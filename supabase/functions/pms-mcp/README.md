@@ -663,6 +663,38 @@ no headers because the function is deployed `--no-verify-jwt`). Tests:
 `fileLinks.test.mjs` exercises the token and the guards for real under Node and
 pins the wiring in `index.ts`.
 
+## `pms_documents`, the derived file index (`POST /pms-mcp/admin/documents-sync`)
+
+One row per file (project folder trees, plus the name-based Proposals and
+Contract libraries; images are excluded). Attributes are DERIVED, never typed:
+doc type, discipline, design phase, set name and date, sheet number, revision,
+RFI/submittal number, email-row link and supersession status. `documentMeta.ts`
+holds the pure derivation (tested in `documentMeta.test.mjs`); the sync lives at
+the bottom of `index.ts`; the schema is migration `20261002120000_pms_documents.sql`.
+
+- **Evidence order:** the transmittal register, then file and folder names, then
+  library and area convention. `derived_from` on each row says which one won.
+- **Corrections:** write a key into `overrides` (for example
+  `{"doc_type":"Narrative"}`). The sync never names that column, so a correction
+  survives every run. Read through the `pms_documents_v` view, which applies it.
+- **Truncated walks never delete.** A scope whose walk hit its cap upserts what it
+  saw and leaves `pms_documents_sync.complete = false`. Only a complete walk
+  tombstones (`deleted_at`) the files it did not see.
+- **Proposals / Contract Library** folders are named by client, so each top folder
+  is its own scope (`lib:<library>/<folder>`). It links to a project
+  (`project_prefix`, `link_basis`) only on a project number in the name, an exact
+  name, or one unambiguous containing name. Unlinked folders are still indexed.
+- **Rotation:** each call syncs the least recently completed scopes, up to 6 or
+  90 s, whichever comes first. Send `{"projectNumber":"..."}` for one project,
+  `{"libraries":false}` to skip the libraries, `{"maxScopes":N}` (max 20).
+- **Auth:** an `x-pms-cron` header equal to the `DOCUMENTS_SYNC_CRON_SECRET`
+  function secret, or a PMS admin Supabase JWT. Schedule it every 15 minutes with
+  pg_cron + pg_net once the secret exists; about 209 projects plus the library
+  folders complete a cycle in roughly a day at that rate.
+- Nothing reads the table yet. `find_document` still walks the live tree until it
+  is switched over (next step), at which point the vocabulary copies in
+  `documentMeta.ts` and `index.ts` collapse into one.
+
 ## Deploying
 
 One-command version: `deploy.ps1` in this folder pulls main, reads the BUILD

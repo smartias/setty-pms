@@ -44,6 +44,9 @@ import {
   RegionAccessError, regionAccessError, regionAccessResult, siteMismatchHint, graphStatusOf, graphErrorCodeOf,
 } from "./regionAccess.ts";
 
+// pms_documents: per-file attributes derived for the nightly sync. Pure; see documentMeta.ts.
+import { type DocFile, deriveDocumentRow, isIndexable, linkLibraryFolder, normaliseFolderUrl } from "./documentMeta.ts";
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
@@ -1250,7 +1253,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-30-onboarding-linked-folders";
+const BUILD = "2026-10-02-documents-sync";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.21.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3410,9 +3413,17 @@ async function transmittalRows(pid: string): Promise<any[]> {
 // Rank the inference fallback on the date in the NAME, never on Graph's
 // lastModifiedDateTime — a bulk migration flattened those firm-wide, so the
 // modified stamp says when the file moved, not when the set was issued.
-function setFolderDate(name: string): string | null {
-  const m = /^\s*(\d{4})-(\d{2})-(\d{2})/.exec(String(name || ""));
+// The PMS itself creates milestone folders as "yyyy_mm_dd Name" (SettyPMS.html
+// createMilestoneSpFolder), so underscore and dot separators must read as dates
+// too, not only hyphens. Always returns ISO "yyyy-mm-dd".
+const NAME_DATE_RE = /(\d{4})[-_.](\d{2})[-_.](\d{2})/;
+function isoDateIn(text: string, anchored = false): string | null {
+  const t = String(text || "");
+  const m = (anchored ? /^\s*(\d{4})[-_.](\d{2})[-_.](\d{2})/ : NAME_DATE_RE).exec(t);
   return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+}
+function setFolderDate(name: string): string | null {
+  return isoDateIn(name, true);
 }
 
 // sheetsOf() moved to currentSet.ts (imported above).
@@ -4927,12 +4938,22 @@ async function treeToDb(numPrefix: string, out: { files: any[]; libraries: strin
   }
 }
 
-async function projectTree(numPrefix: string): Promise<ProjectTree> {
-  const hit = _treeCache.get(numPrefix);
-  if (hit && Date.now() - hit.at < TREE_TTL) return hit;
+// `opts` is for the pms_documents sync only: it wants a FRESH walk (never a
+// cached one) with bigger caps, and must not publish that bigger tree into the
+// 5-minute cache that find_document reads. Every other caller passes nothing.
+async function projectTree(
+  numPrefix: string,
+  opts?: { fresh?: boolean; maxRequests?: number; maxFiles?: number },
+): Promise<ProjectTree> {
+  const maxFiles = opts?.maxFiles ?? TREE_MAX_FILES;
+  const maxRequests = opts?.maxRequests ?? TREE_MAX_REQUESTS;
+  if (!opts?.fresh) {
+    const hit = _treeCache.get(numPrefix);
+    if (hit && Date.now() - hit.at < TREE_TTL) return hit;
 
-  const shared = await treeFromDb(numPrefix);
-  if (shared) { _treeCache.set(numPrefix, shared); return shared; }
+    const shared = await treeFromDb(numPrefix);
+    if (shared) { _treeCache.set(numPrefix, shared); return shared; }
+  }
 
   // Drive-based project (1.17.2): the tree is a breadth-first walk of the
   // project folder on each share that holds it, bounded like the SharePoint
@@ -4948,12 +4969,11 @@ async function projectTree(numPrefix: string): Promise<ProjectTree> {
         const r = await azureWalkFiles(h.ctx, h.folder, h.folder);
         if (!r.started) continue;
         libraries.push(h.ctx.label + ":");
-        for (const f of r.files) { if (files.length >= TREE_MAX_FILES) { truncated = true; break; } files.push(f); }
+        for (const f of r.files) { if (files.length >= maxFiles) { truncated = true; break; } files.push(f); }
         truncated = truncated || r.truncated;
       }
       const out = { at: Date.now(), files, libraries, truncated };
-      _treeCache.set(numPrefix, out);
-      await treeToDb(numPrefix, out);
+      if (!opts) { _treeCache.set(numPrefix, out); await treeToDb(numPrefix, out); }
       return out;
     }
   }
@@ -4982,10 +5002,10 @@ async function projectTree(numPrefix: string): Promise<ProjectTree> {
     // to be serial. Sibling folders are independent, so the only ordering that
     // matters is between levels, not within one.
     let level: Array<{ id: string; path: string }> = [{ id: root.id, path: "" }];
-    while (level.length && requests < TREE_MAX_REQUESTS && files.length < TREE_MAX_FILES) {
+    while (level.length && requests < maxRequests && files.length < maxFiles) {
       const nextLevel: Array<{ id: string; path: string }> = [];
       for (let i = 0; i < level.length; i += TREE_CONCURRENCY) {
-        if (requests >= TREE_MAX_REQUESTS || files.length >= TREE_MAX_FILES) { truncated = true; break; }
+        if (requests >= maxRequests || files.length >= maxFiles) { truncated = true; break; }
         const batch = level.slice(i, i + TREE_CONCURRENCY);
         // Budget is claimed BEFORE dispatch so a batch cannot overshoot the cap
         // by its own width. Each folder needs at least one request; extra pages
@@ -5012,7 +5032,7 @@ async function projectTree(numPrefix: string): Promise<ProjectTree> {
             const path = node.path ? node.path + "/" + it.name : it.name;
             if (it.folder) {
               nextLevel.push({ id: it.id, path });
-            } else if (files.length < TREE_MAX_FILES) {
+            } else if (files.length < maxFiles) {
               files.push(treeFileRow(dr.id, dr.name, it, node.path));
             } else { truncated = true; }
           }
@@ -5020,9 +5040,10 @@ async function projectTree(numPrefix: string): Promise<ProjectTree> {
       }
       level = nextLevel;
     }
-    if (level.length && (requests >= TREE_MAX_REQUESTS || files.length >= TREE_MAX_FILES)) truncated = true;
+    if (level.length && (requests >= maxRequests || files.length >= maxFiles)) truncated = true;
   }
   const out = { at: Date.now(), files, libraries, truncated };
+  if (opts) return out;
   _treeCache.set(numPrefix, out);
   // Publish for the next isolate. Awaited rather than fired and forgotten: an
   // edge function can be torn down as soon as it responds, and a write that
@@ -5245,8 +5266,8 @@ function scoreDocument(file: any, q: ReturnType<typeof parseQuery>, nowMs: numbe
   // Recency as a tiebreak, not a ranking axis. Bulk migrations flattened
   // lastModifiedDateTime firm-wide, so it is weak evidence: worth a nudge
   // between otherwise-equal files, never worth outranking a name match.
-  const dateInPath = /(\d{4})-(\d{2})-(\d{2})/.exec(file.folderPath || "");
-  const stamp = dateInPath ? Date.parse(dateInPath[0]) : Date.parse(file.modified || "");
+  const dateInPath = isoDateIn(file.folderPath || "");
+  const stamp = dateInPath ? Date.parse(dateInPath) : Date.parse(file.modified || "");
   if (!isNaN(stamp)) {
     const years = (nowMs - stamp) / (365.25 * 24 * 3600 * 1000);
     s += Math.max(-3, 3 - years);
@@ -7267,14 +7288,14 @@ mcp.tool("search_drawings", {
 // that metadata only ever exists in the app's SharePoint sidecar, never on
 // the drive. Bounded to ONE project (never a bare browse) because there is
 // no cheap central index to page through here the way the Supabase query is.
-const DRIVE_PHOTO_SESSION_RE = /^(\d{4}-\d{2}-\d{2})[\s_-]*(.*)$/;
+const DRIVE_PHOTO_SESSION_RE = /^(\d{4}[-_.]\d{2}[-_.]\d{2})[\s_-]*(.*)$/;
 // Session folders are named by hand ("2026-01-06 Sam's Photos", "2026-08-27_Varun") — a
 // leading date the app would otherwise have captured as `photo_date`, then a free-text
 // label (usually who took them). No date prefix at all is not an error, just an unlabeled
 // session — the whole name becomes the label.
 function parseDriveSessionFolderName(name: string): { date: string | null; label: string | null } {
   const m = DRIVE_PHOTO_SESSION_RE.exec(String(name || ""));
-  return { date: m ? m[1] : null, label: (m ? m[2] : name).trim() || null };
+  return { date: m ? m[1].replace(/[_.]/g, "-") : null, label: (m ? m[2] : name).trim() || null };
 }
 async function driveFieldPhotoRows(projectQuery: string): Promise<any[]> {
   const pid = await resolveProjectId(projectQuery);
@@ -10707,6 +10728,282 @@ app.post("/pms-mcp/admin/meeting-minutes-sweep", async (c) => {
     more: !onlyProject && active.length > MEETING_SWEEP_MAX_PROJECTS,
     results,
   }, 200, MEETING_SWEEP_CORS);
+});
+
+// ── pms_documents sync ───────────────────────────────────────────────────────
+// Fills pms_documents (one row per file, attributes DERIVED, see documentMeta.ts
+// and migration 20261002120000). Rotation, secret and admin fallback follow the
+// meeting-minutes sweep above. A "scope" is one project (its folder tree) or one
+// top folder of a name-based Proposals/Contract library.
+//
+// Safety rules that matter more than speed:
+//   * A walk that hit its cap is INCOMPLETE. It upserts what it saw but never
+//     tombstones, or every file it did not reach would look deleted.
+//   * The upsert never names `overrides`, so a human correction survives.
+//   * One scope failing records its error and moves on; it never tombstones.
+const DOCS_SYNC_SECRET = Deno.env.get("DOCUMENTS_SYNC_CRON_SECRET");
+const DOCS_SYNC_CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-pms-cron",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+const DOCS_WALK_MAX_REQUESTS = 600;
+const DOCS_WALK_MAX_FILES = 20000;
+const DOCS_MAX_SCOPES_PER_RUN = 6;
+// Stop STARTING new scopes after this; an edge invocation is bounded, and a walk
+// already in flight needs the rest of the time.
+const DOCS_RUN_BUDGET_MS = 90000;
+const DOCS_UPSERT_BATCH = 500;
+const DOCS_LIBRARY_RE = /proposal|contract/i;
+
+type DocsScopeResult = {
+  scope: string; files: number; skippedImages: number; complete: boolean;
+  tombstoned: number; linkedTo?: string | null; error?: string;
+};
+
+async function writeDocsSyncState(scope: string, patch: Record<string, unknown>) {
+  try {
+    await sbUpsert("pms_documents_sync", "scope", [{ scope, updated_at: new Date().toISOString(), ...patch }]);
+  } catch (e) {
+    console.warn("[documents-sync] state write failed:", String((e as any)?.message ?? e));
+  }
+}
+
+// Upsert in batches, deduped on item_id (PostgREST rejects a batch that names
+// the same conflict key twice).
+async function upsertDocumentRows(rows: Record<string, unknown>[]) {
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const r of rows) byId.set(String(r.item_id), r);
+  const all = [...byId.values()];
+  for (let i = 0; i < all.length; i += DOCS_UPSERT_BATCH) {
+    await sbUpsert("pms_documents", "item_id", all.slice(i, i + DOCS_UPSERT_BATCH));
+  }
+}
+
+// Mark files this walk did not see as deleted. return=minimal + count so a scope
+// with thousands of tombstones does not stream its rows back.
+async function tombstoneUnseen(scope: string, runStart: string): Promise<number> {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/pms_documents?scope=eq.${encodeURIComponent(scope)}` +
+    `&deleted_at=is.null&last_seen_at=lt.${encodeURIComponent(runStart)}`,
+    {
+      method: "PATCH",
+      headers: {
+        apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+        "Content-Type": "application/json", Prefer: "count=exact,return=minimal",
+      },
+      body: JSON.stringify({ deleted_at: new Date().toISOString() }),
+    },
+  );
+  if (!res.ok) throw new Error(`tombstone ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const range = res.headers.get("content-range") || "";
+  const n = Number(range.split("/")[1]);
+  return Number.isFinite(n) ? n : 0;
+}
+
+async function syncProjectDocuments(p: any): Promise<DocsScopeResult> {
+  const num = String(p.projectNumber).trim();
+  const scope = num.toLowerCase();
+  const runStart = new Date().toISOString();
+  await writeDocsSyncState(scope, { last_started_at: runStart });
+  try {
+    const tree = await projectTree(scope, { fresh: true, maxRequests: DOCS_WALK_MAX_REQUESTS, maxFiles: DOCS_WALK_MAX_FILES });
+
+    // The register gives sheet number, revision, discipline and supersession for
+    // files issued through the transmittal tool. A read failure must not stop
+    // the sync: the rows are still useful without a status.
+    let idx: ReturnType<typeof buildSupersessionIndex> | null = null;
+    try { idx = buildSupersessionIndex(await transmittalRows(String(p.id))); } catch (e) {
+      console.warn("[documents-sync] register read failed for", scope, String((e as any)?.message ?? e));
+    }
+
+    // Email folder URL -> email row, only when the tree has an Emails folder.
+    let emailFolders: Map<string, string> | undefined;
+    if (tree.files.some((f: any) => /(^|\/)[^/]*emails?(\/|$)/i.test(String(f.folderPath || "")))) {
+      try {
+        const rows = await sbGetAll(
+          "pms_project_emails?select=record_id,sp_folder_url&project_id=eq." + encodeURIComponent(String(p.id)) +
+          "&sp_folder_url=neq.");
+        emailFolders = new Map(rows.map((r: any) => [normaliseFolderUrl(r.sp_folder_url), String(r.record_id)]));
+      } catch (e) {
+        console.warn("[documents-sync] email folder map failed for", scope, String((e as any)?.message ?? e));
+      }
+    }
+
+    const now = new Date().toISOString();
+    let skippedImages = 0;
+    const rows: Record<string, unknown>[] = [];
+    for (const f of tree.files as DocFile[]) {
+      if (!isIndexable(f)) { skippedImages++; continue; }
+      const v: any = idx ? fileSupersessionStatus(f.name, f.folderPath, idx) : null;
+      rows.push(deriveDocumentRow(f, {
+        scope, projectPrefix: scope, now, emailFolders,
+        verdict: v ? {
+          status: v.status, sheetNo: v.sheetNo ?? null, revision: v.revision ?? null,
+          discipline: v.discipline ?? null, transmittalNumber: v.transmittalNumber ?? null,
+        } : null,
+      }) as unknown as Record<string, unknown>);
+    }
+    await upsertDocumentRows(rows);
+    const complete = !tree.truncated;
+    const tombstoned = complete ? await tombstoneUnseen(scope, runStart) : 0;
+    await writeDocsSyncState(scope, {
+      last_completed_at: new Date().toISOString(), complete, file_count: rows.length,
+      skipped_images: skippedImages, error: null,
+    });
+    return { scope, files: rows.length, skippedImages, complete, tombstoned };
+  } catch (e) {
+    const msg = String((e as any)?.message ?? e).slice(0, 500);
+    await writeDocsSyncState(scope, { error: msg });
+    return { scope, files: 0, skippedImages: 0, complete: false, tombstoned: 0, error: msg };
+  }
+}
+
+// Breadth-first walk of ONE folder inside a name-based library, returning rows in
+// the same TreeFile shape the project walk uses (folderPath relative to the top
+// folder). Bounded like the project walk; `truncated` is reported, never hidden.
+async function walkLibraryFolder(dr: { id: string; name: string }, rootId: string): Promise<{ files: DocFile[]; truncated: boolean }> {
+  const files: DocFile[] = [];
+  let requests = 0; let truncated = false;
+  let level: Array<{ id: string; path: string }> = [{ id: rootId, path: "" }];
+  while (level.length) {
+    if (requests >= DOCS_WALK_MAX_REQUESTS || files.length >= DOCS_WALK_MAX_FILES) { truncated = true; break; }
+    const next: Array<{ id: string; path: string }> = [];
+    for (let i = 0; i < level.length; i += TREE_CONCURRENCY) {
+      if (requests >= DOCS_WALK_MAX_REQUESTS) { truncated = true; break; }
+      const batch = level.slice(i, i + TREE_CONCURRENCY);
+      requests += batch.length;
+      const pages = await Promise.all(batch.map(async (node) => {
+        const items: any[] = [];
+        let url = `/drives/${dr.id}/items/${node.id}/children?$select=id,name,folder,file,webUrl,lastModifiedDateTime,size&$top=200`;
+        while (url) {
+          const page = await graphGet(url);
+          items.push(...(page?.value || []));
+          const nl = page?.["@odata.nextLink"];
+          url = nl ? nl.replace("https://graph.microsoft.com/v1.0", "") : "";
+          if (url) requests++;
+        }
+        return { node, items };
+      }));
+      for (const { node, items } of pages) {
+        for (const it of items) {
+          const path = node.path ? node.path + "/" + it.name : it.name;
+          if (it.folder) next.push({ id: it.id, path });
+          else if (files.length < DOCS_WALK_MAX_FILES) files.push(treeFileRow(dr.id, dr.name, it, node.path));
+          else truncated = true;
+        }
+      }
+    }
+    level = next;
+  }
+  return { files, truncated };
+}
+
+// Every top folder of every Proposals/Contract library, across all regions'
+// sites. One scope per top folder keeps a run small and lets rotation reach them.
+async function libraryDocsScopes(): Promise<Array<{ scope: string; dr: { id: string; name: string }; folder: { id: string; name: string } }>> {
+  const seen = new Set<string>();
+  const out: Array<{ scope: string; dr: { id: string; name: string }; folder: { id: string; name: string } }> = [];
+  const teams: Array<string | null> = [null, ...(await regionMap()).keys()];
+  for (const team of teams) {
+    let drives: Array<{ id: string; name: string }> = [];
+    try { drives = await siteDrives(team); } catch { continue; }
+    for (const dr of drives) {
+      if (!DOCS_LIBRARY_RE.test(dr.name) || seen.has(dr.id)) continue;
+      seen.add(dr.id);
+      let folders: any[] = [];
+      try { folders = await findFoldersByName(dr.id, "", 3000); } catch { continue; }
+      for (const f of folders) out.push({ scope: `lib:${dr.name}/${f.name}`, dr, folder: { id: f.id, name: f.name } });
+    }
+  }
+  return out;
+}
+
+async function syncLibraryDocuments(
+  sc: { scope: string; dr: { id: string; name: string }; folder: { id: string; name: string } },
+  projects: any[],
+): Promise<DocsScopeResult> {
+  const runStart = new Date().toISOString();
+  await writeDocsSyncState(sc.scope, { last_started_at: runStart });
+  try {
+    const link = linkLibraryFolder(sc.folder.name, projects);
+    const { files, truncated } = await walkLibraryFolder(sc.dr, sc.folder.id);
+    const now = new Date().toISOString();
+    let skippedImages = 0;
+    const rows: Record<string, unknown>[] = [];
+    for (const f of files) {
+      if (!isIndexable(f)) { skippedImages++; continue; }
+      rows.push(deriveDocumentRow(f, {
+        scope: sc.scope, projectPrefix: link?.projectPrefix ?? null, linkBasis: link?.basis ?? null, now,
+      }) as unknown as Record<string, unknown>);
+    }
+    await upsertDocumentRows(rows);
+    const complete = !truncated;
+    const tombstoned = complete ? await tombstoneUnseen(sc.scope, runStart) : 0;
+    await writeDocsSyncState(sc.scope, {
+      last_completed_at: new Date().toISOString(), complete, file_count: rows.length,
+      skipped_images: skippedImages, error: null,
+    });
+    return { scope: sc.scope, files: rows.length, skippedImages, complete, tombstoned, linkedTo: link?.projectPrefix ?? null };
+  } catch (e) {
+    const msg = String((e as any)?.message ?? e).slice(0, 500);
+    await writeDocsSyncState(sc.scope, { error: msg });
+    return { scope: sc.scope, files: 0, skippedImages: 0, complete: false, tombstoned: 0, error: msg };
+  }
+}
+
+app.options("/pms-mcp/admin/documents-sync", (c) => c.body(null, 204, DOCS_SYNC_CORS));
+app.post("/pms-mcp/admin/documents-sync", async (c) => {
+  const cronGiven = c.req.header("x-pms-cron") || "";
+  const isCron = !!DOCS_SYNC_SECRET && cronGiven === DOCS_SYNC_SECRET;
+  if (!isCron) {
+    const auth = c.req.header("Authorization") || "";
+    const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!(await isAdminSupabaseJwt(jwt))) {
+      return c.json({ error: "Admins only (Supabase session required), or a valid x-pms-cron secret." }, 403, DOCS_SYNC_CORS);
+    }
+  }
+  let body: any = {};
+  try { body = await c.req.json(); } catch { /* cron sends an empty body */ }
+  const onlyProject = String(body?.projectNumber || "").trim();
+  const withLibraries = body?.libraries !== false;
+  const maxScopes = Math.max(1, Math.min(Number(body?.maxScopes) || DOCS_MAX_SCOPES_PER_RUN, 20));
+
+  const projects = (await getProjectsUnfiltered()).filter((p: any) => p.projectNumber);
+  const started = Date.now();
+  const results: DocsScopeResult[] = [];
+
+  if (onlyProject) {
+    const p = projects.find((x: any) => String(x.projectNumber).toLowerCase() === onlyProject.toLowerCase());
+    if (!p) return c.json({ error: `No project matching "${onlyProject}"` }, 404, DOCS_SYNC_CORS);
+    results.push(await syncProjectDocuments(p));
+    return c.json({ scanned: 1, results }, 200, DOCS_SYNC_CORS);
+  }
+
+  type Cand = { scope: string; run: () => Promise<DocsScopeResult> };
+  const cands: Cand[] = projects.map((p: any) => ({
+    scope: String(p.projectNumber).toLowerCase().trim(),
+    run: () => syncProjectDocuments(p),
+  }));
+  if (withLibraries) {
+    try {
+      for (const sc of await libraryDocsScopes()) cands.push({ scope: sc.scope, run: () => syncLibraryDocuments(sc, projects) });
+    } catch (e) {
+      console.warn("[documents-sync] library enumeration failed:", String((e as any)?.message ?? e));
+    }
+  }
+  // Least recently completed first; never-synced scopes ahead of everything.
+  const stateRows = await sbGetAll("pms_documents_sync?select=scope,last_completed_at");
+  const last = new Map<string, string>(stateRows.map((r: any) => [r.scope, r.last_completed_at || ""]));
+  cands.sort((a, b) => (last.get(a.scope) || "").localeCompare(last.get(b.scope) || ""));
+
+  for (const cand of cands.slice(0, maxScopes)) {
+    if (Date.now() - started > DOCS_RUN_BUDGET_MS) break;
+    results.push(await cand.run());
+  }
+  return c.json({
+    scanned: results.length, remaining: cands.length - results.length, results,
+  }, 200, DOCS_SYNC_CORS);
 });
 
 Deno.serve(app.fetch);

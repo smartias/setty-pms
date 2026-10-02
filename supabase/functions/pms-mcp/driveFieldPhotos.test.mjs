@@ -19,10 +19,10 @@ const check = (ok, label) => { total++; if (!ok) { failures++; console.error("�
 const eq = (a, b, label) => check(JSON.stringify(a) === JSON.stringify(b), `${label} (got ${JSON.stringify(a)})`);
 
 // ── copies from index.ts ────────────────────────────────────────────────────
-const DRIVE_PHOTO_SESSION_RE = /^(\d{4}-\d{2}-\d{2})[\s_-]*(.*)$/;
+const DRIVE_PHOTO_SESSION_RE = /^(\d{4}[-_.]\d{2}[-_.]\d{2})[\s_-]*(.*)$/;
 function parseDriveSessionFolderName(name) {
   const m = DRIVE_PHOTO_SESSION_RE.exec(String(name || ""));
-  return { date: m ? m[1] : null, label: (m ? m[2] : name).trim() || null };
+  return { date: m ? m[1].replace(/[_.]/g, "-") : null, label: (m ? m[2] : name).trim() || null };
 }
 
 // ── 1. parseDriveSessionFolderName: real folder names seen live on DC ──────
@@ -62,7 +62,7 @@ check(spRow.folderUrl && !("folderId" in spRow), "a SharePoint session still exp
 import { readFileSync } from "node:fs";
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const has = (needle, label) => check(shipped.includes(needle), `${label} has DRIFTED from this test's copy`);
-has("const DRIVE_PHOTO_SESSION_RE = /^(\\d{4}-\\d{2}-\\d{2})[\\s_-]*(.*)$/;", "the session-folder regex");
+has("const DRIVE_PHOTO_SESSION_RE = /^(\\d{4}[-_.]\\d{2}[-_.]\\d{2})[\\s_-]*(.*)$/;", "the session-folder regex");
 has("function parseDriveSessionFolderName(name: string): { date: string | null; label: string | null } {",
   "parseDriveSessionFolderName is defined");
 has("async function driveFieldPhotoRows(projectQuery: string): Promise<any[]> {", "driveFieldPhotoRows is defined");
