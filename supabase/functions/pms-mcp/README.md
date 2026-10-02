@@ -702,6 +702,10 @@ constant, deploys, and polls `/health` until that build answers (see the header
 of the script). A pending deploy, when there is one, is described in
 `DEPLOY-NEXT.md` beside it. The manual steps follow.
 
+**From GitHub:** the `Deploy pms-mcp` workflow (Actions tab, Run workflow, main only) does the
+same deploy and health check. It needs a repo secret `SUPABASE_ACCESS_TOKEN` (a personal access
+token, same as below) and does not change the manual steps.
+
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.
 
 ```powershell
