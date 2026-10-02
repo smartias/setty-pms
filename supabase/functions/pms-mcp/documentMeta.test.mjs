@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import {
   deriveDocumentRow, deriveDocType, deriveDiscipline, derivePhase, deriveSet, deriveArea,
   parseRecordFolder, isoDateIn, isIndexable, normaliseSitePhase, normaliseDiscipline,
-  normaliseDesignPhase, linkLibraryFolder, folderUrlOf, normaliseFolderUrl,
+  normaliseDesignPhase, linkLibraryFolder, folderUrlOf, normaliseFolderUrl, disciplineFromSpecSection,
   DOC_TYPE_WORDS, DISCIPLINE_WORDS, PHASE_PATTERNS, PHASE_ALIASES,
 } from "./documentMeta.ts";
 
@@ -255,6 +255,48 @@ test("files outside any email folder never link to an email row", () => {
   const r = deriveDocumentRow(file({ name: "M501.pdf", folderPath: "Outgoing/2026_02_18 CD Set", webUrl: "https://x/outgoing/M501.pdf" }),
     ctx({ emailFolders: map }));
   assert.equal(r.email_record_id, null);
+});
+
+// ── Regressions found on the second real sync (CSI Kitchen, SAPX246005.00) ───
+test("spec files in a discipline folder take that discipline, even when the name has no discipline word", () => {
+  const spec = (name, folderPath) => deriveDocumentRow(file({ name, ext: "pdf", folderPath }), ctx());
+  // Real folder shape: Outgoing/<set>/Specs/<M|P|FP|E and FA>. Names are real section titles or, for the
+  // word-less cases, constructed from the same MasterFormat numbering.
+  const a = spec("230517 - SLEEVES AND SLEEVE SEALS FOR HVAC PIPING.pdf", "Outgoing/2025-11-19 CD 100%/Specs/M");
+  assert.equal(a.doc_type, "Spec");
+  assert.equal(a.discipline, "M");
+  const b = spec("230993 - Sequence of Operations.pdf", "Outgoing/2025-11-19 CD 100%/Specs/M");
+  assert.equal(b.discipline, "M");
+  assert.equal(b.derived_from.discipline, "spec section number");
+  assert.equal(spec("211313 - Wet-Pipe Systems.pdf", "Outgoing/2025-11-19 CD 100%/Specs/FP").discipline, "FP");
+  assert.equal(spec("260519 - Conductors and Cables.pdf", "Outgoing/2025-11-19 CD 100%/Specs/E and FA").discipline, "E");
+  assert.equal(spec("283100 - Addressable Devices.pdf", "Outgoing/2025-11-19 CD 100%/Specs/E and FA").discipline, "FA");
+  // No section number and no word: the single-code folder decides.
+  const c = spec("Cover Letter.pdf", "Outgoing/2025-11-19 CD 100%/Specs/P");
+  assert.equal(c.discipline, "P");
+  assert.equal(c.derived_from.discipline, "folder code");
+  // "E and FA" holds two disciplines, so on its own it decides nothing.
+  assert.equal(spec("Cover Letter.pdf", "Outgoing/2025-11-19 CD 100%/Specs/E and FA").discipline, null);
+});
+
+test("a six-digit prefix is only a spec section on a spec, never on a dated file", () => {
+  assert.equal(disciplineFromSpecSection("230517 - SLEEVES.pdf"), "M");
+  assert.equal(disciplineFromSpecSection("Section 26 05 19 Conductors.pdf"), "E");
+  assert.equal(disciplineFromSpecSection("02 Fire Alarm.pdf"), null);
+  assert.equal(disciplineFromSpecSection("20260116_notes.pdf"), null, "an eight-digit date is not a section");
+  assert.equal(disciplineFromSpecSection("2026-01-16 Dr Check.pdf"), null);
+  // Real library file whose name starts with a YYMMDD date: division 26 would read as electrical.
+  const r = deriveDocumentRow(file({ library: "Contract Library", name: "260310 HPCM Refrigeration WO01 Appendix A FE 26.05.pdf",
+    folderPath: "/" }), ctx({ scope: "lib:Contract Library/Buro Happold" }));
+  assert.equal(r.discipline, null);
+  assert.equal(r.doc_type, "Contract");
+});
+
+test("project-root shortcuts and temp files are not documents", () => {
+  for (const name of ["Field Photos.url", "N Drive.url", "Contracts Folder.url", "Link.lnk", "desktop.ini", "~$spec.docx", "x.tmp"]) {
+    assert.equal(isIndexable({ name, ext: name.split(".").pop() }), false, name);
+  }
+  assert.equal(isIndexable({ name: "Narrative.docx", ext: "docx" }), true);
 });
 
 // ── parity with index.ts (find_document's scoring vocabulary) ───────────────
