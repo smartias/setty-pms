@@ -1,5 +1,5 @@
 -- pms_engineering_standards.status was limited to ('active','superseded'), so
--- the review-queue rows staged by 20261002120000_stage_mechanical_standards_
+-- the review-queue rows staged by 20261002120100_stage_mechanical_standards_
 -- from_qc_chats.sql ('suggested') were rejected. Widen it. Ordered before that
 -- migration so a fresh replay (preview branch, local reset) inserts cleanly.
 -- Already applied to production by hand (recorded there as version
