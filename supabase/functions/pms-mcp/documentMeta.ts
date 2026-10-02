@@ -111,6 +111,26 @@ export function normaliseDiscipline(input: string): string | null {
   return DISCIPLINE_FROM_NAME[t.toLowerCase()] ?? null;
 }
 
+// Canonical doc types the sync can assign. find_document's `docType` filter
+// accepts any spelling of these (case, plural), nothing else.
+export const DOC_TYPES = [
+  "Narrative", "Calc", "Spec", "Comment Log", "Transmittal", "Minutes", "Report",
+  "Drawing", "Email", "Email Attachment", "RFI", "Submittal", "Proposal", "Contract",
+] as const;
+const DOC_TYPE_ALIASES: Record<string, string> = {
+  narratives: "Narrative", calcs: "Calc", calculation: "Calc", calculations: "Calc",
+  specs: "Spec", specification: "Spec", specifications: "Spec",
+  "comment logs": "Comment Log", comments: "Comment Log", transmittals: "Transmittal",
+  reports: "Report", drawings: "Drawing", sheet: "Drawing", sheets: "Drawing",
+  emails: "Email", "email attachments": "Email Attachment", attachment: "Email Attachment",
+  rfis: "RFI", submittals: "Submittal", proposals: "Proposal", contracts: "Contract",
+};
+export function normaliseDocType(input: string): string | null {
+  const t = String(input || "").trim().toLowerCase().replace(/\s+/g, " ");
+  if (!t) return null;
+  return DOC_TYPES.find((d) => d.toLowerCase() === t) ?? DOC_TYPE_ALIASES[t] ?? null;
+}
+
 // ── Dates ───────────────────────────────────────────────────────────────────
 // Same helper as index.ts: the PMS creates "yyyy_mm_dd Name" folders, older sets
 // use "yyyy-mm-dd_Name". Always ISO.
