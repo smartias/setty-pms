@@ -4,13 +4,34 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Setty — Admin Console</title>
+<script>
+  // Theme preference: "system" (default, follows the OS), "light" or "dark".
+  // Shared key with the PMS pages; applied before first paint (no flash).
+  (function(){try{var t=localStorage.getItem("pms-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();
+</script>
 <style>
   :root {
-    --bg: #0b1120; --card: #101a30; --card2: #0d1526; --border: #1e2a44;
+    --bg: #0b1120; --card: #101a30; --card2: #0d1526; --border: #1e2a44; --rowline: #0d1526;
     --text: #e2e8f0; --dim: #94a3b8; --muted: #8b98ab;
-    --accent: #3b82f6; --accent-dim: #14233f;
+    --accent: #3b82f6; --accent-dim: #14233f; --link: #60a5fa;
     --green: #34d399; --greenDim: #0a2b22; --red: #f87171; --redDim: #3b1219;
-    --amber: #fbbf24; --amberDim: #33270a;
+    --amber: #fbbf24; --amberDim: #33270a; color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f3f5f9; --card: #ffffff; --card2: #f6f8fb; --border: #d3dae6; --rowline: #e5eaf2;
+      --text: #1e293b; --dim: #475569; --muted: #64748b;
+      --accent: #2563eb; --accent-dim: #dbeafe; --link: #1d4ed8;
+      --green: #047857; --greenDim: #d1fae5; --red: #b91c1c; --redDim: #fee2e2;
+      --amber: #b45309; --amberDim: #fef3c7; color-scheme: light;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f3f5f9; --card: #ffffff; --card2: #f6f8fb; --border: #d3dae6; --rowline: #e5eaf2;
+      --text: #1e293b; --dim: #475569; --muted: #64748b;
+      --accent: #2563eb; --accent-dim: #dbeafe; --link: #1d4ed8;
+      --green: #047857; --greenDim: #d1fae5; --red: #b91c1c; --redDim: #fee2e2;
+      --amber: #b45309; --amberDim: #fef3c7; color-scheme: light;
   }
   * { box-sizing: border-box; }
   body { margin: 0; padding: 20px 26px 70px; background: var(--bg); color: var(--text);
@@ -31,7 +52,7 @@
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase;
        letter-spacing: .4px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
-  td { padding: 8px 10px; border-bottom: 1px solid var(--card2); vertical-align: top; }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--rowline); vertical-align: top; }
   tr:hover td { background: var(--card2); }
   .pill { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 11.5px; font-weight: 600; }
   .ok    { background: var(--greenDim); color: var(--green); }
@@ -46,7 +67,7 @@
   input, select { background: var(--card2); border: 1px solid var(--border); color: var(--text);
                   border-radius: 8px; padding: 7px 10px; font-size: 13px; }
   input:focus, select:focus { border-color: var(--accent); }
-  :focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+  :focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
              clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -79,7 +100,7 @@
   .archcol h4 { margin: 0 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
   .architem { border: 1px solid var(--border); background: var(--card); border-radius: 7px; padding: 5px 9px; font-size: 12.5px; margin: 5px 0; }
   .architem span { color: var(--muted); font-size: 11.5px; display: block; }
-  .phaserow { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--card2); }
+  .phaserow { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--rowline); }
   .phaserow:last-child { border-bottom: none; }
   .phaserow .pill { flex-shrink: 0; margin-top: 1px; }
   .jump { display: inline-block; margin: 2px 6px 2px 0; font-size: 12.5px; }
@@ -95,8 +116,34 @@
       <div class="header-sub">Sign-ins · users &amp; roles · backups · filing log · integration · system guide · Claude/MCP ·
         <a href="https://smartias.github.io/setty-pms/SettyPMS.html">← Back to PMS</a></div>
     </div>
-    <button type="button" class="chip" id="userChip">…</button>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <button type="button" class="chip" id="themeToggle"></button>
+      <button type="button" class="chip" id="userChip">…</button>
+    </div>
   </div>
+  <script>
+    // System → Light → Dark. Saved in localStorage ("pms-theme", shared with the PMS).
+    (function () {
+      var modes = [{ k: "system", i: "🖥", l: "System" }, { k: "light", i: "☀️", l: "Light" }, { k: "dark", i: "🌙", l: "Dark" }];
+      var btn = document.getElementById("themeToggle");
+      function read() { try { var t = localStorage.getItem("pms-theme"); return t === "light" || t === "dark" ? t : "system"; } catch (e) { return "system"; } }
+      var cur = read();
+      function paint() {
+        var m = modes.filter(function (x) { return x.k === cur; })[0], n = modes[(modes.indexOf(m) + 1) % 3];
+        btn.textContent = m.i + " " + m.l;
+        btn.title = "Theme: " + m.l + ". Click for " + n.l + ".";
+        btn.setAttribute("aria-label", "Theme: " + m.l + ". Switch to " + n.l + ".");
+      }
+      btn.addEventListener("click", function () {
+        var m = modes.filter(function (x) { return x.k === cur; })[0];
+        cur = modes[(modes.indexOf(m) + 1) % 3].k;
+        if (cur === "system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", cur);
+        try { if (cur === "system") localStorage.removeItem("pms-theme"); else localStorage.setItem("pms-theme", cur); } catch (e) {}
+        paint();
+      });
+      paint();
+    })();
+  </script>
   <div class="tabs" id="tabs" style="display:none"></div>
   <div id="status"></div>
   <div id="view"></div>
