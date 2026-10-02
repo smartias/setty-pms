@@ -1291,7 +1291,8 @@ async function bulkStatus(kind, status) {
   if (status === "active" && (isA || isS)) payload.date_verified = new Date().toISOString().slice(0,10);
   if (isM && (status === "confirmed" || status === "rejected")) { payload.reviewed_by = state.user || null; payload.reviewed_at = new Date().toISOString(); }
   try {
-    await sb("PATCH", `/rest/v1/${table}?${idcol}=in.(${[...set].join(",")})`, payload);
+    const done = await sb("PATCH", `/rest/v1/${table}?${idcol}=in.(${[...set].join(",")})`, payload);
+    if (isS && (!done || done.length !== set.size)) { toast(`Only ${done ? done.length : 0} of ${set.size} standards changed. You may lack the knowledge.review permission (ask an admin).`, "error"); if (done && done.length) { set.clear(); await loadStandards(); } return; }
     const noun = isL ? "lesson" : isA ? "preference" : isM ? "item" : isS ? "standard" : "practice";
     toast(`${set.size} ${noun}${set.size === 1 ? "" : "s"} ${status === "archived" || status === "rejected" || status === "superseded" ? (isS ? "superseded — off the connector's active list" : "rejected") : status === "active" ? "approved — now feed briefs" : status === "confirmed" ? "confirmed" : "approved"}.`, "success");
     set.clear();
@@ -1531,8 +1532,9 @@ function renderStandardCard(r) {
 }
 async function setStdStatus(id, status) {
   try {
-    await sb("PATCH", "/rest/v1/pms_engineering_standards?standard_id=eq." + encodeURIComponent(id),
+    const done = await sb("PATCH", "/rest/v1/pms_engineering_standards?standard_id=eq." + encodeURIComponent(id),
       { status, updated_at: new Date().toISOString(), ...(status === "active" ? { date_verified: new Date().toISOString().slice(0, 10) } : {}) });
+    if (!done || !done.length) { toast("No rows changed. You may lack the knowledge.review permission (ask an admin).", "error"); return; }
     toast("Standard " + (status === "active" ? "approved." : "superseded."), "success");
     await loadStandards();
   } catch (e) { toast("Update failed: " + e.message, "error"); }
@@ -1572,7 +1574,8 @@ async function saveStandard(id) {
     updated_at: new Date().toISOString(),
   };
   try {
-    await sb("PATCH", "/rest/v1/pms_engineering_standards?standard_id=eq." + encodeURIComponent(id), payload);
+    const done = await sb("PATCH", "/rest/v1/pms_engineering_standards?standard_id=eq." + encodeURIComponent(id), payload);
+    if (!done || !done.length) { toast("No rows changed. You may lack the knowledge.review permission (ask an admin).", "error"); return; }
     closeModal();
     toast("Standard saved.", "success");
     await loadStandards();
