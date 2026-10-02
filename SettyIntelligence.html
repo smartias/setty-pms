@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-09-20-intel-v33-meeting-items";
+    window.__appVersion = "2026-10-02-intel-v34-light-dark-theme";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -37,33 +37,58 @@
       setInterval(_checkForUpdate, 10 * 60 * 1000);
     });
   </script>
+  <script>
+    // Theme preference: "system" (default, follows the OS), "light" or "dark".
+    // Shared key with SettyPMS.html; applied before first paint (no flash).
+    (function(){try{var t=localStorage.getItem("pms-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
       --navy: #1F3864; --blue: #3B82F6; --bg: #0d1117; --card: #161b22;
       --border: #30363d; --text: #e6edf3; --dim: #94a3b8; --muted: #8b98ab;
       --green: #10b981; --yellow: #f59e0b; --red: #ef4444; --accent-dim: #1e3a5f;
-      --purple: #a78bfa;
+      --purple: #a78bfa; --link: #60a5fa; --btn-hover: #223333; --btn-primary-hover: #2f6fd6;
+      --green-dim: #064e3b; --yellow-dim: #451a03; --red-dim: #450a0a; --purple-dim: #2e1065; --gray-dim: #1f242c;
+      --on-yellow: #1a1a1a; color-scheme: dark;
+    }
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme="dark"]) {
+        --blue: #3B82F6; --bg: #f3f5f9; --card: #ffffff;
+      --border: #d3dae6; --text: #1e293b; --dim: #475569; --muted: #64748b;
+      --green: #047857; --yellow: #b45309; --red: #b91c1c; --accent-dim: #dbeafe;
+      --purple: #6d28d9; --link: #1d4ed8; --btn-hover: #bfdbfe; --btn-primary-hover: #2f6fd6;
+      --green-dim: #d1fae5; --yellow-dim: #fef3c7; --red-dim: #fee2e2; --purple-dim: #ede9fe; --gray-dim: #eef1f5;
+      --on-yellow: #ffffff; color-scheme: light;
+      }
+    }
+    :root[data-theme="light"] {
+      --blue: #3B82F6; --bg: #f3f5f9; --card: #ffffff;
+      --border: #d3dae6; --text: #1e293b; --dim: #475569; --muted: #64748b;
+      --green: #047857; --yellow: #b45309; --red: #b91c1c; --accent-dim: #dbeafe;
+      --purple: #6d28d9; --link: #1d4ed8; --btn-hover: #bfdbfe; --btn-primary-hover: #2f6fd6;
+      --green-dim: #d1fae5; --yellow-dim: #fef3c7; --red-dim: #fee2e2; --purple-dim: #ede9fe; --gray-dim: #eef1f5;
+      --on-yellow: #ffffff; color-scheme: light;
     }
     body { font-family: 'Segoe UI', Arial, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 18px 24px 60px; }
     h1 { font-size: 22px; font-weight: 800; margin-bottom: 2px; }
     h2 { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 22px 0 10px; }
-    a { color: #60a5fa; text-decoration: none; }
+    a { color: var(--link); text-decoration: none; }
     a:hover { text-decoration: underline; }
     label { font-size: 11px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; display: block; margin-bottom: 4px; }
     input, select, textarea { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: inherit; width: 100%; }
     input:focus, select:focus, textarea:focus { border-color: var(--blue); }
-    :focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+    :focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
     .skip-link { position: absolute; left: -9999px; top: 0; z-index: 300; background: var(--navy); color: #fff; padding: 8px 14px; border-radius: 0 0 8px 0; font-size: 13px; font-weight: 600; }
     .skip-link:focus { left: 0; }
     textarea { resize: vertical; }
     button { font-family: inherit; cursor: pointer; }
-    .btn { background: var(--accent-dim); color: #60a5fa; border: 1px solid var(--blue); border-radius: 6px; padding: 7px 14px; font-size: 13px; font-weight: 600; }
-    .btn:hover { background: #233; }
+    .btn { background: var(--accent-dim); color: var(--link); border: 1px solid var(--blue); border-radius: 6px; padding: 7px 14px; font-size: 13px; font-weight: 600; }
+    .btn:hover { background: var(--btn-hover); }
     .btn-primary { background: var(--blue); color: white; border-color: var(--blue); }
-    .btn-primary:hover { background: #2f6fd6; }
-    .btn-success { background: #064e3b; color: var(--green); border-color: var(--green); }
+    .btn-primary:hover { background: var(--btn-primary-hover); }
+    .btn-success { background: var(--green-dim); color: var(--green); border-color: var(--green); }
     .btn-danger { background: transparent; color: var(--red); border-color: var(--red); }
     .btn-ghost { background: transparent; color: var(--dim); border-color: var(--border); }
     .btn-sm { padding: 4px 10px; font-size: 12px; }
@@ -74,18 +99,18 @@
     .chip:hover { border-color: var(--blue); color: var(--text); }
     .hm-open { background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; text-decoration: underline; text-underline-offset: 2px; }
     .pill { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
-    .pill-blue   { background: var(--accent-dim); color: #60a5fa; border: 1px solid var(--blue); }
-    .pill-green  { background: #064e3b; color: var(--green); border: 1px solid var(--green); }
-    .pill-yellow { background: #451a03; color: var(--yellow); border: 1px solid var(--yellow); }
-    .pill-gray   { background: #1f242c; color: var(--dim); border: 1px solid var(--border); }
-    .pill-purple { background: #2e1065; color: var(--purple); border: 1px solid var(--purple); }
-    .pill-red    { background: #450a0a; color: var(--red); border: 1px solid var(--red); }
+    .pill-blue   { background: var(--accent-dim); color: var(--link); border: 1px solid var(--blue); }
+    .pill-green  { background: var(--green-dim); color: var(--green); border: 1px solid var(--green); }
+    .pill-yellow { background: var(--yellow-dim); color: var(--yellow); border: 1px solid var(--yellow); }
+    .pill-gray   { background: var(--gray-dim); color: var(--dim); border: 1px solid var(--border); }
+    .pill-purple { background: var(--purple-dim); color: var(--purple); border: 1px solid var(--purple); }
+    .pill-red    { background: var(--red-dim); color: var(--red); border: 1px solid var(--red); }
 
     /* Module tab bar */
     .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; flex-wrap: wrap; }
     .tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--dim); font-size: 13px; font-weight: 600; padding: 10px 14px; margin-bottom: -1px; display: flex; align-items: center; gap: 6px; }
     .tab:hover { color: var(--text); }
-    .tab.active { color: #60a5fa; border-bottom-color: #60a5fa; }
+    .tab.active { color: var(--link); border-bottom-color: var(--link); }
     .tab .badge { background: var(--border); color: var(--text); border-radius: 10px; font-size: 10px; padding: 1px 7px; font-weight: 700; }
     .tab.active .badge { background: var(--blue); color: #fff; }
 
@@ -111,9 +136,9 @@
 
     .empty { text-align: center; color: var(--muted); padding: 48px 20px; font-size: 14px; }
     .status { font-size: 12px; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; display: none; }
-    .status.info    { background: var(--accent-dim); color: #60a5fa; display: block; }
-    .status.error   { background: #450a0a; color: var(--red); display: block; }
-    .status.success { background: #064e3b; color: var(--green); display: block; }
+    .status.info    { background: var(--accent-dim); color: var(--link); display: block; }
+    .status.error   { background: var(--red-dim); color: var(--red); display: block; }
+    .status.success { background: var(--green-dim); color: var(--green); display: block; }
 
     /* Modal */
     .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; z-index: 200; overflow-y: auto; }
@@ -141,13 +166,13 @@
     /* Brief section feedback (👍/👎) */
     .fbbtn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 1px 7px; font-size: 12px; color: var(--dim); cursor: pointer; }
     .fbbtn:hover { border-color: var(--blue); }
-    .fbbtn.on { border-color: var(--green); background: #064e3b; }
+    .fbbtn.on { border-color: var(--green); background: var(--green-dim); }
     .fbbtn[disabled] { cursor: default; opacity: .65; }
     .selbox { width: auto !important; margin-top: 4px; accent-color: var(--blue); flex: none; }
 
     /* Print-friendly brief: light palette, chrome hidden */
     @media print {
-      :root { --text: #111; --dim: #444; --muted: #666; --bg: #fff; --card: #fff; --border: #bbb; --accent-dim: #eef2f7; }
+      :root:root:root { --text: #111; --dim: #444; --muted: #666; --bg: #fff; --card: #fff; --border: #bbb; --accent-dim: #eef2f7; --link: #111; --green: #047857; --yellow: #b45309; --red: #b91c1c; --purple: #6d28d9; --green-dim: #d1fae5; --yellow-dim: #fef3c7; --red-dim: #fee2e2; --purple-dim: #ede9fe; --gray-dim: #eef1f5; --on-yellow: #fff; color-scheme: light; }
       body { background: #fff !important; color: #111; padding: 0; }
       .header-bar, .tabs, .toolbar, .status, .fb, .no-print, #modalMount, .lesson-actions { display: none !important; }
       .card, .lesson { break-inside: avoid; box-shadow: none; }
@@ -172,10 +197,36 @@
         <a href="https://smartias.github.io/setty-pms/SettyPMS.html">← Back to PMS</a>
       </div>
     </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <button type="button" class="chip" id="themeToggle"></button>
     <button type="button" class="chip" id="userChip" title="Sign in (used for approvals and lesson authorship)">
       👤 <span id="userName">Sign in</span>
     </button>
+    </div>
   </header>
+  <script>
+    // System → Light → Dark. Saved in localStorage ("pms-theme", shared with the PMS).
+    (function () {
+      var modes = [{ k: "system", i: "🖥", l: "System" }, { k: "light", i: "☀️", l: "Light" }, { k: "dark", i: "🌙", l: "Dark" }];
+      var btn = document.getElementById("themeToggle");
+      function read() { try { var t = localStorage.getItem("pms-theme"); return t === "light" || t === "dark" ? t : "system"; } catch (e) { return "system"; } }
+      var cur = read();
+      function paint() {
+        var m = modes.filter(function (x) { return x.k === cur; })[0], n = modes[(modes.indexOf(m) + 1) % 3];
+        btn.textContent = m.i + " " + m.l;
+        btn.title = "Theme: " + m.l + ". Click for " + n.l + ".";
+        btn.setAttribute("aria-label", "Theme: " + m.l + ". Switch to " + n.l + ".");
+      }
+      btn.addEventListener("click", function () {
+        var m = modes.filter(function (x) { return x.k === cur; })[0];
+        cur = modes[(modes.indexOf(m) + 1) % 3].k;
+        if (cur === "system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", cur);
+        try { if (cur === "system") localStorage.removeItem("pms-theme"); else localStorage.setItem("pms-theme", cur); } catch (e) {}
+        paint();
+      });
+      paint();
+    })();
+  </script>
 
   <nav class="tabs" id="tabs" aria-label="Modules"></nav>
   <div class="status" id="status" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -377,7 +428,7 @@ function renderTabs() {
     const pending = m.key === "lessons"
       ? state.lessons.filter(l => l.status === "draft" || l.status === "suggested").length : 0;
     const badge = pending
-      ? `<span class="badge" style="background:var(--yellow);color:#1a1a1a" title="${pending} of ${count} awaiting review">${pending} to review</span>`
+      ? `<span class="badge" style="background:var(--yellow);color:var(--on-yellow)" title="${pending} of ${count} awaiting review">${pending} to review</span>`
       : count === "" ? "" : `<span class="badge">${count}</span>`;
     return `<button class="tab ${state.tab === m.key ? "active" : ""}"${state.tab === m.key ? ' aria-current="page"' : ""} onclick="setTab('${m.key}')">${esc(m.label)} ${badge}</button>`;
   }).join("");
@@ -544,7 +595,7 @@ function briefBodyHTML(b) {
   (b.project_analysis || []).forEach(a => { (byCatA[a.category] = byCatA[a.category] || []).push(a); });
   const analysisHTML = Object.keys(catLabelA).filter(c => byCatA[c]).map(c => `
     <div style="margin-bottom:12px">
-      <div style="font-size:12px;font-weight:700;color:#60a5fa;margin-bottom:6px">${catLabelA[c]}</div>
+      <div style="font-size:12px;font-weight:700;color:var(--link);margin-bottom:6px">${catLabelA[c]}</div>
       ${byCatA[c].map(a => `<div class="brief-row" style="font-size:12px">
         <div style="font-weight:700">${esc(a.title)}${(a.severity && a.category!=="owner_directive")?` <span class="pill ${sevPill[a.severity]||"pill-gray"}">${esc(a.severity)}</span>`:""}</div>
         ${a.detail?`<div style="color:var(--dim);margin-top:3px;line-height:1.5">${esc(a.detail)}</div>`:""}
@@ -580,7 +631,7 @@ function briefBodyHTML(b) {
   const addAuth = b.additional_authorities || [];
   const addAuthHTML = addAuth.length ? `
       <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
-        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin-bottom:6px">Also governed by (from scope)</div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--link);margin-bottom:6px">Also governed by (from scope)</div>
         ${addAuth.map(a => `<div class="brief-row" style="font-size:12.5px"><b>${esc(a.owner_name)}</b>: ${esc(a.design_standards||"")}${(a.source_urls&&a.source_urls.length&&safeUrl(a.source_urls[0]))?` <a href="${esc(safeUrl(a.source_urls[0]))}" target="_blank" rel="noreferrer">↗</a>`:""}</div>`).join("")}
       </div>` : "";
   const govCard = (g || addAuth.length) ? `
@@ -600,7 +651,7 @@ function briefBodyHTML(b) {
   (b.regulations || []).forEach(r => { (byCat[r.category] = byCat[r.category] || []).push(r); });
   const regsHTML = Object.keys(catLabel).filter(c => byCat[c]).map(c => `
     <div style="margin-bottom:12px">
-      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin-bottom:5px">${esc(catLabel[c])}</div>
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--link);margin-bottom:5px">${esc(catLabel[c])}</div>
       ${byCat[c].map(r => `<div class="brief-row" style="font-size:12px"><div style="display:flex;gap:8px;align-items:baseline"><span style="flex:1"><b>${esc(r.ref_code||"")}</b> ${esc(r.title||"")}</span>${fbHTML("regulations", (r.ref_code||"")+" "+(r.title||"").slice(0,40), (r.ref_code||"")+" "+(r.title||""))}</div>${r.mep_impact?`<div style="color:var(--muted)">${esc(r.mep_impact)}</div>`:""}</div>`).join("")}
     </div>`).join("");
   const regsCard = (b.regulations && b.regulations.length)
