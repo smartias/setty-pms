@@ -7,7 +7,7 @@ Everything below is on GitHub or in the live database; nothing lives only in
 this session, and the Sheetsa account is not needed to continue.
 
 This file is committed to the repo on purpose, same reason as
-`HANDOFF-STATUS-2026-09-16.md`: the repo is the only place every computer and
+the earlier 09-16 handoff: the repo is the only place every computer and
 every Claude account can see.
 
 ## What landed, all merged and live
