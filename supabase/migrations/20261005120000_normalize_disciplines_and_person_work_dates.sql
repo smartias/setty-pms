@@ -61,5 +61,7 @@ begin
   execute 'create materialized view public.pms_person_work as ' || d;
   create unique index pms_person_work_id on public.pms_person_work (id);
   create index pms_person_work_person on public.pms_person_work (person);
+  -- New objects in this project default-grant to anon; the original matview had no anon access.
+  revoke all on public.pms_person_work from anon;
   grant all on public.pms_person_work to authenticated, service_role;
 end $$;
