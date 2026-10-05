@@ -199,7 +199,7 @@ Discipline for all items: Plumbing.
 - source_reference: IPC 307.2, IPC chapter 8 (section 307.2.1 as cited is unconfirmed)
 - source_chat: claude_chat_01UKsMZ5N3rXiLZCryEHYX1x
 - confidence: medium
-- verify_note: Principle is standard. The chat's "minimum 2 inch air gap" is unverified (IPC air gap is generally 1 inch minimum or twice the pipe diameter, and some codes allow a trapped direct connection, for example IMC 307.2.2). Do not store 2 inch. Coordinate with mechanical.
+- verify_note: Principle is standard. The chat's "minimum 2 inch air gap" is unverified (IPC air gap is generally 1 inch minimum or twice the pipe diameter). Do not store 2 inch. Do not store a "trapped direct connection" exception: an earlier version of this note cited IMC 307.2.2 for one, which was wrong. In the 2021 IMC, 307.2.2 covers drain materials and sizes, and 307.2.1.1 prohibits connecting condensate drains directly to plumbing drain, waste or vent piping (review feedback, 2026-10-05; confirm against the adopted edition). Coordinate with mechanical.
 
 ### S4 (MEDIUM) Trap seal protection and electronic trap primers
 - system: Sanitary drainage, trap seals

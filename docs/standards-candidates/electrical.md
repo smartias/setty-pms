@@ -492,12 +492,12 @@ Ordering: grouped by system; inside each group ordered high, medium, low.
 ### E44 PV and storage interconnection: directory, disconnect marking, busbar rule
 - discipline: Electrical
 - system: PV / energy storage
-- standard_text: Where PV or battery storage connects to a building, show the directory or plaque at the service disconnects for all sources, mark PV disconnects and rapid shutdown labels, check the panelboard busbar connection rule for supply-side versus load-side connection, and bond rooftop PV to the lightning protection system where one exists.
-- basis: Residential and commercial package reviews flagged a missing source directory at service disconnects, unmarked PV disconnects on roof plans and a PV to lightning protection bonding gap.
+- standard_text: Where PV or battery storage connects to a building, show the directory or plaque at the service disconnects for all sources, mark PV disconnects and rapid shutdown labels, check the panelboard busbar connection rule for supply-side versus load-side connection, and have the lightning-protection designer determine whether bonding or separation applies between rooftop PV and the lightning protection system where one exists.
+- basis: Residential and commercial package reviews flagged a missing source directory at service disconnects, unmarked PV disconnects on roof plans and a PV to lightning protection coordination gap (one project).
 - source_reference: NEC 705.10 (directory), 690.13, 690.56(C), 705.12 (interconnection and busbar rules), NFPA 780
 - source_chat: 01LN3gtC (Sep 23), 012emy7Q (Mar 5), 01GDZMuH
 - confidence: medium
-- verify_note: Articles 690 and 705 were substantially renumbered between 2017, 2020 and 2023. Every section number here needs verification per adopted edition. Chat noted the busbar rule could not be checked because the PV schedule was not legible in the conversion.
+- verify_note: The PV to lightning protection item is conditional by design: NFPA 780 allows maintaining separation instead of bonding when the array is outside the calculated bonding distance, and its PV provisions require separation and bonding to be evaluated together. A blanket "bond PV to lightning protection" rule could couple lightning current into the PV grounding system, so the lightning-protection designer decides (review feedback, 2026-10-05). Articles 690 and 705 were substantially renumbered between 2017, 2020 and 2023. Every section number here needs verification per adopted edition. Chat noted the busbar rule could not be checked because the PV schedule was not legible in the conversion.
 
 ================================================================
 ## 12. Communications and lightning protection scope
