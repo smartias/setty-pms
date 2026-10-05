@@ -351,6 +351,52 @@ test("the SharePoint reading is unchanged by the drive prefix rule", () => {
   assert.equal(deriveArea("Misc/loose", "Project Document Library"), "Other");
 });
 
+// ── Tivoly's "RFIs" and "Submittals" were vendor cut sheets, not records ─────────
+test("RFIs and Submittals are areas only where a real record folder sits", () => {
+  const lib = "SAOP:";
+  // Real Tivoly paths: a saved vendor web page, a manufacturer submittal package, a dated incoming drop.
+  assert.equal(deriveArea("26-SIPX251008.00_E/06-CUTSHEET/BESS/Central/RFIs", lib), "Design");
+  assert.equal(deriveArea("26-SIPX251008.00_E/06-CUTSHEET/BESS/Central/RFIs/Energy Storage - Chint Power Systems_files", lib), "Design");
+  assert.equal(deriveArea("26-SIPX251008.00_E/06-CUTSHEET/BESS/Central/Fortress/030 Submittal Package/Datasheet", lib), "Design");
+  assert.equal(deriveArea("01-SIPX251008.00_INCOMING/205-10-17 GSHP Submittals", lib), "Incoming");
+  // Real records still read as records.
+  assert.equal(deriveArea("RFIs/E/RFI-001/IN/2026-07-30 RE- Homeport II", "Project Document Library"), "RFIs");
+  assert.equal(deriveArea("Submittals/M/SUB-144", "Project Document Library"), "Submittals");
+  assert.equal(deriveArea("70-SIPX262004.00_CA/8. RFIs/E/RFI-001", lib), "RFIs");
+  assert.equal(deriveArea("70-SIPX262004.00_CA/9. Submittals/M/SUB-004", lib), "Submittals");
+  assert.equal(deriveArea("Submittals", "Project Document Library"), "Submittals");
+});
+
+test("a deep folder that merely says RFIs or Submittals gives no record number", () => {
+  assert.equal(parseRecordFolder("26-SIPX251008.00_E/06-CUTSHEET/BESS/Central/RFIs/Energy Storage_files"), null);
+  assert.equal(parseRecordFolder("26-SIPX251008.00_E/06-CUTSHEET/BESS/Central/Fortress/030 Submittal Package/Certifications"), null);
+  assert.equal(parseRecordFolder("01-SIPX251008.00_INCOMING/205-10-17 GSHP Submittals"), null);
+  const r = deriveDocumentRow(file({ library: "SAOP:", name: "eSpire_306_UL1973_Certificate.pdf",
+    folderPath: "26-SIPX251008.00_E/06-CUTSHEET/BESS/Central/Fortress/030 Submittal Package/Certifications" }), ctx());
+  assert.equal(r.record_kind, null);
+  assert.notEqual(r.doc_type, "Submittal");
+  assert.equal(r.area, "Design");
+  assert.equal(r.discipline, "E");
+});
+
+test("a saved web page keeps its page but not its stylesheets and scripts", () => {
+  const folder = "26-SIPX251008.00_E/06-CUTSHEET/BESS/Central/RFIs/Energy Storage - Chint Power Systems_files";
+  assert.equal(isIndexable({ name: "all.min.css", ext: "css", folderPath: folder }), false);
+  assert.equal(isIndexable({ name: "app.js", ext: "js", folderPath: folder }), false);
+  assert.equal(isIndexable({ name: "Energy Storage - Chint Power Systems.htm", ext: "htm", folderPath: "26-SIPX251008.00_E/06-CUTSHEET/BESS/Central/RFIs" }), true);
+  assert.equal(isIndexable({ name: "Spec Sheet.pdf", ext: "pdf", folderPath: folder }), true, "a PDF in a _files folder is still a document");
+  assert.equal(isIndexable({ name: "styles.css", ext: "css", folderPath: "Outgoing/2026-01-01 Web" }), true, "only inside a _files folder");
+});
+
+test("drive spec, report and photo folders read as their own areas", () => {
+  const lib = "SAOP:";
+  assert.equal(deriveArea("40-SIPX262004.00_SPECS", lib), "Specs");
+  assert.equal(deriveArea("40-SIPX262004.00_SPECS/Division 23", lib), "Specs");
+  assert.equal(deriveArea("30-SIPX262004.00_REPORTS", lib), "Reports");
+  assert.equal(deriveArea("05-SIPX262004.00_PHOTOS/01-Pictures", lib), "Photos");
+  assert.equal(deriveArea("Misc/Specs", "Project Document Library"), "Other", "only a top-level folder names the area");
+});
+
 // ── parity with index.ts (find_document's scoring vocabulary) ───────────────
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const block = (src, startRe) => {
