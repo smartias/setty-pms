@@ -31,6 +31,8 @@ import {
   YEAR_SEG_RE, ENTITY_SEG_RE, isGroupingSegment, entityPrefixScore, yearOfProjectNumber, standardFolderName, resolveChildFolder,
   projectNumberOfFolder, projectNameFromFolders, caKindFolders, isDisciplineFolder, folderMentionsNumber,
 } from "./azureFiles.ts";
+// The firm Knowledgebase share (team KB): firm-wide read-only, no project gate. Pure; see knowledgebase.ts.
+import { KB_TEAM, isKbTeam, parseKbExclude, kbExcluded, walkKb, kbSearch } from "./knowledgebase.ts";
 // Raw-bytes path (1.19.0): signed single-file links behind download_document /
 // upload_document and the /file/<token> routes. Pure; see fileLinks.ts.
 import {
@@ -932,7 +934,21 @@ async function azureAnnexFor(team: string | null, num: string): Promise<Record<s
 // miss returns the wrapper's not-found shape, never "exists but hidden". The
 // share root is never listed for a caller; it is only walked internally to
 // find a folder by number.
+// Folders of the Knowledgebase share that stay out of reach (KB_EXCLUDE, comma-separated names).
+const KB_EXCLUDE = parseKbExclude(Deno.env.get("KB_EXCLUDE"));
+// A drive file id must name a file inside a project folder ("<folder>/<file>");
+// the Knowledgebase is the exception, its files may sit at the share root.
+function azFileIdOk(dec: { team: string; relPath: string } | null): dec is { team: string; label: string | null; relPath: string } {
+  return !!dec && (dec.relPath.includes("/") || (isKbTeam(dec.team) && dec.relPath.length > 0));
+}
 async function azurePathProject(team: string, relPath: string): Promise<{ ok: true; projectNumber: string } | { ok: false; res: any }> {
+  // The Knowledgebase holds no projects: any signed-in caller reads it (the
+  // endpoint already requires sign-in), minus the KB_EXCLUDE folders. Denials
+  // are the same not-found shape as everywhere else.
+  if (isKbTeam(team)) {
+    if (kbExcluded(relPath, KB_EXCLUDE)) return { ok: false, res: asText({ error: `Nothing found at "${relPath}" in the Knowledgebase.`, nextStep: "browse_knowledgebase lists what is available." }) };
+    return { ok: true, projectNumber: "" };
+  }
   // Grouping folders may sit ahead of the project folder (DC: 2026/SIPX…;
   // NY: SAP/2025/SAPQ…). They are never browsable targets on their own.
   const segs = relPath.split("/").filter(Boolean);
@@ -1260,9 +1276,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-05-documents-record-folders";
+const BUILD = "2026-10-05-knowledgebase";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.21.0",
+  name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -4430,7 +4446,7 @@ mcp.tool("read_document", {
         // first (HEAD), then the bytes; the extractors below are shared.
         const dec = decodeAzId(itemId);
         // A file is always inside a project folder: at least "<folder>/<file>".
-        if (!dec || !dec.relPath.includes("/")) return asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it (az:TEAM.SHARE:project-folder/path/to/file)." });
+        if (!azFileIdOk(dec)) return asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it (az:TEAM.SHARE:project-folder/path/to/file)." });
         const gate = await azurePathProject(dec.team, dec.relPath);
         if (!gate.ok) return gate.res;
         const az = await azureCtxForTeam(dec.team, dec.label);
@@ -4568,6 +4584,62 @@ mcp.tool("read_document", {
   },
 });
 
+// ─── KNOWLEDGEBASE: browse_knowledgebase (1.22.0) ───────────────────────────
+// SETTYfy's internal reference share (team KB, IntranetFiles/Knowledgebase),
+// registered like any drive in Admin → Regions. Firm-wide and read-only: no
+// project gate (azurePathProject's KB branch), minus KB_EXCLUDE folders. The
+// files open with read_document / download_document by the itemIds returned here.
+const KB_WALK_MAX_LISTINGS = 80;
+mcp.tool("browse_knowledgebase", {
+  description:
+    "Browse or search the SETTYfy KNOWLEDGEBASE — Setty's internal reference files (policies, standards, how-tos, " +
+    "templates), kept on a read-only network share. With no arguments it lists the top-level folders. Pass path to " +
+    "open a folder ('Standards/Mechanical'), or query to find files by name or folder (every word must match; " +
+    "e.g. 'vacation policy', 'VAV schedule template'). Results carry an itemId: open one with read_document " +
+    "(PDF, Word, Excel, text), or download_document for the original file. This tool finds files by NAME and " +
+    "folder, not by what is inside them — read a likely file to check. Firm-wide, read-only; nothing can be saved here.",
+  inputSchema: z.object({
+    path: z.string().optional().describe("Folder to list, relative to the Knowledgebase root, e.g. 'HR' or 'Standards/Mechanical'. Folder names are matched loosely (case and spacing). Omit for the root."),
+    query: z.string().optional().describe("Find files whose name or folder path contains every word, searching the whole Knowledgebase (or just under path when both are given)."),
+    limit: z.number().int().min(1).max(100).optional().describe("Max search hits (default 25)."),
+  }),
+  handler: async ({ path, query, limit }) => {
+    try {
+      const rel0 = cleanRelPath(path || "");
+      if (rel0 === null) return asText({ error: "path contains a segment that is not allowed." });
+      const { ctxs, problems } = await azureSharesFor(KB_TEAM);
+      if (!ctxs.length) {
+        return asText({ error: problems.length ? problems.join(" | ") : "The Knowledgebase is not registered.",
+          nextStep: "An admin registers it in Admin → Regions as team KB (share URL + SAS secret name, e.g. AZURE_SAS_K), then adds the secret in the Edge Function settings." });
+      }
+      const ctx = ctxs[0];
+      let rel = "";
+      for (const seg of rel0.split("/").filter(Boolean)) {
+        let pick = seg;
+        try { pick = resolveChildFolder((await azureDirEntries(ctx, rel)).entries, seg) ?? seg; } catch { /* keep literal */ }
+        rel = joinRel(rel, pick);
+      }
+      if (kbExcluded(rel, KB_EXCLUDE)) return asText({ error: `Nothing found at "${rel}" in the Knowledgebase.` });
+      if (query && query.trim()) {
+        const walk = await walkKb((d) => azureDirEntries(ctx, d), rel, { maxListings: KB_WALK_MAX_LISTINGS, exclude: KB_EXCLUDE });
+        const hits = kbSearch(walk.files, query, limit ?? 25).map((f) => ({
+          itemId: encodeAzId(ctx.team, f.path, ctx.label), name: f.name, folder: "/" + f.folder, ext: f.ext, size: f.size, modified: f.modified,
+        }));
+        return asText({
+          query, searchedUnder: "/" + rel, filesScanned: walk.files.length, count: hits.length, hits,
+          ...(walk.truncated ? { truncated: true, coverageWarning: `The walk stopped at ${KB_WALK_MAX_LISTINGS} folder listings${walk.failedListings ? ` (${walk.failedListings} would not list)` : ""}, so this is a PARTIAL search. Pass path to search inside one folder.` } : {}),
+          ...(!hits.length ? { note: "No file name or folder matched every word. Try fewer or different words, or browse folders with no query." } : { note: "Open a hit with read_document using its itemId." }),
+        });
+      }
+      const listing: any = await azureListing(ctx, rel);
+      const items = (listing.items as any[]).filter((i) => !kbExcluded(joinRel(rel, i.name), KB_EXCLUDE));
+      return asText({ ...listing, items, count: items.length, storage: "knowledgebase", note: "Open a folder by passing its name as path; open a file with read_document using its itemId." });
+    } catch (e) {
+      return asText({ error: String((e as any)?.message ?? e) });
+    }
+  },
+});
+
 // ─── RAW FILE ACCESS: download_document / upload_document (1.19.0) ──────────
 // read_document turns every file into text, which is right for reading and
 // wrong for editing: an .xlsx comment log comes back as rows, and its
@@ -4621,7 +4693,7 @@ type FileMeta = {
 async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta } | { ok: false; res: any }> {
   if (isAzId(itemId)) {
     const dec = decodeAzId(itemId);
-    if (!dec || !dec.relPath.includes("/")) return { ok: false, res: asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it (az:TEAM.SHARE:project-folder/path/to/file)." }) };
+    if (!azFileIdOk(dec)) return { ok: false, res: asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it (az:TEAM.SHARE:project-folder/path/to/file)." }) };
     const gate = await azurePathProject(dec.team, dec.relPath);
     if (!gate.ok) return gate;
     const az = await azureCtxForTeam(dec.team, dec.label);
@@ -4651,7 +4723,7 @@ async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta 
 async function openFileById(itemId: string): Promise<Response> {
   if (isAzId(itemId)) {
     const dec = decodeAzId(itemId);
-    if (!dec || !dec.relPath.includes("/")) throw new Error("malformed drive file id");
+    if (!azFileIdOk(dec)) throw new Error("malformed drive file id");
     const gate = await azurePathProject(dec.team, dec.relPath);
     if (!gate.ok) throw new Error(`No project matching "${dec.relPath.split("/")[0]}".`);
     const az = await azureCtxForTeam(dec.team, dec.label);
@@ -7598,7 +7670,7 @@ mcp.tool("view_photos", {
       const raw = itemId.trim();
       if (isAzId(raw)) {
         const dec = decodeAzId(raw);
-        if (!dec || !dec.relPath.includes("/")) return asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it." });
+        if (!azFileIdOk(dec)) return asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it." });
         const gate = await azurePathProject(dec.team, dec.relPath);
         if (!gate.ok) return gate.res;
         const az = await azureCtxForTeam(dec.team, dec.label);
@@ -7908,7 +7980,7 @@ async function loadPdfBytes(itemId: string, maxBytes: number, opts: { cache?: bo
   // the project. SharePoint ids are unguessable, so the cache alone is fine.
   const dec = isAzId(itemId) ? decodeAzId(itemId) : null;
   if (isAzId(itemId)) {
-    if (!dec || !dec.relPath.includes("/")) throw new Error("malformed drive file id");
+    if (!azFileIdOk(dec)) throw new Error("malformed drive file id");
     const gate = await azurePathProject(dec.team, dec.relPath);
     if (!gate.ok) throw new Error(`No project matching "${dec.relPath.split("/")[0]}".`);
   }
@@ -7948,7 +8020,7 @@ async function fetchDrawingPdfById(itemId: string): Promise<Uint8Array> {
 async function drawingItemMeta(itemId: string): Promise<{ name: string; size: number; webUrl: string | null }> {
   if (isAzId(itemId)) {
     const dec = decodeAzId(itemId);
-    if (!dec || !dec.relPath.includes("/")) throw new Error("malformed drive file id");
+    if (!azFileIdOk(dec)) throw new Error("malformed drive file id");
     const gate = await azurePathProject(dec.team, dec.relPath);
     if (!gate.ok) throw new Error(`No project matching "${dec.relPath.split("/")[0]}".`);
     const az = await azureCtxForTeam(dec.team, dec.label);
