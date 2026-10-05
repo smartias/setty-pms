@@ -42,6 +42,13 @@ end $$;
 do $$
 declare d text; d0 text;
 begin
+  -- pms_person_work exists only where it was created by hand (production). A
+  -- fresh database (preview branch, local reset) has no such view, and this
+  -- rewrite has nothing to rewrite there, so skip it instead of failing.
+  if to_regclass('public.pms_person_work') is null then
+    raise notice 'pms_person_work does not exist; skipping its rebuild';
+    return;
+  end if;
   d0 := pg_get_viewdef('public.pms_person_work'::regclass);
   d := rtrim(rtrim(d0), ';');
   d0 := d;
