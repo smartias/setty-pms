@@ -165,8 +165,16 @@ export function deriveArea(folderPath: string, library: string): string {
   const any = (re: RegExp) => parts.some((x) => re.test(x));
   if (any(/outgoing/)) return "Outgoing";
   if (any(/project management/) || /^pm$/.test(top)) return "Project Management";
-  if (any(/^rfis?$/)) return "RFIs";
-  if (any(/submittal/)) return "Submittals";
+  // RFIs and Submittals are record folders only where the project keeps them: at
+  // the top, or directly under the CA folder. The word also turns up deep inside
+  // other trees (a vendor's "030 Submittal Package" in cut sheets, a saved
+  // "RFIs" web page, a dated "GSHP Submittals" drop), and those are not records.
+  const kindIdx = (re: RegExp) => {
+    const i = parts.findIndex((x) => re.test(x));
+    return i === 0 || (i === 1 && /^(ca|construction administration)$/.test(top)) ? i : -1;
+  };
+  if (kindIdx(/^rfis?$/) >= 0) return "RFIs";
+  if (kindIdx(/^submittals?$/) >= 0) return "Submittals";
   if (any(/site field report/)) return "Site Reports";
   if (any(/qaqc|qa qc/)) return "QAQC";
   // Drive layout: 01-<num>_INCOMING, 70-<num>_CA, 80/90-<num>_REVIT/XREF, and one
@@ -174,6 +182,9 @@ export function deriveArea(folderPath: string, library: string): string {
   if (/^incoming$/.test(top)) return "Incoming";
   if (/^ca$/.test(top)) return "CA";
   if (/^(revit|xref)$/.test(top)) return "Models";
+  if (/^specs?$|^specifications?$/.test(top)) return "Specs";
+  if (/^reports?$/.test(top)) return "Reports";
+  if (/^photos?$/.test(top)) return "Photos";
   if (any(/design/)) return "Design";
   if (top.length <= 2 && normaliseDiscipline(stripPrefix(segs(folderPath)[0] || ""))) return "Design";
   return "Other";
@@ -201,6 +212,10 @@ export function parseRecordFolder(
     const head = stripPrefix(parts[i]).toLowerCase();
     const kind = /^rfis?$/.test(head) ? "RFI" : /^submittals?$/.test(head) ? "Submittal" : null;
     if (!kind) continue;
+    // Only a record container: at the top, or directly under the CA folder.
+    // A deeper "RFIs" or "Submittals" folder is just a folder with that word.
+    const underCa = i === 1 && /^(ca|construction administration)$/i.test(stripPrefix(parts[0]));
+    if (i !== 0 && !underCa) return null;
     let discipline: string | undefined;
     for (let j = i + 1; j < Math.min(parts.length, i + 4); j++) {
       const seg = parts[j];
@@ -254,11 +269,17 @@ const NOISE_NAMES = new Set(["thumbs.db", "desktop.ini", ".ds_store", "_pms-meta
 const NOISE_EXT = new Set(["url", "lnk", "ini", "tmp"]);
 // Photos stay session-level (pms_field_photo_sessions), and the sidecar and OS
 // litter are not documents.
-export function isIndexable(file: { name: string; ext: string }): boolean {
+// A browser's "Save page as" leaves "<page>_files/" beside the .htm, full of the
+// page's stylesheets, scripts and fonts (66 of them under one vendor page on
+// Tivoly). The page itself is kept; its assets are not documents.
+const WEB_ASSET_EXT = new Set(["css", "js", "map", "json", "svg", "ico", "woff", "woff2", "ttf", "eot", "otf"]);
+export function isIndexable(file: { name: string; ext: string; folderPath?: string }): boolean {
   const name = String(file.name || "").toLowerCase();
   if (!name || NOISE_NAMES.has(name) || name.startsWith("~$")) return false;
   const ext = String(file.ext || "").toLowerCase();
-  return !IMAGE_EXT.has(ext) && !NOISE_EXT.has(ext);
+  if (IMAGE_EXT.has(ext) || NOISE_EXT.has(ext)) return false;
+  if (WEB_ASSET_EXT.has(ext) && segs(file.folderPath || "").some((x) => /_files$/i.test(x))) return false;
+  return true;
 }
 
 // ── Doc type and discipline ─────────────────────────────────────────────────
