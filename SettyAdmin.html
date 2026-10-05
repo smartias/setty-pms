@@ -554,11 +554,28 @@ function render() {
     state.myRole = "pending";
     sb("POST", "/rest/v1/rpc/my_pms_role", {})
       .then(r => { state.myRole = r || "none"; render(); })
-      .catch(e => { state.myRole = "none"; toast("Role check failed: " + e.message, "error"); render(); });
+      .catch(e => {
+        // fetch() rejects with a TypeError when no response arrived (offline, blocked, DNS).
+        // That says nothing about the user's role, so offer a retry instead of the Admins-only gate.
+        if (e instanceof TypeError) { state.myRole = "neterr"; }
+        else { state.myRole = "none"; toast("Role check failed: " + e.message, "error"); }
+        render();
+      });
   }
   if (state.myRole === "pending") {
     $("tabs").style.display = "none";
     $("view").innerHTML = '<div class="empty">Checking access…</div>';
+    return;
+  }
+  if (state.myRole === "neterr") {
+    $("tabs").style.display = "none";
+    $("view").innerHTML = `
+      <div class="gate card">
+        <div class="big">📡</div>
+        <h2 style="margin:0 0 6px">Can't reach the server</h2>
+        <p style="color:var(--dim)">The access check didn't get a response, so your role is unknown. This is usually a network blip, VPN, or a browser extension blocking <b>supabase.co</b>.</p>
+        <button class="btn btn-primary" onclick="state.myRole = undefined; render();" style="width:100%;padding:11px">Retry</button>
+      </div>`;
     return;
   }
   if (state.myRole !== "admin") {
