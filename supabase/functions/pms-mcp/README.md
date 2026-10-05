@@ -670,7 +670,7 @@ Contract libraries; images are excluded). Attributes are DERIVED, never typed:
 doc type, discipline, design phase, set name and date, sheet number, revision,
 RFI/submittal number, email-row link and supersession status. `documentMeta.ts`
 holds the pure derivation (tested in `documentMeta.test.mjs`); the sync lives at
-the bottom of `index.ts`; the schema is migration `20261002120000_pms_documents.sql`.
+the bottom of `index.ts`; the schema is migration `20261002120010_pms_documents.sql`.
 
 - **Evidence order:** the transmittal register, then file and folder names, then
   library and area convention. `derived_from` on each row says which one won.

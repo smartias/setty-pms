@@ -10830,7 +10830,7 @@ app.post("/pms-mcp/admin/meeting-minutes-sweep", async (c) => {
 
 // ── pms_documents sync ───────────────────────────────────────────────────────
 // Fills pms_documents (one row per file, attributes DERIVED, see documentMeta.ts
-// and migration 20261002120000). Rotation, secret and admin fallback follow the
+// and migration 20261002120010). Rotation, secret and admin fallback follow the
 // meeting-minutes sweep above. A "scope" is one project (its folder tree) or one
 // top folder of a name-based Proposals/Contract library.
 //
