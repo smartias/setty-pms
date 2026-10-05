@@ -705,6 +705,29 @@ the bottom of `index.ts`; the schema is migration `20261002120010_pms_documents.
 - The vocabulary copies in `documentMeta.ts` and `index.ts` still need to collapse
   into one definition (a parity test guards them until then).
 
+## The Knowledgebase (`browse_knowledgebase`, 1.22.0)
+
+SETTYfy's internal reference share (`IntranetFiles/Knowledgebase` on
+ffxfilestorage) is registered in Admin → Regions as team `KB`, share `K`,
+secret `AZURE_SAS_K` (read + list SAS, expires 31 Mar 2028). It holds no
+project folders, so the project visibility gate does not apply: `azurePathProject`
+has a KB branch, and any signed-in caller may read it. Read-only, like every drive.
+
+- `browse_knowledgebase` with no arguments lists the root; `path` opens a
+  folder (loose name matching, like drive subfolders); `query` finds files by
+  name or folder path (every word must match; a bounded breadth-first walk of
+  80 listings, reported `truncated` when it stops early).
+- Files open with `read_document` / `download_document` by the returned
+  `az:KB.K:` itemId. KB files may sit at the share root, so the "must be inside a
+  project folder" id check has a KB exception (`azFileIdOk`).
+- `KB_EXCLUDE` (Edge Function secret, optional): comma-separated folder names to
+  hide, matched on any path segment, case-insensitive. Excluded folders are never
+  listed, searched or opened. Set it BEFORE telling people the tool exists if any
+  part of the share is restricted (HR, finance).
+- Drive discovery on `KB` finds 0 projects. That is expected.
+- Deploy: `pms-mcp` only; no migration. Check `/health` shows build
+  `2026-10-05-knowledgebase`, then start a fresh conversation.
+
 ## Deploying
 
 One-command version: `deploy.ps1` in this folder pulls main, reads the BUILD
