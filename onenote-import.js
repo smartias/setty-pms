@@ -206,34 +206,45 @@ export async function resolveNotebook(graph, { siteId, notebookWebUrl, notebookN
   return { notebook: null, tried };
 }
 
-export async function findSection(graph, notebook, sectionName) {
-  const r = await getWithRetry(graph, `/onenote/notebooks/${encodeURIComponent(notebook.id)}/sections?$select=id,displayName,lastModifiedDateTime`);
-  if (r.status !== 200) return { section: null, status: r.status, error: r.json?.error?.message, sections: [] };
+// Graph's notebook/section objects carry their own sectionsUrl / pagesUrl /
+// contentUrl. A notebook that lives on a SharePoint site is NOT reachable
+// through the /me-style /onenote/... paths (Graph answers 400), so follow the
+// URLs Graph hands back and only fall back to the site-scoped path.
+const withQuery = (url, q) => url + (url.includes("?") ? "&" : "?") + q;
+
+export async function findSection(graph, notebook, sectionName, { siteId } = {}) {
+  const base = notebook.sectionsUrl ||
+    (siteId ? `${siteRoot(siteId)}/notebooks/${encodeURIComponent(notebook.id)}/sections` : `/onenote/notebooks/${encodeURIComponent(notebook.id)}/sections`);
+  const r = await getWithRetry(graph, withQuery(base, "$select=id,displayName,lastModifiedDateTime,pagesUrl"));
+  if (r.status !== 200) return { section: null, status: r.status, error: r.json?.error?.message, url: base, sections: [] };
   const sections = r.json?.value ?? [];
   const want = (sectionName || "").toLowerCase();
   const section = want
     ? sections.find((s) => (s.displayName || "").toLowerCase() === want) ||
       sections.find((s) => (s.displayName || "").toLowerCase().includes(want))
     : null;
-  return { section: section || null, status: 200, sections: sections.map((s) => s.displayName) };
+  return { section: section || null, status: 200, url: base, sections: sections.map((s) => s.displayName) };
 }
 
 // Lists pages with paging (@odata.nextLink). $top=100 is the Graph maximum.
-export async function listSectionPages(graph, sectionId, { maxPages = Infinity } = {}) {
+export async function listSectionPages(graph, section, { maxPages = Infinity, siteId } = {}) {
+  const base = section.pagesUrl ||
+    (siteId ? `${siteRoot(siteId)}/sections/${encodeURIComponent(section.id)}/pages` : `/onenote/sections/${encodeURIComponent(section.id)}/pages`);
   const pages = [];
-  let path = `/onenote/sections/${encodeURIComponent(sectionId)}/pages` +
-    `?$select=id,title,createdDateTime,lastModifiedDateTime,contentUrl,links&$top=100&$orderby=createdDateTime`;
+  let path = withQuery(base, "$select=id,title,createdDateTime,lastModifiedDateTime,contentUrl,links&$top=100&$orderby=createdDateTime");
   while (path && pages.length < maxPages) {
     const r = await getWithRetry(graph, path);
-    if (r.status !== 200) return { pages, status: r.status, error: r.json?.error?.message };
+    if (r.status !== 200) return { pages, status: r.status, error: r.json?.error?.message, url: base };
     pages.push(...(r.json?.value ?? []));
     path = r.json?.["@odata.nextLink"] || null;
   }
-  return { pages: pages.slice(0, maxPages), status: 200 };
+  return { pages: pages.slice(0, maxPages), status: 200, url: base };
 }
 
-export async function fetchPageContent(graph, pageId) {
-  const r = await getWithRetry(graph, `/onenote/pages/${encodeURIComponent(pageId)}/content`, { accept: "text/html" });
+export async function fetchPageContent(graph, page, { siteId } = {}) {
+  const url = page.contentUrl ||
+    (siteId ? `${siteRoot(siteId)}/pages/${encodeURIComponent(page.id)}/content` : `/onenote/pages/${encodeURIComponent(page.id)}/content`);
+  const r = await getWithRetry(graph, url, { accept: "text/html" });
   if (r.status !== 200) return { status: r.status, error: r.json?.error?.message || r.text?.slice(0, 200) };
   return { status: 200, html: r.text ?? "" };
 }
@@ -275,8 +286,8 @@ export async function runSpike(graph, { siteId, notebookWebUrl, notebookName, se
   }
 
   const t1 = Date.now();
-  const sec = await findSection(graph, notebook, sectionName);
-  rep.section = { found: !!sec.section, status: sec.status, error: sec.error, available: sec.sections, picked: sec.section?.displayName };
+  const sec = await findSection(graph, notebook, sectionName, { siteId });
+  rep.section = { found: !!sec.section, status: sec.status, error: sec.error, url: sec.url, available: sec.sections, picked: sec.section?.displayName };
   rep.timings.sectionMs = Date.now() - t1;
   if (!sec.section) {
     rep.verdict = "PARTIAL: notebook resolved but section not found. See section.available for the names Graph returned.";
@@ -284,17 +295,17 @@ export async function runSpike(graph, { siteId, notebookWebUrl, notebookName, se
   }
 
   const t2 = Date.now();
-  const listed = await listSectionPages(graph, sec.section.id, { maxPages });
+  const listed = await listSectionPages(graph, sec.section, { maxPages, siteId });
   rep.timings.listMs = Date.now() - t2;
   rep.listStatus = listed.status;
   if (listed.status !== 200) {
-    rep.verdict = `NO-GO (list pages): Graph ${listed.status} ${listed.error || ""}`;
+    rep.verdict = `NO-GO (list pages): Graph ${listed.status} ${listed.error || ""} (${listed.url})`;
     return rep;
   }
 
   for (const p of listed.pages) {
     const t = Date.now();
-    const c = await fetchPageContent(graph, p.id);
+    const c = await fetchPageContent(graph, p, { siteId });
     const row = {
       title: p.title, created: p.createdDateTime, modified: p.lastModifiedDateTime,
       status: c.status, ms: Date.now() - t,

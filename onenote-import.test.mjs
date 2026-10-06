@@ -79,11 +79,13 @@ test("getWithRetry does not retry 403/404", async () => {
 // paged 2 + 1 to exercise @odata.nextLink.
 function fakeGraph({ blockResolve = false, failContentFor = null } = {}) {
   const calls = [];
-  const nb = { id: "nb1", displayName: "SAPX256014.00 — PANYNJ EWR AirTrain CFD" };
-  const sec = { id: "s1", displayName: "SAPX256014.00 - PANYNJ Newark AirTrain Replacement" };
+  const SITE = "https://graph.microsoft.com/v1.0/sites/s/onenote";
+  const nb = { id: "nb1", displayName: "SAPX256014.00 — PANYNJ EWR AirTrain CFD", sectionsUrl: SITE + "/notebooks/nb1/sections" };
+  const sec = { id: "s1", displayName: "SAPX256014.00 - PANYNJ Newark AirTrain Replacement", pagesUrl: SITE + "/sections/s1/pages" };
   const pg = (n) => ({
     id: "p" + n, title: "Page " + n, createdDateTime: `2026-05-0${n}T10:00:00Z`, lastModifiedDateTime: `2026-05-0${n}T11:00:00Z`,
     links: { oneNoteWebUrl: { href: "https://onenote/p" + n } },
+    contentUrl: SITE + "/pages/p" + n + "/content",
   });
   const g = async (path, opts = {}) => {
     calls.push({ path, ...opts });
@@ -91,11 +93,13 @@ function fakeGraph({ blockResolve = false, failContentFor = null } = {}) {
       return blockResolve ? { status: 403, json: { error: { message: "denied" } } } : { status: 201, json: nb };
     }
     if (/\/sites\/[^/]+\/onenote\/notebooks\?/.test(path)) return { status: 200, json: { value: [nb] } };
+    // A notebook on a SharePoint site is NOT reachable via the /me-style /onenote/... paths.
+    if (/^\/onenote\//.test(path)) return { status: 400, json: { error: { message: "wrong path for a site notebook: " + path } } };
     if (path.includes("/notebooks/nb1/sections")) return { status: 200, json: { value: [sec] } };
     if (path.includes("/sections/s1/pages")) {
       return path.includes("skip=2")
         ? { status: 200, json: { value: [pg(3)] } }
-        : { status: 200, json: { value: [pg(1), pg(2)], "@odata.nextLink": "https://graph.microsoft.com/v1.0/onenote/sections/s1/pages?skip=2" } };
+        : { status: 200, json: { value: [pg(1), pg(2)], "@odata.nextLink": SITE + "/sections/s1/pages?skip=2" } };
     }
     const m = /\/onenote\/pages\/(p\d)\/content/.exec(path);
     if (m) {
@@ -122,25 +126,40 @@ test("resolveNotebook uses getNotebookFromWebUrl, falls back to name match", asy
 
 test("findSection matches exact then partial; reports available names", async () => {
   const g = fakeGraph();
-  assert.equal((await findSection(g, { id: "nb1" }, "sapx256014.00 - panynj newark airtrain replacement")).section.id, "s1");
-  assert.equal((await findSection(g, { id: "nb1" }, "AirTrain")).section.id, "s1");
-  const miss = await findSection(g, { id: "nb1" }, "nope");
+  const NB = { id: "nb1", sectionsUrl: "https://graph.microsoft.com/v1.0/sites/s/onenote/notebooks/nb1/sections" };
+  assert.equal((await findSection(g, NB, "sapx256014.00 - panynj newark airtrain replacement")).section.id, "s1");
+  assert.equal((await findSection(g, NB, "AirTrain")).section.id, "s1");
+  const miss = await findSection(g, NB, "nope");
   assert.equal(miss.section, null);
   assert.deepEqual(miss.sections, ["SAPX256014.00 - PANYNJ Newark AirTrain Replacement"]);
 });
 
-test("listSectionPages follows nextLink and honors maxPages", async () => {
+test("findSection regression: without sectionsUrl it uses the site-scoped path, never /onenote/...", async () => {
   const g = fakeGraph();
-  assert.equal((await listSectionPages(g, "s1")).pages.length, 3);
-  assert.equal((await listSectionPages(g, "s1", { maxPages: 2 })).pages.length, 2);
+  const bare = await findSection(g, { id: "nb1" }, "AirTrain"); // no siteId -> /me path -> 400
+  assert.equal(bare.status, 400);
+  assert.equal(bare.section, null);
+  const scoped = await findSection(g, { id: "nb1" }, "AirTrain", { siteId: "s" });
+  assert.equal(scoped.section.id, "s1");
+});
+
+test("listSectionPages follows pagesUrl and nextLink and honors maxPages", async () => {
+  const g = fakeGraph();
+  const SEC = { id: "s1", pagesUrl: "https://graph.microsoft.com/v1.0/sites/s/onenote/sections/s1/pages" };
+  assert.equal((await listSectionPages(g, SEC)).pages.length, 3);
+  assert.equal((await listSectionPages(g, SEC, { maxPages: 2 })).pages.length, 2);
+  assert.equal((await listSectionPages(g, { id: "s1" }, { siteId: "s" })).pages.length, 3); // fallback path
+  assert.equal((await listSectionPages(g, { id: "s1" })).status, 400);
 });
 
 test("fetchPageContent asks for HTML and returns it", async () => {
   const g = fakeGraph();
-  const r = await fetchPageContent(g, "p1");
+  const P1 = { id: "p1", contentUrl: "https://graph.microsoft.com/v1.0/sites/s/onenote/pages/p1/content" };
+  const r = await fetchPageContent(g, P1);
   assert.equal(r.status, 200);
   assert.equal(g.calls.at(-1).accept, "text/html");
-  assert.equal((await fetchPageContent(fakeGraph({ failContentFor: "p1" }), "p1")).status, 404);
+  assert.equal((await fetchPageContent(fakeGraph({ failContentFor: "p1" }), P1)).status, 404);
+  assert.equal((await fetchPageContent(g, { id: "p1" }, { siteId: "s" })).status, 200); // fallback path
 });
 
 test("buildNoteFromPage: PMS note shape, provenance, not attributed to the importer", () => {
