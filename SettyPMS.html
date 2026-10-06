@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-10-02-pms-v164-photo-phase-colors";
+    window.__appVersion = "2026-10-06-pms-v165-onenote-import";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -73,6 +73,12 @@
   window.SettyDocx = SettyDocx;
   window.CurrentSetFold = CurrentSetFold;
   window.SheetRefs = SheetRefs;
+</script>
+<!-- OneNote page import (Notes tab). Its own module block so a missing or
+     broken file cannot take down the setty-docx.js imports above. -->
+<script type="module">
+  import * as OneNoteImport from "./onenote-import.js";
+  window.OneNoteImport = OneNoteImport;
 </script>
   <script>
     // Theme preference: "system" (default, follows the OS), "light" or "dark".
@@ -21276,6 +21282,243 @@ function CalendarImportPanel({ project, onImport }) {
   );
 }
 
+// ─── ONENOTE PAGE IMPORT ─────────────────────────────────────────────────────
+// Reads the pages of an existing OneNote section (as the signed-in user, via
+// Graph) and turns the chosen ones into project notes, so they are searchable in
+// PMS and by the connector. The logic (HTML to text, duplicate / re-import
+// detection, merge) lives in onenote-import.js, loaded as its own module script
+// as window.OneNoteImport so a missing file cannot take down setty-docx.js.
+// This component is the shell. Design: supabase/functions/pms-mcp/PROPOSAL-onenote-import.md
+const ONENOTE_STATE_LABEL = {
+  "new":       { text: "New",                              color: "var(--c-34d399)" },
+  "updated":   { text: "Changed in OneNote since import",  color: "var(--c-fbbf24)" },
+  "imported":  { text: "Already imported",                 color: "var(--c-9ca3af)" },
+  "duplicate": { text: "Duplicate content",                color: "var(--c-9ca3af)" },
+  "low":       { text: "Mostly images or attachments",     color: "var(--c-fbbf24)" },
+  "empty":     { text: "No text",                          color: "var(--c-9ca3af)" },
+};
+
+function OneNoteImportPanel({ project, onImport }) {
+  const [open, setOpen] = React.useState(false);
+  const [notebookUrl, setNotebookUrl] = React.useState("");
+  const [sections, setSections] = React.useState([]);
+  const [sectionId, setSectionId] = React.useState("");
+  const [rows, setRows] = React.useState([]);
+  const [busy, setBusy] = React.useState(""); // "" | "sections" | "scan"
+  const [progress, setProgress] = React.useState("");
+  const [err, setErr] = React.useState("");
+  const [originalAuthor, setOriginalAuthor] = React.useState("");
+  const [doneMsg, setDoneMsg] = React.useState("");
+  const cancelRef = React.useRef(false);
+
+  const linkedNotebookId = project.teamsOneNoteNotebookId || project.oneNoteNotebookId || "";
+
+  function mod() {
+    const m = window.OneNoteImport;
+    if (!m) throw new Error("The OneNote import module has not loaded. Refresh the page. If this persists, onenote-import.js is not deployed yet.");
+    return m;
+  }
+
+  async function findSections() {
+    setErr(""); setSections([]); setSectionId(""); setRows([]); setBusy("sections");
+    try {
+      const m = mod();
+      const graph = m.makeAppGraph();
+      const url = notebookUrl.trim();
+      let nb = null;
+      if (url) {
+        const r = await m.resolveNotebook(graph, { siteId: SP_SITE_ID_HARDCODED, notebookWebUrl: url });
+        nb = r.notebook;
+        if (!nb) {
+          const codes = (r.tried || []).map(t => t.status).join(", ");
+          throw new Error("Could not open that notebook (Graph " + codes + "). Check the link, and that you can open the notebook in OneNote.");
+        }
+      } else if (project.teamsOneNoteNotebookId) {
+        nb = { id: project.teamsOneNoteNotebookId,
+          sectionsUrl: GRAPH_BASE + "/groups/" + TEAMS_TEAM_ID + "/onenote/notebooks/" + encodeURIComponent(project.teamsOneNoteNotebookId) + "/sections" };
+      } else if (project.oneNoteNotebookId) {
+        nb = { id: project.oneNoteNotebookId,
+          sectionsUrl: GRAPH_BASE + "/sites/" + encodeURIComponent(SP_SITE_ID_HARDCODED) + "/onenote/notebooks/" + encodeURIComponent(project.oneNoteNotebookId) + "/sections" };
+      } else {
+        throw new Error("Paste the notebook link, or link a OneNote notebook to this project first.");
+      }
+      const l = await m.listSections(graph, nb, { siteId: SP_SITE_ID_HARDCODED });
+      if (l.status !== 200) throw new Error("Could not list the notebook's sections (Graph " + l.status + (l.error ? ": " + l.error : "") + ").");
+      if (!l.sections.length) throw new Error("That notebook has no top-level sections.");
+      setSections(l.sections);
+      const num = (project.projectNumber || "").toLowerCase();
+      const guess = num ? l.sections.find(s => (s.displayName || "").toLowerCase().includes(num)) : null;
+      setSectionId((guess || l.sections[0]).id);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function scan() {
+    setErr(""); setRows([]); setDoneMsg(""); setBusy("scan"); cancelRef.current = false;
+    try {
+      const m = mod();
+      const graph = m.makeAppGraph();
+      const section = sections.find(s => s.id === sectionId);
+      if (!section) throw new Error("Pick a section first.");
+      const listed = await m.listSectionPages(graph, section, { siteId: SP_SITE_ID_HARDCODED });
+      if (listed.status !== 200) throw new Error("Could not list the pages (Graph " + listed.status + (listed.error ? ": " + listed.error : "") + ").");
+      const scanned = [];
+      const failed = [];
+      for (let i = 0; i < listed.pages.length; i++) {
+        if (cancelRef.current) break;
+        const page = listed.pages[i];
+        setProgress("Reading page " + (i + 1) + " of " + listed.pages.length + "…");
+        const c = await m.fetchPageContent(graph, page, { siteId: SP_SITE_ID_HARDCODED });
+        if (c.status !== 200) { failed.push((page.title || "(untitled)") + " (HTTP " + c.status + ")"); continue; }
+        scanned.push({ page: page, parsed: m.oneNoteHtmlToText(c.html) });
+      }
+      setRows(m.classifyScan(scanned, project.notes || []));
+      if (failed.length) setErr("Could not read " + failed.length + " page(s): " + failed.join("; "));
+      else if (!scanned.length) setErr(cancelRef.current ? "Cancelled." : "That section has no pages.");
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setBusy(""); setProgress("");
+    }
+  }
+
+  function patchRow(pageId, patch) {
+    setRows(prev => prev.map(r => r.page.id === pageId ? Object.assign({}, r, patch) : r));
+  }
+
+  function importSelected() {
+    const chosen = rows.filter(r => r.selected);
+    if (!chosen.length) return;
+    const updating = chosen.filter(r => r.state === "updated").length;
+    if (updating && !window.confirm(updating + " page(s) changed in OneNote since they were imported. Importing replaces the text of the existing note(s) with the OneNote version. Continue?")) return;
+    try {
+      const m = mod();
+      const by = getCurrentUser();
+      const built = chosen.map(r => ({
+        existingId: r.existingId,
+        note: m.buildNoteFromPage(r.page, r.parsed, { importedBy: by, originalAuthor: originalAuthor.trim(), category: r.category }),
+      }));
+      onImport(built);
+      setDoneMsg("✓ Imported " + built.length + " note" + (built.length !== 1 ? "s" : "") + " from OneNote");
+      setRows([]); setSections([]); setSectionId(""); setOpen(false);
+    } catch (e) {
+      setErr(e.message || String(e));
+    }
+  }
+
+  const selectedCount = rows.filter(r => r.selected).length;
+
+  if (!open) return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <Btn small variant="ghost" onClick={() => { setOpen(true); setDoneMsg(""); }}><span aria-hidden="true">&#128211;</span> Import from OneNote</Btn>
+      {doneMsg && <span style={{ fontSize: 11, fontWeight: 600, color: "var(--c-34d399)" }}>{doneMsg}</span>}
+    </div>
+  );
+
+  return (
+    <div style={{ background: P.card, border: "1px solid " + P.accent, borderRadius: 10, padding: 16, marginBottom: 20, width: "100%" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 13, color: P.accentLight }}>&#128211; Import OneNote Pages as Notes</div>
+        <button onClick={() => { cancelRef.current = true; setOpen(false); }} aria-label="Close" style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 16 }}>&#10005;</button>
+      </div>
+      <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10 }}>
+        Reads the pages of one OneNote section as you, and saves the ones you pick as notes in this project so they are searchable here and by Claude.
+        Text, lists and tables come across. Images and attachments do not (each note says how many were left out). This only reads OneNote, it never changes it.
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <input value={notebookUrl} onChange={e => setNotebookUrl(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && !busy && findSections()}
+          aria-label="OneNote notebook link"
+          placeholder={linkedNotebookId ? "Notebook link (leave blank to use this project's linked notebook)" : "Paste the notebook link"}
+          style={{ flex: 1, fontSize: 13 }} />
+        <Btn onClick={findSections} disabled={!!busy || (!notebookUrl.trim() && !linkedNotebookId)}>
+          {busy === "sections" ? "⏳ Opening…" : "Find sections"}
+        </Btn>
+      </div>
+
+      {sections.length > 0 && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <label style={{ fontSize: 12, color: P.textDim }} htmlFor="onenote-section">Section:</label>
+          <select id="onenote-section" value={sectionId} onChange={e => { setSectionId(e.target.value); setRows([]); }} style={{ flex: 1, fontSize: 13 }}>
+            {sections.map(s => <option key={s.id} value={s.id}>{s.displayName}</option>)}
+          </select>
+          <Btn onClick={scan} disabled={!!busy || !sectionId}>{busy === "scan" ? "⏳ " + (progress || "Reading…") : "Read pages"}</Btn>
+          {busy === "scan" && <Btn small variant="ghost" onClick={() => { cancelRef.current = true; }}>Cancel</Btn>}
+        </div>
+      )}
+
+      {err && <div role="alert" style={{ fontSize: 12, color: P.red, marginTop: 6 }}>{err}</div>}
+
+      {rows.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+            <label style={{ fontSize: 12, color: P.textDim }} htmlFor="onenote-orig-author">Original author:</label>
+            <input id="onenote-orig-author" value={originalAuthor} onChange={e => setOriginalAuthor(e.target.value)}
+              placeholder="e.g. Don (copied in by Varun)" style={{ width: 240, fontSize: 12 }} />
+            <span style={{ fontSize: 11, color: P.textDim }}>Shown as the note's author. OneNote does not say who wrote a page.</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>{rows.length} page{rows.length !== 1 ? "s" : ""} read, {selectedCount} selected</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button onClick={() => setRows(prev => prev.map(r => Object.assign({}, r, { selected: r.state === "new" })))}
+                style={{ background: "none", border: "none", color: P.accentLight, fontSize: 12, cursor: "pointer" }}>Select all new</button>
+              <button onClick={() => setRows(prev => prev.map(r => Object.assign({}, r, { selected: false })))}
+                style={{ background: "none", border: "none", color: P.textDim, fontSize: 12, cursor: "pointer" }}>Clear</button>
+              {selectedCount > 0 && (
+                <Btn small onClick={importSelected}>Import {selectedCount} as note{selectedCount !== 1 ? "s" : ""}</Btn>
+              )}
+            </div>
+          </div>
+          <div style={{ maxHeight: 380, overflowY: "auto", border: "1px solid " + P.border, borderRadius: 6 }}>
+            {rows.map((r, i) => {
+              const st = ONENOTE_STATE_LABEL[r.state] || ONENOTE_STATE_LABEL["new"];
+              const disabled = r.state === "empty";
+              const created = (r.page.createdDateTime || "").slice(0, 10);
+              return (
+                <div key={r.page.id}
+                  onClick={() => !disabled && patchRow(r.page.id, { selected: !r.selected })}
+                  style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px",
+                    borderBottom: i < rows.length - 1 ? "1px solid " + P.border : "none",
+                    background: r.selected ? P.accentDim : "transparent", cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.6 : 1 }}>
+                  <input type="checkbox" checked={!!r.selected} disabled={disabled}
+                    onChange={() => patchRow(r.page.id, { selected: !r.selected })} onClick={e => e.stopPropagation()}
+                    aria-label={"Select page: " + (r.page.title || "(untitled)")} style={{ marginTop: 3, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.page.title || "(untitled)"}</div>
+                      <div style={{ fontSize: 11, color: P.textDim, flexShrink: 0 }}>{created}</div>
+                    </div>
+                    <div style={{ fontSize: 11, marginTop: 2 }}>
+                      <span style={{ color: st.color, fontWeight: 600 }}>{st.text}</span>
+                      {r.state === "duplicate" && r.dupOf && <span style={{ color: P.textDim }}> (same as "{r.dupOf}")</span>}
+                      <span style={{ color: P.textDim }}> &middot; {r.parsed.text.length.toLocaleString()} characters
+                        {r.parsed.images > 0 ? " · " + r.parsed.images + " image" + (r.parsed.images !== 1 ? "s" : "") + " not imported" : ""}
+                        {r.parsed.attachments.length > 0 ? " · " + r.parsed.attachments.length + " attachment" + (r.parsed.attachments.length !== 1 ? "s" : "") + " not imported" : ""}</span>
+                    </div>
+                    {r.parsed.text && <div style={{ fontSize: 11, color: P.textDim, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.parsed.text.replace(/\s+/g, " ").slice(0, 140)}</div>}
+                    {r.selected && r.state !== "updated" && (
+                      <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6 }} onClick={e => e.stopPropagation()}>
+                        <span style={{ fontSize: 11, color: P.textDim }}>Log as:</span>
+                        <select value={r.category} onChange={e => patchRow(r.page.id, { category: e.target.value })} style={{ fontSize: 11, padding: "2px 6px" }}>
+                          {NOTE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NotesView({ project, onChange }) {
   const notes = (project.notes || []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const [draft, setDraft] = useState({ body: "", category: "Client Meeting", actionItem: false, actionOwner: "", actionDueDate: "", actionStatus: "open", visitDate: "" });
@@ -21456,6 +21699,7 @@ function NotesView({ project, onChange }) {
           <span style={{ fontSize: 11, color: P.textDim }}>Ctrl+Enter to post</span>
           <div style={{ display: "flex", gap: 8 }}>
             <CalendarImportPanel project={project} onImport={imported => { const latest = projectRef.current; onChange({ ...latest, notes: [...(latest.notes || []), ...imported] }); }} />
+            <OneNoteImportPanel project={project} onImport={built => { const latest = projectRef.current; onChange({ ...latest, notes: window.OneNoteImport.mergeImport(latest.notes || [], built, uid) }); }} />
             <Btn onClick={addNote} disabled={!draft.body.trim()}>Post Note</Btn>
           </div>
         </div>

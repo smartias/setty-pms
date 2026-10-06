@@ -212,18 +212,23 @@ export async function resolveNotebook(graph, { siteId, notebookWebUrl, notebookN
 // URLs Graph hands back and only fall back to the site-scoped path.
 const withQuery = (url, q) => url + (url.includes("?") ? "&" : "?") + q;
 
-export async function findSection(graph, notebook, sectionName, { siteId } = {}) {
+export async function listSections(graph, notebook, { siteId } = {}) {
   const base = notebook.sectionsUrl ||
     (siteId ? `${siteRoot(siteId)}/notebooks/${encodeURIComponent(notebook.id)}/sections` : `/onenote/notebooks/${encodeURIComponent(notebook.id)}/sections`);
   const r = await getWithRetry(graph, withQuery(base, "$select=id,displayName,lastModifiedDateTime,pagesUrl"));
-  if (r.status !== 200) return { section: null, status: r.status, error: r.json?.error?.message, url: base, sections: [] };
-  const sections = r.json?.value ?? [];
+  if (r.status !== 200) return { sections: [], status: r.status, error: r.json?.error?.message, url: base };
+  return { sections: r.json?.value ?? [], status: 200, url: base };
+}
+
+export async function findSection(graph, notebook, sectionName, opts = {}) {
+  const l = await listSections(graph, notebook, opts);
+  if (l.status !== 200) return { section: null, status: l.status, error: l.error, url: l.url, sections: [] };
   const want = (sectionName || "").toLowerCase();
   const section = want
-    ? sections.find((s) => (s.displayName || "").toLowerCase() === want) ||
-      sections.find((s) => (s.displayName || "").toLowerCase().includes(want))
+    ? l.sections.find((s) => (s.displayName || "").toLowerCase() === want) ||
+      l.sections.find((s) => (s.displayName || "").toLowerCase().includes(want))
     : null;
-  return { section: section || null, status: 200, url: base, sections: sections.map((s) => s.displayName) };
+  return { section: section || null, status: 200, url: l.url, sections: l.sections.map((s) => s.displayName) };
 }
 
 // Lists pages with paging (@odata.nextLink). $top=100 is the Graph maximum.
@@ -264,11 +269,65 @@ export function buildNoteFromPage(page, parsed, { importedBy = "", originalAutho
     (notes.length ? "\n\n[" + notes.join("; ") + "]" : "");
   return {
     body, category, actionItem: false, actionOwner: "", actionDueDate: "", actionStatus: "open",
-    author: "Imported from OneNote", importedBy, originalAuthor,
+    author: originalAuthor ? `${originalAuthor} via OneNote import` : "Imported from OneNote", importedBy, originalAuthor,
     importedFrom: "onenote", oneNotePageId: page.id, oneNoteModified: page.lastModifiedDateTime || "",
     createdAt: page.createdDateTime || now.toISOString(), updatedAt: now.toISOString(),
     oneNoteUrl: url, links: [],
   };
+}
+
+// ── Import panel logic (pure; the React panel in SettyPMS.html is a thin shell) ──
+
+// Suggested note category from a page title. The user can change it per page.
+export function guessCategory(title) {
+  const t = String(title || "");
+  if (/internal/i.test(t)) return "Internal Meeting";
+  if (/meeting|call|status update|notes/i.test(t)) return "Client Meeting";
+  return "General";
+}
+
+const LOW_TEXT_CHARS = 200;
+const pageSig = (title, text) => String(title || "").trim().toLowerCase() + "|" + String(text || "").replace(/\s+/g, " ").trim();
+
+// scanned = [{ page, parsed }] in section order. existingNotes = project.notes.
+// state: new | updated | imported | duplicate | low | empty. Only new is
+// selected by default; everything else is the user's explicit choice.
+export function classifyScan(scanned, existingNotes = []) {
+  const byPageId = new Map();
+  for (const n of existingNotes) if (n.oneNotePageId) byPageId.set(n.oneNotePageId, n);
+  const seen = new Map(); // sig -> title of first page with that content
+  return scanned.map(({ page, parsed }) => {
+    const text = parsed.text || "";
+    const row = { page, parsed, state: "new", existingId: null, dupOf: null, category: guessCategory(page.title), selected: false };
+    const existing = byPageId.get(page.id);
+    const sig = pageSig(page.title, text);
+    if (!text) row.state = "empty";
+    else if (existing) {
+      row.existingId = existing.id;
+      row.state = (existing.oneNoteModified || "") === (page.lastModifiedDateTime || "") ? "imported" : "updated";
+    } else if (seen.has(sig)) { row.state = "duplicate"; row.dupOf = seen.get(sig); }
+    else if (text.length < LOW_TEXT_CHARS && (parsed.images > 0 || parsed.attachments?.length > 0)) row.state = "low";
+    if (text && !seen.has(sig)) seen.set(sig, page.title);
+    row.selected = row.state === "new";
+    return row;
+  });
+}
+
+// built = [{ note, existingId }]. New notes are appended; an "updated" page
+// overwrites only what came from OneNote on the note it already created, so a
+// category or links the user set in PMS survive a re-import.
+export function mergeImport(notes, built, newId) {
+  const out = [...notes];
+  const added = [];
+  for (const { note, existingId } of built) {
+    const i = existingId ? out.findIndex((n) => n.id === existingId) : -1;
+    if (i >= 0) {
+      out[i] = { ...out[i], body: note.body, oneNoteModified: note.oneNoteModified, oneNoteUrl: note.oneNoteUrl || out[i].oneNoteUrl, updatedAt: note.updatedAt };
+    } else {
+      added.push({ ...note, id: newId() });
+    }
+  }
+  return [...out, ...added];
 }
 
 // ── The spike ───────────────────────────────────────────────────────────────

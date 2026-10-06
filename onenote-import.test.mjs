@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   decodeEntities, oneNoteHtmlToText, getWithRetry, resolveNotebook, findSection,
   listSectionPages, fetchPageContent, buildNoteFromPage, runSpike,
+  listSections, guessCategory, classifyScan, mergeImport,
 } from "./onenote-import.js";
 
 // Shaped like real OneNote page content: head/title, outline divs, spans with
@@ -170,7 +171,7 @@ test("buildNoteFromPage: PMS note shape, provenance, not attributed to the impor
   );
   assert.equal(n.importedFrom, "onenote");
   assert.equal(n.oneNotePageId, "p1");
-  assert.equal(n.author, "Imported from OneNote");
+  assert.equal(n.author, "Don (copied by Varun) via OneNote import");
   assert.equal(n.importedBy, "Sara Arias");
   assert.equal(n.originalAuthor, "Don (copied by Varun)");
   assert.equal(n.createdAt, "2026-05-14T14:00:00Z"); // meeting date, not import date
@@ -209,4 +210,103 @@ test("runSpike: one unreadable page makes it PARTIAL, others still read", async 
   const rep = await runSpike(fakeGraph({ failContentFor: "p2" }), { siteId: "s", notebookWebUrl: "https://x", sectionName: "AirTrain" });
   assert.match(rep.verdict, /^PARTIAL: read 2\/3/);
   assert.equal(rep.pages.find((p) => p.title === "Page 2").status, 404);
+});
+
+test("listSections returns the notebook's sections, or the Graph status on failure", async () => {
+  const g = fakeGraph();
+  const ok = await listSections(g, { id: "nb1", sectionsUrl: "https://graph.microsoft.com/v1.0/sites/s/onenote/notebooks/nb1/sections" });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.sections[0].id, "s1");
+  assert.equal(ok.sections[0].pagesUrl.endsWith("/sections/s1/pages"), true);
+  const bad = await listSections(g, { id: "nb1" }); // /me-style path -> 400
+  assert.equal(bad.status, 400);
+  assert.deepEqual(bad.sections, []);
+});
+
+test("buildNoteFromPage puts the original author in the author line", () => {
+  const parsed = { title: "t", text: "body", images: 0, attachments: [] };
+  assert.equal(buildNoteFromPage({ id: "p" }, parsed, { originalAuthor: "Don" }).author, "Don via OneNote import");
+  assert.equal(buildNoteFromPage({ id: "p" }, parsed, {}).author, "Imported from OneNote");
+});
+
+test("guessCategory", () => {
+  assert.equal(guessCategory("2025-08-27 - Internal Meeting"), "Internal Meeting");
+  assert.equal(guessCategory("2025-09-04 Meeting w/ Parsons"), "Client Meeting");
+  assert.equal(guessCategory("8/19/2025 - Intro Call with Parsons"), "Client Meeting");
+  assert.equal(guessCategory("2026-05-20 Status Update"), "Client Meeting");
+  assert.equal(guessCategory("Background"), "General");
+  assert.equal(guessCategory(""), "General");
+  assert.equal(guessCategory(undefined), "General");
+});
+
+const P = (id, title, modified = "2026-05-01T00:00:00Z") => ({ id, title, lastModifiedDateTime: modified, createdDateTime: "2026-05-01T00:00:00Z" });
+const T = (text, images = 0, attachments = []) => ({ title: "", text, images, attachments });
+
+test("classifyScan: new, duplicate, low-text, empty, imported, updated", () => {
+  const long = "x".repeat(300);
+  const existing = [
+    { id: "n-old", oneNotePageId: "p5", oneNoteModified: "2026-05-01T00:00:00Z" },   // unchanged since import
+    { id: "n-chg", oneNotePageId: "p6", oneNoteModified: "2026-04-01T00:00:00Z" },   // edited in OneNote since
+  ];
+  const rows = classifyScan([
+    { page: P("p1", "Model"), parsed: T(long) },
+    { page: P("p2", "Model"), parsed: T(long) },                               // same title+content as p1
+    { page: P("p3", "Exhibit 8"), parsed: T("[image] short", 2, ["a.pdf"]) },  // mostly images
+    { page: P("p4", "Blank"), parsed: T("") },
+    { page: P("p5", "Seen"), parsed: T(long + "a") },
+    { page: P("p6", "Edited"), parsed: T(long + "b") },
+    { page: P("p7", "Short note"), parsed: T("just a short note") },           // short but no images: still new
+  ], existing);
+  const by = Object.fromEntries(rows.map((r) => [r.page.id, r]));
+  assert.equal(by.p1.state, "new");
+  assert.equal(by.p2.state, "duplicate");
+  assert.equal(by.p2.dupOf, "Model");
+  assert.equal(by.p3.state, "low");
+  assert.equal(by.p4.state, "empty");
+  assert.equal(by.p5.state, "imported");
+  assert.equal(by.p5.existingId, "n-old");
+  assert.equal(by.p6.state, "updated");
+  assert.equal(by.p6.existingId, "n-chg");
+  assert.equal(by.p7.state, "new");
+  // only brand-new pages are selected by default
+  assert.deepEqual(rows.filter((r) => r.selected).map((r) => r.page.id), ["p1", "p7"]);
+});
+
+test("classifyScan: a page already imported suppresses a later duplicate only by content, never by id", () => {
+  const long = "y".repeat(300);
+  const rows = classifyScan([
+    { page: P("a", "Same"), parsed: T(long) },
+    { page: P("b", "Same"), parsed: T(long) },
+    { page: P("c", "Same"), parsed: T(long) },
+  ], []);
+  assert.deepEqual(rows.map((r) => r.state), ["new", "duplicate", "duplicate"]);
+});
+
+test("mergeImport appends new notes with fresh ids and updates re-imported pages in place", () => {
+  const notes = [
+    { id: "keep", body: "mine", category: "Decision" },
+    { id: "n-chg", body: "old text", category: "Issue", links: [{ x: 1 }], oneNotePageId: "p6", oneNoteModified: "old", oneNoteUrl: "https://old", updatedAt: "u0", createdAt: "c0" },
+  ];
+  let n = 0;
+  const out = mergeImport(notes, [
+    { note: { body: "fresh", oneNotePageId: "p1", category: "Client Meeting" }, existingId: null },
+    { note: { body: "new text", oneNoteModified: "new", oneNoteUrl: "", updatedAt: "u1", category: "General" }, existingId: "n-chg" },
+  ], () => "id" + ++n);
+  assert.equal(out.length, 3);
+  assert.equal(out[0], notes[0]);                                   // untouched
+  assert.equal(out[1].id, "n-chg");                                 // updated in place, same id
+  assert.equal(out[1].body, "new text");
+  assert.equal(out[1].category, "Issue");                           // PMS-side category survives
+  assert.deepEqual(out[1].links, [{ x: 1 }]);
+  assert.equal(out[1].oneNoteUrl, "https://old");                   // empty new url does not blank it
+  assert.equal(out[1].createdAt, "c0");
+  assert.equal(out[2].id, "id1");                                   // new note appended with generated id
+  assert.equal(out[2].body, "fresh");
+  assert.equal(notes.length, 2);                                    // input not mutated
+});
+
+test("mergeImport: existingId that no longer exists is imported as a new note, not dropped", () => {
+  const out = mergeImport([], [{ note: { body: "b", oneNotePageId: "p9" }, existingId: "gone" }], () => "nid");
+  assert.equal(out.length, 1);
+  assert.equal(out[0].id, "nid");
 });
