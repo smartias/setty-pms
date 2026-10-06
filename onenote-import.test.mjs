@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   decodeEntities, oneNoteHtmlToText, getWithRetry, resolveNotebook, findSection,
   listSectionPages, fetchPageContent, buildNoteFromPage, runSpike,
+  listSections, guessCategory, classifyScan, mergeImport,
 } from "./onenote-import.js";
 
 // Shaped like real OneNote page content: head/title, outline divs, spans with
@@ -79,11 +80,13 @@ test("getWithRetry does not retry 403/404", async () => {
 // paged 2 + 1 to exercise @odata.nextLink.
 function fakeGraph({ blockResolve = false, failContentFor = null } = {}) {
   const calls = [];
-  const nb = { id: "nb1", displayName: "SAPX256014.00 — PANYNJ EWR AirTrain CFD" };
-  const sec = { id: "s1", displayName: "SAPX256014.00 - PANYNJ Newark AirTrain Replacement" };
+  const SITE = "https://graph.microsoft.com/v1.0/sites/s/onenote";
+  const nb = { id: "nb1", displayName: "SAPX256014.00 — PANYNJ EWR AirTrain CFD", sectionsUrl: SITE + "/notebooks/nb1/sections" };
+  const sec = { id: "s1", displayName: "SAPX256014.00 - PANYNJ Newark AirTrain Replacement", pagesUrl: SITE + "/sections/s1/pages" };
   const pg = (n) => ({
     id: "p" + n, title: "Page " + n, createdDateTime: `2026-05-0${n}T10:00:00Z`, lastModifiedDateTime: `2026-05-0${n}T11:00:00Z`,
     links: { oneNoteWebUrl: { href: "https://onenote/p" + n } },
+    contentUrl: SITE + "/pages/p" + n + "/content",
   });
   const g = async (path, opts = {}) => {
     calls.push({ path, ...opts });
@@ -91,11 +94,13 @@ function fakeGraph({ blockResolve = false, failContentFor = null } = {}) {
       return blockResolve ? { status: 403, json: { error: { message: "denied" } } } : { status: 201, json: nb };
     }
     if (/\/sites\/[^/]+\/onenote\/notebooks\?/.test(path)) return { status: 200, json: { value: [nb] } };
+    // A notebook on a SharePoint site is NOT reachable via the /me-style /onenote/... paths.
+    if (/^\/onenote\//.test(path)) return { status: 400, json: { error: { message: "wrong path for a site notebook: " + path } } };
     if (path.includes("/notebooks/nb1/sections")) return { status: 200, json: { value: [sec] } };
     if (path.includes("/sections/s1/pages")) {
       return path.includes("skip=2")
         ? { status: 200, json: { value: [pg(3)] } }
-        : { status: 200, json: { value: [pg(1), pg(2)], "@odata.nextLink": "https://graph.microsoft.com/v1.0/onenote/sections/s1/pages?skip=2" } };
+        : { status: 200, json: { value: [pg(1), pg(2)], "@odata.nextLink": SITE + "/sections/s1/pages?skip=2" } };
     }
     const m = /\/onenote\/pages\/(p\d)\/content/.exec(path);
     if (m) {
@@ -122,25 +127,40 @@ test("resolveNotebook uses getNotebookFromWebUrl, falls back to name match", asy
 
 test("findSection matches exact then partial; reports available names", async () => {
   const g = fakeGraph();
-  assert.equal((await findSection(g, { id: "nb1" }, "sapx256014.00 - panynj newark airtrain replacement")).section.id, "s1");
-  assert.equal((await findSection(g, { id: "nb1" }, "AirTrain")).section.id, "s1");
-  const miss = await findSection(g, { id: "nb1" }, "nope");
+  const NB = { id: "nb1", sectionsUrl: "https://graph.microsoft.com/v1.0/sites/s/onenote/notebooks/nb1/sections" };
+  assert.equal((await findSection(g, NB, "sapx256014.00 - panynj newark airtrain replacement")).section.id, "s1");
+  assert.equal((await findSection(g, NB, "AirTrain")).section.id, "s1");
+  const miss = await findSection(g, NB, "nope");
   assert.equal(miss.section, null);
   assert.deepEqual(miss.sections, ["SAPX256014.00 - PANYNJ Newark AirTrain Replacement"]);
 });
 
-test("listSectionPages follows nextLink and honors maxPages", async () => {
+test("findSection regression: without sectionsUrl it uses the site-scoped path, never /onenote/...", async () => {
   const g = fakeGraph();
-  assert.equal((await listSectionPages(g, "s1")).pages.length, 3);
-  assert.equal((await listSectionPages(g, "s1", { maxPages: 2 })).pages.length, 2);
+  const bare = await findSection(g, { id: "nb1" }, "AirTrain"); // no siteId -> /me path -> 400
+  assert.equal(bare.status, 400);
+  assert.equal(bare.section, null);
+  const scoped = await findSection(g, { id: "nb1" }, "AirTrain", { siteId: "s" });
+  assert.equal(scoped.section.id, "s1");
+});
+
+test("listSectionPages follows pagesUrl and nextLink and honors maxPages", async () => {
+  const g = fakeGraph();
+  const SEC = { id: "s1", pagesUrl: "https://graph.microsoft.com/v1.0/sites/s/onenote/sections/s1/pages" };
+  assert.equal((await listSectionPages(g, SEC)).pages.length, 3);
+  assert.equal((await listSectionPages(g, SEC, { maxPages: 2 })).pages.length, 2);
+  assert.equal((await listSectionPages(g, { id: "s1" }, { siteId: "s" })).pages.length, 3); // fallback path
+  assert.equal((await listSectionPages(g, { id: "s1" })).status, 400);
 });
 
 test("fetchPageContent asks for HTML and returns it", async () => {
   const g = fakeGraph();
-  const r = await fetchPageContent(g, "p1");
+  const P1 = { id: "p1", contentUrl: "https://graph.microsoft.com/v1.0/sites/s/onenote/pages/p1/content" };
+  const r = await fetchPageContent(g, P1);
   assert.equal(r.status, 200);
   assert.equal(g.calls.at(-1).accept, "text/html");
-  assert.equal((await fetchPageContent(fakeGraph({ failContentFor: "p1" }), "p1")).status, 404);
+  assert.equal((await fetchPageContent(fakeGraph({ failContentFor: "p1" }), P1)).status, 404);
+  assert.equal((await fetchPageContent(g, { id: "p1" }, { siteId: "s" })).status, 200); // fallback path
 });
 
 test("buildNoteFromPage: PMS note shape, provenance, not attributed to the importer", () => {
@@ -151,7 +171,7 @@ test("buildNoteFromPage: PMS note shape, provenance, not attributed to the impor
   );
   assert.equal(n.importedFrom, "onenote");
   assert.equal(n.oneNotePageId, "p1");
-  assert.equal(n.author, "Imported from OneNote");
+  assert.equal(n.author, "Don (copied by Varun) via OneNote import");
   assert.equal(n.importedBy, "Sara Arias");
   assert.equal(n.originalAuthor, "Don (copied by Varun)");
   assert.equal(n.createdAt, "2026-05-14T14:00:00Z"); // meeting date, not import date
@@ -190,4 +210,103 @@ test("runSpike: one unreadable page makes it PARTIAL, others still read", async 
   const rep = await runSpike(fakeGraph({ failContentFor: "p2" }), { siteId: "s", notebookWebUrl: "https://x", sectionName: "AirTrain" });
   assert.match(rep.verdict, /^PARTIAL: read 2\/3/);
   assert.equal(rep.pages.find((p) => p.title === "Page 2").status, 404);
+});
+
+test("listSections returns the notebook's sections, or the Graph status on failure", async () => {
+  const g = fakeGraph();
+  const ok = await listSections(g, { id: "nb1", sectionsUrl: "https://graph.microsoft.com/v1.0/sites/s/onenote/notebooks/nb1/sections" });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.sections[0].id, "s1");
+  assert.equal(ok.sections[0].pagesUrl.endsWith("/sections/s1/pages"), true);
+  const bad = await listSections(g, { id: "nb1" }); // /me-style path -> 400
+  assert.equal(bad.status, 400);
+  assert.deepEqual(bad.sections, []);
+});
+
+test("buildNoteFromPage puts the original author in the author line", () => {
+  const parsed = { title: "t", text: "body", images: 0, attachments: [] };
+  assert.equal(buildNoteFromPage({ id: "p" }, parsed, { originalAuthor: "Don" }).author, "Don via OneNote import");
+  assert.equal(buildNoteFromPage({ id: "p" }, parsed, {}).author, "Imported from OneNote");
+});
+
+test("guessCategory", () => {
+  assert.equal(guessCategory("2025-08-27 - Internal Meeting"), "Internal Meeting");
+  assert.equal(guessCategory("2025-09-04 Meeting w/ Parsons"), "Client Meeting");
+  assert.equal(guessCategory("8/19/2025 - Intro Call with Parsons"), "Client Meeting");
+  assert.equal(guessCategory("2026-05-20 Status Update"), "Client Meeting");
+  assert.equal(guessCategory("Background"), "General");
+  assert.equal(guessCategory(""), "General");
+  assert.equal(guessCategory(undefined), "General");
+});
+
+const P = (id, title, modified = "2026-05-01T00:00:00Z") => ({ id, title, lastModifiedDateTime: modified, createdDateTime: "2026-05-01T00:00:00Z" });
+const T = (text, images = 0, attachments = []) => ({ title: "", text, images, attachments });
+
+test("classifyScan: new, duplicate, low-text, empty, imported, updated", () => {
+  const long = "x".repeat(300);
+  const existing = [
+    { id: "n-old", oneNotePageId: "p5", oneNoteModified: "2026-05-01T00:00:00Z" },   // unchanged since import
+    { id: "n-chg", oneNotePageId: "p6", oneNoteModified: "2026-04-01T00:00:00Z" },   // edited in OneNote since
+  ];
+  const rows = classifyScan([
+    { page: P("p1", "Model"), parsed: T(long) },
+    { page: P("p2", "Model"), parsed: T(long) },                               // same title+content as p1
+    { page: P("p3", "Exhibit 8"), parsed: T("[image] short", 2, ["a.pdf"]) },  // mostly images
+    { page: P("p4", "Blank"), parsed: T("") },
+    { page: P("p5", "Seen"), parsed: T(long + "a") },
+    { page: P("p6", "Edited"), parsed: T(long + "b") },
+    { page: P("p7", "Short note"), parsed: T("just a short note") },           // short but no images: still new
+  ], existing);
+  const by = Object.fromEntries(rows.map((r) => [r.page.id, r]));
+  assert.equal(by.p1.state, "new");
+  assert.equal(by.p2.state, "duplicate");
+  assert.equal(by.p2.dupOf, "Model");
+  assert.equal(by.p3.state, "low");
+  assert.equal(by.p4.state, "empty");
+  assert.equal(by.p5.state, "imported");
+  assert.equal(by.p5.existingId, "n-old");
+  assert.equal(by.p6.state, "updated");
+  assert.equal(by.p6.existingId, "n-chg");
+  assert.equal(by.p7.state, "new");
+  // only brand-new pages are selected by default
+  assert.deepEqual(rows.filter((r) => r.selected).map((r) => r.page.id), ["p1", "p7"]);
+});
+
+test("classifyScan: a page already imported suppresses a later duplicate only by content, never by id", () => {
+  const long = "y".repeat(300);
+  const rows = classifyScan([
+    { page: P("a", "Same"), parsed: T(long) },
+    { page: P("b", "Same"), parsed: T(long) },
+    { page: P("c", "Same"), parsed: T(long) },
+  ], []);
+  assert.deepEqual(rows.map((r) => r.state), ["new", "duplicate", "duplicate"]);
+});
+
+test("mergeImport appends new notes with fresh ids and updates re-imported pages in place", () => {
+  const notes = [
+    { id: "keep", body: "mine", category: "Decision" },
+    { id: "n-chg", body: "old text", category: "Issue", links: [{ x: 1 }], oneNotePageId: "p6", oneNoteModified: "old", oneNoteUrl: "https://old", updatedAt: "u0", createdAt: "c0" },
+  ];
+  let n = 0;
+  const out = mergeImport(notes, [
+    { note: { body: "fresh", oneNotePageId: "p1", category: "Client Meeting" }, existingId: null },
+    { note: { body: "new text", oneNoteModified: "new", oneNoteUrl: "", updatedAt: "u1", category: "General" }, existingId: "n-chg" },
+  ], () => "id" + ++n);
+  assert.equal(out.length, 3);
+  assert.equal(out[0], notes[0]);                                   // untouched
+  assert.equal(out[1].id, "n-chg");                                 // updated in place, same id
+  assert.equal(out[1].body, "new text");
+  assert.equal(out[1].category, "Issue");                           // PMS-side category survives
+  assert.deepEqual(out[1].links, [{ x: 1 }]);
+  assert.equal(out[1].oneNoteUrl, "https://old");                   // empty new url does not blank it
+  assert.equal(out[1].createdAt, "c0");
+  assert.equal(out[2].id, "id1");                                   // new note appended with generated id
+  assert.equal(out[2].body, "fresh");
+  assert.equal(notes.length, 2);                                    // input not mutated
+});
+
+test("mergeImport: existingId that no longer exists is imported as a new note, not dropped", () => {
+  const out = mergeImport([], [{ note: { body: "b", oneNotePageId: "p9" }, existingId: "gone" }], () => "nid");
+  assert.equal(out.length, 1);
+  assert.equal(out[0].id, "nid");
 });
