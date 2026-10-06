@@ -1846,14 +1846,28 @@ function bulkProjParse() {
   const p = onb().projectRowsFrom(b.text, { statusMap: b.statusMap });
   b.rows = p.rows; b.unmapped = p.unmapped; b.columns = p.columns;
 }
+// The preview rows that match the results search (all of them when it is empty).
+// Shared by the table and by Create, so Create only acts on what is shown.
+function bulkProjShown(b, res) {
+  const fixed = new Map((b.rows || []).filter((r) => r.fixedFrom).map((r) => [r.number, r.fixedFrom]));
+  const sheetName = new Map((b.rows || []).map((r) => [r.number, r.name || ""]));
+  const terms = String(b.search || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const rows = (res && res.rows) || [];
+  const shown = rows.filter((r) => !terms.length || terms.every((w) =>
+    [r.number, sheetName.get(r.number), r.result.replace(/_/g, " "), r.note, fixed.get(r.number)].join(" ").toLowerCase().includes(w)));
+  return { fixed, sheetName, terms, shown, total: rows.length };
+}
 async function bulkProjRun(apply, btn, keepRows) {
   const b = bulkProjState();
   try {
     if (!keepRows || !b.rows) bulkProjParse();
     if (!b.rows.length) { toast("No project numbers found in what you pasted.", "error"); return; }
     for (const r of b.rows) if (!r.status && b.statusMap[(r.rawStatus || "").toLowerCase()]) r.status = b.statusMap[r.rawStatus.toLowerCase()];
-    const send = b.rows.filter((r) => r.valid && r.status).map((r) => ({ number: r.number, status: r.status, name: r.name || null }));
-    if (!send.length) { toast("Map the sheet's statuses first (or fix the numbers).", "error"); render(); return; }
+    // Applying with a search active writes only the rows the search shows.
+    const only = apply && b.preview ? bulkProjShown(b, b.preview) : null;
+    const onlyNums = only && only.terms.length ? new Set(only.shown.filter((r) => r.result === "create").map((r) => r.number)) : null;
+    const send = b.rows.filter((r) => r.valid && r.status && (!onlyNums || onlyNums.has(r.number))).map((r) => ({ number: r.number, status: r.status, name: r.name || null }));
+    if (!send.length) { toast(onlyNums ? "Nothing to create in the rows this search shows." : "Map the sheet's statuses first (or fix the numbers).", "error"); render(); return; }
     await loadDiscoProjects();
     await withBtn(btn, apply ? "registering…" : "checking…", apply ? "done" : "checked", async () => {
       const res = await sb("POST", "/rest/v1/rpc/pms_admin_bulk_register_projects", { p_rows: send, p_apply: !!apply });
@@ -1884,12 +1898,9 @@ function bulkProjCard() {
     return near.length ? " · did you mean " + near.map((n) =>
       `<button class="btn" style="padding:1px 6px;font-size:11px" onclick="bulkProjUse('${esc(num)}','${esc(n.number)}')" title="${n.sibling ? "Same base number, different task order" : n.dist + " character(s) different"}">${esc(n.number)}</button>`).join(" ") + "?" : "";
   };
-  const fixed = new Map((b.rows || []).filter((r) => r.fixedFrom).map((r) => [r.number, r.fixedFrom]));
   // Search the results by number, sheet name, result, or note; every word must match.
-  const sheetName = new Map((b.rows || []).map((r) => [r.number, r.name || ""]));
-  const terms = String(b.search || "").toLowerCase().split(/s+/).filter(Boolean);
-  const shown = res ? (res.rows || []).filter((r) => !terms.length || terms.every((w) =>
-    [r.number, sheetName.get(r.number), r.result.replace(/_/g, " "), r.note, fixed.get(r.number)].join(" ").toLowerCase().includes(w))) : [];
+  const { fixed, sheetName, terms, shown } = bulkProjShown(b, res);
+  const createShown = shown.filter((r) => r.result === "create").length;
   const table = res ? `
       <div style="margin-top:10px"><b>${b.applied ? "Registered" : "Preview (nothing written yet)"}:</b> ${esc(summaryText(res.summary))}</div>
       <div class="row" style="gap:10px;align-items:center;margin-top:6px">
@@ -1900,7 +1911,7 @@ function bulkProjCard() {
       <tbody>${shown.map((r) => `<tr><td><b>${esc(r.number)}</b>${sheetName.get(r.number) ? `<div style="font-size:11px;color:var(--muted)">${esc(sheetName.get(r.number))}</div>` : ""}${fixed.has(r.number) ? `<div style="font-size:11px;color:var(--muted)">sheet said ${esc(fixed.get(r.number))}</div>` : ""}</td>
         <td><span class="pill ${RESULT_PILL[r.result] || "info"}">${esc(r.result.replace(/_/g, " "))}</span></td>
         <td style="font-size:12px">${esc(r.note || "")}${r.result === "no_folder" ? suggest(r.number) : ""}</td></tr>`).join("")}</tbody></table></div>
-      ${b.preview && (res.summary || {}).create ? `<button class="btn btn-primary" style="margin-top:8px" onclick="bulkProjRun(true,this,true)">Create ${res.summary.create} project record(s)</button>` : ""}` : "";
+      ${b.preview && (res.summary || {}).create ? `<button class="btn btn-primary" style="margin-top:8px" onclick="bulkProjRun(true,this,true)">${terms.length ? "Create " + createShown + " of " + res.summary.create + " (only the rows shown)" : "Create " + res.summary.create + " project record(s)"}</button>` : ""}` : "";
   return `
     <div class="card">
       <details ${b.text ? "open" : ""}><summary style="cursor:pointer"><b>📋 Register projects from a list</b> <span style="color:var(--muted);font-size:12px">(only the jobs on it, in bulk)</span></summary>
