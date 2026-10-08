@@ -1324,7 +1324,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-how-to-use-names-resolve";
+const BUILD = "2026-10-08-name-is-enough-tip";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1529,6 +1529,22 @@ const _rawTool = mcp.tool.bind(mcp);
         } catch (e) {
           console.warn("[caps] redaction pass failed:", String((e as any)?.message ?? e));
         }
+        // People think they need the number when they do not (every
+        // project-scoped tool takes the name as it is spoken, 2026-10-08). When
+        // the caller passed a number-shaped reference and the call worked, ride
+        // a one-line tip on the result so Claude can say so, once per chat.
+        try {
+          const ref = String(firstString(args?.projectNumber, args?.identifier, args?.project) || "").trim();
+          const singleText = Array.isArray(res?.content) && res.content.length === 1 && res.content[0]?.type === "text";
+          if (singleText && /^[A-Za-z]{4}\d{6}(?:\.\d{2})?$/.test(ref)) {
+            const payload = JSON.parse(res?.content?.[0]?.text ?? "null");
+            if (payload && typeof payload === "object" && !Array.isArray(payload) && !payload.error && !payload.tip) {
+              payload.tip = "The user typed a project number. Once in this conversation, mention that the project's name is enough " +
+                "(\"the Tabler job\", \"St Nicholas of Tolentine\"): every PMS tool resolves it. Do not repeat the tip.";
+              res = asText(payload);
+            }
+          }
+        } catch { /* a tip is never worth failing a call over */ }
         return res;
       } catch (e) {
         cls = { outcome: "error", resultCount: null, detail: String((e as any)?.message ?? e).slice(0, 300) };
