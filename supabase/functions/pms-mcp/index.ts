@@ -1362,7 +1362,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-name-tip-only-when-typed";
+const BUILD = "2026-10-08-sweep-pending-first";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -7185,16 +7185,22 @@ const _drawingScopeCache = new Map<string, { at: number; scope: DrawingScope }>(
 const drawingScopeKey = (numPrefix: string, subfolder?: string) =>
   `${numPrefix}#drawings:${String(subfolder || "").replace(/^\/+|\/+$/g, "").toLowerCase()}`;
 
-async function drawingScopeFiles(numPrefix: string, subfolder?: string): Promise<DrawingScope> {
+// `maxAgeMs` lets the background sweep accept an older file list than a live
+// search wants: the sweep runs every 15 minutes, which equals the default TTL,
+// so with the default every sweep run found its cache just expired and spent
+// its whole budget re-crawling (measured 2026-10-08: 10-11 s of crawl, 0 files
+// indexed). A file list a few hours old only means a new PDF is picked up a
+// little later.
+async function drawingScopeFiles(numPrefix: string, subfolder?: string, maxAgeMs: number = DRAWING_SCOPE_TTL): Promise<DrawingScope> {
   const key = drawingScopeKey(numPrefix, subfolder);
   const hit = _drawingScopeCache.get(key);
-  if (hit && Date.now() - hit.at < DRAWING_SCOPE_TTL) return hit.scope;
+  if (hit && Date.now() - hit.at < maxAgeMs) return hit.scope;
   try {
     const rows = await sbGet(
       "pms_mcp_tree_cache?select=cached_at,truncated,libraries,files&project_prefix=eq." + encodeURIComponent(key) + "&limit=1");
     const row = Array.isArray(rows) ? rows[0] : null;
     const at = row ? Date.parse(row.cached_at) : NaN;
-    if (row && Number.isFinite(at) && Date.now() - at < DRAWING_SCOPE_TTL && Array.isArray(row.files)) {
+    if (row && Number.isFinite(at) && Date.now() - at < maxAgeMs && Array.isArray(row.files)) {
       const scope: DrawingScope = {
         files: row.files, truncated: !!row.truncated, resolved: true,
         scopePath: Array.isArray(row.libraries) && row.libraries[0] ? String(row.libraries[0]) : "Outgoing",
@@ -11608,8 +11614,14 @@ app.post("/pms-mcp/admin/documents-sync", async (c) => {
 // small, so many short runs beat a few long ones. The indexer stops opening
 // files and pages at this deadline.
 const DRAWINGS_SWEEP_BUDGET_MS = 6000;
-const DRAWINGS_SWEEP_MAX_PROJECTS = 4;
+// The deadline governs, not a project count: a project with nothing pending
+// costs one cached read, and counting it against a cap of 4 (as the first fix
+// did) let four no-ops use the whole run. This is only a safety ceiling.
+const DRAWINGS_SWEEP_MAX_PROJECTS = 40;
 const DRAWINGS_SWEEP_FILES_PER_PROJECT = 3;
+// File lists the sweep will reuse: it runs every 15 minutes, so the 15-minute
+// live-search TTL always expired right before the next run.
+const DRAWINGS_SWEEP_SCOPE_MAX_AGE_MS = 6 * 3600_000;
 const DRAWINGS_SWEEP_ACTIVE_DAYS = 30;
 app.options("/pms-mcp/admin/drawings-index", (c) => c.body(null, 204, DOCS_SYNC_CORS));
 app.post("/pms-mcp/admin/drawings-index", async (c) => {
@@ -11625,7 +11637,7 @@ app.post("/pms-mcp/admin/drawings-index", async (c) => {
   let body: any = {};
   try { body = await c.req.json(); } catch { /* cron sends an empty body */ }
   const onlyProject = String(body?.projectNumber || "").toLowerCase().trim();
-  const maxProjects = Math.max(1, Math.min(Number(body?.maxProjects) || DRAWINGS_SWEEP_MAX_PROJECTS, 20));
+  const maxProjects = Math.max(1, Math.min(Number(body?.maxProjects) || DRAWINGS_SWEEP_MAX_PROJECTS, 100));
   const filesPerProject = Math.max(1, Math.min(Number(body?.maxFilesPerProject) || DRAWINGS_SWEEP_FILES_PER_PROJECT, DRAWING_INDEX_MAX_FILES_CAP));
   const started = Date.now();
 
@@ -11658,16 +11670,33 @@ app.post("/pms-mcp/admin/drawings-index", async (c) => {
       const off = Math.floor(Date.now() / 900000) % cands.length;
       cands = cands.slice(off).concat(cands.slice(0, off));
     }
+    // Projects with unfinished files go FIRST (resumable books and files not
+    // yet given up), oldest touch first. Without this, 6 files across 5
+    // projects had to be found among ~125 candidates by rotation alone.
+    try {
+      const pend = await sbGet(
+        "pms_drawing_index_files?select=project_prefix,updated_at&status=eq.pending&attempts=lt." + DRAWING_INDEX_MAX_ATTEMPTS +
+        "&order=updated_at.asc&limit=300");
+      const first: string[] = [];
+      for (const r of (Array.isArray(pend) ? pend : [])) {
+        const pp = String(r.project_prefix || "").toLowerCase().trim();
+        if (pp && !first.includes(pp)) first.push(pp);
+      }
+      cands = [...first, ...cands.filter((n) => !first.includes(n))];
+    } catch (e) {
+      console.warn("[drawings-sweep] pending-first ordering failed:", String((e as any)?.message ?? e));
+    }
   }
 
   const results: any[] = [];
+  let noWork = 0;
   for (const prefix of cands) {
-    if (results.length >= maxProjects) break;
+    if (results.length + noWork >= maxProjects) break;
     const left = DRAWINGS_SWEEP_BUDGET_MS - (Date.now() - started);
     if (left < 1500) break;
     try {
-      const scope = await drawingScopeFiles(prefix);
-      if (!scope.resolved) { results.push({ project: prefix, skipped: "no Outgoing folder" }); continue; }
+      const scope = await drawingScopeFiles(prefix, undefined, DRAWINGS_SWEEP_SCOPE_MAX_AGE_MS);
+      if (!scope.resolved) { noWork++; continue; }
       const known: any[] = await sbGetAll(
         "pms_drawing_index_files?select=item_id,status,attempts,pages,pages_done,text_pages,file_name,folder_path,error,updated_at" +
         "&project_prefix=eq." + encodeURIComponent(prefix) + "&order=item_id");
@@ -11683,7 +11712,7 @@ app.post("/pms-mcp/admin/drawings-index", async (c) => {
         if (k.status === "pending" && Date.now() - Date.parse(k.updated_at || "") < 120000) return false;
         return Number(k.attempts) < DRAWING_INDEX_MAX_ATTEMPTS;
       });
-      if (!pending.length) { results.push({ project: prefix, filesInScope: scope.files.length, pending: 0 }); continue; }
+      if (!pending.length) { noWork++; continue; }
       // The run's clock is the sweep's own, so a slow scope crawl spends the
       // same budget the indexer then honours; nothing restarts the 90 s.
       const run = await indexDrawingFiles({
@@ -11698,7 +11727,7 @@ app.post("/pms-mcp/admin/drawings-index", async (c) => {
     }
   }
   return c.json({
-    scanned: results.length, candidates: cands.length, elapsedMs: Date.now() - started, results,
+    scanned: results.length + noWork, withWork: results.length, noWork, candidates: cands.length, elapsedMs: Date.now() - started, results,
   }, 200, DOCS_SYNC_CORS);
 });
 
