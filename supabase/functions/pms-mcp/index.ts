@@ -1635,7 +1635,32 @@ mcp.tool("search_projects", {
       // been set up in the PMS yet (searched hours before its row appeared,
       // 2026-10-02 and 2026-10-08), so say that instead of leaving the user
       // to retry the same number.
-      const looksLikeNumber = /\b[a-z]{4}\d{6}(?:\.\d{2})?\b/i.test(raw) || /^\d{6}$/.test(raw);
+      const numTok = (raw.match(/\b([a-z]{4}\d{6}(?:\.\d{2})?)\b/i) || [])[1] ?? (/^\d{6}$/.test(raw) ? raw : null);
+      // The pool here is every project the caller may see, archived included,
+      // so "no project carries it" is only said when that is actually true.
+      const carriers = numTok
+        ? projects.filter((p) => String(p.projectNumber || "").toLowerCase().includes(numTok))
+        : [];
+      if (carriers.length) {
+        const live = carriers.filter((p) => !p.archived);
+        if (!live.length && !includeArchived) {
+          return asText({
+            count: 0, includeArchived: false, projects: [],
+            interpreted: { terms },
+            reason: `${numTok.toUpperCase()} is ${carriers.length === 1 ? "an archived project" : "archived projects"}: ${carriers.map((p) => p.name).join("; ")}.`,
+            nextStep: "Pass includeArchived: true to search the archive.",
+          });
+        }
+        // The number is real; the other words did not fit it. Answer with the
+        // number's projects rather than nothing.
+        const hits = includeArchived ? carriers : live;
+        return asText({
+          count: hits.length, includeArchived: !!includeArchived,
+          interpreted: { terms, note: `Matched on the project number ${numTok.toUpperCase()}; the other terms did not match these projects and were ignored.` },
+          projects: hits.map(summarizeProject),
+        });
+      }
+      const looksLikeNumber = !!numTok;
       return asText({
         count: 0, includeArchived: !!includeArchived, projects: [],
         interpreted: { terms },
@@ -5415,10 +5440,19 @@ async function documentsFromTable(
     // region to look for a folder the sync had already proved absent: 8-14 s
     // per call on pipeline projects (66 of 316 scopes), measured 2026-10-08.
     // An incomplete or stale sync still walks, exactly as before.
-    if (state?.complete === true) {
-      return { files: [], rows: new Map(), truncated: false, libraries: [], fileCount: 0, indexedAt: String(state?.last_completed_at) };
-    }
-    return null;
+    if (state?.complete !== true) return null;
+    // Proposal/Contract library files are synced under their OWN scope but
+    // carry this project's prefix once linked, so the project scope being
+    // empty says nothing about them. One cheap query (45 ms measured) keeps
+    // them visible; the walk is what this branch avoids, not the table.
+    const linked = await sbGet(buildDocumentsQuery({ projectPrefix: prefix, tokens, docType, discipline, offset: 0, limit: 1000 }));
+    const byId = new Map<string, any>();
+    const files = (Array.isArray(linked) ? linked : []).map((r) => { byId.set(String(r.item_id), r); return rowToFile(r); });
+    return {
+      files, rows: byId, truncated: false,
+      libraries: [...new Set(files.map((f) => f.library))],
+      fileCount: files.length, indexedAt: String(state?.last_completed_at),
+    };
   }
 
   const rows: any[] = [];
@@ -11353,11 +11387,13 @@ app.post("/pms-mcp/admin/drawings-index", async (c) => {
     cands = [n];
   } else {
     const since = new Date(Date.now() - DRAWINGS_SWEEP_ACTIVE_DAYS * 86400000).toISOString();
-    const rows = await sbGet(
+    // The whole window, paged: ~500 project-bearing calls a day means a single
+    // page would drop everything older than a day or two.
+    const rows = await sbGetAll(
       "pms_mcp_telemetry?select=project_number&project_number=not.is.null&created_at=gt." + encodeURIComponent(since) +
-      "&order=created_at.desc&limit=500");
+      "&order=created_at.desc");
     const seen = new Set<string>();
-    for (const r of (Array.isArray(rows) ? rows : [])) {
+    for (const r of rows) {
       const n = resolve(String(r.project_number || "").toLowerCase().trim());
       if (n && !seen.has(n)) { seen.add(n); cands.push(n); }
     }
@@ -11378,18 +11414,25 @@ app.post("/pms-mcp/admin/drawings-index", async (c) => {
       const scope = await drawingScopeFiles(prefix);
       if (!scope.resolved) { results.push({ project: prefix, skipped: "no Outgoing folder" }); continue; }
       const known: any[] = await sbGetAll(
-        "pms_drawing_index_files?select=item_id,status,attempts,pages,pages_done,text_pages,file_name,folder_path,error" +
+        "pms_drawing_index_files?select=item_id,status,attempts,pages,pages_done,text_pages,file_name,folder_path,error,updated_at" +
         "&project_prefix=eq." + encodeURIComponent(prefix) + "&order=item_id");
       const knownById = new Map(known.map((k) => [k.item_id, k]));
       const pending = planDrawingScope(scope.files).files.filter((f) => {
         const k = knownById.get(f.itemId);
         if (!k) return true;
         if (k.status === "done" || k.status === "skipped") return false;
+        // A file another worker (a live search_drawings call) touched in the
+        // last two minutes is theirs: the background has no deadline to miss,
+        // so it never races a user's resume pointer. The per-call path keeps
+        // no such skip, or a quick second call could not continue a big book.
+        if (k.status === "pending" && Date.now() - Date.parse(k.updated_at || "") < 120000) return false;
         return Number(k.attempts) < DRAWING_INDEX_MAX_ATTEMPTS;
       });
       if (!pending.length) { results.push({ project: prefix, filesInScope: scope.files.length, pending: 0 }); continue; }
+      // The run's clock is the sweep's own, so a slow scope crawl spends the
+      // same budget the indexer then honours; nothing restarts the 90 s.
       const run = await indexDrawingFiles({
-        numPrefix: prefix, pending, knownById, fileBudget: filesPerProject, t0: Date.now(), deadlineMs: left,
+        numPrefix: prefix, pending, knownById, fileBudget: filesPerProject, t0: started, deadlineMs: DRAWINGS_SWEEP_BUDGET_MS,
       });
       results.push({
         project: prefix, filesInScope: scope.files.length, pending: pending.length,
