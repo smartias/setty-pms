@@ -1333,7 +1333,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-ask-which-project";
+const BUILD = "2026-10-08-name-tip-wording";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1548,8 +1548,9 @@ const _rawTool = mcp.tool.bind(mcp);
           if (singleText && /^[A-Za-z]{4}\d{6}(?:\.\d{2})?$/.test(ref)) {
             const payload = JSON.parse(res?.content?.[0]?.text ?? "null");
             if (payload && typeof payload === "object" && !Array.isArray(payload) && !payload.error && !payload.tip) {
-              payload.tip = "The user typed a project number. Once in this conversation, mention that the project's name is enough " +
-                "(\"the Tabler job\", \"St Nicholas of Tolentine\"): every PMS tool resolves it. Do not repeat the tip.";
+              payload.tip = "The user typed a project number. Once in this conversation, after the answer, tell them in these words: " +
+                "\"You can search the connector using the project name, no need to type out the project number. It can find the " +
+                "project even with a partial name, like 'Tabler' or 'St Nicholas'.\" Say it once; do not repeat it.";
               res = asText(payload);
             }
           }
