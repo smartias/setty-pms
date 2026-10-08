@@ -12,7 +12,7 @@ function resolve(visible, identifier) {
   const id = identifier.toLowerCase().trim();
   const hit = visible.find((r) => [r.pid, r.pn, r.nm].filter(Boolean).some((f) => String(f).toLowerCase() === id));
   if (hit) return hit.pid;
-  if (/^[a-z]{4}\d{6}$/.test(id)) {
+  if (/^[a-z]{4}\d{5,6}$/.test(id)) {
     const phase = visible.find((r) => String(r.pn || "").toLowerCase().startsWith(id + "."));
     return phase?.pid ?? null;
   }
@@ -36,6 +36,7 @@ const ROWS = [
   { pid: "p5", pn: "SAPX256011.00", nm: "Queens College Accessibility" },
   { pid: "p6", pn: "SAPX176006.00", nm: "Queens College Lab Renovation" },
   { pid: "p7", pn: null, nm: "Homeport II" },
+  { pid: "p8", pn: "SAPX21602.00", nm: "Legacy Five Digit Job" },
 ];
 
 test("exact number, id and name still win", () => {
@@ -47,6 +48,7 @@ test("a bare number resolves to its first phase", () => {
   assert.equal(resolve(ROWS, "SAPX239010"), "p2");
   assert.equal(resolve(ROWS, "sapx266021"), "p1");
   assert.equal(resolve(ROWS, "SAPX999999"), null);
+  assert.equal(resolve(ROWS, "SAPX21602"), "p8", "legacy five-digit number");
 });
 test("a name as people say it resolves when it fits one job", () => {
   assert.equal(resolve(ROWS, "St Nicholas of Tolentine"), "p1", "missing period and suffix words");
@@ -58,19 +60,23 @@ test("several phases of one job count as one job; two jobs stay ambiguous", () =
   assert.equal(resolve(ROWS, "Queens College"), null, "two different jobs: leave it to search_projects");
   assert.equal(resolve(ROWS, "Queens College Lab"), "p6");
 });
-test("drift: an ambiguous name records its candidates for the follow-up question", () => {
+test("drift: ambiguity is request-scoped and reports the total", () => {
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-  const seg = src.slice(src.indexOf("async function resolveProjectId"), src.indexOf("const MAX_BODY_CHARS"));
-  assert.ok(seg.includes("_ambiguousRefs.set(id, matches.slice(0, 8)"), "resolver records the candidates");
+  const seg = src.slice(src.indexOf("async function resolveProjectRef"), src.indexOf("const MAX_BODY_CHARS"));
+  assert.ok(seg.includes("const scope = _resolveScope.getStore();"), "candidates live on the request scope, not a module map");
+  assert.ok(!src.includes("_ambiguousRefs"), "the module-level map is gone");
+  assert.ok(seg.includes("ref: identifier, total: matches.length,"), "the total survives the cap");
   assert.ok(src.includes("Ask the user which of these they mean"), "wrapper turns the miss into a question");
+  assert.ok(src.includes("const row = await _resolveScope.run(scope, () => resolveProjectRef(String(args[refKey])));"), "wrapper normalises the argument before the handler");
 });
 test("drift: the shipped resolver carries the same fallbacks", () => {
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-  const seg = src.slice(src.indexOf("async function resolveProjectId"), src.indexOf("const MAX_BODY_CHARS"));
+  const seg = src.slice(src.indexOf("async function resolveProjectRef"), src.indexOf("const MAX_BODY_CHARS"));
   for (const line of [
-    'if (/^[a-z]{4}\\d{6}$/.test(id)) {',
+    "if (BARE_NUMBER_RE.test(id)) {",
+    "const BARE_NUMBER_RE = /^[a-z]{4}\\d{5,6}$/;",
     "const terms = id.split(/[^a-z0-9.#&-]+/).map((t) => t.replace(/\\.+$/, \"\")).filter((t) => t.length > 1 && !SEARCH_STOPWORDS.has(t));",
-    "if (matches.length === 1) return matches[0].pid;",
+    "if (matches.length === 1) return matches[0];",
     'const jobs = new Set(matches.map((r: any) => String(r.pn).toLowerCase().replace(/\\.\\d{2}$/, "")));',
-  ]) assert.ok(seg.includes(line), "index.ts resolveProjectId lost: " + line);
+  ]) assert.ok(src.includes(line) || seg.includes(line), "index.ts resolver lost: " + line);
 });

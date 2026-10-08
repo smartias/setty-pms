@@ -451,51 +451,80 @@ async function getProjectById(pid: string): Promise<any | null> {
   return p;
 }
 
-// When a name fits several DIFFERENT jobs, resolveProjectId records them here
-// (same request, same isolate) and the tool wrapper turns the tool's "no
-// project matching" into the list, so Claude asks which one instead of giving
-// up. Cleared on any successful resolution of that identifier.
-const _ambiguousRefs = new Map<string, Array<{ projectNumber: string | null; name: string | null }>>();
-async function resolveProjectId(identifier: string): Promise<string | null> {
+// Project reference resolution, shared by every project-scoped tool: the
+// wrapper normalises the argument BEFORE a handler runs, and tools that need
+// the id call resolveProjectId themselves. Order: exact id / number / name; a
+// bare number to its first phase; a name as people say it when it fits one
+// job. A name that fits several DIFFERENT jobs is recorded on the REQUEST's
+// own scope (never a module-level map: two callers in one warm isolate would
+// see each other's candidates, filtered by the wrong permissions) so the
+// wrapper can ask which one.
+type ProjectRefRow = { pid: string; pn: string | null; nm: string | null };
+type ProjectRefAmbiguity = { ref: string; total: number; candidates: Array<{ projectNumber: string | null; name: string | null }> };
+const AMBIGUITY_LIST_MAX = 8;
+const _resolveScope = new AsyncLocalStorage<{ ambiguity?: ProjectRefAmbiguity }>();
+// Canonical numbers carry a phase suffix; legacy jobs have five digits
+// (SAPX21602.00), current ones six.
+const CANONICAL_NUMBER_RE = /^[a-z]{4}\d{5,6}\.\d{2}$/i;
+const BARE_NUMBER_RE = /^[a-z]{4}\d{5,6}$/;
+async function resolveProjectRef(identifier: string): Promise<ProjectRefRow | null> {
   const id = identifier.toLowerCase().trim();
-  _ambiguousRefs.delete(id);
+  const scope = _resolveScope.getStore();
+  if (scope) delete scope.ambiguity;
   const rows = await sbGetAll("pms_projects?select=pid:project->>id,pn:project->>projectNumber,nm:project->>name,team&order=id.asc");
   const caps = await resolveCaps();
-  const visible = caps.isAdmin ? (rows || [])
+  const visible: ProjectRefRow[] = caps.isAdmin ? (rows || [])
     : (rows || []).filter((r: any) => projectVisible(caps, r?.pn));
   const hit = visible.find((r: any) =>
     [r.pid, r.pn, r.nm].filter(Boolean).some((f: string) => String(f).toLowerCase() === id));
-  if (hit) return hit.pid;
+  if (hit) return hit;
   // A bare number ("SAPX266021") names the job people mean; the record carries
   // the phase suffix ("SAPX266021.00"). Take the first phase in id order, the
-  // same rule teamForProject uses, so every project-scoped tool accepts the
-  // number as it is spoken and nobody is sent to an admin over a missing .00.
-  if (/^[a-z]{4}\d{6}$/.test(id)) {
+  // same rule teamForProject uses.
+  if (BARE_NUMBER_RE.test(id)) {
     const phase = visible.find((r: any) => String(r.pn || "").toLowerCase().startsWith(id + "."));
-    return phase?.pid ?? null;
+    return phase ?? null;
   }
   // Names are how people ask ("St Nicholas of Tolentine", "the Tabler job").
-  // An exact miss now tries every word against the visible names and numbers,
-  // the way search_projects does, and takes the match when it is the only job
-  // it fits. Several phases of ONE job (SAPX239010.00 / .01) count as one job
-  // and resolve to the first phase; two different jobs stay ambiguous and the
-  // tool says "no project matching", which search_projects then disambiguates.
+  // Every word is tried against the visible names and numbers, the way
+  // search_projects does; the match is taken when it is the only job it fits.
+  // Several phases of ONE job (SAPX239010.00 / .01) count as one job and
+  // resolve to the first phase.
   const terms = id.split(/[^a-z0-9.#&-]+/).map((t) => t.replace(/\.+$/, "")).filter((t) => t.length > 1 && !SEARCH_STOPWORDS.has(t));
   if (terms.length) {
     const matches = visible.filter((r: any) => {
       const hay = `${r.pn || ""} ${r.nm || ""}`.toLowerCase();
       return terms.every((t) => hay.includes(t));
     });
-    if (matches.length === 1) return matches[0].pid;
+    if (matches.length === 1) return matches[0];
     if (matches.length > 1 && matches.every((r: any) => r.pn)) {
       const jobs = new Set(matches.map((r: any) => String(r.pn).toLowerCase().replace(/\.\d{2}$/, "")));
-      if (jobs.size === 1) return matches[0].pid;
+      if (jobs.size === 1) return matches[0];
     }
-    if (matches.length > 1) {
-      _ambiguousRefs.set(id, matches.slice(0, 8).map((r: any) => ({ projectNumber: r.pn ?? null, name: r.nm ?? null })));
+    if (matches.length > 1 && scope) {
+      scope.ambiguity = {
+        ref: identifier, total: matches.length,
+        candidates: matches.slice(0, AMBIGUITY_LIST_MAX).map((r: any) => ({ projectNumber: r.pn ?? null, name: r.nm ?? null })),
+      };
     }
   }
   return null;
+}
+async function resolveProjectId(identifier: string): Promise<string | null> {
+  return (await resolveProjectRef(identifier))?.pid ?? null;
+}
+// The answer a tool gives when the name fits several jobs: the list (capped)
+// and the total, so a ninth project is never silently unreachable.
+function ambiguityResponse(a: ProjectRefAmbiguity) {
+  const notListed = a.total - a.candidates.length;
+  return asText({
+    error: `"${a.ref}" fits ${a.total} projects.`,
+    candidates: a.candidates,
+    ...(notListed > 0 ? { notListed } : {}),
+    nextStep: notListed > 0
+      ? `Showing ${a.candidates.length} of ${a.total}. Ask the user for another word from the project's name (or use search_projects with more terms), then call again with the one they pick. Do not guess.`
+      : "Ask the user which of these they mean (show the names and numbers), then call again with the one they pick. Do not guess.",
+  });
 }
 
 const MAX_BODY_CHARS = 5000;
@@ -1333,7 +1362,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-name-tip-wording";
+const BUILD = "2026-10-08-names-everywhere";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1499,6 +1528,22 @@ const _rawTool = mcp.tool.bind(mcp);
         // view returns the same not-found shape a nonsense ref would, without
         // running the tool at all. The CALLER cannot tell the two apart (by
         // design); the telemetry row can, and does: outcome `hidden`.
+        // Normalise the project argument BEFORE the handler: a name or a bare
+        // number becomes the canonical project number, so tools that never call
+        // resolveProjectId themselves (list_project_documents matches folder
+        // prefixes, list_action_items compares numbers) accept names too. A
+        // name that fits several jobs stops here with the candidates. A
+        // pipeline project with no number keeps its name.
+        const scope: { ambiguity?: ProjectRefAmbiguity } = {};
+        const refKey = ["projectNumber", "identifier", "project"].find((k) => typeof args?.[k] === "string" && args[k].trim()) ?? null;
+        if (refKey && !CANONICAL_NUMBER_RE.test(String(args[refKey]).trim())) {
+          const row = await _resolveScope.run(scope, () => resolveProjectRef(String(args[refKey])));
+          if (row?.pn) args = { ...args, [refKey]: row.pn };
+          else if (scope.ambiguity) {
+            cls = { outcome: "empty", resultCount: 0, detail: `ambiguous: ${scope.ambiguity.total} projects fit "${args[refKey]}"`.slice(0, 300) };
+            return ambiguityResponse(scope.ambiguity);
+          }
+        }
         const ref = firstString(args?.projectNumber, args?.identifier, args?.project);
         let res;
         if (ref && !(await projectRefVisible(ref))) {
@@ -1508,7 +1553,7 @@ const _rawTool = mcp.tool.bind(mcp);
           });
           cls = { outcome: "hidden", resultCount: null, detail: `caps: projects.view denied for "${ref}"`.slice(0, 300) };
         } else {
-          res = await inner(args);
+          res = await _resolveScope.run(scope, () => inner(args));
           try {
             cls = classifyResult(JSON.parse(res?.content?.[0]?.text ?? "null"));
           } catch { /* not JSON: treat as a hit, the tool answered something */ }
@@ -1545,7 +1590,7 @@ const _rawTool = mcp.tool.bind(mcp);
         try {
           const ref = String(firstString(args?.projectNumber, args?.identifier, args?.project) || "").trim();
           const singleText = Array.isArray(res?.content) && res.content.length === 1 && res.content[0]?.type === "text";
-          if (singleText && /^[A-Za-z]{4}\d{6}(?:\.\d{2})?$/.test(ref)) {
+          if (singleText && /^[A-Za-z]{4}\d{5,6}(?:\.\d{2})?$/.test(ref)) {
             const payload = JSON.parse(res?.content?.[0]?.text ?? "null");
             if (payload && typeof payload === "object" && !Array.isArray(payload) && !payload.error && !payload.tip) {
               payload.tip = "The user typed a project number. Once in this conversation, after the answer, tell them in these words: " +
@@ -1555,23 +1600,15 @@ const _rawTool = mcp.tool.bind(mcp);
             }
           }
         } catch { /* a tip is never worth failing a call over */ }
-        // A name that fits several different jobs: hand Claude the list and
-        // the instruction to ask, instead of a dead end.
+        // A tool that resolved a second reference itself (a name inside its
+        // own arguments) and hit several jobs: hand Claude the list and the
+        // instruction to ask, instead of its "no project matching".
         try {
-          const ref = String(firstString(args?.projectNumber, args?.identifier, args?.project) || "").toLowerCase().trim();
-          const cands = ref ? _ambiguousRefs.get(ref) : undefined;
+          const a = scope.ambiguity;
           const singleText = Array.isArray(res?.content) && res.content.length === 1 && res.content[0]?.type === "text";
-          if (cands && singleText) {
+          if (a && singleText) {
             const payload = JSON.parse(res?.content?.[0]?.text ?? "null");
-            if (payload && typeof payload === "object" && /^No project matching/i.test(String(payload.error || ""))) {
-              _ambiguousRefs.delete(ref);
-              res = asText({
-                ...payload,
-                error: `"${firstString(args?.projectNumber, args?.identifier, args?.project)}" fits ${cands.length} projects.`,
-                candidates: cands,
-                nextStep: "Ask the user which of these they mean (show the names and numbers), then call again with the one they pick. Do not guess.",
-              });
-            }
+            if (payload && typeof payload === "object" && /^No project matching/i.test(String(payload.error || ""))) res = ambiguityResponse(a);
           }
         } catch { /* never fail a call over a follow-up */ }
         return res;
@@ -1707,7 +1744,7 @@ mcp.tool("search_projects", {
       // been set up in the PMS yet (searched hours before its row appeared,
       // 2026-10-02 and 2026-10-08), so say that instead of leaving the user
       // to retry the same number.
-      const numTok = (raw.match(/\b([a-z]{4}\d{6}(?:\.\d{2})?)\b/i) || [])[1] ?? (/^\d{6}$/.test(raw) ? raw : null);
+      const numTok = (raw.match(/\b([a-z]{4}\d{5,6}(?:\.\d{2})?)\b/i) || [])[1] ?? (/^\d{5,6}$/.test(raw) ? raw : null);
       // The pool here is every project the caller may see, archived included,
       // so "no project carries it" is only said when that is actually true.
       const carriers = numTok
