@@ -451,8 +451,14 @@ async function getProjectById(pid: string): Promise<any | null> {
   return p;
 }
 
+// When a name fits several DIFFERENT jobs, resolveProjectId records them here
+// (same request, same isolate) and the tool wrapper turns the tool's "no
+// project matching" into the list, so Claude asks which one instead of giving
+// up. Cleared on any successful resolution of that identifier.
+const _ambiguousRefs = new Map<string, Array<{ projectNumber: string | null; name: string | null }>>();
 async function resolveProjectId(identifier: string): Promise<string | null> {
   const id = identifier.toLowerCase().trim();
+  _ambiguousRefs.delete(id);
   const rows = await sbGetAll("pms_projects?select=pid:project->>id,pn:project->>projectNumber,nm:project->>name,team&order=id.asc");
   const caps = await resolveCaps();
   const visible = caps.isAdmin ? (rows || [])
@@ -484,6 +490,9 @@ async function resolveProjectId(identifier: string): Promise<string | null> {
     if (matches.length > 1 && matches.every((r: any) => r.pn)) {
       const jobs = new Set(matches.map((r: any) => String(r.pn).toLowerCase().replace(/\.\d{2}$/, "")));
       if (jobs.size === 1) return matches[0].pid;
+    }
+    if (matches.length > 1) {
+      _ambiguousRefs.set(id, matches.slice(0, 8).map((r: any) => ({ projectNumber: r.pn ?? null, name: r.nm ?? null })));
     }
   }
   return null;
@@ -1324,7 +1333,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-name-is-enough-tip";
+const BUILD = "2026-10-08-ask-which-project";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1545,6 +1554,25 @@ const _rawTool = mcp.tool.bind(mcp);
             }
           }
         } catch { /* a tip is never worth failing a call over */ }
+        // A name that fits several different jobs: hand Claude the list and
+        // the instruction to ask, instead of a dead end.
+        try {
+          const ref = String(firstString(args?.projectNumber, args?.identifier, args?.project) || "").toLowerCase().trim();
+          const cands = ref ? _ambiguousRefs.get(ref) : undefined;
+          const singleText = Array.isArray(res?.content) && res.content.length === 1 && res.content[0]?.type === "text";
+          if (cands && singleText) {
+            const payload = JSON.parse(res?.content?.[0]?.text ?? "null");
+            if (payload && typeof payload === "object" && /^No project matching/i.test(String(payload.error || ""))) {
+              _ambiguousRefs.delete(ref);
+              res = asText({
+                ...payload,
+                error: `"${firstString(args?.projectNumber, args?.identifier, args?.project)}" fits ${cands.length} projects.`,
+                candidates: cands,
+                nextStep: "Ask the user which of these they mean (show the names and numbers), then call again with the one they pick. Do not guess.",
+              });
+            }
+          }
+        } catch { /* never fail a call over a follow-up */ }
         return res;
       } catch (e) {
         cls = { outcome: "error", resultCount: null, detail: String((e as any)?.message ?? e).slice(0, 300) };

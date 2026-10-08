@@ -58,6 +58,12 @@ test("several phases of one job count as one job; two jobs stay ambiguous", () =
   assert.equal(resolve(ROWS, "Queens College"), null, "two different jobs: leave it to search_projects");
   assert.equal(resolve(ROWS, "Queens College Lab"), "p6");
 });
+test("drift: an ambiguous name records its candidates for the follow-up question", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  const seg = src.slice(src.indexOf("async function resolveProjectId"), src.indexOf("const MAX_BODY_CHARS"));
+  assert.ok(seg.includes("_ambiguousRefs.set(id, matches.slice(0, 8)"), "resolver records the candidates");
+  assert.ok(src.includes("Ask the user which of these they mean"), "wrapper turns the miss into a question");
+});
 test("drift: the shipped resolver carries the same fallbacks", () => {
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
   const seg = src.slice(src.indexOf("async function resolveProjectId"), src.indexOf("const MAX_BODY_CHARS"));
