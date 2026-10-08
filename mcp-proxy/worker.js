@@ -56,10 +56,15 @@ const authorizationServerMetadata = (origin) => ({
 // and advertising one would send the client chasing an endpoint that cannot
 // exist. The connector is configured with a client id and secret by hand.
 
+// scopes_supported here is what the client actually requests at sign-in (the
+// authorization-server list above is informational). offline_access makes
+// Entra issue a refresh token, so an expired hourly access token is renewed
+// instead of surfacing as a disconnect. Keep in sync with the Edge Function's
+// own protected-resource metadata in supabase/functions/pms-mcp/index.ts.
 const protectedResourceMetadata = (origin) => ({
   resource: APP_ID_URI,
   authorization_servers: [origin],
-  scopes_supported: [`${APP_ID_URI}/MCP.Access`],
+  scopes_supported: [`${APP_ID_URI}/MCP.Access`, 'offline_access'],
   bearer_methods_supported: ['header'],
 });
 
