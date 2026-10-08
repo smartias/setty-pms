@@ -1276,7 +1276,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-05-knowledgebase";
+const BUILD = "2026-10-08-mcp400-logging";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -10539,7 +10539,36 @@ app.use("/pms-mcp/mcp", async (c, next) => {
 // registration order, so these must stay ABOVE the app.all catch-all.
 app.get("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST" }));
 app.delete("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST" }));
-app.all("/pms-mcp/mcp", (c) => httpHandler(c.req.raw));
+// Diagnostic: the transport answers 400 without saying why in our logs (bad
+// MCP-Protocol-Version header, missing session id, malformed JSON-RPC, batch
+// request). Record the reason for every 400, never the Authorization header
+// or the request body beyond the JSON-RPC method name.
+app.all("/pms-mcp/mcp", async (c) => {
+  const req = c.req.raw;
+  const probe = req.method === "POST" ? req.clone() : null;
+  const res = await httpHandler(req);
+  if (res.status === 400) {
+    try {
+      let rpcMethod: unknown = null;
+      if (probe) {
+        try {
+          const m = JSON.parse(await probe.text());
+          rpcMethod = Array.isArray(m) ? "batch(" + m.length + ")" : m?.method ?? "response";
+        } catch { rpcMethod = "unparseable"; }
+      }
+      console.warn("[mcp-400]", JSON.stringify({
+        http: req.method,
+        rpcMethod,
+        protocolHeader: req.headers.get("mcp-protocol-version"),
+        hasSessionId: !!req.headers.get("mcp-session-id"),
+        accept: req.headers.get("accept"),
+        client: req.headers.get("user-agent"),
+        reason: (await res.clone().text()).slice(0, 300),
+      }));
+    } catch (e) { console.warn("[mcp-400] log failed:", String((e as any)?.message ?? e)); }
+  }
+  return res;
+});
 // A plain GET (no preflight): the Admin console's new-region checklist reads
 // ?probe=regions from the browser.
 const HEALTH_CORS = { "Access-Control-Allow-Origin": "*" };
