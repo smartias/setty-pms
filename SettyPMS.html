@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-10-06-pms-v165-onenote-import";
+    window.__appVersion = "2026-10-08-pms-v166-proposal-record-writeback";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -26023,6 +26023,42 @@ function ScopeView({ project, onChange, clients = [] }) {
   // Validates the pasted JSON against the LIVE approved library, sanitizes all
   // HTML, and assembles the standard-heading scope document. Nothing lands in
   // scopeContent until the PM reviews the preview and clicks apply.
+  // Project-record facts the draft read out of the RFP (address, area, type,
+  // construction budget). Each value is validated here and only offered to the
+  // PM in the preview; nothing reaches the record until they tick it and apply.
+  // Blank record fields start ticked, filled ones start unticked.
+  function buildRecordFields(dp) {
+    dp = dp || {};
+    const out = [];
+    const blank = (v) => v === undefined || v === null || v === "" || v === 0;
+    const parseNum = (v) => {
+      if (typeof v === "number") return isFinite(v) ? v : null;
+      const t = String(v == null ? "" : v).toLowerCase().replace(/[$,\s]/g, "");
+      // Whole-string match: a range ("10m-12m") or alternates must not parse as their first number.
+      const m = t.match(/^(\d+(?:\.\d+)?)(million|mm|m|thousand|k)?(?:sf|gsf|sqft|squarefeet|usd|dollars)?$/);
+      if (!m) return null;
+      const mult = /^(million|mm|m)$/.test(m[2] || "") ? 1e6 : /^(thousand|k)$/.test(m[2] || "") ? 1e3 : 1;
+      return parseFloat(m[1]) * mult;
+    };
+    const add = (key, label, proposed, current, note) => {
+      if (blank(proposed)) return;
+      out.push({ key, label, proposed, current, note: note || "", apply: blank(current) });
+    };
+    const addr = String(dp.address || "").trim();
+    const city = String(dp.city || "").trim();
+    const st = String(dp.state || "").trim().toUpperCase();
+    add("projectAddress", "Address", addr.slice(0, 200), project.projectAddress);
+    add("projectCity", "City", city.slice(0, 100), project.projectCity);
+    add("projectState", "State", /^[A-Z]{2}$/.test(st) ? st : "", project.projectState);
+    const sf = parseNum(dp.squareFootage);
+    if (sf && sf >= 100 && sf <= 50000000) add("squareFootage", "Square footage", Math.round(sf), project.squareFootage);
+    const wanted = String(dp.projectType || "").trim().toLowerCase();
+    const ptype = PROJECT_TYPES.find(t => t.toLowerCase() === wanted);
+    add("projectType", "Project type", ptype || "", project.projectType, "Drives the fee curve and discipline percentages.");
+    const cost = parseNum(dp.constructionBudget);
+    if (cost && cost >= 10000) add("manualConstructionCost", "Construction cost", Math.round(cost), project.manualConstructionCost, "Overrides SF × Cost/SF in the fee calculator.");
+    return out;
+  }
   function buildDraftImport(text, lib) {
     let d;
     try { d = JSON.parse(text); } catch (e) { throw new Error("That isn't valid JSON (" + e.message + "). Paste the full JSON object from the drafting skill, including the outer braces."); }
@@ -26172,7 +26208,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       phasePctTotal: phases.reduce((a, p) => a + p.pct, 0),
       basisOfFeeNote: String(d.basisOfFeeNote || ""),
     };
-    return { html, sections, report, alternates };
+    return { html, sections, report, alternates, recordFields: buildRecordFields(d.project) };
   }
   async function validateImport() {
     setImportError("");
@@ -26266,6 +26302,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       "- Name each clause key ONCE in the whole draft. Exclusion clauses go only in exclusions.clauseKeys and assumption clauses only in assumptions.clauseKeys, never repeated in clauses[].",
       "- Plain AEC professional English. No em dashes anywhere. No marketing superlatives. Spell out agency names on first use.",
       "- Never invent a fee total. suggestedPhases must sum to 100; basisOfFeeNote says how the fee could be benchmarked. Dollar amounts only if the RFP states them, and only inside understanding.",
+      "- Project record facts (project.address, city, state, squareFootage, projectType, constructionBudget): I review these and apply them to the project record, so report only what the RFP or teaming email states. Use null (or \"\" for text) for anything not stated; never estimate, never infer a square footage from a budget or the reverse. address is the street address only, city is the city, state is the two-letter code. squareFootage is a number: the gross area of the work in this proposal's scope (if the RFP gives several buildings or areas, use the one Setty's scope covers, or null and say why in flaggedForReview). constructionBudget is a number in dollars (construction cost only, not total project cost or A/E fee), or null; if the RFP gives a range, use null and note the range in understanding. projectType must be exactly one of: " + PROJECT_TYPES.map(t => '"' + t + '"').join(", ") + ", or null. If the RFP does not make the type clear, use null and say so in internalNotes.",
       "- Do not set {{DISCIPLINE_LIST}}, {{DISCIPLINE_ABBR}} or {{DISCIPLINE_MEP}}: the PMS fills them from the project.",
       "- HTML fields allow only p, h3, ul, ol, li, strong, em, u, br.",
       "- Uncertainty is data: anything you could not map, verify or understand goes in flaggedForReview with a one-line reason.",
@@ -26275,7 +26312,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       "{",
       "  \"schemaVersion\": 1,",
       "  \"kind\": \"proposal-draft\",",
-      "  \"project\": { \"name\": \"\", \"client\": \"\", \"owner\": \"\", \"location\": \"\", \"rfpReference\": \"\", \"constructionBudget\": \"\" },",
+      "  \"project\": { \"name\": \"\", \"client\": \"\", \"owner\": \"\", \"location\": \"\", \"rfpReference\": \"\", \"constructionBudget\": null, \"address\": \"\", \"city\": \"\", \"state\": \"\", \"squareFootage\": null, \"projectType\": null },",
       "  \"understanding\": \"<p>HTML</p>\",",
       "  \"approach\": \"<p>HTML</p>\",",
       "  \"clauses\": [ { \"key\": \"inc-predesign-visit\", \"params\": { \"VISIT_COUNT\": \"Two (2)\" } } ],",
@@ -26410,12 +26447,21 @@ function ScopeView({ project, onChange, clients = [] }) {
         + ((r.alternateCount || 0) ? " · " + r.alternateCount + " alternate" + (r.alternateCount > 1 ? "s" : "") : "")
         + (r.flagged.length ? " · " + r.flagged.length + " flagged" : ""),
     };
-    onChange({ ...project, ...snapshotSections(), proposalAlternates: nextAlts, scopeAuditLog: [...auditLog, entry] });
+    // Record facts the PM ticked in the preview. Untouched fields keep their value.
+    const recPatch = {};
+    const recApplied = [];
+    (importParsed.recordFields || []).forEach(f => {
+      if (!f.apply) return;
+      recPatch[f.key] = f.proposed;
+      recApplied.push(f.label);
+    });
+    if (recApplied.length) entry.note += " · record updated: " + recApplied.join(", ");
+    onChange({ ...project, ...snapshotSections(), ...recPatch, proposalAlternates: nextAlts, scopeAuditLog: [...auditLog, entry] });
     setWc(countScopeWords());
     setShowImport(false); setImportParsed(null);
     genFromAIRef.current = false;
     if (importTextRef.current) importTextRef.current.value = "";
-    setProposalMsg("✓ AI draft " + (mode === "replace" ? "imported" : "appended") + ". Review the scope below" + (r.flagged.length ? ", and resolve the " + r.flagged.length + " flagged item" + (r.flagged.length > 1 ? "s" : "") + " noted in the import preview before sending." : "."));
+    setProposalMsg("✓ AI draft " + (mode === "replace" ? "imported" : "appended") + (recApplied.length ? " and project record updated (" + recApplied.join(", ") + ")" : "") + ". Review the scope below" + (r.flagged.length ? ", and resolve the " + r.flagged.length + " flagged item" + (r.flagged.length > 1 ? "s" : "") + " noted in the import preview before sending." : "."));
     setProposalKind("success");
   }
   // Remember where the caret was. Clicking a clause button moves focus out of
@@ -27305,6 +27351,22 @@ function ScopeView({ project, onChange, clients = [] }) {
                   )}
                   {r.basisOfFeeNote && <li>Basis-of-fee note: <em>{r.basisOfFeeNote}</em> <span style={{ color: P.textDim }}>(for the fee page, not inserted into the scope)</span></li>}
                 </ul>
+                {(importParsed.recordFields || []).length > 0 && (
+                  <div style={{ border: "1px solid " + P.border, borderRadius: 6, padding: "8px 12px", marginBottom: 8 }}>
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>Project record: facts read from the RFP</div>
+                    <div style={{ color: P.textDim, marginBottom: 4 }}>Ticked fields are written to the project when you apply the draft. Fields that already have a value start unticked.</div>
+                    {importParsed.recordFields.map(f => (
+                      <label key={f.key} style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "2px 0", cursor: "pointer" }}>
+                        <input type="checkbox" checked={!!f.apply} disabled={scopeLocked}
+                          onChange={e => { const on = e.target.checked; setImportParsed(prev => prev && ({ ...prev, recordFields: prev.recordFields.map(x => x.key === f.key ? { ...x, apply: on } : x) })); }} />
+                        <span style={{ minWidth: 120, fontWeight: 600 }}>{f.label}</span>
+                        <span>{typeof f.proposed === "number" && f.key === "manualConstructionCost" ? fmt(f.proposed) : typeof f.proposed === "number" ? f.proposed.toLocaleString() : f.proposed}</span>
+                        {f.current ? <span style={{ color: P.yellow }}>(replaces {typeof f.current === "number" && f.key === "manualConstructionCost" ? fmt(f.current) : typeof f.current === "number" ? f.current.toLocaleString() : f.current})</span> : null}
+                        {f.note ? <span style={{ color: P.textDim }}>{f.note}</span> : null}
+                      </label>
+                    ))}
+                  </div>
+                )}
                 {r.flagged.length > 0 && (
                   <div style={{ background: P.redDim, border: "1px solid " + P.red, borderRadius: 6, padding: "8px 12px", marginBottom: 8 }}>
                     <div style={{ fontWeight: 700, color: P.red, marginBottom: 4 }}>🚩 Flagged for review: resolve before sending</div>
