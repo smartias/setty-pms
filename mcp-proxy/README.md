@@ -41,8 +41,9 @@ Two details that are easy to get wrong and fail silently:
 
 ## Deploy
 
-Needs a free Cloudflare account. No DNS record and no IT ticket: the free
-`*.workers.dev` subdomain gives us a root we control, which is the whole point.
+Needs a Cloudflare account on the Workers Paid plan (see the ceiling section
+for why). No DNS record and no IT ticket: the `*.workers.dev` subdomain gives
+us a root we control, which is the whole point.
 
 ```bash
 cd mcp-proxy && npx wrangler login && npx wrangler deploy
@@ -82,11 +83,13 @@ What the ceiling does and does not give, measured on this account 2026-08-05:
   a maximally spread storm (new connection per request) is only clipped, not
   capped. In a 1,000-request soak at 15 a second, rejections began at 16
   seconds. Treat the ceiling as damage limiting for Supabase, not accounting.
-- The ceiling cannot protect this worker's own free-plan quota of 100k
-  requests per day. Rejected requests still count. A large enough storm takes
-  the connector down for the day for everyone, and the only real fixes are
-  the Workers Paid plan (5 dollars a month, removes the daily cap) or a real
-  hostname behind zone-level protection. Worth doing before wide rollout.
+- The ceiling cannot protect the worker's own request quota: rejected requests
+  still count. On the free plan that quota was 100k requests per day, so a
+  large enough storm took the connector down for everyone until midnight. The
+  account moved to the Workers Paid plan on 2026-10-08, which removes the
+  daily cap; a storm now costs a few cents instead of an outage. Keep the
+  account on that plan. A real hostname behind zone-level protection remains
+  the stronger option if abuse ever becomes routine.
 
 ## Handing it over
 
