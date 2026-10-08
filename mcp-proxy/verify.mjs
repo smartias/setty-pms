@@ -63,6 +63,14 @@ check(
 
 const as = pr?.authorization_servers?.[0];
 check('authorization_servers names the proxy', as === base, as);
+// This is the scope list the client requests at sign-in. A stale worker
+// without offline_access passes every other check and still leaves clients
+// with no refresh token (the hourly disconnect).
+check(
+  'protected-resource scopes include MCP.Access and offline_access',
+  pr?.scopes_supported?.some((s) => s.endsWith('/MCP.Access')) && pr?.scopes_supported?.includes('offline_access'),
+  JSON.stringify(pr?.scopes_supported)
+);
 
 // Step 3: the authorization server metadata. This is the document Entra does
 // not publish and the whole reason the proxy exists.
