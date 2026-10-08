@@ -1276,7 +1276,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-auth401-logging-offline-access";
+const BUILD = "2026-10-08-find-contact-name-required";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1509,7 +1509,10 @@ const _rawTool = mcp.tool.bind(mcp);
           // 400s inserts with unknown columns or a failed CHECK, and
           // logTelemetry swallows that, which would silently kill ALL telemetry.
           caller_email: currentCaller().kind === "service" ? TELEMETRY_SERVICE_LABEL : currentCaller().email,
-          query: args?.query ? String(args.query).slice(0, TELEMETRY_QUERY_MAX) : null,
+          // find_contact's search text is `name`, not `query`; without the
+          // fallback its rows carried a blank query and empties could not be
+          // told from calls that passed no name at all.
+          query: firstString(args?.query, args?.name) ? String(firstString(args?.query, args?.name)).slice(0, TELEMETRY_QUERY_MAX) : null,
           detail: cls.detail,
         });
       }
@@ -1730,11 +1733,13 @@ mcp.tool("find_contact", {
     "Built for the way people actually ask: \"can I get Daniel H from Dattner's email\" works, " +
     "because names are matched per word by PREFIX, so a first name plus an initial is enough. " +
     "Give `company` to disambiguate when a first name is common. " +
+    "`name` is REQUIRED and must not be empty: this tool looks up a person, it does not list " +
+    "a firm's people (use search_companies for the firm, then ask for a person by name). " +
     "Returns name, title, company and email; pass includePhone to get phone numbers too. " +
     "For who is on ONE project specifically, use get_project instead — its `directory` is that " +
     "job's own contact list, including people picked up from filed email.",
   inputSchema: z.object({
-    name: z.string().describe("Person's name, or part of it. 'Daniel H' matches 'Daniel Heuberger'."),
+    name: z.string().min(1).describe("Required, non-empty. Person's name, or part of it. 'Daniel H' matches 'Daniel Heuberger'."),
     company: z.string().optional().describe("Narrow to one firm, e.g. 'Dattner'"),
     includePhone: z.boolean().optional().describe("Include phone numbers (default false)"),
     limit: z.number().optional().describe("Max results (default 15, max 50)"),

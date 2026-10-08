@@ -163,6 +163,25 @@ export default {
       return json(authorizationServerMetadata(origin));
     }
 
+    // An /mcp request with no Authorization header can only ever get the 401
+    // challenge back (the Edge Function's auth middleware answers before any
+    // tool runs), so answer it here. This is the first request of every OAuth
+    // discovery walk AND what unauthenticated scanners send once a minute;
+    // neither should cost a metered Supabase invocation. The body and header
+    // mirror the Edge Function's own 401 exactly, with resource_metadata
+    // already pointing at this proxy (proxy() would have rewritten it anyway).
+    if (path === '/mcp' && !request.headers.get('authorization')) {
+      console.log('[mcp] unauthenticated', request.method, '-> 401 (not forwarded)');
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: {
+          'content-type': 'application/json',
+          'www-authenticate': `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
+          ...CORS,
+        },
+      });
+    }
+
     // Everything past this point is forwarded upstream and costs money.
     try {
       const { success } = await env.PROXY_LIMITER.limit({ key: await rateLimitKey(request) });
