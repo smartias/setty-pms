@@ -1276,7 +1276,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-mcp400-logging";
+const BUILD = "2026-10-08-auth401-logging-offline-access";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -10462,16 +10462,24 @@ const ENTRA_JWKS = ENTRA_TENANT_ID
 // Returns the verified payload (null = reject) instead of a boolean: the payload
 // carries the caller's identity, and dropping it here is what made the sign-in a
 // boolean gate in the first place.
-async function verifyEntraToken(token: string): Promise<JWTPayload | null> {
-  if (!ENTRA_JWKS || !ENTRA_CLIENT_ID) return null;
+// `reason` names why a token was refused (jose's error code, e.g.
+// ERR_JWT_EXPIRED / ERR_JWS_SIGNATURE_VERIFICATION_FAILED / a failed claim),
+// so a 401 in the logs can be told apart from an expired sign-in. Never the
+// token itself.
+async function verifyEntraToken(token: string): Promise<{ payload: JWTPayload | null; reason: string | null }> {
+  if (!ENTRA_JWKS || !ENTRA_CLIENT_ID) return { payload: null, reason: "entra-not-configured" };
   try {
     const { payload } = await jwtVerify(token, ENTRA_JWKS, {
       issuer: `https://login.microsoftonline.com/${ENTRA_TENANT_ID}/v2.0`,
       audience: [ENTRA_CLIENT_ID, `api://${ENTRA_CLIENT_ID}`],
     });
-    if (payload.tid && payload.tid !== ENTRA_TENANT_ID) return null;
-    return payload;
-  } catch { return null; }
+    if (payload.tid && payload.tid !== ENTRA_TENANT_ID) return { payload: null, reason: "tenant-mismatch" };
+    return { payload, reason: null };
+  } catch (e) {
+    const code = String((e as any)?.code ?? (e as any)?.name ?? "unknown");
+    const claim = (e as any)?.claim ? ":" + String((e as any).claim) : "";
+    return { payload: null, reason: code + claim };
+  }
 }
 
 function callerFromPayload(payload: JWTPayload): Caller {
@@ -10495,7 +10503,10 @@ app.get("/pms-mcp/.well-known/oauth-protected-resource", (c) =>
     // Application ID URI here rather than the function URL.
     resource: `api://${ENTRA_CLIENT_ID}`,
     authorization_servers: [`https://login.microsoftonline.com/${ENTRA_TENANT_ID}/v2.0`],
-    scopes_supported: [`api://${ENTRA_CLIENT_ID}/MCP.Access`],
+    // offline_access asks Entra for a refresh token alongside the access
+    // token. Without it the client holds a ~1h access token and has to
+    // re-run the sign-in when it expires (seen as paired 401s in the logs).
+    scopes_supported: [`api://${ENTRA_CLIENT_ID}/MCP.Access`, "offline_access"],
     bearer_methods_supported: ["header"],
   }));
 
@@ -10507,8 +10518,10 @@ app.use("/pms-mcp/mcp", async (c, next) => {
     await callerStore.run(SERVICE_CALLER, () => next());
     return;
   }
+  let refusal = auth ? (auth.startsWith("Bearer ") ? null : "not-bearer") : "no-authorization-header";
   if (auth.startsWith("Bearer ")) {
-    const payload = await verifyEntraToken(auth.slice(7));
+    const { payload, reason } = await verifyEntraToken(auth.slice(7));
+    refusal = reason;
     if (payload) {
       const caller = callerFromPayload(payload);
       // A verified token with no user claims is an app-only (client
@@ -10526,6 +10539,14 @@ app.use("/pms-mcp/mcp", async (c, next) => {
       return;
     }
   }
+  // Diagnostic (pairs with [mcp-400]): the 401s from Claude clients arrive in
+  // pairs a second apart with no successful call around them, which is what
+  // a user sees as the connector "disconnecting". Record why, never the token.
+  console.warn("[auth-401]", JSON.stringify({
+    reason: refusal,
+    client: c.req.header("user-agent") ?? null,
+    hasSessionId: !!c.req.header("mcp-session-id"),
+  }));
   c.header("WWW-Authenticate", `Bearer resource_metadata=\"${RESOURCE_META_URL}\"`);
   return c.json({ error: "Unauthorized" }, 401);
 });
