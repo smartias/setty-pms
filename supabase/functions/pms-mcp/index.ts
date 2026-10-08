@@ -451,15 +451,80 @@ async function getProjectById(pid: string): Promise<any | null> {
   return p;
 }
 
-async function resolveProjectId(identifier: string): Promise<string | null> {
+// Project reference resolution, shared by every project-scoped tool: the
+// wrapper normalises the argument BEFORE a handler runs, and tools that need
+// the id call resolveProjectId themselves. Order: exact id / number / name; a
+// bare number to its first phase; a name as people say it when it fits one
+// job. A name that fits several DIFFERENT jobs is recorded on the REQUEST's
+// own scope (never a module-level map: two callers in one warm isolate would
+// see each other's candidates, filtered by the wrong permissions) so the
+// wrapper can ask which one.
+type ProjectRefRow = { pid: string; pn: string | null; nm: string | null };
+type ProjectRefAmbiguity = { ref: string; total: number; candidates: Array<{ projectNumber: string | null; name: string | null }> };
+const AMBIGUITY_LIST_MAX = 8;
+const _resolveScope = new AsyncLocalStorage<{ ambiguity?: ProjectRefAmbiguity }>();
+// Canonical numbers carry a phase suffix; legacy jobs have five digits
+// (SAPX21602.00), current ones six.
+const CANONICAL_NUMBER_RE = /^[a-z]{4}\d{5,6}\.\d{2}$/i;
+const BARE_NUMBER_RE = /^[a-z]{4}\d{5,6}$/;
+async function resolveProjectRef(identifier: string): Promise<ProjectRefRow | null> {
   const id = identifier.toLowerCase().trim();
+  const scope = _resolveScope.getStore();
+  if (scope) delete scope.ambiguity;
   const rows = await sbGetAll("pms_projects?select=pid:project->>id,pn:project->>projectNumber,nm:project->>name,team&order=id.asc");
   const caps = await resolveCaps();
-  const visible = caps.isAdmin ? (rows || [])
+  const visible: ProjectRefRow[] = caps.isAdmin ? (rows || [])
     : (rows || []).filter((r: any) => projectVisible(caps, r?.pn));
   const hit = visible.find((r: any) =>
     [r.pid, r.pn, r.nm].filter(Boolean).some((f: string) => String(f).toLowerCase() === id));
-  return hit?.pid ?? null;
+  if (hit) return hit;
+  // A bare number ("SAPX266021") names the job people mean; the record carries
+  // the phase suffix ("SAPX266021.00"). Take the first phase in id order, the
+  // same rule teamForProject uses.
+  if (BARE_NUMBER_RE.test(id)) {
+    const phase = visible.find((r: any) => String(r.pn || "").toLowerCase().startsWith(id + "."));
+    return phase ?? null;
+  }
+  // Names are how people ask ("St Nicholas of Tolentine", "the Tabler job").
+  // Every word is tried against the visible names and numbers, the way
+  // search_projects does; the match is taken when it is the only job it fits.
+  // Several phases of ONE job (SAPX239010.00 / .01) count as one job and
+  // resolve to the first phase.
+  const terms = id.split(/[^a-z0-9.#&-]+/).map((t) => t.replace(/\.+$/, "")).filter((t) => t.length > 1 && !SEARCH_STOPWORDS.has(t));
+  if (terms.length) {
+    const matches = visible.filter((r: any) => {
+      const hay = `${r.pn || ""} ${r.nm || ""}`.toLowerCase();
+      return terms.every((t) => hay.includes(t));
+    });
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1 && matches.every((r: any) => r.pn)) {
+      const jobs = new Set(matches.map((r: any) => String(r.pn).toLowerCase().replace(/\.\d{2}$/, "")));
+      if (jobs.size === 1) return matches[0];
+    }
+    if (matches.length > 1 && scope) {
+      scope.ambiguity = {
+        ref: identifier, total: matches.length,
+        candidates: matches.slice(0, AMBIGUITY_LIST_MAX).map((r: any) => ({ projectNumber: r.pn ?? null, name: r.nm ?? null })),
+      };
+    }
+  }
+  return null;
+}
+async function resolveProjectId(identifier: string): Promise<string | null> {
+  return (await resolveProjectRef(identifier))?.pid ?? null;
+}
+// The answer a tool gives when the name fits several jobs: the list (capped)
+// and the total, so a ninth project is never silently unreachable.
+function ambiguityResponse(a: ProjectRefAmbiguity) {
+  const notListed = a.total - a.candidates.length;
+  return asText({
+    error: `"${a.ref}" fits ${a.total} projects.`,
+    candidates: a.candidates,
+    ...(notListed > 0 ? { notListed } : {}),
+    nextStep: notListed > 0
+      ? `Showing ${a.candidates.length} of ${a.total}. Ask the user for another word from the project's name (or use search_projects with more terms), then call again with the one they pick. Do not guess.`
+      : "Ask the user which of these they mean (show the names and numbers), then call again with the one they pick. Do not guess.",
+  });
 }
 
 const MAX_BODY_CHARS = 5000;
@@ -1297,7 +1362,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-cold-path-and-drawings-sweep";
+const BUILD = "2026-10-08-names-everywhere";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1463,6 +1528,22 @@ const _rawTool = mcp.tool.bind(mcp);
         // view returns the same not-found shape a nonsense ref would, without
         // running the tool at all. The CALLER cannot tell the two apart (by
         // design); the telemetry row can, and does: outcome `hidden`.
+        // Normalise the project argument BEFORE the handler: a name or a bare
+        // number becomes the canonical project number, so tools that never call
+        // resolveProjectId themselves (list_project_documents matches folder
+        // prefixes, list_action_items compares numbers) accept names too. A
+        // name that fits several jobs stops here with the candidates. A
+        // pipeline project with no number keeps its name.
+        const scope: { ambiguity?: ProjectRefAmbiguity } = {};
+        const refKey = ["projectNumber", "identifier", "project"].find((k) => typeof args?.[k] === "string" && args[k].trim()) ?? null;
+        if (refKey && !CANONICAL_NUMBER_RE.test(String(args[refKey]).trim())) {
+          const row = await _resolveScope.run(scope, () => resolveProjectRef(String(args[refKey])));
+          if (row?.pn) args = { ...args, [refKey]: row.pn };
+          else if (scope.ambiguity) {
+            cls = { outcome: "empty", resultCount: 0, detail: `ambiguous: ${scope.ambiguity.total} projects fit "${args[refKey]}"`.slice(0, 300) };
+            return ambiguityResponse(scope.ambiguity);
+          }
+        }
         const ref = firstString(args?.projectNumber, args?.identifier, args?.project);
         let res;
         if (ref && !(await projectRefVisible(ref))) {
@@ -1472,7 +1553,7 @@ const _rawTool = mcp.tool.bind(mcp);
           });
           cls = { outcome: "hidden", resultCount: null, detail: `caps: projects.view denied for "${ref}"`.slice(0, 300) };
         } else {
-          res = await inner(args);
+          res = await _resolveScope.run(scope, () => inner(args));
           try {
             cls = classifyResult(JSON.parse(res?.content?.[0]?.text ?? "null"));
           } catch { /* not JSON: treat as a hit, the tool answered something */ }
@@ -1502,6 +1583,34 @@ const _rawTool = mcp.tool.bind(mcp);
         } catch (e) {
           console.warn("[caps] redaction pass failed:", String((e as any)?.message ?? e));
         }
+        // People think they need the number when they do not (every
+        // project-scoped tool takes the name as it is spoken, 2026-10-08). When
+        // the caller passed a number-shaped reference and the call worked, ride
+        // a one-line tip on the result so Claude can say so, once per chat.
+        try {
+          const ref = String(firstString(args?.projectNumber, args?.identifier, args?.project) || "").trim();
+          const singleText = Array.isArray(res?.content) && res.content.length === 1 && res.content[0]?.type === "text";
+          if (singleText && /^[A-Za-z]{4}\d{5,6}(?:\.\d{2})?$/.test(ref)) {
+            const payload = JSON.parse(res?.content?.[0]?.text ?? "null");
+            if (payload && typeof payload === "object" && !Array.isArray(payload) && !payload.error && !payload.tip) {
+              payload.tip = "The user typed a project number. Once in this conversation, after the answer, tell them in these words: " +
+                "\"You can search the connector using the project name, no need to type out the project number. It can find the " +
+                "project even with a partial name, like 'Tabler' or 'St Nicholas'.\" Say it once; do not repeat it.";
+              res = asText(payload);
+            }
+          }
+        } catch { /* a tip is never worth failing a call over */ }
+        // A tool that resolved a second reference itself (a name inside its
+        // own arguments) and hit several jobs: hand Claude the list and the
+        // instruction to ask, instead of its "no project matching".
+        try {
+          const a = scope.ambiguity;
+          const singleText = Array.isArray(res?.content) && res.content.length === 1 && res.content[0]?.type === "text";
+          if (a && singleText) {
+            const payload = JSON.parse(res?.content?.[0]?.text ?? "null");
+            if (payload && typeof payload === "object" && /^No project matching/i.test(String(payload.error || ""))) res = ambiguityResponse(a);
+          }
+        } catch { /* never fail a call over a follow-up */ }
         return res;
       } catch (e) {
         cls = { outcome: "error", resultCount: null, detail: String((e as any)?.message ?? e).slice(0, 300) };
@@ -1635,7 +1744,7 @@ mcp.tool("search_projects", {
       // been set up in the PMS yet (searched hours before its row appeared,
       // 2026-10-02 and 2026-10-08), so say that instead of leaving the user
       // to retry the same number.
-      const numTok = (raw.match(/\b([a-z]{4}\d{6}(?:\.\d{2})?)\b/i) || [])[1] ?? (/^\d{6}$/.test(raw) ? raw : null);
+      const numTok = (raw.match(/\b([a-z]{4}\d{5,6}(?:\.\d{2})?)\b/i) || [])[1] ?? (/^\d{5,6}$/.test(raw) ? raw : null);
       // The pool here is every project the caller may see, archived included,
       // so "no project carries it" is only said when that is actually true.
       const carriers = numTok
@@ -3050,6 +3159,138 @@ mcp.tool("list_action_items", {
       }
     }
     return asText({ count: out.length, items: out });
+  },
+});
+
+// ── how_to_use: the connector explaining itself ──────────────────────────────
+// Users do not see tool descriptions; they see a chat box. When someone asks
+// what the PMS connector can do, or asks something too vague to route, this
+// returns the same guidance as docs/PMS-CONNECTOR-GUIDE.md (keep the two in
+// step) so Claude can show them what to ask. Content only, no data access.
+const HOW_TO_USE_GUIDE_URL = "https://claude.ai/artifact/Mvg23nQL3NuK83eJGt5G3n";
+const HOW_TO_USE_TOPICS: Record<string, { title: string; summary: string; prompts: Array<{ ask: string; note: string }> }> = {
+  catchup: { title: "Catch me up", summary: "Start here for any project you have not looked at in a while.", prompts: [
+    { ask: "Catch me up on SAPX256014.00", note: "One call: the record, latest meeting minutes, open items, recent email, what is due next." },
+    { ask: "What is due in the next two weeks on the Tabler project?", note: "Milestones with pinned dates first." },
+    { ask: "Which of my projects have overdue milestones or open action items?", note: "Across everything your role can see." },
+  ]},
+  documents: { title: "Documents and folders", summary: "Describe the document; you do not need to know where it lives.", prompts: [
+    { ask: "Find the current fire protection narrative for SIPX252003.00", note: "Ranked by filename, the Outgoing folder and recency, with a link." },
+    { ask: "Show me the folder tree for SAPX239010.00 under Outgoing", note: "Browse a known folder live." },
+    { ask: "Read the 100% CD basis of design for the Lynchburg Library and summarize the HVAC approach", note: "PDF, Word and Excel; long files come back in pages." },
+  ]},
+  drawings: { title: "Drawings", summary: "Search the text on issued sheets, look at a sheet, read schedules.", prompts: [
+    { ask: "Which sheets on SAPX229002.00 show FCU-11?", note: "Tags, keynotes, room names, notes. Hyphens optional." },
+    { ask: "What is the current issued set for the Queens College accessibility project?", note: "From the transmittal register, with sheet index and revisions." },
+    { ask: "Read the AHU schedule on M-601 for SAPX249006.00 and list the CFM for each unit", note: "Schedules come back as rows." },
+    { ask: "Show me sheet E-201 so I can see the panel locations", note: "Renders the sheet as an image." },
+  ]},
+  rfis: { title: "RFIs and submittals", summary: "Review one item at a time against the current set.", prompts: [
+    { ask: "List the open RFIs on SAPX256011.00 and who is waiting on us", note: "Filter by status, discipline or keyword." },
+    { ask: "Review submittal 23-05-00-004 on the Vanderbilt project against the drawings and draft a response", note: "Checks the marked selection against the spec and suggests a stamp. The engineer decides." },
+    { ask: "Which sheets does RFI 017 refer to, and are they still current?", note: "References are checked against the register." },
+  ]},
+  qa: { title: "QA reviews", summary: "Internal coordination reviews and external comment logs live in the QA ledger.", prompts: [
+    { ask: "Run a QA coordination review on the 100% CD set for SIPX261005.00", note: "Works the firm checklist against the set; findings go to the ledger for sign-off." },
+    { ask: "The DASNY comments came back on SAPX176006.00. Draft our responses.", note: "Each draft names its sheets and lands in the QA Reviews tab." },
+    { ask: "What is still open in the QA ledger for the GU Elstad project?", note: "Internal findings and external comments with live status." },
+  ]},
+  email: { title: "Email and notes", summary: "Filed project email and OneNote notes are searchable.", prompts: [
+    { ask: "Summarize the last two weeks of email on SAPX239010.00", note: "Full bodies, newest first." },
+    { ask: "Find the email where the owner approved the chiller substitution", note: "Subject, sender, body and attachment names." },
+    { ask: "What did we agree with the architect at the last site meeting on the UMD Thrive Center?", note: "Meeting notes and action items, with the OneNote link." },
+  ]},
+  people: { title: "People and firms", summary: "About 2,600 outside contacts and the staff roster.", prompts: [
+    { ask: "Get me Daniel H from Dattner's email", note: "First name plus an initial is enough." },
+    { ask: "Who do we know for cost estimating on SCA work? WBE preferred.", note: "By what a firm does and is certified as; says whether we have worked with them." },
+    { ask: "What work is running under the Perkins Eastman master agreement?", note: "Term contracts and their task orders." },
+  ]},
+  knowledge: { title: "Firm knowledge and standards", summary: "Reviewed knowledge, agency preferences and engineering standards.", prompts: [
+    { ask: "What is our standard for chilled water pipe insulation?", note: "Design-basis positions with their code or spec source." },
+    { ask: "How does CUNY want submittals handled?", note: "Verified process rules per agency." },
+    { ask: "Save that: DASNY rejected the VFD substitution on this project because of harmonics", note: "\"Save that\" writes a durable finding others can find." },
+  ]},
+  templates: { title: "Proposals and templates", summary: "Formal documents start from the firm's templates.", prompts: [
+    { ask: "Draft an additional services letter on SAPX256014.00 for the added commissioning scope", note: "The add-service template with project details filled in." },
+    { ask: "Draft a letter to the owner on letterhead about the schedule change", note: "Letterhead format with placeholders to complete." },
+  ]},
+  photos: { title: "Field photos", summary: "Photos from the Field Photos app, by project, phase and date.", prompts: [
+    { ask: "Show me the rough-in photos from the last site visit on SAPX229002.00", note: "Claude can look at them and describe equipment, nameplates and conditions." },
+  ]},
+};
+const HOW_TO_USE_RULES = [
+  "Name the project the way you say it: 'the Tabler job', 'St Nicholas of Tolentine', or the number if you have it. A name resolves on its own when it fits one job; if two jobs fit, Claude asks which. One project per question.",
+  "Say what you want back: a list, a summary, a draft, a table.",
+  "Ask for the source: which sheet, which email, link it. Check it before acting on it.",
+  "Follow-up questions keep the project context.",
+  "\"Save that\" writes a finding to the shared project knowledge.",
+];
+// The four skills live in the firm's claude.ai skill library, uploaded by an
+// Organization Owner (Admin Console → Skill library sync). A seat without
+// them still gets a useful answer from the tools, but not the firm's
+// procedure, so the guide says how to check rather than promising them.
+const HOW_TO_USE_WORKFLOWS_NOTE =
+  "These run as skills from the firm's Claude skill library. Check a skill is on your seat before relying on it: " +
+  "type / in a chat and look for its name. If it is missing, ask Sara Arias; the tools still answer, but without " +
+  "the skill Claude does not follow the firm's evidence and review steps.";
+const HOW_TO_USE_WORKFLOWS = [
+  { name: "Design narrative", ask: "Draft the DD basis of design for SAPX239010.00", does: "Builds a narrative from the issued drawings, notes, filed email and earlier narratives, with a drawing index. Everything traces to the record." },
+  { name: "QA coordination review", ask: "Run QA on the 100% CD set for the Thrive Center", does: "Works the QA Deliverables Checklist against the set and open items; findings go to the ledger keyed to checklist items." },
+  { name: "Review comment responses", ask: "Respond to the DrChecks comments on SIPX268014.00", does: "Drafts a disposition and response per open comment and builds the register that goes back to the reviewer." },
+  { name: "Submittal and RFI review", ask: "Review the VAV submittal against the drawings", does: "Checks the marked selection against schedule and spec, suggests a stamp and response, flags cost or scope issues." },
+];
+const HOW_TO_USE_LIMITS = [
+  "Only what your PMS role allows: fee fields are hidden without the fees permission; a project you cannot see does not exist here. A PMS admin can change access.",
+  "A newly won or transferred job is not searchable until it has a PMS record.",
+  "Documents are searched from an index rebuilt about daily; ask to browse the folder live for a file added today.",
+  "Drawings index as you go: the first search on a project reads a few sheets, ask again to index more. Active projects are pre-indexed in the background.",
+  "Archived projects are hidden unless you say include archived.",
+  "Claude drafts; it never sends email, issues a transmittal or closes a comment.",
+  "Sheet references can be misread on scanned sheets; open the sheet if it matters.",
+];
+const HOW_TO_USE_TROUBLESHOOTING = [
+  { when: "The connector shows disconnected", then: "Settings, Connectors, Setty PMS, reconnect; sign in with the Setty Microsoft account once." },
+  { when: "No project matching", then: "Check the number; a bare number resolves to its first phase, so the .00 suffix is optional. A new job may not be set up yet; ask a PMS admin." },
+  { when: "A document is missing from results", then: "Ask to browse the folder live, or confirm the file is in the project's SharePoint folder; the daily index will pick it up." },
+  { when: "Something looks wrong", then: "Send Sara Arias or Nikhil the question and the time; every call is logged and can be traced." },
+];
+mcp.tool("how_to_use", {
+  description:
+    "HOW TO USE THIS CONNECTOR: call this FIRST when the user asks what the Setty PMS connector (or you, " +
+    "with it) can do, how to use it, what to ask, says 'help', or asks a question too vague to route (no " +
+    "project, no task). Returns the ways to ask, example prompts grouped by task (catch-up, documents, " +
+    "drawings, RFIs and submittals, QA, email and notes, people and firms, knowledge and standards, " +
+    "proposals and templates, field photos), the four bigger workflows, what to expect, and troubleshooting. " +
+    "Pass topic to get one group. Then show the user 3-5 prompts that fit what they seem to want, in their " +
+    "words, rather than the whole list. Reads no project data.",
+  inputSchema: z.object({
+    topic: z.string().optional().describe("One group: catchup, documents, drawings, rfis, qa, email, people, knowledge, templates, photos, connect, limits, troubleshooting. Omit for everything."),
+  }),
+  handler: async ({ topic }) => {
+    const t = String(topic || "").toLowerCase().trim();
+    const presentation = "Show the user 3-5 prompts that fit what they seem to want, in their words. Offer the guide link for the rest.";
+    if (t && HOW_TO_USE_TOPICS[t]) {
+      return asText({ guide: HOW_TO_USE_GUIDE_URL, presentation, howToAsk: HOW_TO_USE_RULES, ...HOW_TO_USE_TOPICS[t] });
+    }
+    if (t === "limits") return asText({ guide: HOW_TO_USE_GUIDE_URL, whatToExpect: HOW_TO_USE_LIMITS });
+    if (t === "troubleshooting") return asText({ guide: HOW_TO_USE_GUIDE_URL, troubleshooting: HOW_TO_USE_TROUBLESHOOTING });
+    if (t === "connect") {
+      return asText({ guide: HOW_TO_USE_GUIDE_URL, connect: [
+        "In Claude, open Settings, then Connectors, and click Connect on Setty PMS.",
+        "Sign in with the Setty Microsoft account; accept the permissions screen if one appears. The sign-in renews itself.",
+        "Start a new chat and ask about a project.",
+      ]});
+    }
+    return asText({
+      guide: HOW_TO_USE_GUIDE_URL,
+      presentation,
+      ...(t ? { note: `No group called "${topic}"; here is everything.` } : {}),
+      howToAsk: HOW_TO_USE_RULES,
+      byTask: Object.entries(HOW_TO_USE_TOPICS).map(([key, v]) => ({ topic: key, ...v })),
+      biggerWorkflows: { note: HOW_TO_USE_WORKFLOWS_NOTE, workflows: HOW_TO_USE_WORKFLOWS },
+      whatToExpect: HOW_TO_USE_LIMITS,
+      troubleshooting: HOW_TO_USE_TROUBLESHOOTING,
+    });
   },
 });
 
