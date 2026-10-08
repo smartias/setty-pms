@@ -1297,7 +1297,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-cold-path-and-drawings-sweep";
+const BUILD = "2026-10-08-how-to-use";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3050,6 +3050,130 @@ mcp.tool("list_action_items", {
       }
     }
     return asText({ count: out.length, items: out });
+  },
+});
+
+// ── how_to_use: the connector explaining itself ──────────────────────────────
+// Users do not see tool descriptions; they see a chat box. When someone asks
+// what the PMS connector can do, or asks something too vague to route, this
+// returns the same guidance as docs/PMS-CONNECTOR-GUIDE.md (keep the two in
+// step) so Claude can show them what to ask. Content only, no data access.
+const HOW_TO_USE_GUIDE_URL = "https://claude.ai/artifact/Mvg23nQL3NuK83eJGt5G3n";
+const HOW_TO_USE_TOPICS: Record<string, { title: string; summary: string; prompts: Array<{ ask: string; note: string }> }> = {
+  catchup: { title: "Catch me up", summary: "Start here for any project you have not looked at in a while.", prompts: [
+    { ask: "Catch me up on SAPX256014.00", note: "One call: the record, latest meeting minutes, open items, recent email, what is due next." },
+    { ask: "What is due in the next two weeks on the Tabler project?", note: "Milestones with pinned dates first." },
+    { ask: "Which of my projects have overdue milestones or open action items?", note: "Across everything your role can see." },
+  ]},
+  documents: { title: "Documents and folders", summary: "Describe the document; you do not need to know where it lives.", prompts: [
+    { ask: "Find the current fire protection narrative for SIPX252003.00", note: "Ranked by filename, the Outgoing folder and recency, with a link." },
+    { ask: "Show me the folder tree for SAPX239010.00 under Outgoing", note: "Browse a known folder live." },
+    { ask: "Read the 100% CD basis of design for the Lynchburg Library and summarize the HVAC approach", note: "PDF, Word and Excel; long files come back in pages." },
+  ]},
+  drawings: { title: "Drawings", summary: "Search the text on issued sheets, look at a sheet, read schedules.", prompts: [
+    { ask: "Which sheets on SAPX229002.00 show FCU-11?", note: "Tags, keynotes, room names, notes. Hyphens optional." },
+    { ask: "What is the current issued set for the Queens College accessibility project?", note: "From the transmittal register, with sheet index and revisions." },
+    { ask: "Read the AHU schedule on M-601 for SAPX249006.00 and list the CFM for each unit", note: "Schedules come back as rows." },
+    { ask: "Show me sheet E-201 so I can see the panel locations", note: "Renders the sheet as an image." },
+  ]},
+  rfis: { title: "RFIs and submittals", summary: "Review one item at a time against the current set.", prompts: [
+    { ask: "List the open RFIs on SAPX256011.00 and who is waiting on us", note: "Filter by status, discipline or keyword." },
+    { ask: "Review submittal 23-05-00-004 on the Vanderbilt project against the drawings and draft a response", note: "Checks the marked selection against the spec and suggests a stamp. The engineer decides." },
+    { ask: "Which sheets does RFI 017 refer to, and are they still current?", note: "References are checked against the register." },
+  ]},
+  qa: { title: "QA reviews", summary: "Internal coordination reviews and external comment logs live in the QA ledger.", prompts: [
+    { ask: "Run a QA coordination review on the 100% CD set for SIPX261005.00", note: "Works the firm checklist against the set; findings go to the ledger for sign-off." },
+    { ask: "The DASNY comments came back on SAPX176006.00. Draft our responses.", note: "Each draft names its sheets and lands in the QA Reviews tab." },
+    { ask: "What is still open in the QA ledger for the GU Elstad project?", note: "Internal findings and external comments with live status." },
+  ]},
+  email: { title: "Email and notes", summary: "Filed project email and OneNote notes are searchable.", prompts: [
+    { ask: "Summarize the last two weeks of email on SAPX239010.00", note: "Full bodies, newest first." },
+    { ask: "Find the email where the owner approved the chiller substitution", note: "Subject, sender, body and attachment names." },
+    { ask: "What did we agree with the architect at the last site meeting on the UMD Thrive Center?", note: "Meeting notes and action items, with the OneNote link." },
+  ]},
+  people: { title: "People and firms", summary: "About 2,600 outside contacts and the staff roster.", prompts: [
+    { ask: "Get me Daniel H from Dattner's email", note: "First name plus an initial is enough." },
+    { ask: "Who do we know for cost estimating on SCA work? WBE preferred.", note: "By what a firm does and is certified as; says whether we have worked with them." },
+    { ask: "What work is running under the Perkins Eastman master agreement?", note: "Term contracts and their task orders." },
+  ]},
+  knowledge: { title: "Firm knowledge and standards", summary: "Reviewed knowledge, agency preferences and engineering standards.", prompts: [
+    { ask: "What is our standard for chilled water pipe insulation?", note: "Design-basis positions with their code or spec source." },
+    { ask: "How does CUNY want submittals handled?", note: "Verified process rules per agency." },
+    { ask: "Save that: DASNY rejected the VFD substitution on this project because of harmonics", note: "\"Save that\" writes a durable finding others can find." },
+  ]},
+  templates: { title: "Proposals and templates", summary: "Formal documents start from the firm's templates.", prompts: [
+    { ask: "Draft an additional services letter on SAPX256014.00 for the added commissioning scope", note: "The add-service template with project details filled in." },
+    { ask: "Draft a letter to the owner on letterhead about the schedule change", note: "Letterhead format with placeholders to complete." },
+  ]},
+  photos: { title: "Field photos", summary: "Photos from the Field Photos app, by project, phase and date.", prompts: [
+    { ask: "Show me the rough-in photos from the last site visit on SAPX229002.00", note: "Claude can look at them and describe equipment, nameplates and conditions." },
+  ]},
+};
+const HOW_TO_USE_RULES = [
+  "Name the project: the number when you have it (SAPX256014.00); the name works too, and pipeline projects only have a name. One project per question.",
+  "Say what you want back: a list, a summary, a draft, a table.",
+  "Ask for the source: which sheet, which email, link it. Check it before acting on it.",
+  "Follow-up questions keep the project context.",
+  "\"Save that\" writes a finding to the shared project knowledge.",
+];
+const HOW_TO_USE_WORKFLOWS = [
+  { name: "Design narrative", ask: "Draft the DD basis of design for SAPX239010.00", does: "Builds a narrative from the issued drawings, notes, filed email and earlier narratives, with a drawing index. Everything traces to the record." },
+  { name: "QA coordination review", ask: "Run QA on the 100% CD set for the Thrive Center", does: "Works the QA Deliverables Checklist against the set and open items; findings go to the ledger keyed to checklist items." },
+  { name: "Review comment responses", ask: "Respond to the DrChecks comments on SIPX268014.00", does: "Drafts a disposition and response per open comment and builds the register that goes back to the reviewer." },
+  { name: "Submittal and RFI review", ask: "Review the VAV submittal against the drawings", does: "Checks the marked selection against schedule and spec, suggests a stamp and response, flags cost or scope issues." },
+];
+const HOW_TO_USE_LIMITS = [
+  "Only what your PMS role allows: fee fields are hidden without the fees permission; a project you cannot see does not exist here. A PMS admin can change access.",
+  "A newly won or transferred job is not searchable until it has a PMS record.",
+  "Documents are searched from an index rebuilt about daily; ask to browse the folder live for a file added today.",
+  "Drawings index as you go: the first search on a project reads a few sheets, ask again to index more. Active projects are pre-indexed in the background.",
+  "Archived projects are hidden unless you say include archived.",
+  "Claude drafts; it never sends email, issues a transmittal or closes a comment.",
+  "Sheet references can be misread on scanned sheets; open the sheet if it matters.",
+];
+const HOW_TO_USE_TROUBLESHOOTING = [
+  { when: "The connector shows disconnected", then: "Settings, Connectors, Setty PMS, reconnect; sign in with the Setty Microsoft account once." },
+  { when: "No project matching", then: "Check the number (the .00 suffix is optional). A new job may not be set up yet; ask a PMS admin." },
+  { when: "A document is missing from results", then: "Ask to browse the folder live, or confirm the file is in the project's SharePoint folder; the daily index will pick it up." },
+  { when: "Something looks wrong", then: "Send Sara Arias or Nikhil the question and the time; every call is logged and can be traced." },
+];
+mcp.tool("how_to_use", {
+  description:
+    "HOW TO USE THIS CONNECTOR: call this FIRST when the user asks what the Setty PMS connector (or you, " +
+    "with it) can do, how to use it, what to ask, says 'help', or asks a question too vague to route (no " +
+    "project, no task). Returns the ways to ask, example prompts grouped by task (catch-up, documents, " +
+    "drawings, RFIs and submittals, QA, email and notes, people and firms, knowledge and standards, " +
+    "proposals and templates, field photos), the four bigger workflows, what to expect, and troubleshooting. " +
+    "Pass topic to get one group. Then show the user 3-5 prompts that fit what they seem to want, in their " +
+    "words, rather than the whole list. Reads no project data.",
+  inputSchema: z.object({
+    topic: z.string().optional().describe("One group: catchup, documents, drawings, rfis, qa, email, people, knowledge, templates, photos, connect, limits, troubleshooting. Omit for everything."),
+  }),
+  handler: async ({ topic }) => {
+    const t = String(topic || "").toLowerCase().trim();
+    const presentation = "Show the user 3-5 prompts that fit what they seem to want, in their words. Offer the guide link for the rest.";
+    if (t && HOW_TO_USE_TOPICS[t]) {
+      return asText({ guide: HOW_TO_USE_GUIDE_URL, presentation, howToAsk: HOW_TO_USE_RULES, ...HOW_TO_USE_TOPICS[t] });
+    }
+    if (t === "limits") return asText({ guide: HOW_TO_USE_GUIDE_URL, whatToExpect: HOW_TO_USE_LIMITS });
+    if (t === "troubleshooting") return asText({ guide: HOW_TO_USE_GUIDE_URL, troubleshooting: HOW_TO_USE_TROUBLESHOOTING });
+    if (t === "connect") {
+      return asText({ guide: HOW_TO_USE_GUIDE_URL, connect: [
+        "In Claude, open Settings, then Connectors, and click Connect on Setty PMS.",
+        "Sign in with the Setty Microsoft account; accept the permissions screen if one appears. The sign-in renews itself.",
+        "Start a new chat and ask about a project.",
+      ]});
+    }
+    return asText({
+      guide: HOW_TO_USE_GUIDE_URL,
+      presentation,
+      ...(t ? { note: `No group called "${topic}"; here is everything.` } : {}),
+      howToAsk: HOW_TO_USE_RULES,
+      byTask: Object.entries(HOW_TO_USE_TOPICS).map(([key, v]) => ({ topic: key, ...v })),
+      biggerWorkflows: HOW_TO_USE_WORKFLOWS,
+      whatToExpect: HOW_TO_USE_LIMITS,
+      troubleshooting: HOW_TO_USE_TROUBLESHOOTING,
+    });
   },
 });
 

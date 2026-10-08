@@ -16,6 +16,16 @@ That is no longer necessary. This directory was seeded from the deployed **v32**
 
 If you have any doubt about whether that still holds, verify rather than assume. See below.
 
+## `how_to_use`, the connector explaining itself
+
+Users see a chat box, not tool descriptions. `how_to_use` returns the ways to
+ask, example prompts grouped by task, the four skill workflows, what to expect
+and troubleshooting, so Claude can show someone what to ask when they say
+"what can you do", "help", or ask something too vague to route. `topic` narrows
+to one group. It reads no project data. The content mirrors
+`docs/PMS-CONNECTOR-GUIDE.md` (the human guide and the published page); change
+both together.
+
 ## `project_briefing`, and why it exists
 
 Asked "what's going on with 280 Broadway", the connector used to answer out of the
