@@ -468,6 +468,24 @@ async function resolveProjectId(identifier: string): Promise<string | null> {
     const phase = visible.find((r: any) => String(r.pn || "").toLowerCase().startsWith(id + "."));
     return phase?.pid ?? null;
   }
+  // Names are how people ask ("St Nicholas of Tolentine", "the Tabler job").
+  // An exact miss now tries every word against the visible names and numbers,
+  // the way search_projects does, and takes the match when it is the only job
+  // it fits. Several phases of ONE job (SAPX239010.00 / .01) count as one job
+  // and resolve to the first phase; two different jobs stay ambiguous and the
+  // tool says "no project matching", which search_projects then disambiguates.
+  const terms = id.split(/[^a-z0-9.#&-]+/).map((t) => t.replace(/\.+$/, "")).filter((t) => t.length > 1 && !SEARCH_STOPWORDS.has(t));
+  if (terms.length) {
+    const matches = visible.filter((r: any) => {
+      const hay = `${r.pn || ""} ${r.nm || ""}`.toLowerCase();
+      return terms.every((t) => hay.includes(t));
+    });
+    if (matches.length === 1) return matches[0].pid;
+    if (matches.length > 1 && matches.every((r: any) => r.pn)) {
+      const jobs = new Set(matches.map((r: any) => String(r.pn).toLowerCase().replace(/\.\d{2}$/, "")));
+      if (jobs.size === 1) return matches[0].pid;
+    }
+  }
   return null;
 }
 
@@ -1306,7 +1324,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-how-to-use-bare-number";
+const BUILD = "2026-10-08-how-to-use-names-resolve";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3119,7 +3137,7 @@ const HOW_TO_USE_TOPICS: Record<string, { title: string; summary: string; prompt
   ]},
 };
 const HOW_TO_USE_RULES = [
-  "Name the project: the number when you have it (SAPX256014.00); the name works too, and pipeline projects only have a name. One project per question.",
+  "Name the project the way you say it: 'the Tabler job', 'St Nicholas of Tolentine', or the number if you have it. A name resolves on its own when it fits one job; if two jobs fit, Claude asks which. One project per question.",
   "Say what you want back: a list, a summary, a draft, a table.",
   "Ask for the source: which sheet, which email, link it. Check it before acting on it.",
   "Follow-up questions keep the project context.",

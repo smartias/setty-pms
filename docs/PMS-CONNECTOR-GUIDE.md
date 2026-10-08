@@ -10,7 +10,7 @@ The Setty PMS connector lets Claude read the project record, filed email, docume
 
 ## How to ask
 
-**Name the project.** Give the project number when you have it (SAPX256014.00). The name works too, and pipeline projects only have a name. One project per question keeps answers clean.
+**Name the project the way you say it.** "The Tabler job", "St Nicholas of Tolentine", or the number if you happen to have it. A name resolves on its own when it fits one job; if two jobs fit, Claude asks which one. Pipeline projects only have a name. One project per question keeps answers clean.
 
 **Say what you want back.** A list, a summary, a draft, a table. Claude picks the right tool from how you phrase the ask.
 
