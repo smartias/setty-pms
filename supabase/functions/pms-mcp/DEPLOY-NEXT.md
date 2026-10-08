@@ -20,6 +20,12 @@ Expected `/health` build after the deploy: **`2026-10-08-auth401-logging-offline
 
 ## How to deploy
 
+The scope change also lives in `mcp-proxy/worker.js`, and the proxy is what
+Claude reads metadata from. Deploy it as well (`cd mcp-proxy && npx wrangler
+deploy`, then `node mcp-proxy/verify.mjs <proxy url>`), or the connector keeps
+requesting only `MCP.Access`.
+
+
 In PowerShell, from the repo root:
 ```powershell
 $env:SUPABASE_ACCESS_TOKEN = "sbp_..."     # supabase.com -> Account -> Access Tokens
