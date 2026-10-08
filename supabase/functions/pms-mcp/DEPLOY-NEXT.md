@@ -1,57 +1,40 @@
-# Pending deploy: connector 1.19.2 (project-number suffix matching)
+# Pending deploy: 401 attribution + offline_access scope
 
-Written 2026-09-24 for whoever has the Supabase CLI next. This replaces the
-stale version of this file, which described the 15-Sep PR #271 deploy — that
-one has clearly already shipped (the BUILD constant on `main` moved well past
-`2026-09-15-sharepoint-nudge` since then). Delete this file once `/health`
-shows the build below.
+Written 2026-10-08. Delete this file once `/health` shows the build below.
 
 ## What is waiting
 
-PR #303, merged to `main` (`2db06c2`): `list_project_documents` (and every
-tool that resolves a project's SharePoint folder by number) and
-`search_field_photos` both missed real folders/sessions when a SharePoint
-folder name or a stored `project_number` dropped the default `.00` phase
-suffix that PMS's canonical project number always carries — confirmed live
-on SAPX266021.00, whose actual folder is named `SAPX266021 - St. Nicholas of
-Tolentine Feasibility Study` (no `.00`) and whose 5 field-photo sessions were
-logged as `project_number: "SAPX266021"` (also no `.00`). Full story in
-`HANDOFF-STATUS-2026-09-24.md` at the repo root.
+Branch `claude/awesome-maxwell-4n9qyj` (merge to `main` first):
 
-Expected `/health` build after the deploy: **`2026-09-24-project-number-suffix-match`**.
+- Every 401 from the `/mcp` auth middleware now logs `[auth-401]` with the
+  refusal reason (jose error code such as `ERR_JWT_EXPIRED`, a failed claim,
+  `tenant-mismatch`, `no-authorization-header`), the client user-agent and
+  whether a session id was present. No token or header value is logged.
+  Pairs with the `[mcp-400]` logging from the previous deploy.
+- The protected-resource metadata now advertises `offline_access` next to
+  `MCP.Access`, so clients that honor `scopes_supported` ask Entra for a
+  refresh token instead of re-running sign-in when the ~1h access token
+  expires (the paired 401s seen from Claude clients on 2026-10-08).
 
-## The short version
+Expected `/health` build after the deploy: **`2026-10-08-auth401-logging-offline-access`**.
 
-1. `main` already has PR #303 merged — nothing to merge first.
-2. In PowerShell, from the repo root:
-   ```powershell
-   $env:SUPABASE_ACCESS_TOKEN = "sbp_..."     # supabase.com → Account → Access Tokens
-   .\supabase\functions\pms-mcp\deploy.ps1
-   ```
-   The script pulls main, checks the BUILD string on disk, deploys, and polls
-   `/health` until the new build answers. It stops with a message if any step
-   is off.
-3. Start a fresh Claude conversation (the tool list is cached per connection).
-4. Revoke the access token when done.
+## How to deploy
 
-## If you would rather do it by hand
-
+In PowerShell, from the repo root:
 ```powershell
-cd C:\path\to\setty-pms          # the REPO ROOT — the folder that contains supabase\
-git checkout main; git pull origin main
-$env:SUPABASE_ACCESS_TOKEN = "sbp_..."
-npx supabase functions deploy pms-mcp --project-ref khxmgjilwhdguuepbhne --no-verify-jwt
-curl https://khxmgjilwhdguuepbhne.supabase.co/functions/v1/pms-mcp/health
+$env:SUPABASE_ACCESS_TOKEN = "sbp_..."     # supabase.com -> Account -> Access Tokens
+.\supabase\functions\pms-mcp\deploy.ps1
 ```
+Known traps are in README -> Deploying (run from the repo root, no
+`--import-map`, `--no-verify-jwt` required).
 
-Known traps (all in README → Deploying): run from the repo root, never from
-`supabase\`; no `--import-map` flag; `--no-verify-jwt` is required; "Docker is
-not running" is harmless; the first health call after a deploy can be slow.
+## After the deploy
 
-## Smoke test, in a new Claude conversation
-
-- `list_project_documents` on `SAPX266021.00` → the SharePoint folder is
-  found (`count` > 0, `Photos` among the items), not "Nothing for this
-  project in SharePoint yet."
-- `search_field_photos` with `project: "SAPX266021.00"` → 5 sessions from
-  2026-07-07 come back, not `count: 0`.
+1. Disconnect and reconnect the Setty PMS connector in claude.ai once, so the
+   new scope list is picked up at the next sign-in. If Entra prompts for
+   consent on `offline_access`, accept it (an admin may need to grant it
+   tenant-wide in the app registration's API permissions).
+2. Over the next day, query `function_logs` for `[auth-401]`. `ERR_JWT_EXPIRED`
+   on a client that then keeps working means refresh is now happening;
+   `ERR_JWT_EXPIRED` followed by a fresh sign-in means the client did not
+   request `offline_access` and the refresh path needs another look.
