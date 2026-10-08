@@ -240,6 +240,34 @@ one indexed query.
 node supabase/functions/pms-mcp/searchDrawings.test.mjs
 ```
 
+### Background sweep (`POST /pms-mcp/admin/drawings-index`)
+
+The lazy index is what made `search_drawings` sit at 7-14 s per call: each call
+read a few PDFs before searching. The sweep does that reading in the background,
+with the same indexer (`indexDrawingFiles`) and the same per-file resume rules,
+for the projects people are actually working in: any project named in a tool
+call in the last 30 days (`pms_mcp_telemetry`). A run takes up to 8 projects and
+90 s, indexes up to 20 files per project, and rotates its starting point with the
+quarter-hour so one project with a long backlog cannot hog every run. A project
+whose scope is already fully indexed costs one cache read to skip.
+
+- **Body:** `{}` sweeps; `{"projectNumber":"SAPX..."}` does one project;
+  `maxProjects` (max 20) and `maxFilesPerProject` (max 20) tune a run.
+- **Auth:** the same `x-pms-cron` header as `documents-sync`, or a PMS admin
+  Supabase JWT.
+- **Schedule:** every 15 minutes, offset from the documents sync. The secret
+  never goes in a migration; copy it from the job that already carries it:
+
+```sql
+select cron.schedule('pms-drawings-index', '2,17,32,47 * * * *',
+  replace((select command from cron.job where jobname = 'pms-documents-sync'),
+          'admin/documents-sync', 'admin/drawings-index'));
+```
+
+`search_drawings` itself is unchanged: it still indexes a few files per call when
+something is pending, so a project the sweep has not reached yet behaves exactly
+as before.
+
 ## `view_drawing`, eyes on the sheet (Drawing Intelligence phase 4)
 
 `search_drawings` says WHERE something is (file, page, revision); `view_drawing` renders that
@@ -695,8 +723,13 @@ the bottom of `index.ts`; the schema is migration `20261002120010_pms_documents.
 - **`find_document` reads it.** When a project has a sync that completed within 3
   days and holds files, candidates come from `pms_documents_v` (hard SQL filters
   on `docType`, `discipline`; a token prefilter; stored phase) and the existing
-  `scoreDocument` ranks them. Otherwise, or on any read error, it uses the live
-  folder walk exactly as before, and says which in `source`. Results also carry
+  `scoreDocument` ranks them. A fresh sync that COMPLETED and saw no files is
+  trusted too: the tool answers "no files indexed" with the sync time instead of
+  walking every drive root of the region to look for a folder the sync already
+  proved absent (that walk cost 8-14 s per call on pipeline projects, 66 of 316
+  scopes, measured 2026-10-08). Otherwise (stale, incomplete, or any read
+  error) it uses the live folder walk exactly as before, and says which in
+  `source`. Results also carry
   stored `docType`/`discipline`, and Proposals/Contract files linked to the project
   appear. Supersession status is still computed live from the register, so it is
   never stale. Set the function secret `FIND_DOCUMENT_USE_TABLE=0` to force the

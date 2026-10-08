@@ -723,9 +723,30 @@ async function siteForTeam(team: string | null | undefined): Promise<RegionSite>
 async function teamForProject(projectNumber: string | null | undefined): Promise<string | null> {
   const num = String(projectNumber || "").toLowerCase().trim();
   if (!num) return null;
-  const all = await getProjectsUnfiltered();
-  const p = all.find((x) => String(x.projectNumber || "").toLowerCase() === num) ??
-    all.find((x) => String(x.projectNumber || "").toLowerCase().startsWith(num));
+  // Warm cache: the same answer as always, for free.
+  if (_projCache && (Date.now() - _projCache.at) < 300000) return pickTeam(_projCache.data, num);
+  // Cold isolate, which is the COMMON case: the runtime boots a fresh isolate
+  // for most requests (1,500 boots a day against ~500 tool calls, measured
+  // 2026-10-08; the 2-minute keep-warm ping does not keep one alive). Reading
+  // the ~7MB slim portfolio here just to learn one project's team was the floor
+  // under every single-project tool's latency. One row by number instead; any
+  // failure falls back to the full load so routing can never regress.
+  try {
+    const pat = encodeURIComponent(num.replace(/[%_*]/g, "") + "*");
+    const rows = await sbGet(
+      "pms_projects?select=team,projectNumber:project->>projectNumber" +
+      "&project->>projectNumber=ilike." + pat + "&order=id.asc&limit=25");
+    if (Array.isArray(rows)) return pickTeam(rows, num);
+  } catch (e) {
+    console.warn("[team] direct lookup failed, loading portfolio:", String((e as any)?.message ?? e));
+  }
+  return pickTeam(await getProjectsUnfiltered(), num);
+}
+// Exact number first, then the first project whose number starts with it (a
+// bare "SAPX256015" resolves to its .00 phase). Mirrored in regionRouting.test.mjs.
+function pickTeam(list: any[], num: string): string | null {
+  const p = list.find((x) => String(x.projectNumber || "").toLowerCase() === num) ??
+    list.find((x) => String(x.projectNumber || "").toLowerCase().startsWith(num));
   return p?.team ?? null;
 }
 
@@ -1276,7 +1297,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-find-contact-name-required";
+const BUILD = "2026-10-08-cold-path-and-drawings-sweep";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1610,13 +1631,52 @@ mcp.tool("search_projects", {
       : pool;
 
     if (raw && !matched.length) {
+      // Every project-number miss in the last week was a job that had not
+      // been set up in the PMS yet (searched hours before its row appeared,
+      // 2026-10-02 and 2026-10-08), so say that instead of leaving the user
+      // to retry the same number.
+      const numTok = (raw.match(/\b([a-z]{4}\d{6}(?:\.\d{2})?)\b/i) || [])[1] ?? (/^\d{6}$/.test(raw) ? raw : null);
+      // The pool here is every project the caller may see, archived included,
+      // so "no project carries it" is only said when that is actually true.
+      const carriers = numTok
+        ? projects.filter((p) => String(p.projectNumber || "").toLowerCase().includes(numTok))
+        : [];
+      if (carriers.length) {
+        const live = carriers.filter((p) => !p.archived);
+        if (!live.length && !includeArchived) {
+          return asText({
+            count: 0, includeArchived: false, projects: [],
+            interpreted: { terms },
+            reason: `${numTok.toUpperCase()} is ${carriers.length === 1 ? "an archived project" : "archived projects"}: ${carriers.map((p) => p.name).join("; ")}.`,
+            nextStep: "Pass includeArchived: true to search the archive.",
+          });
+        }
+        // The number is real; the other words did not fit it. Answer with the
+        // number's projects rather than nothing.
+        const hits = includeArchived ? carriers : live;
+        return asText({
+          count: hits.length, includeArchived: !!includeArchived,
+          interpreted: { terms, note: `Matched on the project number ${numTok.toUpperCase()}; the other terms did not match these projects and were ignored.` },
+          projects: hits.map(summarizeProject),
+        });
+      }
+      const looksLikeNumber = !!numTok;
       return asText({
         count: 0, includeArchived: !!includeArchived, projects: [],
         interpreted: { terms },
-        reason: `No project matches every term in "${query}".`,
-        nextStep: "Drop the least certain term and try again: every term has to match something. " +
-          "The prime firm, owner agency, project type and city are all searchable, so a partial " +
-          "description usually works better than a full sentence.",
+        reason: looksLikeNumber
+          ? `No project in the PMS carries the number in "${query}".`
+          : `No project matches every term in "${query}".`,
+        nextStep: looksLikeNumber
+          ? "A newly won or transferred job is not searchable until it has been set up in the PMS " +
+            "(a project added in the last five minutes may also not show yet). Ask a PMS admin to " +
+            "confirm the project exists, or search by name in case the number differs."
+          : "Drop the least certain term and try again: every term has to match something. " +
+            "The prime firm, owner agency, project type and city are all searchable, so a partial " +
+            "description usually works better than a full sentence.",
+        ...(looksLikeNumber ? {} : {
+          note: "If this is a new job, it may not be set up in the PMS yet; a PMS admin can confirm.",
+        }),
       });
     }
 
@@ -5373,7 +5433,27 @@ async function documentsFromTable(
   const stateRows = await sbGet(
     "pms_documents_sync?select=last_completed_at,complete,file_count&scope=eq." + encodeURIComponent(prefix) + "&limit=1");
   const state: SyncState = Array.isArray(stateRows) ? stateRows[0] : null;
-  if (!tableIsFresh(state, Date.now()) || !(Number(state?.file_count) > 0)) return null;
+  if (!tableIsFresh(state, Date.now())) return null;
+  if (!(Number(state?.file_count) > 0)) {
+    // A fresh COMPLETE sync that saw no files is an answer, not a gap. Falling
+    // through to the live walk made find_document list every drive root of the
+    // region to look for a folder the sync had already proved absent: 8-14 s
+    // per call on pipeline projects (66 of 316 scopes), measured 2026-10-08.
+    // An incomplete or stale sync still walks, exactly as before.
+    if (state?.complete !== true) return null;
+    // Proposal/Contract library files are synced under their OWN scope but
+    // carry this project's prefix once linked, so the project scope being
+    // empty says nothing about them. One cheap query (45 ms measured) keeps
+    // them visible; the walk is what this branch avoids, not the table.
+    const linked = await sbGet(buildDocumentsQuery({ projectPrefix: prefix, tokens, docType, discipline, offset: 0, limit: 1000 }));
+    const byId = new Map<string, any>();
+    const files = (Array.isArray(linked) ? linked : []).map((r) => { byId.set(String(r.item_id), r); return rowToFile(r); });
+    return {
+      files, rows: byId, truncated: false,
+      libraries: [...new Set(files.map((f) => f.library))],
+      fileCount: files.length, indexedAt: String(state?.last_completed_at),
+    };
+  }
 
   const rows: any[] = [];
   let truncated = state?.complete === false;
@@ -5478,6 +5558,15 @@ mcp.tool("find_document", {
       });
     }
     if (!tree.files.length) {
+      if (table) {
+        return asText({
+          project, query, count: 0, results: [],
+          reason: `The document index (completed ${table.indexedAt}) holds no files for this project: its folder is not provisioned yet, or it is empty.`,
+          nextStep: "list_project_documents reads the folders live; use it if the folder was created after that time. " +
+            "The index is refreshed about daily, so a new folder shows up here on its own.",
+          source: { kind: "pms_documents", indexedAt: table.indexedAt },
+        });
+      }
       return asText({
         project, query, count: 0, results: [],
         reason: tree.libraries.length
@@ -7078,6 +7167,146 @@ async function drawingScopeWalk(numPrefix: string, subfolder?: string): Promise<
   return { files, scopePath, truncated, resolved };
 }
 
+// The lazy indexer, shared by search_drawings (a few files per call, inside
+// the request's time box) and the background sweep below (the same work with
+// a bigger budget, so a search finds the current sets already indexed).
+// `pending` is the ordered list of files still to read; `knownById` the
+// pms_drawing_index_files rows for the project. Throws only when the index
+// table itself cannot be written; a bad file is recorded and skipped.
+type DrawingIndexRun = { indexedNow: any[]; skippedNow: any[]; failedNow: any[]; opened: number };
+async function indexDrawingFiles(a: {
+  numPrefix: string; pending: any[]; knownById: Map<string, any>; fileBudget: number; t0: number; deadlineMs: number;
+}): Promise<DrawingIndexRun> {
+  const { numPrefix, pending, knownById, fileBudget, t0, deadlineMs } = a;
+  const indexedNow: any[] = [];
+  const skippedNow: any[] = [];
+  const failedNow: any[] = [];
+  let opened = 0;
+  for (const f of pending) {
+    if (opened >= fileBudget) break;
+    if (Date.now() - t0 > deadlineMs) break;
+    const prev = knownById.get(f.itemId);
+    const attempts = Number(prev?.attempts || 0) + 1;
+    const base = {
+      item_id: f.itemId, project_prefix: numPrefix, file_name: f.name, folder_path: f.folderPath,
+      web_url: f.webUrl, size_bytes: Number(f.size) || null, updated_at: new Date().toISOString(),
+    };
+    if (Number(f.size) > DRAWING_INDEX_MAX_BYTES) {
+      const sizeMB = Math.round(Number(f.size) / 104857.6) / 10;
+      await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
+        { ...base, status: "skipped", attempts, error: `${sizeMB}MB is over the ${DRAWING_INDEX_MAX_BYTES / 1048576}MB indexing cap` },
+        "resolution=merge-duplicates,return=minimal");
+      skippedNow.push({ itemId: f.itemId, file: f.name, folderPath: f.folderPath, sizeMB, webUrl: f.webUrl });
+      continue;
+    }
+    // Mark the attempt BEFORE downloading. If the request dies mid-file there
+    // is no later chance to write, and without this a file that always times
+    // out would be retried on every call forever, starving the rest.
+    try {
+      await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
+        { ...base, status: "pending", attempts }, "resolution=merge-duplicates,return=minimal");
+    } catch (e) {
+      throw new Error(`Could not write to the drawing index: ${String((e as any)?.message ?? e)}`);
+    }
+    opened++;
+    let buf: Uint8Array;
+    try {
+      buf = await loadPdfBytes(f.itemId, DRAWING_INDEX_MAX_BYTES, { cache: false });
+    } catch (e) {
+      const msg = String((e as any)?.message ?? e);
+      failedNow.push({ file: f.name, reason: msg });
+      await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
+        { ...base, status: "failed", attempts, error: msg }, "resolution=merge-duplicates,return=minimal").catch(() => {});
+      continue;
+    }
+    try {
+      const { getDocumentProxy } = await import("unpdf");
+      const pdf: any = await getDocumentProxy(new Uint8Array(buf));
+      const total: number = pdf.numPages;
+      // Page-windowed resume (see DRAWING_INDEX_PAGE_WINDOW). Start where the
+      // last attempt stopped; pms_drawing_text rows upsert on (item_id,page)
+      // so re-processing a page after a mid-window crash is idempotent, and
+      // text_pages/pages_done are written only for flushed pages, so counts
+      // never double on a retried window.
+      const startPage = Math.max(0, Number(prev?.pages_done || 0)) + 1;
+      const windowEnd = Math.min(total, startPage + DRAWING_INDEX_PAGE_WINDOW - 1);
+      let textPages = Number(prev?.text_pages || 0);
+      let batch: any[] = [];
+      let lastFlushed = startPage - 1;
+      let flushedTextPages = textPages;
+      const flush = async (upTo: number, tp: number) => {
+        if (batch.length) {
+          await drawingIndexWrite("pms_drawing_text?on_conflict=item_id,page", batch, "resolution=merge-duplicates,return=minimal");
+          batch = [];
+        }
+        lastFlushed = upTo; flushedTextPages = tp;
+        // The resume pointer is persisted at EVERY flush, not only at window
+        // end: the platform can kill the isolate the moment the client
+        // disconnects (~25s at the proxy), which is BEFORE the 28s deadline
+        // path runs — without this, page rows landed but pages_done stayed 0
+        // and the book re-parsed from page 1 every call until given up.
+        if (upTo >= startPage) {
+          await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
+            { ...base, status: "pending", attempts: 0, pages: total, pages_done: upTo, text_pages: tp, error: null },
+            "resolution=merge-duplicates,return=minimal").catch(() => {});
+        }
+      };
+      const sheetsSeen = new Set<string>();
+      let stoppedAt = startPage - 1;
+      for (let i = startPage; i <= windowEnd; i++) {
+        // The window itself can outlive the request budget on text-dense
+        // books; stop at the deadline and let pages_done carry the progress.
+        if (i > startPage && Date.now() - t0 > deadlineMs) break;
+        const pg = await pdf.getPage(i);
+        const tc = await pg.getTextContent();
+        // Null bytes appear in some PDFs' text layers (seen: a ProjNet
+        // comment export) and Postgres rejects them ("\u0000 cannot be
+        // converted to text", 22P05), leaving the file permanently
+        // unindexable. Strip them before anything downstream sees the text.
+        const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/\u0000/g, " ").replace(/ +/g, " ").trim();
+        if (typeof pg.cleanup === "function") pg.cleanup();
+        if (text.length >= 50) textPages++;
+        const tb = text.length >= 50 ? parseTitleBlock(text) : null;
+        if (tb?.sheetNo) sheetsSeen.add(tb.sheetNo);
+        batch.push({
+          project_prefix: numPrefix, item_id: f.itemId, page: i,
+          file_name: f.name, folder_path: f.folderPath, web_url: f.webUrl,
+          sheet_no: tb?.sheetNo ?? null, sheet_title: tb?.sheetTitle ?? null,
+          revision: tb?.revision ?? null, revision_date: tb?.revisionDate ?? null,
+          revision_description: tb?.revisionDescription ?? null, title_block_layout: tb?.titleBlockLayout ?? null,
+          text, text_len: text.length, indexed_at: new Date().toISOString(),
+        });
+        stoppedAt = i;
+        if (batch.length >= DRAWING_INDEX_FLUSH_EVERY) await flush(i, textPages);
+      }
+      await flush(stoppedAt, textPages);
+      const finished = lastFlushed >= total;
+      await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
+        {
+          ...base,
+          status: finished ? "done" : "pending",
+          // Progress RESETS the attempt clock: only a book that crashes
+          // without advancing pages_done can ever reach MAX_ATTEMPTS.
+          attempts: lastFlushed > Number(prev?.pages_done || 0) ? 0 : attempts,
+          pages: total, pages_done: lastFlushed, text_pages: flushedTextPages, error: null,
+          ...(finished ? { indexed_at: new Date().toISOString() } : {}),
+        },
+        "resolution=merge-duplicates,return=minimal");
+      indexedNow.push({
+        file: f.name, folderPath: f.folderPath, pages: total, textPages: flushedTextPages,
+        ...(finished ? {} : { pagesDone: lastFlushed, resumes: "large file — the next call continues from where this one stopped" }),
+        sheets: [...sheetsSeen],
+      });
+    } catch (e) {
+      const msg = `PDF parse failed: ${String((e as any)?.message ?? e)}`;
+      failedNow.push({ file: f.name, reason: msg });
+      await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
+        { ...base, status: "failed", attempts, error: msg }, "resolution=merge-duplicates,return=minimal").catch(() => {});
+    }
+  }
+  return { indexedNow, skippedNow, failedNow, opened };
+}
+
 mcp.tool("search_drawings", {
   description:
     "Search the TEXT ON THE DRAWINGS of a project: equipment tags (FCU-11, CHWP-2), keynotes, room names, " +
@@ -7168,132 +7397,13 @@ mcp.tool("search_drawings", {
     });
 
     // ── 3. Index a few, time-boxed ────────────────────────────────────────────
-    const indexedNow: any[] = [];
-    const skippedNow: any[] = [];
-    const failedNow: any[] = [];
-    let opened = 0;
-    for (const f of pending) {
-      if (opened >= fileBudget) break;
-      if (Date.now() - t0 > DRAWING_INDEX_DEADLINE_MS) break;
-      const prev = knownById.get(f.itemId);
-      const attempts = Number(prev?.attempts || 0) + 1;
-      const base = {
-        item_id: f.itemId, project_prefix: numPrefix, file_name: f.name, folder_path: f.folderPath,
-        web_url: f.webUrl, size_bytes: Number(f.size) || null, updated_at: new Date().toISOString(),
-      };
-      if (Number(f.size) > DRAWING_INDEX_MAX_BYTES) {
-        const sizeMB = Math.round(Number(f.size) / 104857.6) / 10;
-        await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
-          { ...base, status: "skipped", attempts, error: `${sizeMB}MB is over the ${DRAWING_INDEX_MAX_BYTES / 1048576}MB indexing cap` },
-          "resolution=merge-duplicates,return=minimal");
-        skippedNow.push({ itemId: f.itemId, file: f.name, folderPath: f.folderPath, sizeMB, webUrl: f.webUrl });
-        continue;
-      }
-      // Mark the attempt BEFORE downloading. If the request dies mid-file there
-      // is no later chance to write, and without this a file that always times
-      // out would be retried on every call forever, starving the rest.
-      try {
-        await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
-          { ...base, status: "pending", attempts }, "resolution=merge-duplicates,return=minimal");
-      } catch (e) {
-        return asText({ project, error: `Could not write to the drawing index: ${String((e as any)?.message ?? e)}` });
-      }
-      opened++;
-      let buf: Uint8Array;
-      try {
-        buf = await loadPdfBytes(f.itemId, DRAWING_INDEX_MAX_BYTES, { cache: false });
-      } catch (e) {
-        const msg = String((e as any)?.message ?? e);
-        failedNow.push({ file: f.name, reason: msg });
-        await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
-          { ...base, status: "failed", attempts, error: msg }, "resolution=merge-duplicates,return=minimal").catch(() => {});
-        continue;
-      }
-      try {
-        const { getDocumentProxy } = await import("unpdf");
-        const pdf: any = await getDocumentProxy(new Uint8Array(buf));
-        const total: number = pdf.numPages;
-        // Page-windowed resume (see DRAWING_INDEX_PAGE_WINDOW). Start where the
-        // last attempt stopped; pms_drawing_text rows upsert on (item_id,page)
-        // so re-processing a page after a mid-window crash is idempotent, and
-        // text_pages/pages_done are written only for flushed pages, so counts
-        // never double on a retried window.
-        const startPage = Math.max(0, Number(prev?.pages_done || 0)) + 1;
-        const windowEnd = Math.min(total, startPage + DRAWING_INDEX_PAGE_WINDOW - 1);
-        let textPages = Number(prev?.text_pages || 0);
-        let batch: any[] = [];
-        let lastFlushed = startPage - 1;
-        let flushedTextPages = textPages;
-        const flush = async (upTo: number, tp: number) => {
-          if (batch.length) {
-            await drawingIndexWrite("pms_drawing_text?on_conflict=item_id,page", batch, "resolution=merge-duplicates,return=minimal");
-            batch = [];
-          }
-          lastFlushed = upTo; flushedTextPages = tp;
-          // The resume pointer is persisted at EVERY flush, not only at window
-          // end: the platform can kill the isolate the moment the client
-          // disconnects (~25s at the proxy), which is BEFORE the 28s deadline
-          // path runs — without this, page rows landed but pages_done stayed 0
-          // and the book re-parsed from page 1 every call until given up.
-          if (upTo >= startPage) {
-            await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
-              { ...base, status: "pending", attempts: 0, pages: total, pages_done: upTo, text_pages: tp, error: null },
-              "resolution=merge-duplicates,return=minimal").catch(() => {});
-          }
-        };
-        const sheetsSeen = new Set<string>();
-        let stoppedAt = startPage - 1;
-        for (let i = startPage; i <= windowEnd; i++) {
-          // The window itself can outlive the request budget on text-dense
-          // books; stop at the deadline and let pages_done carry the progress.
-          if (i > startPage && Date.now() - t0 > DRAWING_INDEX_DEADLINE_MS) break;
-          const pg = await pdf.getPage(i);
-          const tc = await pg.getTextContent();
-          // Null bytes appear in some PDFs' text layers (seen: a ProjNet
-          // comment export) and Postgres rejects them ("\u0000 cannot be
-          // converted to text", 22P05), leaving the file permanently
-          // unindexable. Strip them before anything downstream sees the text.
-          const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/\u0000/g, " ").replace(/ +/g, " ").trim();
-          if (typeof pg.cleanup === "function") pg.cleanup();
-          if (text.length >= 50) textPages++;
-          const tb = text.length >= 50 ? parseTitleBlock(text) : null;
-          if (tb?.sheetNo) sheetsSeen.add(tb.sheetNo);
-          batch.push({
-            project_prefix: numPrefix, item_id: f.itemId, page: i,
-            file_name: f.name, folder_path: f.folderPath, web_url: f.webUrl,
-            sheet_no: tb?.sheetNo ?? null, sheet_title: tb?.sheetTitle ?? null,
-            revision: tb?.revision ?? null, revision_date: tb?.revisionDate ?? null,
-            revision_description: tb?.revisionDescription ?? null, title_block_layout: tb?.titleBlockLayout ?? null,
-            text, text_len: text.length, indexed_at: new Date().toISOString(),
-          });
-          stoppedAt = i;
-          if (batch.length >= DRAWING_INDEX_FLUSH_EVERY) await flush(i, textPages);
-        }
-        await flush(stoppedAt, textPages);
-        const finished = lastFlushed >= total;
-        await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
-          {
-            ...base,
-            status: finished ? "done" : "pending",
-            // Progress RESETS the attempt clock: only a book that crashes
-            // without advancing pages_done can ever reach MAX_ATTEMPTS.
-            attempts: lastFlushed > Number(prev?.pages_done || 0) ? 0 : attempts,
-            pages: total, pages_done: lastFlushed, text_pages: flushedTextPages, error: null,
-            ...(finished ? { indexed_at: new Date().toISOString() } : {}),
-          },
-          "resolution=merge-duplicates,return=minimal");
-        indexedNow.push({
-          file: f.name, folderPath: f.folderPath, pages: total, textPages: flushedTextPages,
-          ...(finished ? {} : { pagesDone: lastFlushed, resumes: "large file — the next call continues from where this one stopped" }),
-          sheets: [...sheetsSeen],
-        });
-      } catch (e) {
-        const msg = `PDF parse failed: ${String((e as any)?.message ?? e)}`;
-        failedNow.push({ file: f.name, reason: msg });
-        await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
-          { ...base, status: "failed", attempts, error: msg }, "resolution=merge-duplicates,return=minimal").catch(() => {});
-      }
+    let run: DrawingIndexRun;
+    try {
+      run = await indexDrawingFiles({ numPrefix, pending, knownById, fileBudget, t0, deadlineMs: DRAWING_INDEX_DEADLINE_MS });
+    } catch (e) {
+      return asText({ project, error: String((e as any)?.message ?? e) });
     }
+    const { indexedNow, skippedNow, failedNow } = run;
 
     // ── 4. Coverage, from the scope list and the (now updated) file table ────
     const doneIds = new Set(known.filter((k) => k.status === "done").map((k) => k.item_id));
@@ -11231,6 +11341,109 @@ app.post("/pms-mcp/admin/documents-sync", async (c) => {
   }
   return c.json({
     scanned: results.length, remaining: cands.length - results.length, results,
+  }, 200, DOCS_SYNC_CORS);
+});
+
+// ── drawings index sweep ─────────────────────────────────────────────────────
+// search_drawings indexes LAZILY: each call first reads a few not-yet-indexed
+// PDFs, which is why its latency sat at 7-14 s. This sweep does that reading in
+// the background for the projects people are actually working in (any tool
+// call in the last 30 days), so the next search_drawings on them finds the
+// current sets indexed and only searches. Same auth and run shape as
+// documents-sync; the cron job carries the same x-pms-cron secret (README →
+// Deploying → drawings index sweep). Candidates rotate by run so one project
+// with a long backlog cannot hog every run.
+const DRAWINGS_SWEEP_BUDGET_MS = 90000;
+const DRAWINGS_SWEEP_MAX_PROJECTS = 8;
+const DRAWINGS_SWEEP_ACTIVE_DAYS = 30;
+app.options("/pms-mcp/admin/drawings-index", (c) => c.body(null, 204, DOCS_SYNC_CORS));
+app.post("/pms-mcp/admin/drawings-index", async (c) => {
+  const cronGiven = c.req.header("x-pms-cron") || "";
+  const isCron = !!DOCS_SYNC_SECRET && cronGiven === DOCS_SYNC_SECRET;
+  if (!isCron) {
+    const auth = c.req.header("Authorization") || "";
+    const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!(await isAdminSupabaseJwt(jwt))) {
+      return c.json({ error: "Admins only (Supabase session required), or a valid x-pms-cron secret." }, 403, DOCS_SYNC_CORS);
+    }
+  }
+  let body: any = {};
+  try { body = await c.req.json(); } catch { /* cron sends an empty body */ }
+  const onlyProject = String(body?.projectNumber || "").toLowerCase().trim();
+  const maxProjects = Math.max(1, Math.min(Number(body?.maxProjects) || DRAWINGS_SWEEP_MAX_PROJECTS, 20));
+  const filesPerProject = Math.max(1, Math.min(Number(body?.maxFilesPerProject) || DRAWING_INDEX_MAX_FILES_CAP, DRAWING_INDEX_MAX_FILES_CAP));
+  const started = Date.now();
+
+  const projects = (await getProjectsUnfiltered()).filter((p: any) => p.projectNumber && !p.archived);
+  const numbers = projects.map((p: any) => String(p.projectNumber).toLowerCase().trim());
+  const resolve = (ref: string): string | null =>
+    numbers.find((n) => n === ref) ?? numbers.find((n) => n.startsWith(ref)) ??
+    projects.find((p: any) => String(p.name || "").toLowerCase().trim() === ref)?.projectNumber?.toLowerCase() ?? null;
+
+  let cands: string[] = [];
+  if (onlyProject) {
+    const n = resolve(onlyProject);
+    if (!n) return c.json({ error: `No project matching "${onlyProject}"` }, 404, DOCS_SYNC_CORS);
+    cands = [n];
+  } else {
+    const since = new Date(Date.now() - DRAWINGS_SWEEP_ACTIVE_DAYS * 86400000).toISOString();
+    // The whole window, paged: ~500 project-bearing calls a day means a single
+    // page would drop everything older than a day or two.
+    const rows = await sbGetAll(
+      "pms_mcp_telemetry?select=project_number&project_number=not.is.null&created_at=gt." + encodeURIComponent(since) +
+      "&order=created_at.desc");
+    const seen = new Set<string>();
+    for (const r of rows) {
+      const n = resolve(String(r.project_number || "").toLowerCase().trim());
+      if (n && !seen.has(n)) { seen.add(n); cands.push(n); }
+    }
+    // Rotate the start point with the quarter-hour so successive runs begin on
+    // different projects; a fully indexed project costs one cache read to skip.
+    if (cands.length) {
+      const off = Math.floor(Date.now() / 900000) % cands.length;
+      cands = cands.slice(off).concat(cands.slice(0, off));
+    }
+  }
+
+  const results: any[] = [];
+  for (const prefix of cands) {
+    if (results.length >= maxProjects) break;
+    const left = DRAWINGS_SWEEP_BUDGET_MS - (Date.now() - started);
+    if (left < 5000) break;
+    try {
+      const scope = await drawingScopeFiles(prefix);
+      if (!scope.resolved) { results.push({ project: prefix, skipped: "no Outgoing folder" }); continue; }
+      const known: any[] = await sbGetAll(
+        "pms_drawing_index_files?select=item_id,status,attempts,pages,pages_done,text_pages,file_name,folder_path,error,updated_at" +
+        "&project_prefix=eq." + encodeURIComponent(prefix) + "&order=item_id");
+      const knownById = new Map(known.map((k) => [k.item_id, k]));
+      const pending = planDrawingScope(scope.files).files.filter((f) => {
+        const k = knownById.get(f.itemId);
+        if (!k) return true;
+        if (k.status === "done" || k.status === "skipped") return false;
+        // A file another worker (a live search_drawings call) touched in the
+        // last two minutes is theirs: the background has no deadline to miss,
+        // so it never races a user's resume pointer. The per-call path keeps
+        // no such skip, or a quick second call could not continue a big book.
+        if (k.status === "pending" && Date.now() - Date.parse(k.updated_at || "") < 120000) return false;
+        return Number(k.attempts) < DRAWING_INDEX_MAX_ATTEMPTS;
+      });
+      if (!pending.length) { results.push({ project: prefix, filesInScope: scope.files.length, pending: 0 }); continue; }
+      // The run's clock is the sweep's own, so a slow scope crawl spends the
+      // same budget the indexer then honours; nothing restarts the 90 s.
+      const run = await indexDrawingFiles({
+        numPrefix: prefix, pending, knownById, fileBudget: filesPerProject, t0: started, deadlineMs: DRAWINGS_SWEEP_BUDGET_MS,
+      });
+      results.push({
+        project: prefix, filesInScope: scope.files.length, pending: pending.length,
+        indexed: run.indexedNow.length, skipped: run.skippedNow.length, failed: run.failedNow.length,
+      });
+    } catch (e) {
+      results.push({ project: prefix, error: String((e as any)?.message ?? e).slice(0, 300) });
+    }
+  }
+  return c.json({
+    scanned: results.length, candidates: cands.length, elapsedMs: Date.now() - started, results,
   }, 200, DOCS_SYNC_CORS);
 });
 
