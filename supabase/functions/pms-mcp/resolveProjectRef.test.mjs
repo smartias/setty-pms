@@ -80,3 +80,11 @@ test("drift: the shipped resolver carries the same fallbacks", () => {
     'const jobs = new Set(matches.map((r: any) => String(r.pn).toLowerCase().replace(/\\.\\d{2}$/, "")));',
   ]) assert.ok(src.includes(line) || seg.includes(line), "index.ts resolver lost: " + line);
 });
+
+test("drift: the name-is-enough tip keys off what was passed in, and leaves the call to Claude", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  assert.ok(src.includes("const passedRef = refKey ? String(args[refKey]).trim() : \"\";"), "wrapper captures the reference before normalisation");
+  assert.ok(src.includes("test(passedRef)"), "tip tests the passed reference, not the substituted number");
+  assert.ok(src.includes("Say this only if the USER'S OWN message contained a project number."), "tip leaves the judgment to Claude");
+  assert.ok(!src.includes("The user typed a project number."), "the tip no longer asserts what the user typed");
+});
