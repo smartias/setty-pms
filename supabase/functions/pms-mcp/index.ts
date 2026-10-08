@@ -1362,7 +1362,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-names-everywhere";
+const BUILD = "2026-10-08-sweep-cpu-budget";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -11594,8 +11594,14 @@ app.post("/pms-mcp/admin/documents-sync", async (c) => {
 // documents-sync; the cron job carries the same x-pms-cron secret (README →
 // Deploying → drawings index sweep). Candidates rotate by run so one project
 // with a long backlog cannot hog every run.
-const DRAWINGS_SWEEP_BUDGET_MS = 90000;
-const DRAWINGS_SWEEP_MAX_PROJECTS = 8;
+// Sized for CPU, not wall time: the first runs (2026-10-08, 90 s / 8 projects /
+// 20 files each) all died with "CPU Time exceeded" (546) after 12-35 s, because
+// parsing PDFs is CPU-bound. The index is resumable per page and the backlog is
+// small, so many short runs beat a few long ones. The indexer stops opening
+// files and pages at this deadline.
+const DRAWINGS_SWEEP_BUDGET_MS = 6000;
+const DRAWINGS_SWEEP_MAX_PROJECTS = 4;
+const DRAWINGS_SWEEP_FILES_PER_PROJECT = 3;
 const DRAWINGS_SWEEP_ACTIVE_DAYS = 30;
 app.options("/pms-mcp/admin/drawings-index", (c) => c.body(null, 204, DOCS_SYNC_CORS));
 app.post("/pms-mcp/admin/drawings-index", async (c) => {
@@ -11612,7 +11618,7 @@ app.post("/pms-mcp/admin/drawings-index", async (c) => {
   try { body = await c.req.json(); } catch { /* cron sends an empty body */ }
   const onlyProject = String(body?.projectNumber || "").toLowerCase().trim();
   const maxProjects = Math.max(1, Math.min(Number(body?.maxProjects) || DRAWINGS_SWEEP_MAX_PROJECTS, 20));
-  const filesPerProject = Math.max(1, Math.min(Number(body?.maxFilesPerProject) || DRAWING_INDEX_MAX_FILES_CAP, DRAWING_INDEX_MAX_FILES_CAP));
+  const filesPerProject = Math.max(1, Math.min(Number(body?.maxFilesPerProject) || DRAWINGS_SWEEP_FILES_PER_PROJECT, DRAWING_INDEX_MAX_FILES_CAP));
   const started = Date.now();
 
   const projects = (await getProjectsUnfiltered()).filter((p: any) => p.projectNumber && !p.archived);
@@ -11650,7 +11656,7 @@ app.post("/pms-mcp/admin/drawings-index", async (c) => {
   for (const prefix of cands) {
     if (results.length >= maxProjects) break;
     const left = DRAWINGS_SWEEP_BUDGET_MS - (Date.now() - started);
-    if (left < 5000) break;
+    if (left < 1500) break;
     try {
       const scope = await drawingScopeFiles(prefix);
       if (!scope.resolved) { results.push({ project: prefix, skipped: "no Outgoing folder" }); continue; }

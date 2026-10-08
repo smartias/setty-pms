@@ -256,10 +256,17 @@ The lazy index is what made `search_drawings` sit at 7-14 s per call: each call
 read a few PDFs before searching. The sweep does that reading in the background,
 with the same indexer (`indexDrawingFiles`) and the same per-file resume rules,
 for the projects people are actually working in: any project named in a tool
-call in the last 30 days (`pms_mcp_telemetry`). A run takes up to 8 projects and
-90 s, indexes up to 20 files per project, and rotates its starting point with the
+call in the last 30 days (`pms_mcp_telemetry`). A run takes up to 4 projects and
+6 s, indexes up to 3 files per project, and rotates its starting point with the
 quarter-hour so one project with a long backlog cannot hog every run. A project
 whose scope is already fully indexed costs one cache read to skip.
+
+The budget is CPU-sized: PDF parsing is CPU-bound and the platform kills a worker
+that exceeds its CPU allowance ("CPU Time exceeded", status 546), which the first
+90 s / 8 project / 20 file runs did every time. A run now stops opening files and
+pages after 6 s, takes up to 4 projects and 3 files each, and relies on the
+per-page resume pointer to continue next quarter-hour. Watch for 546s in
+`function_edge_logs` for `admin/drawings-index` before raising any of these.
 
 - **Body:** `{}` sweeps; `{"projectNumber":"SAPX..."}` does one project;
   `maxProjects` (max 20) and `maxFilesPerProject` (max 20) tune a run.
