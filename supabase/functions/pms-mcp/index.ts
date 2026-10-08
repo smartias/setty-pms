@@ -459,7 +459,16 @@ async function resolveProjectId(identifier: string): Promise<string | null> {
     : (rows || []).filter((r: any) => projectVisible(caps, r?.pn));
   const hit = visible.find((r: any) =>
     [r.pid, r.pn, r.nm].filter(Boolean).some((f: string) => String(f).toLowerCase() === id));
-  return hit?.pid ?? null;
+  if (hit) return hit.pid;
+  // A bare number ("SAPX266021") names the job people mean; the record carries
+  // the phase suffix ("SAPX266021.00"). Take the first phase in id order, the
+  // same rule teamForProject uses, so every project-scoped tool accepts the
+  // number as it is spoken and nobody is sent to an admin over a missing .00.
+  if (/^[a-z]{4}\d{6}$/.test(id)) {
+    const phase = visible.find((r: any) => String(r.pn || "").toLowerCase().startsWith(id + "."));
+    return phase?.pid ?? null;
+  }
+  return null;
 }
 
 const MAX_BODY_CHARS = 5000;
@@ -1297,7 +1306,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-how-to-use";
+const BUILD = "2026-10-08-how-to-use-bare-number";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3116,6 +3125,14 @@ const HOW_TO_USE_RULES = [
   "Follow-up questions keep the project context.",
   "\"Save that\" writes a finding to the shared project knowledge.",
 ];
+// The four skills live in the firm's claude.ai skill library, uploaded by an
+// Organization Owner (Admin Console → Skill library sync). A seat without
+// them still gets a useful answer from the tools, but not the firm's
+// procedure, so the guide says how to check rather than promising them.
+const HOW_TO_USE_WORKFLOWS_NOTE =
+  "These run as skills from the firm's Claude skill library. Check a skill is on your seat before relying on it: " +
+  "type / in a chat and look for its name. If it is missing, ask Sara Arias; the tools still answer, but without " +
+  "the skill Claude does not follow the firm's evidence and review steps.";
 const HOW_TO_USE_WORKFLOWS = [
   { name: "Design narrative", ask: "Draft the DD basis of design for SAPX239010.00", does: "Builds a narrative from the issued drawings, notes, filed email and earlier narratives, with a drawing index. Everything traces to the record." },
   { name: "QA coordination review", ask: "Run QA on the 100% CD set for the Thrive Center", does: "Works the QA Deliverables Checklist against the set and open items; findings go to the ledger keyed to checklist items." },
@@ -3133,7 +3150,7 @@ const HOW_TO_USE_LIMITS = [
 ];
 const HOW_TO_USE_TROUBLESHOOTING = [
   { when: "The connector shows disconnected", then: "Settings, Connectors, Setty PMS, reconnect; sign in with the Setty Microsoft account once." },
-  { when: "No project matching", then: "Check the number (the .00 suffix is optional). A new job may not be set up yet; ask a PMS admin." },
+  { when: "No project matching", then: "Check the number; a bare number resolves to its first phase, so the .00 suffix is optional. A new job may not be set up yet; ask a PMS admin." },
   { when: "A document is missing from results", then: "Ask to browse the folder live, or confirm the file is in the project's SharePoint folder; the daily index will pick it up." },
   { when: "Something looks wrong", then: "Send Sara Arias or Nikhil the question and the time; every call is logged and can be traced." },
 ];
@@ -3170,7 +3187,7 @@ mcp.tool("how_to_use", {
       ...(t ? { note: `No group called "${topic}"; here is everything.` } : {}),
       howToAsk: HOW_TO_USE_RULES,
       byTask: Object.entries(HOW_TO_USE_TOPICS).map(([key, v]) => ({ topic: key, ...v })),
-      biggerWorkflows: HOW_TO_USE_WORKFLOWS,
+      biggerWorkflows: { note: HOW_TO_USE_WORKFLOWS_NOTE, workflows: HOW_TO_USE_WORKFLOWS },
       whatToExpect: HOW_TO_USE_LIMITS,
       troubleshooting: HOW_TO_USE_TROUBLESHOOTING,
     });

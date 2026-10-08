@@ -132,7 +132,9 @@ Photos from the Field Photos app are searchable by project, phase and date.
 
 ## Bigger jobs Claude knows how to run
 
-Four workflows are set up as skills. Ask in plain words; Claude follows the firm's procedure and produces a draft for your review. It never files, sends or closes anything on its own.
+Four workflows are written as skills in the firm's Claude skill library. Ask in plain words; with the skill loaded, Claude follows the firm's procedure and produces a draft for your review. It never files, sends or closes anything on its own.
+
+Check the skill is on your seat before relying on it: type / in a chat and look for its name. If it is missing, ask Sara. The tools still answer without it, but Claude then improvises the method instead of following the firm's evidence and review steps, which matters most for QA and submittal reviews.
 
 **Design narrative.** "Draft the DD basis of design for SAPX239010.00" builds a narrative from the issued drawings, notes, filed email and any earlier narratives, with a drawing index. Everything traces to the record; you edit before it goes anywhere.
 
@@ -162,7 +164,7 @@ Four workflows are set up as skills. Ask in plain words; Claude follows the firm
 
 **The connector shows disconnected.** Open Settings, Connectors, Setty PMS, and reconnect. You will sign in with your Setty Microsoft account once. Since October 8 the sign-in renews itself; if it keeps dropping, tell Sara with the time it happened.
 
-**"No project matching".** Check the number (the .00 phase suffix is optional). If the job is new, it may not be set up yet; ask a PMS admin.
+**"No project matching".** Check the number. A bare number resolves to its first phase, so the .00 suffix is optional. If the job is new, it may not be set up yet; ask a PMS admin.
 
 **A document is missing from results.** Ask Claude to browse the folder live, or check the file is actually in the project's SharePoint folder. The daily index will pick it up.
 
