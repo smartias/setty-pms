@@ -261,6 +261,15 @@ call in the last 30 days (`pms_mcp_telemetry`). A run takes up to 4 projects and
 quarter-hour so one project with a long backlog cannot hog every run. A project
 whose scope is already fully indexed costs one cache read to skip.
 
+A run works candidates until its 6 s deadline rather than up to a project count,
+puts projects with unfinished files first (resumable books, files not yet given
+up), and reuses a project's file list for up to 6 hours instead of the 15-minute
+live-search TTL. The first version visited four projects per run, usually
+no-ops, and re-crawled a project's folders every run because the cron interval
+equals the default TTL: its first three runs indexed nothing (read the bodies in
+`net._http_response`). The response now reports `scanned`, `withWork` and
+`noWork`.
+
 The budget is CPU-sized: PDF parsing is CPU-bound and the platform kills a worker
 that exceeds its CPU allowance ("CPU Time exceeded", status 546), which the first
 90 s / 8 project / 20 file runs did every time. A run now stops opening files and
