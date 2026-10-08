@@ -1362,7 +1362,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-sweep-cpu-budget";
+const BUILD = "2026-10-08-name-tip-only-when-typed";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1536,6 +1536,10 @@ const _rawTool = mcp.tool.bind(mcp);
         // pipeline project with no number keeps its name.
         const scope: { ambiguity?: ProjectRefAmbiguity } = {};
         const refKey = ["projectNumber", "identifier", "project"].find((k) => typeof args?.[k] === "string" && args[k].trim()) ?? null;
+        // What the CALLER passed, before normalisation overwrites it: the
+        // "name is enough" tip must look at this, not at the canonical number
+        // the wrapper substitutes for a name.
+        const passedRef = refKey ? String(args[refKey]).trim() : "";
         if (refKey && !CANONICAL_NUMBER_RE.test(String(args[refKey]).trim())) {
           const row = await _resolveScope.run(scope, () => resolveProjectRef(String(args[refKey])));
           if (row?.pn) args = { ...args, [refKey]: row.pn };
@@ -1588,14 +1592,18 @@ const _rawTool = mcp.tool.bind(mcp);
         // the caller passed a number-shaped reference and the call worked, ride
         // a one-line tip on the result so Claude can say so, once per chat.
         try {
-          const ref = String(firstString(args?.projectNumber, args?.identifier, args?.project) || "").trim();
           const singleText = Array.isArray(res?.content) && res.content.length === 1 && res.content[0]?.type === "text";
-          if (singleText && /^[A-Za-z]{4}\d{5,6}(?:\.\d{2})?$/.test(ref)) {
+          if (singleText && /^[A-Za-z]{4}\d{5,6}(?:\.\d{2})?$/.test(passedRef)) {
             const payload = JSON.parse(res?.content?.[0]?.text ?? "null");
             if (payload && typeof payload === "object" && !Array.isArray(payload) && !payload.error && !payload.tip) {
-              payload.tip = "The user typed a project number. Once in this conversation, after the answer, tell them in these words: " +
-                "\"You can search the connector using the project name, no need to type out the project number. It can find the " +
-                "project even with a partial name, like 'Tabler' or 'St Nicholas'.\" Say it once; do not repeat it.";
+              // The connector cannot see what the user typed: after a name
+              // search Claude passes the number it found, which looks the same.
+              // So the wording leaves the judgment to Claude, who can.
+              payload.tip = "Say this only if the USER'S OWN message contained a project number. Do not say it if you got the number " +
+                "from a search or an earlier answer, or if the user named the project by name. If it applies, once in this conversation, " +
+                "after the answer, tell them in these words: \"You can search the connector using the project name, no need to type " +
+                "out the project number. It can find the project even with a partial name, like 'Tabler' or 'St Nicholas'.\" " +
+                "Say it once; do not repeat it.";
               res = asText(payload);
             }
           }
