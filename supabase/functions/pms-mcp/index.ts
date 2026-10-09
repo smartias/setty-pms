@@ -1362,7 +1362,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-08-sweep-pending-first";
+const BUILD = "2026-10-09-unrostered-alert";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -11597,6 +11597,76 @@ app.post("/pms-mcp/admin/documents-sync", async (c) => {
   return c.json({
     scanned: results.length, remaining: cands.length - results.length, results,
   }, 200, DOCS_SYNC_CORS);
+});
+
+// ── unrostered-caller alert ──────────────────────────────────────────────────
+// The connector accepts any verified Setty sign-in and resolves a person with no
+// pms_user_roles row to plain "staff" (pms_caps_for), so someone can use it
+// without ever being set up. This route emails the director each person the
+// FIRST time they show up, so they can be added in the Admin Console (Staff).
+// pms_unrostered_callers is the telemetry anti-joined against pms_user_roles;
+// pms_unrostered_alerts remembers who was already emailed so each person is
+// reported once, and a failed send leaves them unrecorded so the next run
+// retries. RESEND_API_KEY is a project secret shared with pms-user-emails.
+const UNROSTERED_ALERT_TO = Deno.env.get("UNROSTERED_ALERT_TO") || "sara.arias@setty.com";
+const UNROSTERED_ALERT_FROM = Deno.env.get("DIGEST_FROM_EMAIL") || "Setty PMS <digest@pms.setty.com>";
+const htmlEsc = (s: string) =>
+  String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const etStamp = (iso: string) =>
+  new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+function unrosteredAlertHtml(rows: any[]): string {
+  const body = rows.map((r) =>
+    `<tr><td style="padding:8px;border-bottom:1px solid #eee"><b>${htmlEsc(r.email)}</b></td>` +
+    `<td style="padding:8px;border-bottom:1px solid #eee">${Number(r.calls) || 0}</td>` +
+    `<td style="padding:8px;border-bottom:1px solid #eee">${htmlEsc(etStamp(r.first_call))} to ${htmlEsc(etStamp(r.last_call))} ET</td>` +
+    `<td style="padding:8px;border-bottom:1px solid #eee">${htmlEsc((r.tools || []).join(", "))}</td></tr>`).join("");
+  return `<div style="font-family:Calibri,'Segoe UI',sans-serif;font-size:11pt;color:#222;max-width:720px">
+<p>${rows.length === 1 ? "Someone" : rows.length + " people"} used the Setty PMS connector without being in Staff.</p>
+<table style="border-collapse:collapse;font-size:10pt"><tr style="text-align:left;background:#f5f7fa"><th style="padding:8px">Person</th><th style="padding:8px">Calls</th><th style="padding:8px">Seen</th><th style="padding:8px">Tools used</th></tr>${body}</table>
+<p>The connector treats anyone not in Staff as plain staff: they can see projects, but fees and billing are hidden. To set them up, add them in the PMS Admin Console under Staff. You will not be emailed about the same person again.</p>
+</div>`;
+}
+
+app.options("/pms-mcp/admin/unrostered-alert", (c) => c.body(null, 204, DOCS_SYNC_CORS));
+app.post("/pms-mcp/admin/unrostered-alert", async (c) => {
+  const cronGiven = c.req.header("x-pms-cron") || "";
+  const isCron = !!DOCS_SYNC_SECRET && cronGiven === DOCS_SYNC_SECRET;
+  if (!isCron) {
+    const auth = c.req.header("Authorization") || "";
+    const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!(await isAdminSupabaseJwt(jwt))) {
+      return c.json({ error: "Admins only (Supabase session required), or a valid x-pms-cron secret." }, 403, DOCS_SYNC_CORS);
+    }
+  }
+  let body: any = {};
+  try { body = await c.req.json(); } catch { /* cron sends an empty body */ }
+  const dryRun = body?.dryRun === true;
+  const seen = await sbGetAll("pms_unrostered_callers?select=email,calls,first_call,last_call,tools&order=first_call.asc");
+  const done = new Set((await sbGetAll("pms_unrostered_alerts?select=email")).map((r: any) => String(r.email).toLowerCase()));
+  const fresh = seen.filter((r: any) => !done.has(String(r.email).toLowerCase()));
+  if (!fresh.length || dryRun) {
+    return c.json({ unrostered: seen.length, fresh: fresh.length, dryRun, emails: dryRun ? fresh.map((r: any) => r.email) : undefined }, 200, DOCS_SYNC_CORS);
+  }
+  const key = Deno.env.get("RESEND_API_KEY") || "";
+  if (!key) return c.json({ error: "RESEND_API_KEY is not set; nothing was sent.", fresh: fresh.length }, 500, DOCS_SYNC_CORS);
+  const subject = fresh.length === 1
+    ? `Setty PMS: ${fresh[0].email} is using the connector but is not in Staff`
+    : `Setty PMS: ${fresh.length} people are using the connector but are not in Staff`;
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ from: UNROSTERED_ALERT_FROM, to: UNROSTERED_ALERT_TO, subject, html: unrosteredAlertHtml(fresh) }),
+  });
+  if (!res.ok) {
+    const err = (await res.text()).slice(0, 300);
+    console.warn("[unrostered-alert] send failed:", res.status, err);
+    return c.json({ error: `Email not sent (Resend ${res.status}); will retry next run.`, detail: err, fresh: fresh.length }, 502, DOCS_SYNC_CORS);
+  }
+  await sbUpsert("pms_unrostered_alerts", "email", fresh.map((r: any) => ({
+    email: String(r.email).toLowerCase(), calls_at_alert: Number(r.calls) || 0, alerted_to: UNROSTERED_ALERT_TO,
+  })));
+  return c.json({ sent: true, to: UNROSTERED_ALERT_TO, emails: fresh.map((r: any) => r.email) }, 200, DOCS_SYNC_CORS);
 });
 
 // ── drawings index sweep ─────────────────────────────────────────────────────
