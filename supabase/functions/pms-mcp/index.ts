@@ -55,6 +55,11 @@ import {
 import {
   type SyncState, DOCS_TABLE_MAX_ROWS, tableIsFresh, buildDocumentsQuery, rowToFile,
 } from "./documentSearch.ts";
+// Outgoing follow-ups (pms_followups): kinds, cadence and due rules. Pure; see its tests.
+import {
+  FOLLOWUP_KINDS, FOLLOWUP_SOURCES, FOLLOWUP_CADENCE_DAYS, type FollowupKind,
+  addDays, nextFollowupAfter, toneForReminder, daysOutstanding, isDue,
+} from "./followups.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -9254,6 +9259,226 @@ mcp.tool("update_qa_finding", {
         ...(row.source !== "qa" && status === "closed"
           ? { reminder: "External-source finding closed — the note above should name the human decision behind it." } : {}),
       });
+    } catch (e) {
+      return asText({ error: `Update failed: ${String((e as any)?.message ?? e)}` });
+    }
+  },
+});
+
+// ─── OUTGOING FOLLOW-UPS ────────────────────────────────────────────────────
+// Things we asked someone for and are waiting on: a signed contract or add
+// service, a payment, an answer. One table (pms_followups, migration
+// 20261013120000), one kind label per row; cadence and tone live in
+// followups.ts. Rows come from a flagged Outlook sent item (flag due date seeds
+// the first reminder), a PMS-generated email, or a person. Every row has an
+// owner and is only visible to and changeable by that owner through these
+// tools. Nothing here sends mail: the add-in drafts, a person sends.
+const FOLLOWUP_COLUMNS =
+  "id,kind,label,subject,project_number,counterpart_name,counterpart_email,company,amount," +
+  "internet_message_id,conversation_id,web_link,sent_at,flag_due_at,status,next_followup_at," +
+  "snoozed_until,reminder_count,last_reminded_at,source,resolution,resolved_at,resolved_by,notes,owner_email";
+
+function followupCaller(): { ok: true; email: string } | { ok: false; response: { content: Array<{ type: "text"; text: string }> } } {
+  const c = currentCaller();
+  if (c.kind === "service" || !c.email) {
+    return { ok: false, response: asText({ error: "Follow-ups belong to a person: sign-in required; the service lane cannot read or write them." }) };
+  }
+  return { ok: true, email: c.email.toLowerCase() };
+}
+
+function shapeFollowup(r: any) {
+  return {
+    ...r,
+    daysOutstanding: daysOutstanding(r.sent_at),
+    due: isDue(r),
+    nextTone: toneForReminder(r.reminder_count ?? 0),
+  };
+}
+
+// Load one row and refuse unless the caller owns it (the connector reads with
+// the service key, so RLS does not do this for us).
+async function loadOwnedFollowup(id: number, email: string): Promise<{ row: any } | { error: string }> {
+  let rows: any[];
+  try { rows = await sbGet(`pms_followups?select=${FOLLOWUP_COLUMNS}&id=eq.${Math.round(id)}`); }
+  catch (e) { return { error: `Could not read the follow-up: ${String((e as any)?.message ?? e)}` }; }
+  const row = rows?.[0];
+  if (!row || String(row.owner_email).toLowerCase() !== email) return { error: `No follow-up with id ${id} on your list.` };
+  return { row };
+}
+
+mcp.tool("create_followup", {
+  description:
+    "Track an outgoing request you are waiting on: a signed contract or add service ('signature'), an invoice " +
+    "('payment'), a question ('info'), an approval, or anything else ('general'). Pass the sent message's " +
+    "internetMessageId when you have it: tracking the same message twice returns the existing row instead of " +
+    "a duplicate (a flagged Outlook sent item re-synced is safe). The first reminder is the Outlook flag's due " +
+    "date when given, else the kind's default cadence from the send date. Owned by the signed-in caller. " +
+    "Tracking sends nothing.",
+  inputSchema: z.object({
+    subject: z.string().min(1).describe("What is being waited on, e.g. 'Homeport II Add Service 7' or the email subject."),
+    kind: z.enum(FOLLOWUP_KINDS).optional().describe("Default 'general'. Cadence: " +
+      Object.entries(FOLLOWUP_CADENCE_DAYS).map(([k, v]) => `${k} ${v.join("/")}d`).join(", ") + "."),
+    label: z.string().optional().describe("Short sub-label: 'Add Service 7', 'Invoice 3'."),
+    projectNumber: z.string().optional().describe("Project number OR name."),
+    counterpartName: z.string().optional(),
+    counterpartEmail: z.string().optional(),
+    company: z.string().optional(),
+    amount: z.number().optional().describe("Dollars, for payments, add services and fees."),
+    internetMessageId: z.string().optional().describe("The sent message's Internet-Message-ID: the dedupe key."),
+    conversationId: z.string().optional().describe("Graph conversationId, used to spot a reply."),
+    webLink: z.string().optional().describe("Link back to the sent message."),
+    sentAt: z.string().optional().describe("ISO date-time the message went out (default now)."),
+    flagDueAt: z.string().optional().describe("ISO date-time of the Outlook flag's due date, when sourced from a flag."),
+    source: z.enum(FOLLOWUP_SOURCES).optional().describe("Default 'manual'."),
+    notes: z.string().optional(),
+  }),
+  handler: async (a) => {
+    const who = followupCaller();
+    if (!who.ok) return who.response;
+    const kind: FollowupKind = a.kind ?? "general";
+    if (a.sentAt && !Number.isFinite(Date.parse(a.sentAt))) return asText({ error: `sentAt is not a date: ${a.sentAt}` });
+    if (a.flagDueAt && !Number.isFinite(Date.parse(a.flagDueAt))) return asText({ error: `flagDueAt is not a date: ${a.flagDueAt}` });
+    let project: string | null = null;
+    if (a.projectNumber?.trim()) {
+      const pid = await resolveProjectId(a.projectNumber);
+      if (!pid) return asText({ error: `No project matching "${a.projectNumber}".`, nextStep: "Confirm with search_projects, or omit projectNumber." });
+      project = (await getProjectById(pid))?.projectNumber ?? a.projectNumber;
+    }
+    if (a.internetMessageId) {
+      try {
+        const dup = await sbGet(`pms_followups?select=${FOLLOWUP_COLUMNS}&owner_email=eq.${encodeURIComponent(who.email)}` +
+          `&internet_message_id=eq.${encodeURIComponent(a.internetMessageId)}`);
+        if (dup?.length) return asText({ alreadyTracked: true, followup: shapeFollowup(dup[0]) });
+      } catch (e) { return asText({ error: `Could not check for an existing follow-up: ${String((e as any)?.message ?? e)}` }); }
+    }
+    const sentAt = a.sentAt ?? new Date().toISOString();
+    const next = a.flagDueAt ?? nextFollowupAfter(kind, sentAt, 0);
+    try {
+      const row = await sbInsert("pms_followups", {
+        kind, label: a.label ?? null, subject: a.subject.trim(), project_number: project,
+        counterpart_name: a.counterpartName ?? null, counterpart_email: a.counterpartEmail ?? null,
+        company: a.company ?? null, amount: a.amount ?? null,
+        internet_message_id: a.internetMessageId ?? null, conversation_id: a.conversationId ?? null,
+        web_link: a.webLink ?? null, sent_at: sentAt, flag_due_at: a.flagDueAt ?? null,
+        next_followup_at: next, source: a.source ?? "manual", notes: a.notes ?? null,
+        owner_email: who.email, created_by: who.email,
+      });
+      return asText({ followup: shapeFollowup(row) });
+    } catch (e) {
+      return asText({ error: `Could not create the follow-up: ${String((e as any)?.message ?? e)}` });
+    }
+  },
+});
+
+mcp.tool("list_followups", {
+  description:
+    "Your outgoing follow-ups: what you are waiting on, oldest-due first, with days outstanding and the tone of " +
+    "the next reminder (friendly / firm / escalate). Defaults to active (open or snoozed). 'due' narrows to those " +
+    "whose next reminder date has arrived. Only your own rows are returned. Pair with the draft-a-reminder step: " +
+    "this tool drafts nothing and sends nothing.",
+  inputSchema: z.object({
+    status: z.enum(["active", "resolved", "dismissed", "all"]).optional().describe("Default 'active'."),
+    kind: z.enum(FOLLOWUP_KINDS).optional(),
+    projectNumber: z.string().optional().describe("Project number OR name."),
+    due: z.boolean().optional().describe("Only items whose next reminder date has arrived."),
+    limit: z.number().optional().describe("Default 50, max 200."),
+  }),
+  handler: async ({ status, kind, projectNumber, due, limit }) => {
+    const who = followupCaller();
+    if (!who.ok) return who.response;
+    const want = status ?? "active";
+    let q = `pms_followups?select=${FOLLOWUP_COLUMNS}&owner_email=eq.${encodeURIComponent(who.email)}`;
+    if (want === "active") q += "&status=in.(open,snoozed)";
+    else if (want !== "all") q += `&status=eq.${want}`;
+    if (kind) q += `&kind=eq.${kind}`;
+    if (projectNumber?.trim()) {
+      const pid = await resolveProjectId(projectNumber);
+      if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+      q += `&project_number=eq.${encodeURIComponent((await getProjectById(pid))?.projectNumber ?? projectNumber)}`;
+    }
+    const cap = Math.min(Math.max(Math.round(limit ?? 50), 1), 200);
+    q += `&order=next_followup_at.asc.nullsfirst&limit=${cap}`;
+    let rows: any[];
+    try { rows = await sbGet(q); } catch (e) { return asText({ error: `Could not read follow-ups: ${String((e as any)?.message ?? e)}` }); }
+    let out = (rows ?? []).map(shapeFollowup);
+    if (due) out = out.filter((r) => r.due);
+    const open = out.filter((r) => r.status === "open" || r.status === "snoozed");
+    return asText({
+      count: out.length,
+      dueNow: open.filter((r) => r.due).length,
+      outstandingAmount: open.reduce((s, r) => s + (Number(r.amount) || 0), 0),
+      followups: out,
+    });
+  },
+});
+
+mcp.tool("snooze_followup", {
+  description:
+    "Push a follow-up's next reminder out, or record that you just sent a reminder. Pass `until` (ISO date) or " +
+    "`days` to snooze. Pass reminded:true when a reminder email actually went out: it bumps the reminder count " +
+    "(which sets the next tone) and, with no `until`/`days`, schedules the next reminder from the kind's cadence. " +
+    "Does not send anything.",
+  inputSchema: z.object({
+    id: z.number().describe("Follow-up id from list_followups."),
+    until: z.string().optional().describe("ISO date or date-time."),
+    days: z.number().optional().describe("Snooze this many days from now."),
+    reminded: z.boolean().optional().describe("A reminder was just sent."),
+  }),
+  handler: async ({ id, until, days, reminded }) => {
+    const who = followupCaller();
+    if (!who.ok) return who.response;
+    if (until === undefined && days === undefined && !reminded) {
+      return asText({ error: "Pass until, days, or reminded:true." });
+    }
+    if (until !== undefined && !Number.isFinite(Date.parse(until))) return asText({ error: `until is not a date: ${until}` });
+    const found = await loadOwnedFollowup(id, who.email);
+    if ("error" in found) return asText({ error: found.error });
+    const row = found.row;
+    if (row.status === "resolved" || row.status === "dismissed") {
+      return asText({ error: `Follow-up ${id} is already ${row.status}. Nothing to snooze.` });
+    }
+    const now = new Date().toISOString();
+    const count = (row.reminder_count ?? 0) + (reminded ? 1 : 0);
+    const target = until !== undefined ? new Date(until).toISOString()
+      : days !== undefined ? addDays(now, days)
+      : nextFollowupAfter(row.kind as FollowupKind, now, count);
+    try {
+      const updated = await sbPatch("pms_followups?id=eq." + Math.round(id), {
+        status: "snoozed", snoozed_until: target, next_followup_at: target,
+        reminder_count: count, ...(reminded ? { last_reminded_at: now } : {}),
+      });
+      return asText({ followup: shapeFollowup(updated) });
+    } catch (e) {
+      return asText({ error: `Update failed: ${String((e as any)?.message ?? e)}` });
+    }
+  },
+});
+
+mcp.tool("resolve_followup", {
+  description:
+    "Close a follow-up: 'resolved' when the thing came back (signed, paid, answered) or 'dismissed' when it is no " +
+    "longer needed. `resolution` is required: say what happened ('signed copy received 10/14', 'paid check 4471', " +
+    "'client withdrew'), because the record shows how it ended, not just that it did. Does not change the project's " +
+    "contract status or file anything; do that separately.",
+  inputSchema: z.object({
+    id: z.number().describe("Follow-up id from list_followups."),
+    resolution: z.string().min(1).describe("What happened."),
+    outcome: z.enum(["resolved", "dismissed"]).optional().describe("Default 'resolved'."),
+  }),
+  handler: async ({ id, resolution, outcome }) => {
+    const who = followupCaller();
+    if (!who.ok) return who.response;
+    const found = await loadOwnedFollowup(id, who.email);
+    if ("error" in found) return asText({ error: found.error });
+    if (found.row.status === "resolved" || found.row.status === "dismissed") {
+      return asText({ error: `Follow-up ${id} is already ${found.row.status}.` });
+    }
+    try {
+      const updated = await sbPatch("pms_followups?id=eq." + Math.round(id), {
+        status: outcome ?? "resolved", resolution: resolution.trim(),
+        resolved_at: new Date().toISOString(), resolved_by: who.email,
+      });
+      return asText({ followup: shapeFollowup(updated) });
     } catch (e) {
       return asText({ error: `Update failed: ${String((e as any)?.message ?? e)}` });
     }
