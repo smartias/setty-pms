@@ -5157,8 +5157,11 @@ function uploadResult(item: any, drive: string, name: string, bytes: number, exi
 
 mcp.tool("upload_document", {
   description:
-    "WRITE a file into the project's SharePoint record — how an edited workbook or document is handed back as a " +
-    "real file, not text. Target: the itemId of an EXISTING FILE (overwrite:true replaces its content as a new " +
+    "WRITE a file into the project's SharePoint FOLDERS — how an edited workbook or document is handed back as a " +
+    "real file, not text. NOT the tool for 'save this to the project record' / 'save that' / 'remember this': a " +
+    "finding, timeline, status table or decision from the conversation goes to save_knowledge (the knowledge " +
+    "layer), and a QA report or narrative goes to file_qa_report. Use this only when the user wants a FILE " +
+    "written to SharePoint, or an existing file overwritten. Target: the itemId of an EXISTING FILE (overwrite:true replaces its content as a new " +
     "SharePoint version, the previous version staying in version history; or name:'…' saves a new file in the same " +
     "folder), or the itemId of a FOLDER from list_project_documents plus name. Bytes: contentBase64 inline for " +
     "small files (≤3.5MB), or omit it and the tool returns a signed uploadUrl — PUT the raw bytes to it within the " +
@@ -10513,9 +10516,11 @@ function knowledgeOverlap(a: string, b: string): number {
 
 mcp.tool("save_knowledge", {
   description:
-    "Save a durable finding to Setty's SHARED project knowledge record in the PMS. When the user " +
-    "asks to save, remember, or share a project finding — 'save that', 'add this to the project " +
-    "record' — THIS TOOL is the destination, NOT your private conversation memory: memory is " +
+    "Save a durable finding to Setty's SHARED project knowledge record (the knowledge layer) in the PMS. " +
+    "When the user asks to save, remember, or share a project finding, timeline, status table or decision — " +
+    "'save that', 'save this to the project record' — THIS TOOL is the destination, even when the text is " +
+    "long or table-shaped; do not try upload_document (a SharePoint file write) first unless they ask for a " +
+    "file. It is NOT your private conversation memory: memory is " +
     "invisible to their teammates, and saving there instead of here silently loses the finding " +
     "for the team. CALL IT ONLY AFTER THE USER SAYS YES: either they asked, or they accepted " +
     "your offer. DO offer — once, briefly, at a natural pause — when the session just did work " +
