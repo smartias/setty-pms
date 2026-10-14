@@ -119,3 +119,9 @@ create policy pms_followups_update on public.pms_followups
   with check (lower(owner_email) = pms_followups_caller_email() or is_pms_admin());
 
 -- No delete policy: dismiss instead, so the record of what was chased survives.
+
+-- Supabase default privileges grant anon and authenticated everything on new
+-- public tables. RLS already denies anon (no policy) and DELETE (no policy),
+-- but TRUNCATE ignores RLS, so state the intended surface explicitly.
+revoke all on public.pms_followups from anon;
+revoke delete, truncate, references, trigger on public.pms_followups from authenticated;
