@@ -118,11 +118,50 @@
     refreshTimer = setTimeout(() => { refresh().catch(() => {}); }, ms);
   }
 
+  // Every open tab (and the Outlook task pane on the web, which shares this
+  // origin's storage) runs its own refresh timer against the SAME refresh
+  // token, and they all fire at about the same moment. Supabase rotates the
+  // token on every use, so the loser of that race holds a consumed token and
+  // can end up signed out. One browser-wide lock makes them take turns; the
+  // later ones then find the winner's fresh session in storage and adopt it.
+  // The wait is capped so a stuck tab can never block sign-in; browsers
+  // without navigator.locks keep the old behavior.
+  const REFRESH_LOCK = "settyAuth:refresh";
+  const REFRESH_LOCK_WAIT_MS = 15000;
+  function withRefreshLock(fn) {
+    const locks = typeof navigator !== "undefined" ? navigator.locks : null;
+    if (!locks || typeof locks.request !== "function") return fn();
+    const ac = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = ac ? setTimeout(() => ac.abort(), REFRESH_LOCK_WAIT_MS) : null;
+    return locks.request(REFRESH_LOCK, ac ? { signal: ac.signal } : {}, () => {
+      if (timer) clearTimeout(timer);
+      return fn();
+    }).catch((e) => {
+      if (e && e.name === "AbortError") return fn();   // waited too long: go ahead unlocked
+      throw e;
+    });
+  }
+
   async function refresh() {
     if (!session || !session.refresh_token) return null;
     if (refreshing) return refreshing;            // single-flight across callers
-    refreshing = (async () => {
+    refreshing = withRefreshLock(async () => {
       try {
+        // Another tab may have refreshed while we waited for the lock: if
+        // storage holds a session that is not about to expire, take it and
+        // spend no refresh token at all.
+        const stored = loadStored();
+        if (stored && stored.access_token && session && stored.access_token !== session.access_token &&
+            stored.expires_at * 1000 - Date.now() > REFRESH_SKEW_S * 1000) {
+          store(stored);
+          return session;
+        }
+        // Otherwise spend the newest refresh token we know of, not a stale
+        // in-memory copy that another tab already rotated.
+        if (stored && stored.refresh_token && session && stored.refresh_token !== session.refresh_token &&
+            stored.expires_at >= session.expires_at) {
+          session = stored;
+        }
         const j = await authFetch("/token?grant_type=refresh_token", { refresh_token: session.refresh_token });
         store(sessionFromTokenResponse(j));
         return session;
@@ -133,9 +172,14 @@
         if (other && other.access_token !== (session && session.access_token)) { store(other); return session; }
         store(null);
         return null;
-      } finally { refreshing = null; }
-    })();
-    return refreshing;
+      }
+    });
+    // Cleared after assignment (not in a finally inside the task): the task
+    // can finish before this line when storage already holds a fresh session.
+    const p = refreshing;
+    const clear = () => { if (refreshing === p) refreshing = null; };
+    p.then(clear, clear);
+    return p;
   }
 
   // ── sign-in flows ──────────────────────────────────────────────────────────
