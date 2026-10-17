@@ -193,6 +193,16 @@ do $$ declare r record; n int; begin
   select count(*) into n from public.search_ca_items(array['p1'], p_text => 'dampers', p_discipline => 'mechanical'); assert n = 2, 'discipline ci';
   select count(*) into n from public.search_ca_items(array['p1'], p_text => 'dampers', p_status => 'Closed'); assert n = 1, 'status';
   select count(*) into n from public.search_ca_items(array['p1'], p_text => 'nothing matches this'); assert n = 0, 'prose miss';
+  -- a discipline or status word still matches, as the in-memory scan did (Codex P2)
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'Mechanical'); assert n = 2, 'discipline word -> ' || n;
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'closed'); assert n = 1, 'status word -> ' || n;
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'resub'); assert n = 1, 'status substring -> ' || n;
+  select * into r from public.search_ca_items(array['p1'], p_text => 'closed') limit 1; assert r.rank = 1, 'field rank';
+  -- a zero-only number filters instead of listing everything (Codex P2)
+  select count(*) into n from public.search_ca_items(array['p1'], p_number => 'RFI-000'); assert n = 0, 'RFI-000 -> ' || n;
+  select count(*) into n from public.search_ca_items(array['p1'], p_number => '0'); assert n = 0, 'zero -> ' || n;
+  select count(*) into n from public.search_ca_items(array['p1'], p_number => 'RFI-0001', p_type => 'rfi'); assert n = 1, 'padded number -> ' || n;  -- the connector passes the prefix as p_type
+  select count(*) into n from public.search_ca_items(array['p1'], p_number => '1'); assert n = 2, 'bare 1 matches RFI-001 and SUB-001 -> ' || n;
   -- limit clamps
   select count(*) into n from public.search_ca_items(array['p1'], p_limit => 0); assert n = 1, 'limit floor';
   raise notice 'search_ca_items ok';
