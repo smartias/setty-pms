@@ -50,7 +50,7 @@ import {
 // classifier, RPC arguments and row mapping are pure. See caItems.ts.
 import {
   buildCaSearchArgs, caRowToItem, caTotalOf, clampCaLimit, summarizeReconcile,
-  CA_EMBED_MODEL, isEmbedding, vectorLiteral, summarizeEmbedRun,
+  CA_EMBED_MODEL, isEmbedding, vectorLiteral, runEmbedPass,
 } from "./caItems.ts";
 
 // pms_documents: per-file attributes derived for the nightly sync. Pure; see documentMeta.ts.
@@ -1374,7 +1374,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-17-ca-items-min-similarity";
+const BUILD = "2026-10-17-ca-items-embed-route";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -11925,71 +11925,58 @@ app.post("/pms-mcp/admin/documents-sync", async (c) => {
       console.warn("[documents-sync] pms_ca_items reconcile failed:", caItems.error);
     }
   }
-  // Embedding pass (PROPOSAL-ca-items-embeddings.md): rows whose text has no
-  // embedding yet, or whose text changed since (the hash), embedded with the
-  // edge runtime's model and stored in one RPC per batch. Bounded by its own
-  // time budget so a long document walk before it never pushes the invocation
-  // over the edge limit; what it does not reach, the next run does. The
-  // backfill of ~2,900 rows takes about 15 runs at the default 200, or one
-  // admin call with {"caItemsEmbed": {"max": 3000}}. {"caItemsEmbed": false}
-  // skips it. Same posture as the reconcile step: log and continue, never fail
-  // the run.
-  let caItemsEmbed: Record<string, unknown> | undefined;
-  if (body?.caItemsEmbed !== false) {
-    const maxRows = Math.max(1, Math.min(Number(body?.caItemsEmbed?.max) || CA_EMBED_DEFAULT_ROWS, 3000));
-    try { caItemsEmbed = await embedCaItems(maxRows, Date.now()); }
-    catch (e) {
-      caItemsEmbed = { error: String((e as any)?.message ?? e) };
-      console.warn("[documents-sync] pms_ca_items embed failed:", caItemsEmbed.error);
-    }
-  }
   return c.json({
     scanned: results.length, remaining: cands.length - results.length, results,
     ...(caItems ? { caItems } : {}),
-    ...(caItemsEmbed ? { caItemsEmbed } : {}),
   }, 200, DOCS_SYNC_CORS);
 });
 
-const CA_EMBED_DEFAULT_ROWS = 200;
-const CA_EMBED_BATCH = 100;
-const CA_EMBED_BUDGET_MS = 25000;
-async function embedCaItems(maxRows: number, started: number): Promise<Record<string, unknown>> {
-  let queued = 0, embedded = 0, failed = 0, batches = 0, stoppedEarly = false;
-  while (queued < maxRows) {
-    if (Date.now() - started > CA_EMBED_BUDGET_MS) { stoppedEarly = true; break; }
-    const want = Math.min(CA_EMBED_BATCH, maxRows - queued);
-    const rows = await sbRpc("pms_ca_items_to_embed", { p_limit: want });
-    if (!Array.isArray(rows) || !rows.length) break;
-    queued += rows.length;
-    const out: Record<string, unknown>[] = [];
-    for (const r of rows) {
-      if (Date.now() - started > CA_EMBED_BUDGET_MS) { stoppedEarly = true; break; }
-      try {
-        const v = await embedText(String(r.embed_text ?? ""));
-        out.push({ project_row_id: r.project_row_id, item_type: r.item_type, item_id: r.item_id, embed_hash: r.embed_hash, embedding: vectorLiteral(v) });
-      } catch (e) {
-        failed++;
-        console.warn("[documents-sync] embed failed for", r.project_row_id, r.item_type, r.item_id, String((e as any)?.message ?? e));
-      }
+// ── CA item embeddings (PROPOSAL-ca-items-embeddings.md) ─────────────────────
+// Rows whose text has no embedding yet, or whose text changed since (the
+// hash), embedded with the edge runtime's model and stored in small groups.
+// A route of its own, called once a minute by pg_cron (README → CA items
+// table), NOT a step of documents-sync: the model runs on the CPU and the
+// runtime allows 2 s of active compute per request, so the first version
+// (200 rows inside the 15-minute sync) was killed before it stored a single
+// row (2026-10-17, 0 of 2,879 embedded after two cycles). Each call takes a
+// few rows, stores every few, and stops at a short deadline; the backfill is
+// a couple of hours of one-minute calls and steady state is one cheap call
+// a minute that finds nothing to do. {"max": N} (max 200) sizes one call.
+const CA_EMBED_DEFAULT_ROWS = 20;
+const CA_EMBED_FETCH = 10;
+const CA_EMBED_STORE_EVERY = 5;
+const CA_EMBED_BUDGET_MS = 1500;
+app.options("/pms-mcp/admin/ca-items-embed", (c) => c.body(null, 204, DOCS_SYNC_CORS));
+app.post("/pms-mcp/admin/ca-items-embed", async (c) => {
+  const cronGiven = c.req.header("x-pms-cron") || "";
+  const isCron = !!DOCS_SYNC_SECRET && cronGiven === DOCS_SYNC_SECRET;
+  if (!isCron) {
+    const auth = c.req.header("Authorization") || "";
+    const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!(await isAdminSupabaseJwt(jwt))) {
+      return c.json({ error: "Admins only (Supabase session required), or a valid x-pms-cron secret." }, 403, DOCS_SYNC_CORS);
     }
-    // A batch with no successes means the model is down, not the rows: stop
-    // here rather than pull every remaining row through the same failure.
-    if (!out.length) break;
-    {
-      const n = Number(await sbRpc("pms_ca_items_store_embeddings", { p_rows: out })) || 0;
-      embedded += n;
-      batches++;
-      // rows whose text moved between read and write are skipped by the store
-      // (hash mismatch) and come back on the next pass; count them as failed
-      // here so the number is visible, not as embedded.
-      failed += Math.max(0, out.length - n);
-    }
-    if (stoppedEarly || rows.length < want) break;   // a short batch means the queue is drained
   }
-  const summary = summarizeEmbedRun({ queued, embedded, failed, batches, ms: Date.now() - started, stoppedEarly });
-  if (failed) console.warn("[documents-sync] pms_ca_items embed:", JSON.stringify(summary));
-  return summary;
-}
+  let body: any = {};
+  try { body = await c.req.json(); } catch { /* cron sends an empty body */ }
+  const maxRows = Math.max(1, Math.min(Number(body?.max) || CA_EMBED_DEFAULT_ROWS, 200));
+  try {
+    const summary = await runEmbedPass({
+      maxRows, fetchSize: CA_EMBED_FETCH, storeEvery: CA_EMBED_STORE_EVERY, budgetMs: CA_EMBED_BUDGET_MS,
+      now: () => Date.now(),
+      fetchRows: (limit) => sbRpc("pms_ca_items_to_embed", { p_limit: limit }),
+      embed: (text) => embedText(text),
+      store: async (rows) => Number(await sbRpc("pms_ca_items_store_embeddings", { p_rows: rows })) || 0,
+      log: (msg) => console.warn("[ca-items-embed]", msg),
+    });
+    if (summary.failed) console.warn("[ca-items-embed]", JSON.stringify(summary));
+    return c.json(summary, 200, DOCS_SYNC_CORS);
+  } catch (e) {
+    const error = String((e as any)?.message ?? e);
+    console.warn("[ca-items-embed] failed:", error);
+    return c.json({ error }, 500, DOCS_SYNC_CORS);
+  }
+});
 
 // ── unrostered-caller alert ──────────────────────────────────────────────────
 // The connector accepts any verified Setty sign-in and resolves a person with no

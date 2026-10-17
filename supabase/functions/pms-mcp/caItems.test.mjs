@@ -5,7 +5,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
   classifyCaQuery, buildCaSearchArgs, caRowToItem, caTotalOf, clampCaLimit, summarizeReconcile,
-  vectorLiteral, isEmbedding, summarizeEmbedRun,
+  vectorLiteral, isEmbedding, summarizeEmbedRun, runEmbedPass,
   CA_SEARCH_DEFAULT_LIMIT, CA_SEARCH_MAX_LIMIT, CA_EMBED_DIMS, CA_MIN_SIMILARITY,
 } from "./caItems.ts";
 
@@ -168,5 +168,73 @@ test("an embed run is summarised with its budget flag", () => {
     { queued: 200, embedded: 198, failed: 2, batches: 1, ms: 1235 });
   const early = summarizeEmbedRun({ queued: 400, embedded: 200, failed: 0, batches: 1, ms: 25000, stoppedEarly: true });
   assert.equal(early.stoppedEarly, true);
-  assert.match(String(early.note), /next run/);
+  assert.match(String(early.note), /next call/);
+});
+
+// ── the embed pass ───────────────────────────────────────────────────────────
+// A fake queue of rows plus a fake clock; `embed` returns a unit vector so the
+// store sees exactly what the route would send.
+function embedHarness(total, { clockStep = 0, failIds = [], storeSkips = 0, embedThrows = false } = {}) {
+  const queue = Array.from({ length: total }, (_, i) => ({ project_row_id: "p", item_type: "rfi", item_id: "r" + i, embed_text: "text " + i, embed_hash: "h" + i }));
+  let t = 0;
+  const stores = [];
+  const opts = {
+    maxRows: 1000, fetchSize: 10, storeEvery: 5, budgetMs: 1500,
+    now: () => t,
+    fetchRows: async (limit) => queue.splice(0, limit),
+    embed: async (text) => {
+      t += clockStep;
+      const id = "r" + text.slice(5);
+      if (embedThrows || failIds.includes(id)) throw new Error("model down");
+      return UNIT;
+    },
+    store: async (rows) => { stores.push(rows.map((r) => r.item_id)); return Math.max(0, rows.length - storeSkips); },
+    log: () => {},
+  };
+  return { opts, stores };
+}
+
+test("the embed pass stores in small groups and flushes the tail", async () => {
+  const h = embedHarness(23);
+  const out = await runEmbedPass(h.opts);
+  assert.equal(out.queued, 23);
+  assert.equal(out.embedded, 23);
+  assert.equal(out.failed, 0);
+  assert.deepEqual(h.stores.map((g) => g.length), [5, 5, 5, 5, 3], "five per write, the remainder at the end");
+  assert.equal(out.batches, 5);
+  assert.equal(out.stoppedEarly, undefined, "a drained queue is not an early stop");
+});
+
+test("the embed pass stops at the deadline and keeps what it already embedded", async () => {
+  const h = embedHarness(100, { clockStep: 100 });   // 100 ms per row against a 1500 ms budget
+  const out = await runEmbedPass(h.opts);
+  assert.equal(out.stoppedEarly, true);
+  assert.ok(out.embedded >= 15 && out.embedded <= 16, `embedded ${out.embedded}`);
+  assert.equal(out.embedded, h.stores.flat().length, "everything embedded before the deadline was written");
+  assert.match(String(out.note), /next call/);
+});
+
+test("the embed pass respects maxRows", async () => {
+  const h = embedHarness(100);
+  const out = await runEmbedPass({ ...h.opts, maxRows: 20 });
+  assert.equal(out.queued, 20);
+  assert.equal(out.embedded, 20);
+});
+
+test("a batch with no successes stops the pass instead of draining the queue through a dead model", async () => {
+  const h = embedHarness(50, { embedThrows: true });
+  const out = await runEmbedPass(h.opts);
+  assert.equal(out.queued, 10, "one fetch, then stop");
+  assert.equal(out.failed, 10);
+  assert.equal(out.embedded, 0);
+  assert.deepEqual(h.stores, []);
+});
+
+test("a single bad row is counted and skipped; a store that skips a moved row counts it as failed", async () => {
+  const h = embedHarness(7, { failIds: ["r3"], storeSkips: 1 });
+  const out = await runEmbedPass(h.opts);
+  assert.equal(out.queued, 7);
+  assert.equal(out.failed, 1 + 2, "one embed failure, plus one skipped row per store write (two writes)");
+  assert.equal(out.embedded, 6 - 2);
+  assert.deepEqual(h.stores.map((g) => g.length), [5, 1]);
 });

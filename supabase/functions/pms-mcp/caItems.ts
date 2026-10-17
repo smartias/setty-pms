@@ -138,8 +138,72 @@ export type EmbedRunCounts = { queued: number; embedded: number; failed: number;
 export function summarizeEmbedRun(c: EmbedRunCounts): Record<string, unknown> {
   return {
     queued: c.queued, embedded: c.embedded, failed: c.failed, batches: c.batches, ms: Math.round(c.ms),
-    ...(c.stoppedEarly ? { stoppedEarly: true, note: "Time budget reached; the next run continues." } : {}),
+    ...(c.stoppedEarly ? { stoppedEarly: true, note: "Time budget reached; the next call continues." } : {}),
   };
+}
+
+// The embed pass, with its I/O injected so the loop can be tested. Sized for
+// the edge runtime's CPU cap (2 s of active compute per request): the model
+// runs on the CPU, so a long loop in one invocation is killed before it stores
+// anything (the drawings sweep hit the same wall, see DRAWINGS_SWEEP_BUDGET_MS).
+// Rows are stored in small groups so a kill loses at most `storeEvery` rows,
+// and the deadline is checked before every row. Many short calls, one a
+// minute from pg_cron, beat one long one.
+export type EmbedRow = { project_row_id: string; item_type: string; item_id: string; embed_text?: string | null; embed_hash: string };
+export type EmbedPassOpts = {
+  maxRows: number;            // rows this call may take off the queue
+  fetchSize: number;          // rows per queue read
+  storeEvery: number;         // rows per store write
+  budgetMs: number;           // wall-clock deadline, checked before each row
+  now: () => number;
+  fetchRows: (limit: number) => Promise<EmbedRow[]>;
+  embed: (text: string) => Promise<ArrayLike<number>>;
+  store: (rows: Record<string, unknown>[]) => Promise<number>;   // rows actually written
+  log?: (msg: string) => void;
+};
+export async function runEmbedPass(o: EmbedPassOpts): Promise<Record<string, unknown>> {
+  const started = o.now();
+  const over = () => o.now() - started > o.budgetMs;
+  let queued = 0, embedded = 0, failed = 0, batches = 0, stoppedEarly = false;
+  let pending: Record<string, unknown>[] = [];
+  const flush = async () => {
+    if (!pending.length) return;
+    const n = Number(await o.store(pending)) || 0;
+    embedded += n;
+    batches++;
+    // rows whose text moved between read and write are skipped by the store
+    // (hash mismatch) and come back on the next pass; count them as failed
+    // here so the number is visible, not as embedded.
+    failed += Math.max(0, pending.length - n);
+    pending = [];
+  };
+  outer: while (queued < o.maxRows) {
+    if (over()) { stoppedEarly = true; break; }
+    const want = Math.max(1, Math.min(o.fetchSize, o.maxRows - queued));
+    const rows = await o.fetchRows(want);
+    if (!Array.isArray(rows) || !rows.length) break;
+    queued += rows.length;
+    let okInBatch = 0;
+    for (const r of rows) {
+      if (over()) { stoppedEarly = true; break outer; }
+      try {
+        const v = await o.embed(String(r.embed_text ?? ""));
+        if (!isEmbedding(v)) throw new Error("Embedding model returned an unexpected shape.");
+        pending.push({ project_row_id: r.project_row_id, item_type: r.item_type, item_id: r.item_id, embed_hash: r.embed_hash, embedding: vectorLiteral(v) });
+        okInBatch++;
+        if (pending.length >= o.storeEvery) await flush();
+      } catch (e) {
+        failed++;
+        o.log?.(`embed failed for ${r.project_row_id} ${r.item_type} ${r.item_id}: ${String((e as any)?.message ?? e)}`);
+      }
+    }
+    // A batch with no successes means the model is down, not the rows: stop
+    // here rather than pull every remaining row through the same failure.
+    if (!okInBatch) break;
+    if (rows.length < want) break;   // a short batch means the queue is drained
+  }
+  await flush();
+  return summarizeEmbedRun({ queued, embedded, failed, batches, ms: o.now() - started, stoppedEarly });
 }
 
 function nonEmpty(s: string | null | undefined): string | null {

@@ -1,6 +1,10 @@
 # Proposal: semantic search on CA items, as a bounded experiment
 
-Status: MIGRATION MERGED AND APPLIED (#362), CONNECTOR PR OPEN (2026-10-17). Migration: `supabase/migrations/20261017150000_ca_items_embeddings.sql`
+Status: MIGRATION APPLIED (#362), CONNECTOR DEPLOYED (#363, #366). 2026-10-17: the
+embed pass moved out of `documents-sync` into its own one-minute route
+(`admin/ca-items-embed`) after the first version was killed by the edge
+runtime's 2 s CPU cap before storing a row; the sizing below (200 rows per
+15-minute run) is superseded by the README. Migration: `supabase/migrations/20261017150000_ca_items_embeddings.sql`
 (extension, columns, `pms_ca_items_embed_text`, the two job helpers, hybrid
 `search_ca_items`), tested locally with pgvector built from source. Nothing
 reads the new columns until the connector PR. Connector: `caItems.ts` (embedding

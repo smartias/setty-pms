@@ -11,9 +11,13 @@ with it and the decision at the bottom.
 
 1. **Coverage is complete.** In the Supabase SQL editor run section 7b of
    `supabase/ca-items-verify.sql`. `embedded` must equal `rows` for both
-   types (2,879 in total on 2026-10-17) and `queued` must be 0. If not, wait
-   for the sync cron (about 200 rows per 15 minutes) or trigger one admin
-   call with `{"caItemsEmbed": {"max": 3000}}`.
+   types (2,879 in total on 2026-10-17) and `queued` must be 0. If not, the
+   one-minute `pms-ca-items-embed` cron job (README → CA items table) is
+   either not scheduled or not finishing: check `cron.job` and the function
+   logs for `admin/ca-items-embed`. One call does about 20 rows, so the full
+   backfill is roughly two and a half hours. The first hybrid run of
+   question 2 on 2026-10-17 returned nothing for exactly this reason (the
+   record had no embedding yet), which is why this check comes first.
 2. **Semantic mode answers.** In a NEW Claude chat with the PMS connector,
    ask: *search RFIs and submittals for "damper" with semantic ranking on,
    limit 3*. The answer must say `searchMode: "hybrid"`. If it says

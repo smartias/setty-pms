@@ -800,21 +800,34 @@ a save: the trigger warns and returns, and `pms_ca_items_reconcile()` repairs.
   migration `20261017150000`). Each item's text (subject + body minus the
   known boilerplate, `pms_ca_items_embed_text`) is embedded with the edge
   runtime's built-in `gte-small` model (384 dims; nothing leaves Supabase) by
-  the same `documents-sync` run: `pms_ca_items_to_embed` lists rows with no
-  embedding or a changed text hash, the run embeds up to 200 per cycle inside
-  a 25 s budget, and `pms_ca_items_store_embeddings` writes each batch. The
-  response reports `caItemsEmbed` (`queued`, `embedded`, `failed`, `batches`,
-  `ms`, `stoppedEarly`); `{"caItemsEmbed":{"max":3000}}` backfills in one
-  admin call, `{"caItemsEmbed":false}` skips it. On a prose query, when the
-  function secret `CA_ITEMS_SEMANTIC=1` is set or the tool's `semantic: true`
-  argument is passed, the query is embedded too and `search_ca_items` fuses
-  the keyword ranking with the nearest vectors (reciprocal rank, similarity
-  floor 0.75, or the tool's `minSimilarity` argument); the answer says
-  `searchMode: "hybrid"` and the `minSimilarity` it ran with. Numbers, spec sections
-  and plain listings never use it. Default OFF: the `semantic` argument exists
-  so the ten-question experiment can run both modes side by side, and goes
-  away when the experiment ends. If the model is unavailable the call falls
-  back to keyword ranking with a `semanticNote`.
+  `POST /pms-mcp/admin/ca-items-embed`, a route of its own with the same auth
+  as `documents-sync`: `pms_ca_items_to_embed` lists rows with no embedding
+  or a changed text hash, the call embeds up to 20 of them (`{"max": N}`, max
+  200) inside a 1.5 s deadline and `pms_ca_items_store_embeddings` writes
+  every 5. It is sized for the runtime's CPU cap (2 s of active compute per
+  request): the first version embedded 200 rows inside the 15-minute sync and
+  was killed before it stored any. Schedule it once a minute; a call that
+  finds nothing to do costs one cheap RPC. The secret never goes in a
+  migration; copy it from the job that already carries it:
+
+  ```sql
+  select cron.schedule('pms-ca-items-embed', '* * * * *',
+    replace((select command from cron.job where jobname = 'pms-documents-sync'),
+            'admin/documents-sync', 'admin/ca-items-embed'));
+  ```
+
+  The response reports `queued`, `embedded`, `failed`, `batches`, `ms` and
+  `stoppedEarly`; the ~2,900-row backfill takes about two and a half hours of
+  one-minute calls. On a prose query, when the function secret
+  `CA_ITEMS_SEMANTIC=1` is set or the tool's `semantic: true` argument is
+  passed, the query is embedded too and `search_ca_items` fuses the keyword
+  ranking with the nearest vectors (reciprocal rank, similarity floor 0.75,
+  or the tool's `minSimilarity` argument); the answer says `searchMode:
+  "hybrid"` and the `minSimilarity` it ran with. Numbers, spec sections and
+  plain listings never use it. Default OFF: the `semantic` argument exists so
+  the ten-question experiment can run both modes side by side, and goes away
+  when the experiment ends. If the model is unavailable the call falls back
+  to keyword ranking with a `semanticNote`.
 - **Verify in production** with `supabase/ca-items-verify.sql` (section 7b for
   embedding coverage); the behaviour test is `supabase/ca-items-local-test.sql`
   (local Postgres 16 with pgvector).
