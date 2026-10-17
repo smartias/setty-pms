@@ -31,6 +31,8 @@ with it and the decision at the bottom.
 - **Questions are in your own words**, the way you would ask a colleague,
   not the words you remember from the record. If you only know a record by
   its exact title, it is not a good question for this test.
+- **Keep questions short (four to eight words).** Keyword mode needs every
+  word to match, so a long sentence returns nothing and proves nothing.
 - **Each question runs twice**, same wording, limit 5, firm-wide (no project
   filter): once with semantic off, once with semantic on. In a Claude chat
   with the connector, the two prompts are:
@@ -45,21 +47,39 @@ with it and the decision at the bottom.
 
 ## The ten questions
 
-Starting points from the proposal are in grey; replace every one with a real
-question from someone who works CA. Keep ten.
+Columns A and B were filled on 2026-10-17 from real records found by
+BROWSING project listings and reading each one in full. None were found by
+searching for the question text, so neither mode has been "tuned" to them.
+Each question is in a project engineer's words and avoids the record's own
+title. The expected record is deliberately not the only possible answer:
+other projects may have a similar item, and a row still scores a hit if
+either listed item appears.
+
+If a question does not ring true to someone who works CA, replace it with
+one of your own before searching, and write the expected item from memory,
+not from a search. Keep ten.
 
 | # | A. Question, in the asker's words | B. Expected item(s), written before searching | C. Keyword top-5 hit? (Y/N) | D. Hybrid top-5 hit? (Y/N) | E. Hybrid-only items the judge calls useful | F. Items in hybrid top-5 the judge calls irrelevant | Notes |
 |---|---|---|---|---|---|---|---|
-| 1 | *a contractor pushing back on a fire smoke damper rating* | | | | | | |
-| 2 | *a manufacturer substitution on scheduled equipment* | | | | | | |
-| 3 | *a grease interceptor venting question* | | | | | | |
-| 4 | *temporary cooling during construction* | | | | | | |
-| 5 | *a failed hydrostatic test* | | | | | | |
-| 6 | *controls integrated with a BMS versus stand-alone* | | | | | | |
-| 7 | *sleeve locations clashing with structure* | | | | | | |
-| 8 | *exterior lighting photometrics* | | | | | | |
-| 9 | *lightning protection* | | | | | | |
-| 10 | *water hammer* | | | | | | |
+| 1 | roof fan on a curb or a concrete pad | `SAPX256009.03 rfi 014` | | | | | |
+| 2 | radiator hookup detail missing | `SAPX246005.00 rfi 003` | | | | | |
+| 3 | toilet drain has to go around a beam | `SAPX196006.00 rfi 121.1` | | | | | |
+| 4 | smoke damper closed, does the air handler stop | `SAPX219002.00 rfi 024` | | | | | |
+| 5 | controls tied to building automation or stand alone | `SAPX256010.01 rfi 009` | | | | | |
+| 6 | no room for the damper in the shaft | `SAPX196006.00 rfi 265` | | | | | |
+| 7 | grease trap pit too small to fit the unit | `SAPX246005.00 rfi 004` | | | | | |
+| 8 | pipe pressure test passed with conditions | `SAPX219002.00 submittal 232113-011-0` | | | | | |
+| 9 | conduit rejected, brand not approved | `SAPX256010.01 submittal 260553-001-0` | | | | | |
+| 10 | temporary cooling during construction | `SAPX236024.00 submittal S01500-01-02` | | | | | |
+
+Why these ten: each pairs everyday wording with a record that says the same
+thing in different words (radiator vs "FTR", toilet drain vs "water closet
+waste line", pressure test vs "hydrostatic", brand vs "manufacturer", temp
+AC vs "temporary cooling"). That is the gap semantic ranking is supposed to
+close. Rows 1 and 7 share more words with their record and are there as
+controls: keyword search should hit them, and hybrid must not lose them.
+Row 10's record is thin (title only, no body), which is the hardest case
+for both modes.
 
 ## Tally
 
