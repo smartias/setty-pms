@@ -626,6 +626,8 @@ regions and SharePoint regions with a drive annex alike, capped at
 - `search_rfis_submittals` with a project adds `driveOnly`: CA item folders
   no log entry matches, so they can be logged with `backload_ca_item`
   (its `spFolderUrl` accepts the folder's UNC path).
+- `search_rfis_submittals` answers from the `pms_ca_items` table (see "CA items
+  table" below) and says so in `source`; the drive listing is unchanged.
 
 `resolveChildFolder`'s last-resort contains-match is word-bounded since
 1.18.0: `CA` used to resolve to `SIPX262012.00_Load Forecasting` on a job
@@ -763,6 +765,40 @@ the bottom of `index.ts`; the schema is migration `20261002120010_pms_documents.
   `documentSearch.ts`.
 - The vocabulary copies in `documentMeta.ts` and `index.ts` still need to collapse
   into one definition (a parity test guards them until then).
+
+## CA items table (`pms_ca_items`, 2026-10-17)
+
+RFIs and submittals live in two jsonb arrays inside `pms_projects.project`, and
+that stays the source of truth. Migration `20261017120000_pms_ca_items.sql`
+adds `pms_ca_items`, one row per item, kept current by a trigger on
+`pms_projects` (design: `PROPOSAL-ca-items-table.md`). The row carries what
+people filter and search by (number, subject, status, `is_open`, discipline,
+spec section, dates), a weighted full-text column, an HTML-stripped
+`body_text`, and the item as stored in `raw`. A projection failure never blocks
+a save: the trigger warns and returns, and `pms_ca_items_reconcile()` repairs.
+
+- **`search_rfis_submittals` reads it** through the `search_ca_items` RPC
+  (`20261017130000_search_ca_items.sql`). `caItems.ts` classifies the query:
+  an item-number token (`RFI-012`, `12`, `SUB-004`) matches numbers with leading
+  zeros ignored; a spec section (`23 09 23`, `230923`) matches on digits; prose
+  goes through `websearch_to_tsquery('english')`, so "dampers" finds "damper",
+  ranked, with a `[highlighted]` snippet. `status`, `discipline`, `openOnly` and
+  `type` are SQL filters. The visible-project set is still resolved in the
+  connector (`getProjects()` / `getProjectById()`) and passed as row ids: the
+  RPC runs as definer, is `service_role` only, and returns nothing for an empty
+  list. The answer carries `source: "table"` and `searchMode`.
+- **Fallback.** Any RPC failure (migration not applied, transient error) falls
+  back to the old in-memory substring scan for that call, with `source:
+  "memory"` and a `note`. Set the function secret `CA_ITEMS_USE_TABLE=0` to force
+  the scan without a redeploy.
+- **Drift repair.** Every `documents-sync` run (the 15-minute cron) also calls
+  `pms_ca_items_reconcile()` and reports `caItems` (`projects`, `written`,
+  `repaired`, `failed`); a non-zero `written` or any `failed` entry is logged as
+  a warning. `{"caItems":false}` skips it.
+- **Verify in production** with `supabase/ca-items-verify.sql`; the behaviour
+  test is `supabase/ca-items-local-test.sql` (local Postgres 16).
+- `read_rfi_submittal`, `save_ca_review` and `backload_ca_item` still read and
+  write the blob; nothing writes the table but the trigger.
 
 ## The Knowledgebase (`browse_knowledgebase`, 1.22.0)
 

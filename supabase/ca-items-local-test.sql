@@ -4,6 +4,7 @@
 -- Runs against a throwaway Postgres 16 with pg_trgm (any local install):
 --   psql -v ON_ERROR_STOP=1 -f supabase/ca-items-local-standin.sql   # roles + bare pms_projects
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261017120000_pms_ca_items.sql
+--   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261017130000_search_ca_items.sql
 --   psql -f supabase/ca-items-local-test.sql                          # ends with ALL TESTS PASSED
 -- (run from the repo root: the test re-applies the migration by relative path).
 --
@@ -11,7 +12,8 @@
 -- duplicate-id keys, a non-array `rfis`, the "unrelated save leaves CA rows
 -- alone" guard, renumber, remove, project delete cascade, full-text stemming,
 -- the warn-and-continue path when the projection breaks, reconcile repair,
--- re-applying the migration, backfill counts, and the RLS/privilege surface.
+-- re-applying the migration, backfill counts, the RLS/privilege surface, and
+-- the search_ca_items RPC (number / spec / prose / list shapes, fail-closed ids).
 
 \set ON_ERROR_STOP on
 \set QUIET on
@@ -165,6 +167,47 @@ do $$ declare a int; b int; begin
   raise notice 'backfill ok (% rows, % blob elements incl. 1 non-object + 1 duplicate id)', a, b;
 end $$;
 
+-- ── 6b. search_ca_items (the connector's read path) ──────────────────────────
+do $$ declare r record; n int; begin
+  -- fail closed: no ids, no rows
+  select count(*) into n from public.search_ca_items(null); assert n = 0, 'null ids';
+  select count(*) into n from public.search_ca_items('{}'::text[]); assert n = 0, 'empty ids';
+  -- list: newest received first
+  select count(*) into n from public.search_ca_items(array['p1','p2','p3']); assert n = 5, 'list ' || n;
+  select * into r from public.search_ca_items(array['p1']) limit 1;
+  assert r.item_id = 'r1', 'newest first, got ' || r.item_id;
+  assert r.rank = 0 and r.link_count = 1 and r.has_ai_review, 'list row shape';
+  -- number: digits agree ignoring zeros, prefix narrows nothing here (p_type does)
+  select count(*) into n from public.search_ca_items(array['p1'], p_number => '4'); assert n = 1, 'number 4 -> ' || n;
+  select * into r from public.search_ca_items(array['p1'], p_number => 'RFI-004'); assert r.item_id = 'r4' and r.rank = 10, 'RFI-004';
+  select count(*) into n from public.search_ca_items(array['p1'], p_number => '2', p_type => 'submittal'); assert n = 0, 'type filter';
+  select count(*) into n from public.search_ca_items(array['p1'], p_number => '002A'); assert n = 1, 'suffix number';
+  -- spec: separators ignored
+  select * into r from public.search_ca_items(array['p1'], p_spec => '230923'); assert r.item_id = 's1' and r.rank = 5, 'spec';
+  select count(*) into n from public.search_ca_items(array['p1'], p_spec => '999999'); assert n = 0, 'spec miss';
+  -- prose: stemmed, ranked, headline snippet
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'dampers'); assert n = 2, 'dampers -> ' || n;
+  select * into r from public.search_ca_items(array['p1'], p_text => 'dampers above ceiling') limit 1;
+  assert r.item_id = 'r2' and r.rank > 0 and r.snippet like '%[dampers]%', 'prose rank/snippet: ' || coalesce(r.snippet,'');
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'dampers', p_open_only => true); assert n = 1, 'open only';
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'dampers', p_discipline => 'mechanical'); assert n = 2, 'discipline ci';
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'dampers', p_status => 'Closed'); assert n = 1, 'status';
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'nothing matches this'); assert n = 0, 'prose miss';
+  -- a discipline or status word still matches, as the in-memory scan did (Codex P2)
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'Mechanical'); assert n = 2, 'discipline word -> ' || n;
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'closed'); assert n = 1, 'status word -> ' || n;
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'resub'); assert n = 1, 'status substring -> ' || n;
+  select * into r from public.search_ca_items(array['p1'], p_text => 'closed') limit 1; assert r.rank = 1, 'field rank';
+  -- a zero-only number filters instead of listing everything (Codex P2)
+  select count(*) into n from public.search_ca_items(array['p1'], p_number => 'RFI-000'); assert n = 0, 'RFI-000 -> ' || n;
+  select count(*) into n from public.search_ca_items(array['p1'], p_number => '0'); assert n = 0, 'zero -> ' || n;
+  select count(*) into n from public.search_ca_items(array['p1'], p_number => 'RFI-0001', p_type => 'rfi'); assert n = 1, 'padded number -> ' || n;  -- the connector passes the prefix as p_type
+  select count(*) into n from public.search_ca_items(array['p1'], p_number => '1'); assert n = 2, 'bare 1 matches RFI-001 and SUB-001 -> ' || n;
+  -- limit clamps
+  select count(*) into n from public.search_ca_items(array['p1'], p_limit => 0); assert n = 1, 'limit floor';
+  raise notice 'search_ca_items ok';
+end $$;
+
 -- ── 7. RLS / privileges ───────────────────────────────────────────────────────
 set role authenticated;
 do $$ declare n int; begin
@@ -174,6 +217,8 @@ do $$ declare n int; begin
   begin truncate public.pms_ca_items; raise exception 'truncate allowed';
   exception when insufficient_privilege then null; end;
   begin perform public.pms_ca_items_reconcile(); raise exception 'reconcile allowed';
+  exception when insufficient_privilege then null; end;
+  begin perform public.search_ca_items(array['p1']); raise exception 'search allowed';
   exception when insufficient_privilege then null; end;
   raise notice 'authenticated: read yes, write/truncate/reconcile no';
 end $$;
@@ -188,6 +233,7 @@ reset role;
 set role service_role;
 do $$ declare n int; begin
   select count(*) into n from public.pms_ca_items_reconcile(); assert n = 3, 'service reconcile ' || n;
+  select count(*) into n from public.search_ca_items(array['p1']); assert n = 5, 'service search ' || n;
   raise notice 'service_role: reconcile ok';
 end $$;
 reset role;
