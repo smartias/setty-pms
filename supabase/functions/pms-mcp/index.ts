@@ -45,6 +45,10 @@ import {
 import {
   RegionAccessError, regionAccessError, regionAccessResult, siteMismatchHint, graphStatusOf, graphErrorCodeOf,
 } from "./regionAccess.ts";
+// search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
+// the RFI/submittal arrays) through the search_ca_items RPC; the query
+// classifier, RPC arguments and row mapping are pure. See caItems.ts.
+import { buildCaSearchArgs, caRowToItem, clampCaLimit, summarizeReconcile } from "./caItems.ts";
 
 // pms_documents: per-file attributes derived for the nightly sync. Pure; see documentMeta.ts.
 import {
@@ -1367,7 +1371,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-09-unrostered-alert";
+const BUILD = "2026-10-17-ca-items-table";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3589,6 +3593,12 @@ async function teamWithShares(projectNumber: string | null | undefined): Promise
   return (await siteForTeam(team)).shares.length ? String(team).toUpperCase().trim() : null;
 }
 
+// Kill switch for the table path (same shape as FIND_DOCUMENT_USE_TABLE): set
+// the function secret CA_ITEMS_USE_TABLE=0 to force the in-memory scan without
+// a redeploy. The scan also answers on its own whenever the RPC fails (the
+// migration not applied yet, a transient error), and the answer says which.
+const CA_ITEMS_USE_TABLE = Deno.env.get("CA_ITEMS_USE_TABLE") !== "0";
+
 mcp.tool("search_rfis_submittals", {
   description:
     "Search Construction Administration RFIs and submittals (including historical / Newforma- " +
@@ -3608,17 +3618,39 @@ mcp.tool("search_rfis_submittals", {
     limit: z.number().optional().describe("Max results (default 30, max 100)"),
   }),
   handler: async ({ projectNumber, type, query, status, discipline, openOnly, limit }) => {
-    const lim = Math.min(Math.max(limit ?? 30, 1), 100);
+    const lim = clampCaLimit(limit);
     let pid: string | null = null;
     if (projectNumber) {
       pid = await resolveProjectId(projectNumber);
       if (!pid) return asText({ error: `No project matching \"${projectNumber}\"` });
     }
+    // The visible project set, through the same path as every other tool
+    // (getProjects() applies projects.view; getProjectById() hides a denied
+    // project as a miss). Firm-wide this is the cached portfolio list, so it is
+    // a cache read, not the per-call blob scan the table replaces. p.id is the
+    // pms_projects row id: the client saves `{ id: p.id, project: p }`.
     const projects = pid ? [await getProjectById(pid)].filter(Boolean) : await getProjects();
     const q = (query ?? "").toLowerCase().trim();
     const disc = (discipline ?? "").toLowerCase().trim();
-    const out: any[] = [];
-    for (const p of projects) {
+    let out: any[] = [];
+    let source: "table" | "memory" = "memory";
+    let searchMode: string | undefined;
+    let tableNote: string | undefined;
+    if (CA_ITEMS_USE_TABLE) {
+      try {
+        const { args, mode } = buildCaSearchArgs({
+          query, rowIds: projects.map((p: any) => String(p.id ?? "")), type: type ?? null,
+          status, discipline, openOnly, limit: lim,
+        });
+        const rows = await sbRpc("search_ca_items", args);
+        out = (Array.isArray(rows) ? rows : []).map((r: any) => caRowToItem(r, mode !== "list"));
+        source = "table"; searchMode = mode;
+      } catch (e) {
+        console.warn("[search_rfis_submittals] table path failed, scanning projects:", String((e as any)?.message ?? e));
+        tableNote = "The indexed search was unavailable for this call; results come from a plain substring scan of the project records (no ranking, no stemming).";
+      }
+    }
+    if (source === "memory") for (const p of projects) {
       const add = (item: any, kind: string) => {
         if (!item) return;
         if (status && (item.status || "") !== status) return;
@@ -3642,7 +3674,7 @@ mcp.tool("search_rfis_submittals", {
       if (type !== "submittal") for (const r of (p.rfis ?? [])) add(r, "rfi");
       if (type !== "rfi") for (const s of (p.submittals ?? [])) add(s, "submittal");
     }
-    out.sort((a, b) => String(b.received ?? b.dueDate ?? "").localeCompare(String(a.received ?? a.dueDate ?? "")));
+    if (source === "memory") out.sort((a, b) => String(b.received ?? b.dueDate ?? "").localeCompare(String(a.received ?? a.dueDate ?? "")));
     // Drive (1.18.0): item folders under CA on the drive with no record behind them.
     let driveOnly: Array<Record<string, unknown>> = []; let driveNote: string | null = null;
     if (pid && projects[0]) {
@@ -3666,7 +3698,14 @@ mcp.tool("search_rfis_submittals", {
         }
       } catch (e) { driveNote = `Drive CA folders not read: ${String((e as any)?.message ?? e)}`; }
     }
-    return asText({ count: out.length, returned: Math.min(out.length, lim), items: out.slice(0, lim), ...(driveOnly.length ? { driveOnly } : {}), ...(driveNote ? { driveNote } : {}) });
+    // The table path already applied the limit in SQL; `count` is what came
+    // back, so a capped answer says so through `returned === limit`.
+    return asText({
+      count: out.length, returned: Math.min(out.length, lim), items: out.slice(0, lim), source,
+      ...(searchMode && searchMode !== "list" ? { searchMode } : {}),
+      ...(tableNote ? { note: tableNote } : {}),
+      ...(driveOnly.length ? { driveOnly } : {}), ...(driveNote ? { driveNote } : {}),
+    });
   },
 });
 
@@ -11824,8 +11863,26 @@ app.post("/pms-mcp/admin/documents-sync", async (c) => {
     if (Date.now() - started > DOCS_RUN_BUDGET_MS) break;
     results.push(await cand.run());
   }
+  // pms_ca_items drift repair rides the same schedule: the projection trigger
+  // warns instead of failing a save, and this is what turns a warning back
+  // into a row. One SQL call over every project; unchanged rows cost nothing
+  // (the upsert's is-distinct guard), so it is cheap to run every cycle.
+  // `{"caItems":false}` skips it.
+  let caItems: Record<string, unknown> | undefined;
+  if (body?.caItems !== false) {
+    try {
+      caItems = summarizeReconcile(await sbRpc("pms_ca_items_reconcile", {}));
+      if ((caItems.failed as any[]).length || (caItems.written as number) > 0) {
+        console.warn("[documents-sync] pms_ca_items reconcile:", JSON.stringify(caItems));
+      }
+    } catch (e) {
+      caItems = { error: String((e as any)?.message ?? e) };
+      console.warn("[documents-sync] pms_ca_items reconcile failed:", caItems.error);
+    }
+  }
   return c.json({
     scanned: results.length, remaining: cands.length - results.length, results,
+    ...(caItems ? { caItems } : {}),
   }, 200, DOCS_SYNC_CORS);
 });
 
