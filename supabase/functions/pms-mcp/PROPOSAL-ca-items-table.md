@@ -1,6 +1,12 @@
 # Proposal: a real table for RFIs and submittals (`pms_ca_items`)
 
-Status: DRAFT (2026-10-17). Step 1 of the "semantic layer" discussion:
+Status: MIGRATION PR OPEN (2026-10-17): `supabase/migrations/20261017120000_pms_ca_items.sql`,
+verified locally by `supabase/ca-items-local-test.sql`, checked in production by
+`supabase/ca-items-verify.sql`. The RLS question below is answered (the
+`pms_projects` select policy is `to authenticated using (true)`, unchanged by
+the confidential-projects migration; the projection mirrors it). The no-id
+count is read from the verify script after the backfill. Step 1 of the
+"semantic layer" discussion:
 give Construction Administration items an indexed, queryable home before
 any embedding or ontology work. One slice per branch per PR, same working
 rules as ROADMAP.md.
