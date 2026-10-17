@@ -105,6 +105,7 @@ export type CaSearchRow = {
   status: string | null; is_open: boolean; date_received: string | null; due_date: string | null;
   date_closed: string | null; link_count: number | null; has_ai_review: boolean | null;
   rank: number | null; snippet: string | null;
+  total?: number | string | null;   // matches before the limit; absent on the pre-total function
 };
 
 // The same keys the in-memory path has always returned, so a caller cannot
@@ -128,6 +129,16 @@ export function caRowToItem(r: CaSearchRow, ranked: boolean): Record<string, unk
     ...(links ? { linkCount: links, linkNote: "Has linked items — read_rfi_submittal shows them." } : {}),
     ...(r.has_ai_review ? { aiReviewed: true } : {}),
   };
+}
+
+// Matches before the limit, carried on every row by the RPC's window count.
+// Null when the rows carry none (an older search_ca_items), so the caller can
+// fall back to the row count rather than claim a total it does not have.
+export function caTotalOf(rows: Array<{ total?: number | string | null }> | null | undefined): number | null {
+  const first = Array.isArray(rows) ? rows[0] : undefined;
+  if (!first || first.total === null || first.total === undefined) return null;
+  const n = Number(first.total);
+  return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null;
 }
 
 export type ReconcileRow = { project_row_id: string; written: number | null; error: string | null };

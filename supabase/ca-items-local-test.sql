@@ -5,6 +5,7 @@
 --   psql -v ON_ERROR_STOP=1 -f supabase/ca-items-local-standin.sql   # roles + bare pms_projects
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261017120000_pms_ca_items.sql
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261017130000_search_ca_items.sql
+--   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261017140000_search_ca_items_total.sql
 --   psql -f supabase/ca-items-local-test.sql                          # ends with ALL TESTS PASSED
 -- (run from the repo root: the test re-applies the migration by relative path).
 --
@@ -203,6 +204,10 @@ do $$ declare r record; n int; begin
   select count(*) into n from public.search_ca_items(array['p1'], p_number => '0'); assert n = 0, 'zero -> ' || n;
   select count(*) into n from public.search_ca_items(array['p1'], p_number => 'RFI-0001', p_type => 'rfi'); assert n = 1, 'padded number -> ' || n;  -- the connector passes the prefix as p_type
   select count(*) into n from public.search_ca_items(array['p1'], p_number => '1'); assert n = 2, 'bare 1 matches RFI-001 and SUB-001 -> ' || n;
+  -- total = matches before the limit, on every row
+  select total into n from public.search_ca_items(array['p1'], p_limit => 2) limit 1; assert n = 5, 'total -> ' || n;
+  select count(*) into n from public.search_ca_items(array['p1'], p_limit => 2); assert n = 2, 'limited rows -> ' || n;
+  select total into n from public.search_ca_items(array['p1'], p_text => 'dampers', p_limit => 1) limit 1; assert n = 2, 'total with query -> ' || n;
   -- limit clamps
   select count(*) into n from public.search_ca_items(array['p1'], p_limit => 0); assert n = 1, 'limit floor';
   raise notice 'search_ca_items ok';

@@ -786,7 +786,8 @@ a save: the trigger warns and returns, and `pms_ca_items_reconcile()` repairs.
   `type` are SQL filters. The visible-project set is still resolved in the
   connector (`getProjects()` / `getProjectById()`) and passed as row ids: the
   RPC runs as definer, is `service_role` only, and returns nothing for an empty
-  list. The answer carries `source: "table"` and `searchMode`.
+  list. The answer carries `source: "table"` and `searchMode`; `count` is every
+  match (the RPC's window `total`, `20261017140000`), `returned` the rows sent.
 - **Fallback.** Any RPC failure (migration not applied, transient error) falls
   back to the old in-memory substring scan for that call, with `source:
   "memory"` and a `note`. Set the function secret `CA_ITEMS_USE_TABLE=0` to force
