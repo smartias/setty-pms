@@ -809,7 +809,8 @@ a save: the trigger warns and returns, and `pms_ca_items_reconcile()` repairs.
   function secret `CA_ITEMS_SEMANTIC=1` is set or the tool's `semantic: true`
   argument is passed, the query is embedded too and `search_ca_items` fuses
   the keyword ranking with the nearest vectors (reciprocal rank, similarity
-  floor 0.75); the answer says `searchMode: "hybrid"`. Numbers, spec sections
+  floor 0.75, or the tool's `minSimilarity` argument); the answer says
+  `searchMode: "hybrid"` and the `minSimilarity` it ran with. Numbers, spec sections
   and plain listings never use it. Default OFF: the `semantic` argument exists
   so the ten-question experiment can run both modes side by side, and goes
   away when the experiment ends. If the model is unavailable the call falls
