@@ -1374,7 +1374,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-17-ca-items-semantic";
+const BUILD = "2026-10-17-ca-items-min-similarity";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3641,8 +3641,9 @@ mcp.tool("search_rfis_submittals", {
     openOnly: z.boolean().optional().describe("Only items still needing attention (open RFIs / in-review submittals)"),
     limit: z.number().optional().describe("Max results (default 30, max 100)"),
     semantic: z.boolean().optional().describe("EXPERIMENT ONLY: true adds meaning-based ranking to a prose query (an embedding of the query fused with the keyword ranking), false forces keyword-only; omit to follow the connector's default. Numbers and spec sections are never affected."),
+    minSimilarity: z.number().min(0).max(1).optional().describe("EXPERIMENT ONLY, with semantic ranking: lowest cosine similarity (0-1) a meaning-based match may have; default 0.75. 0 ranks every item by closeness, for diagnosing a miss."),
   }),
-  handler: async ({ projectNumber, type, query, status, discipline, openOnly, limit, semantic }) => {
+  handler: async ({ projectNumber, type, query, status, discipline, openOnly, limit, semantic, minSimilarity }) => {
     const lim = clampCaLimit(limit);
     let pid: string | null = null;
     if (projectNumber) {
@@ -3663,6 +3664,7 @@ mcp.tool("search_rfis_submittals", {
     let tableNote: string | undefined;
     let total: number | null = null;   // matches before the limit (table path only)
     let semanticNote: string | undefined;
+    let usedFloor: number | undefined;   // the similarity floor the hybrid call ran with
     if (CA_ITEMS_USE_TABLE) {
       try {
         // Embed the query only when semantic ranking is wanted AND the query is
@@ -3679,8 +3681,9 @@ mcp.tool("search_rfis_submittals", {
         }
         const { args, mode } = buildCaSearchArgs({
           query, rowIds: projects.map((p: any) => String(p.id ?? "")), type: type ?? null,
-          status, discipline, openOnly, limit: lim, embedding,
+          status, discipline, openOnly, limit: lim, embedding, minSimilarity,
         });
+        if (mode === "hybrid") usedFloor = args.p_min_similarity;
         const rows = await sbRpc("search_ca_items", args);
         out = (Array.isArray(rows) ? rows : []).map((r: any) => caRowToItem(r, mode !== "list"));
         total = caTotalOf(rows);
@@ -3743,6 +3746,7 @@ mcp.tool("search_rfis_submittals", {
     return asText({
       count: total ?? out.length, returned: Math.min(out.length, lim), items: out.slice(0, lim), source,
       ...(searchMode && searchMode !== "list" ? { searchMode } : {}),
+      ...(searchMode === "hybrid" ? { minSimilarity: usedFloor } : {}),
       ...(tableNote ? { note: tableNote } : {}),
       ...(semanticNote ? { semanticNote } : {}),
       ...(driveOnly.length ? { driveOnly } : {}), ...(driveNote ? { driveNote } : {}),
