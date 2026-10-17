@@ -4,7 +4,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
-  classifyCaQuery, buildCaSearchArgs, caRowToItem, clampCaLimit, summarizeReconcile,
+  classifyCaQuery, buildCaSearchArgs, caRowToItem, caTotalOf, clampCaLimit, summarizeReconcile,
   CA_SEARCH_DEFAULT_LIMIT, CA_SEARCH_MAX_LIMIT,
 } from "./caItems.ts";
 
@@ -111,4 +111,13 @@ test("a reconcile pass is summarised with the projects that needed repair and th
   ]);
   assert.deepEqual(s, { projects: 3, written: 3, repaired: ["b"], failed: [{ project: "c", error: "23502: null value" }] });
   assert.deepEqual(summarizeReconcile(null), { projects: 0, written: 0, repaired: [], failed: [] });
+});
+
+test("the total comes off the first row and is null when the rows carry none", () => {
+  assert.equal(caTotalOf([{ total: 46 }, { total: 46 }]), 46);
+  assert.equal(caTotalOf([{ total: "2879" }]), 2879, "PostgREST sends bigint as a string");
+  assert.equal(caTotalOf([{}]), null, "an older function without the column");
+  assert.equal(caTotalOf([]), null);
+  assert.equal(caTotalOf(null), null);
+  assert.equal(caTotalOf([{ total: "x" }]), null);
 });

@@ -48,7 +48,7 @@ import {
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
 // classifier, RPC arguments and row mapping are pure. See caItems.ts.
-import { buildCaSearchArgs, caRowToItem, clampCaLimit, summarizeReconcile } from "./caItems.ts";
+import { buildCaSearchArgs, caRowToItem, caTotalOf, clampCaLimit, summarizeReconcile } from "./caItems.ts";
 
 // pms_documents: per-file attributes derived for the nightly sync. Pure; see documentMeta.ts.
 import {
@@ -1371,7 +1371,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-17-ca-items-table";
+const BUILD = "2026-10-17-ca-items-total";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3636,6 +3636,7 @@ mcp.tool("search_rfis_submittals", {
     let source: "table" | "memory" = "memory";
     let searchMode: string | undefined;
     let tableNote: string | undefined;
+    let total: number | null = null;   // matches before the limit (table path only)
     if (CA_ITEMS_USE_TABLE) {
       try {
         const { args, mode } = buildCaSearchArgs({
@@ -3644,6 +3645,7 @@ mcp.tool("search_rfis_submittals", {
         });
         const rows = await sbRpc("search_ca_items", args);
         out = (Array.isArray(rows) ? rows : []).map((r: any) => caRowToItem(r, mode !== "list"));
+        total = caTotalOf(rows);
         source = "table"; searchMode = mode;
       } catch (e) {
         console.warn("[search_rfis_submittals] table path failed, scanning projects:", String((e as any)?.message ?? e));
@@ -3698,10 +3700,10 @@ mcp.tool("search_rfis_submittals", {
         }
       } catch (e) { driveNote = `Drive CA folders not read: ${String((e as any)?.message ?? e)}`; }
     }
-    // The table path already applied the limit in SQL; `count` is what came
-    // back, so a capped answer says so through `returned === limit`.
+    // `count` is every match (the RPC's window total on the table path, the
+    // full scan's length in memory); `returned` is what this answer holds.
     return asText({
-      count: out.length, returned: Math.min(out.length, lim), items: out.slice(0, lim), source,
+      count: total ?? out.length, returned: Math.min(out.length, lim), items: out.slice(0, lim), source,
       ...(searchMode && searchMode !== "list" ? { searchMode } : {}),
       ...(tableNote ? { note: tableNote } : {}),
       ...(driveOnly.length ? { driveOnly } : {}), ...(driveNote ? { driveNote } : {}),
