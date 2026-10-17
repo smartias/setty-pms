@@ -5,7 +5,8 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
   classifyCaQuery, buildCaSearchArgs, caRowToItem, caTotalOf, clampCaLimit, summarizeReconcile,
-  CA_SEARCH_DEFAULT_LIMIT, CA_SEARCH_MAX_LIMIT,
+  vectorLiteral, isEmbedding, summarizeEmbedRun,
+  CA_SEARCH_DEFAULT_LIMIT, CA_SEARCH_MAX_LIMIT, CA_EMBED_DIMS, CA_MIN_SIMILARITY,
 } from "./caItems.ts";
 
 test("an item-number token is a number query, with the type the prefix implies", () => {
@@ -120,4 +121,52 @@ test("the total comes off the first row and is null when the rows carry none", (
   assert.equal(caTotalOf([]), null);
   assert.equal(caTotalOf(null), null);
   assert.equal(caTotalOf([{ total: "x" }]), null);
+});
+
+const UNIT = new Float32Array(CA_EMBED_DIMS); UNIT[0] = 1;
+
+test("an embedding is trusted only with the column's shape", () => {
+  assert.equal(isEmbedding(UNIT), true);
+  assert.equal(isEmbedding(Array.from(UNIT)), true);
+  assert.equal(isEmbedding(new Float32Array(CA_EMBED_DIMS - 1)), false, "wrong length");
+  assert.equal(isEmbedding(null), false);
+  assert.equal(isEmbedding("[1,2]"), false);
+  const nan = Array.from(UNIT); nan[5] = NaN;
+  assert.equal(isEmbedding(nan), false, "NaN");
+});
+
+test("the vector literal is what PostgREST expects", () => {
+  assert.equal(vectorLiteral([0.5, 1, -0.25]), "[0.5,1,-0.25]");
+  assert.equal(vectorLiteral(new Float32Array([1, 0])), "[1,0]");
+  assert.equal(vectorLiteral(UNIT).split(",").length, CA_EMBED_DIMS);
+});
+
+test("an embedding turns a prose query into hybrid mode, and nothing else", () => {
+  const prose = buildCaSearchArgs({ query: "damper pushback", rowIds: ["p1"], embedding: UNIT });
+  assert.equal(prose.mode, "hybrid");
+  assert.equal(prose.args.p_text, "damper pushback");
+  assert.equal(prose.args.p_embedding, vectorLiteral(UNIT));
+  assert.equal(prose.args.p_min_similarity, CA_MIN_SIMILARITY);
+
+  const floor = buildCaSearchArgs({ query: "damper", rowIds: ["p1"], embedding: UNIT, minSimilarity: 0.6 });
+  assert.equal(floor.args.p_min_similarity, 0.6);
+  const badFloor = buildCaSearchArgs({ query: "damper", rowIds: ["p1"], embedding: UNIT, minSimilarity: 7 });
+  assert.equal(badFloor.args.p_min_similarity, CA_MIN_SIMILARITY, "an out-of-range floor falls back to the default");
+
+  for (const query of ["RFI-012", "23 09 23", "", undefined]) {
+    const r = buildCaSearchArgs({ query, rowIds: ["p1"], embedding: UNIT });
+    assert.notEqual(r.mode, "hybrid", `no hybrid for ${JSON.stringify(query)}`);
+    assert.equal("p_embedding" in r.args, false, `no embedding sent for ${JSON.stringify(query)}`);
+  }
+  const malformed = buildCaSearchArgs({ query: "damper", rowIds: ["p1"], embedding: [1, 2, 3] });
+  assert.equal(malformed.mode, "text", "a malformed embedding is dropped, not sent");
+  assert.equal("p_embedding" in malformed.args, false);
+});
+
+test("an embed run is summarised with its budget flag", () => {
+  assert.deepEqual(summarizeEmbedRun({ queued: 200, embedded: 198, failed: 2, batches: 1, ms: 1234.6 }),
+    { queued: 200, embedded: 198, failed: 2, batches: 1, ms: 1235 });
+  const early = summarizeEmbedRun({ queued: 400, embedded: 200, failed: 0, batches: 1, ms: 25000, stoppedEarly: true });
+  assert.equal(early.stoppedEarly, true);
+  assert.match(String(early.note), /next run/);
 });
