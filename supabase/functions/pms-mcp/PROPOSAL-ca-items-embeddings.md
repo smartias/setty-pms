@@ -1,9 +1,12 @@
 # Proposal: semantic search on CA items, as a bounded experiment
 
-Status: MIGRATION PR OPEN (2026-10-17): `supabase/migrations/20261017150000_ca_items_embeddings.sql`
+Status: MIGRATION MERGED AND APPLIED (#362), CONNECTOR PR OPEN (2026-10-17). Migration: `supabase/migrations/20261017150000_ca_items_embeddings.sql`
 (extension, columns, `pms_ca_items_embed_text`, the two job helpers, hybrid
 `search_ca_items`), tested locally with pgvector built from source. Nothing
-reads the new columns until the connector PR. The experiment below decides
+reads the new columns until the connector PR. Connector: `caItems.ts` (embedding
+helpers, hybrid args), `index.ts` (embed pass in documents-sync, query embedding,
+`CA_ITEMS_SEMANTIC` default off, `semantic` tool argument). Next: the ten
+questions. The experiment below decides
 whether embeddings earn a place; if they do not, the column and the RPC
 parameter come out again in one PR. Follows PROPOSAL-ca-items-table.md
 (steps 1 and 2 live since 2026-10-17; step 3, removing the fallback, is

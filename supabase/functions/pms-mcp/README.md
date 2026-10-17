@@ -796,8 +796,27 @@ a save: the trigger warns and returns, and `pms_ca_items_reconcile()` repairs.
   `pms_ca_items_reconcile()` and reports `caItems` (`projects`, `written`,
   `repaired`, `failed`); a non-zero `written` or any `failed` entry is logged as
   a warning. `{"caItems":false}` skips it.
-- **Verify in production** with `supabase/ca-items-verify.sql`; the behaviour
-  test is `supabase/ca-items-local-test.sql` (local Postgres 16).
+- **Semantic ranking, as an experiment** (`PROPOSAL-ca-items-embeddings.md`,
+  migration `20261017150000`). Each item's text (subject + body minus the
+  known boilerplate, `pms_ca_items_embed_text`) is embedded with the edge
+  runtime's built-in `gte-small` model (384 dims; nothing leaves Supabase) by
+  the same `documents-sync` run: `pms_ca_items_to_embed` lists rows with no
+  embedding or a changed text hash, the run embeds up to 200 per cycle inside
+  a 25 s budget, and `pms_ca_items_store_embeddings` writes each batch. The
+  response reports `caItemsEmbed` (`queued`, `embedded`, `failed`, `batches`,
+  `ms`, `stoppedEarly`); `{"caItemsEmbed":{"max":3000}}` backfills in one
+  admin call, `{"caItemsEmbed":false}` skips it. On a prose query, when the
+  function secret `CA_ITEMS_SEMANTIC=1` is set or the tool's `semantic: true`
+  argument is passed, the query is embedded too and `search_ca_items` fuses
+  the keyword ranking with the nearest vectors (reciprocal rank, similarity
+  floor 0.75); the answer says `searchMode: "hybrid"`. Numbers, spec sections
+  and plain listings never use it. Default OFF: the `semantic` argument exists
+  so the ten-question experiment can run both modes side by side, and goes
+  away when the experiment ends. If the model is unavailable the call falls
+  back to keyword ranking with a `semanticNote`.
+- **Verify in production** with `supabase/ca-items-verify.sql` (section 7b for
+  embedding coverage); the behaviour test is `supabase/ca-items-local-test.sql`
+  (local Postgres 16 with pgvector).
 - `read_rfi_submittal`, `save_ca_review` and `backload_ca_item` still read and
   write the blob; nothing writes the table but the trigger.
 

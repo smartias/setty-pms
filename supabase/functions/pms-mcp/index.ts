@@ -48,7 +48,10 @@ import {
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
 // classifier, RPC arguments and row mapping are pure. See caItems.ts.
-import { buildCaSearchArgs, caRowToItem, caTotalOf, clampCaLimit, summarizeReconcile } from "./caItems.ts";
+import {
+  buildCaSearchArgs, caRowToItem, caTotalOf, clampCaLimit, summarizeReconcile,
+  CA_EMBED_MODEL, isEmbedding, vectorLiteral, summarizeEmbedRun,
+} from "./caItems.ts";
 
 // pms_documents: per-file attributes derived for the nightly sync. Pure; see documentMeta.ts.
 import {
@@ -1371,7 +1374,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-17-ca-items-total";
+const BUILD = "2026-10-17-ca-items-semantic";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3599,6 +3602,27 @@ async function teamWithShares(projectNumber: string | null | undefined): Promise
 // migration not applied yet, a transient error), and the answer says which.
 const CA_ITEMS_USE_TABLE = Deno.env.get("CA_ITEMS_USE_TABLE") !== "0";
 
+// Semantic (hybrid) ranking for prose queries, PROPOSAL-ca-items-embeddings.md.
+// OFF by default: the function secret CA_ITEMS_SEMANTIC=1 turns it on for
+// every call, and the tool's `semantic` argument overrides per call while the
+// experiment runs both modes side by side. The query is embedded with the edge
+// runtime's built-in model, the same one the sync job uses for the rows.
+const CA_ITEMS_SEMANTIC = Deno.env.get("CA_ITEMS_SEMANTIC") === "1";
+let _embedSession: any = null;
+function embedSession(): any {
+  if (_embedSession) return _embedSession;
+  const ai = (globalThis as any).Supabase?.ai;
+  if (!ai?.Session) throw new Error("Supabase.ai is not available in this runtime (gte-small needs Edge Runtime 1.36+).");
+  _embedSession = new ai.Session(CA_EMBED_MODEL);
+  return _embedSession;
+}
+// One text -> one normalized 384-dim vector, or a thrown error; never a partial.
+async function embedText(text: string): Promise<number[]> {
+  const out = await embedSession().run(String(text ?? ""), { mean_pool: true, normalize: true });
+  if (!isEmbedding(out)) throw new Error("Embedding model returned an unexpected shape.");
+  return Array.from(out as ArrayLike<number>, (x) => Number(x));
+}
+
 mcp.tool("search_rfis_submittals", {
   description:
     "Search Construction Administration RFIs and submittals (including historical / Newforma- " +
@@ -3616,8 +3640,9 @@ mcp.tool("search_rfis_submittals", {
     discipline: z.string().optional().describe("Discipline filter, e.g. Electrical, Mechanical"),
     openOnly: z.boolean().optional().describe("Only items still needing attention (open RFIs / in-review submittals)"),
     limit: z.number().optional().describe("Max results (default 30, max 100)"),
+    semantic: z.boolean().optional().describe("EXPERIMENT ONLY: true adds meaning-based ranking to a prose query (an embedding of the query fused with the keyword ranking), false forces keyword-only; omit to follow the connector's default. Numbers and spec sections are never affected."),
   }),
-  handler: async ({ projectNumber, type, query, status, discipline, openOnly, limit }) => {
+  handler: async ({ projectNumber, type, query, status, discipline, openOnly, limit, semantic }) => {
     const lim = clampCaLimit(limit);
     let pid: string | null = null;
     if (projectNumber) {
@@ -3637,11 +3662,24 @@ mcp.tool("search_rfis_submittals", {
     let searchMode: string | undefined;
     let tableNote: string | undefined;
     let total: number | null = null;   // matches before the limit (table path only)
+    let semanticNote: string | undefined;
     if (CA_ITEMS_USE_TABLE) {
       try {
+        // Embed the query only when semantic ranking is wanted AND the query is
+        // prose: the classifier decides the shape first, so a number or spec
+        // query never pays for an embedding it would not use.
+        let embedding: number[] | null = null;
+        const wantSemantic = semantic ?? CA_ITEMS_SEMANTIC;
+        if (wantSemantic && buildCaSearchArgs({ query, rowIds: [] }).mode === "text") {
+          try { embedding = await embedText(String(query)); }
+          catch (e) {
+            console.warn("[search_rfis_submittals] query embedding failed, keyword ranking only:", String((e as any)?.message ?? e));
+            semanticNote = "Meaning-based ranking was unavailable for this call; results are keyword-ranked.";
+          }
+        }
         const { args, mode } = buildCaSearchArgs({
           query, rowIds: projects.map((p: any) => String(p.id ?? "")), type: type ?? null,
-          status, discipline, openOnly, limit: lim,
+          status, discipline, openOnly, limit: lim, embedding,
         });
         const rows = await sbRpc("search_ca_items", args);
         out = (Array.isArray(rows) ? rows : []).map((r: any) => caRowToItem(r, mode !== "list"));
@@ -3706,6 +3744,7 @@ mcp.tool("search_rfis_submittals", {
       count: total ?? out.length, returned: Math.min(out.length, lim), items: out.slice(0, lim), source,
       ...(searchMode && searchMode !== "list" ? { searchMode } : {}),
       ...(tableNote ? { note: tableNote } : {}),
+      ...(semanticNote ? { semanticNote } : {}),
       ...(driveOnly.length ? { driveOnly } : {}), ...(driveNote ? { driveNote } : {}),
     });
   },
@@ -11882,11 +11921,71 @@ app.post("/pms-mcp/admin/documents-sync", async (c) => {
       console.warn("[documents-sync] pms_ca_items reconcile failed:", caItems.error);
     }
   }
+  // Embedding pass (PROPOSAL-ca-items-embeddings.md): rows whose text has no
+  // embedding yet, or whose text changed since (the hash), embedded with the
+  // edge runtime's model and stored in one RPC per batch. Bounded by its own
+  // time budget so a long document walk before it never pushes the invocation
+  // over the edge limit; what it does not reach, the next run does. The
+  // backfill of ~2,900 rows takes about 15 runs at the default 200, or one
+  // admin call with {"caItemsEmbed": {"max": 3000}}. {"caItemsEmbed": false}
+  // skips it. Same posture as the reconcile step: log and continue, never fail
+  // the run.
+  let caItemsEmbed: Record<string, unknown> | undefined;
+  if (body?.caItemsEmbed !== false) {
+    const maxRows = Math.max(1, Math.min(Number(body?.caItemsEmbed?.max) || CA_EMBED_DEFAULT_ROWS, 3000));
+    try { caItemsEmbed = await embedCaItems(maxRows, Date.now()); }
+    catch (e) {
+      caItemsEmbed = { error: String((e as any)?.message ?? e) };
+      console.warn("[documents-sync] pms_ca_items embed failed:", caItemsEmbed.error);
+    }
+  }
   return c.json({
     scanned: results.length, remaining: cands.length - results.length, results,
     ...(caItems ? { caItems } : {}),
+    ...(caItemsEmbed ? { caItemsEmbed } : {}),
   }, 200, DOCS_SYNC_CORS);
 });
+
+const CA_EMBED_DEFAULT_ROWS = 200;
+const CA_EMBED_BATCH = 100;
+const CA_EMBED_BUDGET_MS = 25000;
+async function embedCaItems(maxRows: number, started: number): Promise<Record<string, unknown>> {
+  let queued = 0, embedded = 0, failed = 0, batches = 0, stoppedEarly = false;
+  while (queued < maxRows) {
+    if (Date.now() - started > CA_EMBED_BUDGET_MS) { stoppedEarly = true; break; }
+    const want = Math.min(CA_EMBED_BATCH, maxRows - queued);
+    const rows = await sbRpc("pms_ca_items_to_embed", { p_limit: want });
+    if (!Array.isArray(rows) || !rows.length) break;
+    queued += rows.length;
+    const out: Record<string, unknown>[] = [];
+    for (const r of rows) {
+      if (Date.now() - started > CA_EMBED_BUDGET_MS) { stoppedEarly = true; break; }
+      try {
+        const v = await embedText(String(r.embed_text ?? ""));
+        out.push({ project_row_id: r.project_row_id, item_type: r.item_type, item_id: r.item_id, embed_hash: r.embed_hash, embedding: vectorLiteral(v) });
+      } catch (e) {
+        failed++;
+        console.warn("[documents-sync] embed failed for", r.project_row_id, r.item_type, r.item_id, String((e as any)?.message ?? e));
+      }
+    }
+    // A batch with no successes means the model is down, not the rows: stop
+    // here rather than pull every remaining row through the same failure.
+    if (!out.length) break;
+    {
+      const n = Number(await sbRpc("pms_ca_items_store_embeddings", { p_rows: out })) || 0;
+      embedded += n;
+      batches++;
+      // rows whose text moved between read and write are skipped by the store
+      // (hash mismatch) and come back on the next pass; count them as failed
+      // here so the number is visible, not as embedded.
+      failed += Math.max(0, out.length - n);
+    }
+    if (stoppedEarly || rows.length < want) break;   // a short batch means the queue is drained
+  }
+  const summary = summarizeEmbedRun({ queued, embedded, failed, batches, ms: Date.now() - started, stoppedEarly });
+  if (failed) console.warn("[documents-sync] pms_ca_items embed:", JSON.stringify(summary));
+  return summary;
+}
 
 // ── unrostered-caller alert ──────────────────────────────────────────────────
 // The connector accepts any verified Setty sign-in and resolves a person with no

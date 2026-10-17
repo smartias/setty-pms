@@ -53,6 +53,30 @@ export function clampCaLimit(limit: number | null | undefined): number {
   return Math.min(Math.max(Math.trunc(n), 1), CA_SEARCH_MAX_LIMIT);
 }
 
+// ── Embeddings (PROPOSAL-ca-items-embeddings.md) ─────────────────────────────
+// The edge runtime's built-in model. The column is vector(384) and the model
+// name is pinned here and in the migration comment; change both together.
+export const CA_EMBED_MODEL = "gte-small";
+export const CA_EMBED_DIMS = 384;
+export const CA_MIN_SIMILARITY = 0.75;
+
+// A pgvector literal as PostgREST wants it on an RPC call: "[0.1,0.2,...]".
+export function vectorLiteral(v: ArrayLike<number>): string {
+  const out: string[] = [];
+  for (let i = 0; i < v.length; i++) out.push(Number(v[i]).toString());
+  return "[" + out.join(",") + "]";
+}
+
+// The model's output is trusted only when it has the column's shape; anything
+// else is a configuration or runtime fault and must not reach the RPC.
+export function isEmbedding(v: unknown): v is ArrayLike<number> {
+  if (!v || typeof (v as any).length !== "number") return false;
+  const a = v as ArrayLike<number>;
+  if (a.length !== CA_EMBED_DIMS) return false;
+  for (let i = 0; i < a.length; i++) if (!Number.isFinite(Number(a[i]))) return false;
+  return true;
+}
+
 export type CaSearchInput = {
   query?: string | null;
   rowIds: string[];
@@ -61,6 +85,9 @@ export type CaSearchInput = {
   discipline?: string | null;
   openOnly?: boolean | null;
   limit?: number | null;
+  // the query's embedding; used only when the query is prose (mode "text")
+  embedding?: ArrayLike<number> | null;
+  minSimilarity?: number | null;
 };
 
 export type CaSearchArgs = {
@@ -73,10 +100,16 @@ export type CaSearchArgs = {
   p_discipline: string | null;
   p_open_only: boolean;
   p_limit: number;
+  p_embedding?: string;
+  p_min_similarity?: number;
 };
 
+export type CaSearchMode = "list" | "number" | "spec" | "text" | "hybrid";
+
 // The RPC body. `mode` says which shape the query took, for the tool's answer.
-export function buildCaSearchArgs(input: CaSearchInput): { args: CaSearchArgs; mode: "list" | "number" | "spec" | "text" } {
+// An embedding is attached only to a prose query: the number and spec shapes
+// are exact by nature, and the RPC ignores it for them anyway.
+export function buildCaSearchArgs(input: CaSearchInput): { args: CaSearchArgs; mode: CaSearchMode } {
   const q = classifyCaQuery(input.query);
   const type = input.type ?? q.typeHint ?? null;
   const args: CaSearchArgs = {
@@ -90,8 +123,23 @@ export function buildCaSearchArgs(input: CaSearchInput): { args: CaSearchArgs; m
     p_open_only: input.openOnly === true,
     p_limit: clampCaLimit(input.limit),
   };
-  const mode = q.number ? "number" : q.spec ? "spec" : q.text ? "text" : "list";
+  let mode: CaSearchMode = q.number ? "number" : q.spec ? "spec" : q.text ? "text" : "list";
+  if (mode === "text" && isEmbedding(input.embedding)) {
+    args.p_embedding = vectorLiteral(input.embedding);
+    const f = Number(input.minSimilarity);
+    args.p_min_similarity = Number.isFinite(f) && f >= 0 && f <= 1 ? f : CA_MIN_SIMILARITY;
+    mode = "hybrid";
+  }
   return { args, mode };
+}
+
+// What the documents-sync response reports about the embed pass.
+export type EmbedRunCounts = { queued: number; embedded: number; failed: number; batches: number; ms: number; stoppedEarly?: boolean };
+export function summarizeEmbedRun(c: EmbedRunCounts): Record<string, unknown> {
+  return {
+    queued: c.queued, embedded: c.embedded, failed: c.failed, batches: c.batches, ms: Math.round(c.ms),
+    ...(c.stoppedEarly ? { stoppedEarly: true, note: "Time budget reached; the next run continues." } : {}),
+  };
 }
 
 function nonEmpty(s: string | null | undefined): string | null {
