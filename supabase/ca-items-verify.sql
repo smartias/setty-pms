@@ -70,5 +70,11 @@ from pg_proc p cross join (values ('anon'), ('authenticated'), ('service_role'))
 where p.pronamespace = 'public'::regnamespace and p.proname = 'pms_ca_items_reconcile'
 order by 2;
 
+-- ── 7b. Embedding coverage (after 20261017150000 and the connector embed job) ─
+select item_type, count(*) as rows, count(embedding) as embedded,
+       count(*) filter (where embedding is not null and embedded_at < projected_at) as stale,
+       (select count(*) from public.pms_ca_items_to_embed(1000)) as queued
+from public.pms_ca_items group by 1 order by 1;
+
 -- ── 8. Reconcile a single project after a logged WARNING ─────────────────────
 -- select * from public.pms_ca_items_reconcile('<pms_projects.id>');

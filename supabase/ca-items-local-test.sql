@@ -6,6 +6,7 @@
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261017120000_pms_ca_items.sql
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261017130000_search_ca_items.sql
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261017140000_search_ca_items_total.sql
+--   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261017150000_ca_items_embeddings.sql   # needs pgvector installed
 --   psql -f supabase/ca-items-local-test.sql                          # ends with ALL TESTS PASSED
 -- (run from the repo root: the test re-applies the migration by relative path).
 --
@@ -14,7 +15,8 @@
 -- alone" guard, renumber, remove, project delete cascade, full-text stemming,
 -- the warn-and-continue path when the projection breaks, reconcile repair,
 -- re-applying the migration, backfill counts, the RLS/privilege surface, and
--- the search_ca_items RPC (number / spec / prose / list shapes, fail-closed ids).
+-- the search_ca_items RPC (number / spec / prose / list shapes, fail-closed ids),
+-- and the embeddings experiment pieces (embed text, job helpers, hybrid rank).
 
 \set ON_ERROR_STOP on
 \set QUIET on
@@ -213,6 +215,75 @@ do $$ declare r record; n int; begin
   raise notice 'search_ca_items ok';
 end $$;
 
+-- ── 6c. embeddings: embed text, job helpers, hybrid search ───────────────────
+-- Fake unit vectors stand in for the model: e(k) has a 1 at position k.
+create or replace function pg_temp.e(k int, v real default 1) returns extensions.vector(384) language sql as $$
+  select ('[' || string_agg(case when i = k then v::text else '0' end, ',' order by i) || ']')::extensions.vector(384)
+  from generate_series(1, 384) i $$;
+-- a vector close to e(1): cosine similarity 0.9 / sqrt(0.9^2 + 0.1^2) = 0.994
+create or replace function pg_temp.near1() returns extensions.vector(384) language sql as $$
+  select ('[' || string_agg(case when i = 1 then '0.9' when i = 2 then '0.1' else '0' end, ',' order by i) || ']')::extensions.vector(384)
+  from generate_series(1, 384) i $$;
+
+do $$ declare t text; n int; r record; begin
+  -- embed text: boilerplate stripped, the real notes kept, capped, null when empty
+  t := public.pms_ca_items_embed_text('Air Terminal Units',
+       E'NOTATIONS: 1. Comments, corrections, approvals, or provisional acceptance made to submittals, shop drawings, or other project correspondence during the review process do not relieve contractor from compliance. 2. Provide 2-inch filters.');
+  assert t = E'Air Terminal Units\nNOTATIONS: 2. Provide 2-inch filters.', 'submittal boilerplate: ' || t;
+  t := public.pms_ca_items_embed_text('FDC Relocation',
+       E'General Notations: This RFI, RFI response, and related correspondence, written, verbal, or other; is not an authorization to proceed. Response: Relocate the FDC to the north wall.');
+  assert t = E'FDC Relocation\nResponse: Relocate the FDC to the north wall.', 'rfi boilerplate: ' || t;
+  assert length(public.pms_ca_items_embed_text('x', repeat('a', 5000))) = 1500, 'cap';
+  assert public.pms_ca_items_embed_text('', '  ') is null, 'empty';
+  assert public.pms_ca_items_embed_text(null, 'body only') = 'body only', 'no subject';
+  raise notice 'embed text ok';
+
+  -- job helpers: everything needs embedding at first
+  select count(*) into n from public.pms_ca_items_to_embed(); assert n = 5, 'to_embed initial ' || n;
+  select count(*) into n from public.pms_ca_items_to_embed(2); assert n = 2, 'to_embed limit';
+  -- store: r1 -> e(1), r2 -> e(2), s1 -> e(3) (orthogonal, so the fused order is unambiguous); one bad hash is skipped
+  select public.pms_ca_items_store_embeddings(jsonb_build_array(
+    jsonb_build_object('project_row_id','p1','item_type','rfi','item_id','r1','embed_hash',(select embed_hash from public.pms_ca_items_to_embed(10) where item_id='r1'),'embedding',pg_temp.e(1)::text),
+    jsonb_build_object('project_row_id','p1','item_type','rfi','item_id','r2','embed_hash',(select embed_hash from public.pms_ca_items_to_embed(10) where item_id='r2'),'embedding',pg_temp.e(2)::text),
+    jsonb_build_object('project_row_id','p1','item_type','submittal','item_id','s1','embed_hash',(select embed_hash from public.pms_ca_items_to_embed(10) where item_id='s1'),'embedding',pg_temp.e(3)::text),
+    jsonb_build_object('project_row_id','p1','item_type','rfi','item_id','r4','embed_hash','stale-hash','embedding',pg_temp.e(4)::text)
+  )) into n;
+  assert n = 3, 'stored ' || n;
+  select count(*) into n from public.pms_ca_items_to_embed(); assert n = 2, 'to_embed after store ' || n;  -- r4 (bad hash) and rfi:RFI-003
+  -- an edit re-queues just that row (keeps the word "damper" for the search checks below)
+  update public.pms_projects set project = jsonb_set(project, '{rfis,0,description}', '"Please confirm the damper rating again"'), version = version + 1 where id='p1';
+  select count(*) into n from public.pms_ca_items_to_embed() where item_id = 'r1'; assert n = 1, 're-queue on edit';
+  select embedded_hash into t from public.pms_ca_items where item_id='r1';
+  assert t is distinct from (select embed_hash from public.pms_ca_items_to_embed(10) where item_id='r1'), 'hash moved';
+  raise notice 'embed job helpers ok';
+
+  -- hybrid search: no embedding -> identical to before. r1 (description "damper",
+  -- received 2026-09-01) and r2 (response "dampers", no date) match; equal text
+  -- rank, so the date tie-break puts r1 first.
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'dampers'); assert n = 2, 'lexical dampers ' || n;
+  select * into r from public.search_ca_items(array['p1'], p_text => 'dampers') limit 1;
+  assert r.item_id = 'r1', 'lexical top is r1, got ' || r.item_id;
+  -- with r2's vector as the query, r2 is in both lists and rises to the top; r1 (orthogonal) is lexical only
+  select * into r from public.search_ca_items(array['p1'], p_text => 'dampers', p_embedding => pg_temp.e(2)) limit 1;
+  assert r.item_id = 'r2', 'hybrid top is r2, got ' || r.item_id;
+  assert r.total = 2, 'hybrid total ' || r.total;
+  -- a vector merely close to r1's (similarity 0.994) clears the floor and lifts r1
+  select * into r from public.search_ca_items(array['p1'], p_text => 'dampers', p_embedding => pg_temp.near1()) limit 1;
+  assert r.item_id = 'r1' and r.rank > 0.03, 'near vector lifts r1, got ' || r.item_id || ' rank ' || r.rank;
+  -- a semantic-only hit: s1 (no "damper" text) appears when its vector is the query
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'dampers', p_embedding => pg_temp.e(3)) where item_id = 's1';
+  assert n = 1, 'semantic-only hit missing';
+  select total into n from public.search_ca_items(array['p1'], p_text => 'dampers', p_embedding => pg_temp.e(3)) limit 1;
+  assert n = 3, 'hybrid total with addition ' || n;
+  -- the floor keeps dissimilar vectors out: e(4) is orthogonal to everything stored (r4 never stored)
+  select count(*) into n from public.search_ca_items(array['p1'], p_text => 'dampers', p_embedding => pg_temp.e(4)); assert n = 2, 'floor';
+  -- number and spec shapes ignore the embedding entirely
+  select count(*) into n from public.search_ca_items(array['p1'], p_number => 'RFI-004', p_embedding => pg_temp.e(3)); assert n = 1, 'number ignores embedding';
+  select count(*) into n from public.search_ca_items(array['p1'], p_spec => '230923', p_embedding => pg_temp.e(1)); assert n = 1, 'spec ignores embedding';
+  select count(*) into n from public.search_ca_items(array['p1'], p_embedding => pg_temp.e(1)); assert n = 5, 'list ignores embedding';
+  raise notice 'hybrid search ok';
+end $$;
+
 -- ── 7. RLS / privileges ───────────────────────────────────────────────────────
 set role authenticated;
 do $$ declare n int; begin
@@ -224,6 +295,10 @@ do $$ declare n int; begin
   begin perform public.pms_ca_items_reconcile(); raise exception 'reconcile allowed';
   exception when insufficient_privilege then null; end;
   begin perform public.search_ca_items(array['p1']); raise exception 'search allowed';
+  exception when insufficient_privilege then null; end;
+  begin perform public.pms_ca_items_to_embed(); raise exception 'to_embed allowed';
+  exception when insufficient_privilege then null; end;
+  begin perform public.pms_ca_items_store_embeddings('[]'); raise exception 'store allowed';
   exception when insufficient_privilege then null; end;
   raise notice 'authenticated: read yes, write/truncate/reconcile no';
 end $$;

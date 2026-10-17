@@ -1,6 +1,9 @@
 # Proposal: semantic search on CA items, as a bounded experiment
 
-Status: PROPOSAL (2026-10-17). Nothing is built. The experiment below decides
+Status: MIGRATION PR OPEN (2026-10-17): `supabase/migrations/20261017150000_ca_items_embeddings.sql`
+(extension, columns, `pms_ca_items_embed_text`, the two job helpers, hybrid
+`search_ca_items`), tested locally with pgvector built from source. Nothing
+reads the new columns until the connector PR. The experiment below decides
 whether embeddings earn a place; if they do not, the column and the RPC
 parameter come out again in one PR. Follows PROPOSAL-ca-items-table.md
 (steps 1 and 2 live since 2026-10-17; step 3, removing the fallback, is
