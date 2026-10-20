@@ -3,18 +3,14 @@
 Written 2026-10-20 for a session that HAS Supabase access to the PMS project
 (`khxmgjilwhdguuepbhne`). The session that wrote PR #372 did not.
 
-## The short version: one query, then hand it back
+## Status 2026-10-20, later: steps A and B are DONE
 
-Everything else is done or can be done by the session without access. The
-only thing this session needs to do is run the query in step A (one
-`execute_sql` call, read-only) and give the full output back, either pasted
-into the original chat session or posted as a comment on PR #372 (that
-session is subscribed to the PR and wakes on the comment). Steps B and C
-below are what happens next; they are here for completeness and do NOT need
-to be done by this session.
-
-Also done without access, waiting only on the query: the connector half
-(embed route, flagged query embedding) is on PR #373.
+The capture query was run and its output folded in: the three assumptions
+held, the capture migration `20261020110000` holds the live function's text,
+and the baseline carries production's real columns. Nothing further is needed
+from a session with Supabase access except applying the migrations (step C),
+which is a few pasted statements in the SQL editor. Steps A and B below are
+kept for the record.
 
 ## Where things stand
 

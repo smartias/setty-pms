@@ -842,14 +842,16 @@ status. Nothing uses it until the connector PR (step 2) ships, and the
 keyword search behaves exactly as before.
 
 - **The live keyword function is kept, not rewritten.** `search_project_emails`
-  was created in the SQL editor and its text was not in the repository. The
-  migration renames it to `pms_emails_search_lexical` untouched (first
-  application only) and the new `search_project_emails(q, proj, lim,
-  p_embedding, p_min_similarity)` delegates every keyword ranking to it. With
-  no embedding (every caller today) the wrapper returns the lexical rows in
-  the lexical order, `search_mode: "keyword"`. The capture migration
-  (`20261020110000`, written from `pg_get_functiondef`, section 0 of
-  `supabase/emails-verify.sql`) puts the text under version control.
+  was created in the SQL editor; migration `20261020110000` is its text,
+  captured with `pg_get_functiondef` on 2026-10-20, under the name
+  `pms_emails_search_lexical` (it ranks with `ts_rank` over the table's
+  `search_tsv` column). `20261020120000` renames the live function to that
+  name if the capture has not run yet, drops whatever else is still called
+  `search_project_emails`, and creates the new `search_project_emails(q,
+  proj, lim, p_embedding, p_min_similarity)`, which delegates every keyword
+  ranking to the lexical function. With no embedding (every caller today) the
+  wrapper returns the lexical rows in the lexical order, `search_mode:
+  "keyword"`. The two migrations can be applied in either order.
 - **Hybrid mode** (an embedding and a non-blank query): the lexical list and a
   cosine nearest-neighbour list (floor `p_min_similarity`, default 0.75) are
   fused by reciprocal rank as `search_ca_items` does, then collapsed to **one
@@ -874,8 +876,9 @@ keyword search behaves exactly as before.
 - **Baseline** `20261020100000` creates the table and a stand-in keyword
   function only where they are missing (a Supabase Preview branch, a local
   replay); in production, which has both, every statement is skipped by its
-  guard. Its column list is the PMS's; correct it from section 0 of the verify
-  file when that output is in hand.
+  guard. Columns, nullability and indexes are production's as read on
+  2026-10-20; `search_tsv` and `direction` are generated there because
+  nothing else fills them in a replay.
 - **Verify** with `supabase/emails-verify.sql` (capture query, object list,
   keyword-unchanged check, coverage, queue sample, latency, thread collapse);
   the behaviour test is `supabase/emails-local-test.sql` with

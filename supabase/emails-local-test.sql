@@ -5,11 +5,12 @@
 -- Runs against a throwaway Postgres 16 with pgvector (any local install):
 --   psql -v ON_ERROR_STOP=1 -f supabase/emails-local-standin.sql                               # roles, extensions schema
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020100000_baseline_pms_project_emails.sql  # table + stand-in keyword search
+--   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020110000_search_project_emails_capture.sql # the live keyword search, captured
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020120000_emails_embeddings.sql
 --   psql -f supabase/emails-local-test.sql                                                     # ends with ALL TESTS PASSED
 -- (run from the repo root: the test re-applies the migration by relative path).
--- The baseline leaves the keyword function under its live name, so this
--- exercises the first-application rename exactly as production will.
+-- Drop the capture line to exercise the first-application rename instead
+-- (the baseline leaves its stand-in under the live name); both orders pass.
 --
 -- Covers: the thread key, the cleaning rule (reply cut, forward kept, footers,
 -- urls, quote prefixes, cap, blank), the queue and store helpers (newest
@@ -74,7 +75,9 @@ end $$;
 
 -- ── 1. rows ───────────────────────────────────────────────────────────────────
 truncate public.pms_project_emails;
-insert into public.pms_project_emails (record_id, project_id, conversation_id, subject, from_name, from_address, email_date, body_text, preview, has_attachments) values
+insert into public.pms_project_emails (record_id, project_id, conversation_id, subject, from_name, from_address, email_date, body_text, preview, has_attachments, msg_id, saved_at, sp_folder_url, saved_to_sharepoint)
+select record_id, project_id, conversation_id, subject, from_name, from_address, email_date::timestamptz, body_text, preview, has_attachments, 'm-' || record_id, now(), '', false
+from (values
 -- a three-reply thread on p1 about the chiller disconnect
 ('e1', 'p1', 'conv-1', 'Chiller disconnect',     'Bob',  'bob@gc.com',    '2026-10-01 09:00+00', 'Can we move the disconnect to the wall behind the chiller?', 'Can we move', false),
 ('e2', 'p1', 'conv-1', 'RE: Chiller disconnect', 'Anne', 'anne@setty.com','2026-10-01 11:00+00', E'Within sight of the unit is the rule, so the wall works.\n\nFrom: Bob\nSent: x\nTo: Anne\nSubject: Chiller disconnect\n\nCan we move the disconnect?', 'Within sight', false),
@@ -87,7 +90,8 @@ insert into public.pms_project_emails (record_id, project_id, conversation_id, s
 -- another project
 ('e7', 'p2', 'conv-9', 'Chiller disconnect location', 'Eve', 'eve@gc.com', '2026-10-05 10:00+00', 'Where does the chiller disconnect go on this one?', 'Where', false),
 -- nothing to embed
-('e8', 'p2', null, '', 'Nobody', 'n@x.com', '2026-10-06 10:00+00', '   ', '', false);
+('e8', 'p2', null, '', 'Nobody', 'n@x.com', '2026-10-06 10:00+00', '   ', '', false)
+) as v(record_id, project_id, conversation_id, subject, from_name, from_address, email_date, body_text, preview, has_attachments);
 
 -- ── 2. queue and store ───────────────────────────────────────────────────────
 do $$
