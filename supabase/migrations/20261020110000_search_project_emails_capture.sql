@@ -9,6 +9,27 @@
 -- What it relies on, all present in production: the search_tsv tsvector
 -- column (GIN index pms_project_emails_search_idx), websearch_to_tsquery with
 -- the english configuration, and rows ordered best first then newest.
+--
+-- A replay table built by an earlier version of the baseline (20261020100000)
+-- has no search_tsv, and a function body is checked against the table when it
+-- is created, so the column is added there first. Production has it; the
+-- guard makes this a no-op there (the baseline's own definition is reused).
+
+do $$
+begin
+  if to_regclass('public.pms_project_emails') is not null
+     and not exists (select 1 from information_schema.columns
+                     where table_schema = 'public' and table_name = 'pms_project_emails'
+                       and column_name = 'search_tsv') then
+    alter table public.pms_project_emails
+      add column search_tsv tsvector generated always as
+        (to_tsvector('english',
+           coalesce(subject, '') || ' ' || coalesce(from_name, '') || ' ' ||
+           coalesce(body_text, '') || ' ' || coalesce(attachment_names::text, ''))) stored;
+    create index if not exists pms_project_emails_search_idx
+      on public.pms_project_emails using gin (search_tsv);
+  end if;
+end $$;
 
 CREATE OR REPLACE FUNCTION public.pms_emails_search_lexical(q text, proj text DEFAULT NULL::text, lim integer DEFAULT 25)
  RETURNS TABLE(record_id text, project_id text, subject text, from_name text, from_address text, to_addresses text, direction text, email_date timestamp with time zone, preview text, has_attachments boolean, rank real)
