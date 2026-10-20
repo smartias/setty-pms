@@ -1,9 +1,20 @@
 # Handoff: finishing the email embeddings migration (PR #372)
 
 Written 2026-10-20 for a session that HAS Supabase access to the PMS project
-(`khxmgjilwhdguuepbhne`). The session that wrote PR #372 did not, so one query
-and one small migration are still owed. Same text as the Claude Doc "Email
-embeddings handoff (PR #372)".
+(`khxmgjilwhdguuepbhne`). The session that wrote PR #372 did not.
+
+## The short version: one query, then hand it back
+
+Everything else is done or can be done by the session without access. The
+only thing this session needs to do is run the query in step A (one
+`execute_sql` call, read-only) and give the full output back, either pasted
+into the original chat session or posted as a comment on PR #372 (that
+session is subscribed to the PR and wakes on the comment). Steps B and C
+below are what happens next; they are here for completeness and do NOT need
+to be done by this session.
+
+Also done without access, waiting only on the query: the connector half
+(embed route, flagged query embedding) is on PR #373.
 
 ## Where things stand
 
