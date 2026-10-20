@@ -871,10 +871,16 @@ keyword search behaves exactly as before.
   21,000 bodies a minute as the CA helper does), and
   `pms_emails_store_embeddings(p_rows)` writes a batch, refusing a row whose
   text no longer hashes to what was embedded. Both are `service_role` only.
+- **Baseline** `20261020100000` creates the table and a stand-in keyword
+  function only where they are missing (a Supabase Preview branch, a local
+  replay); in production, which has both, every statement is skipped by its
+  guard. Its column list is the PMS's; correct it from section 0 of the verify
+  file when that output is in hand.
 - **Verify** with `supabase/emails-verify.sql` (capture query, object list,
   keyword-unchanged check, coverage, queue sample, latency, thread collapse);
   the behaviour test is `supabase/emails-local-test.sql` with
-  `supabase/emails-local-standin.sql` (local Postgres 16 with pgvector).
+  `supabase/emails-local-standin.sql` (roles only; local Postgres 16 with
+  pgvector).
 
 ## The Knowledgebase (`browse_knowledgebase`, 1.22.0)
 

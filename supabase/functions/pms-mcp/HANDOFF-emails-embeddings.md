@@ -119,16 +119,18 @@ Then the local test (throwaway Postgres 16 with pgvector, from the repo root):
 
 ```
 psql -v ON_ERROR_STOP=1 -f supabase/emails-local-standin.sql
+psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020100000_baseline_pms_project_emails.sql
 psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020110000_search_project_emails_capture.sql
 psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020120000_emails_embeddings.sql
 psql -f supabase/emails-local-test.sql      # must end with ALL TESTS PASSED
 ```
 
-If the captured function references a column the stand-in table lacks (a
-`search_vector` tsvector column is likely), add it to
-`supabase/emails-local-standin.sql` with the type step A printed, and drop the
-stand-in's own `pms_emails_search_lexical` from that file. Commit and push to
-the same branch.
+If the captured function references a column the baseline table lacks (a
+`search_vector` tsvector column is likely), add it to the table in
+`supabase/migrations/20261020100000_baseline_pms_project_emails.sql` with the
+type step A printed (that file only runs where the table is missing, so
+production is untouched). Correct the baseline's other column types from the
+`col` rows at the same time. Commit and push to the same branch.
 
 ## Step C: apply in production and verify
 

@@ -1,14 +1,15 @@
--- pms_project_emails embeddings — LOCAL behaviour test for migration
--- 20261020120000. Not for production: it truncates the table.
+-- pms_project_emails embeddings — LOCAL behaviour test for migrations
+-- 20261020100000 (baseline) and 20261020120000 (embeddings). Not for
+-- production: it truncates the table.
 --
 -- Runs against a throwaway Postgres 16 with pgvector (any local install):
---   psql -v ON_ERROR_STOP=1 -f supabase/emails-local-standin.sql                        # roles, bare table, stand-in keyword search
+--   psql -v ON_ERROR_STOP=1 -f supabase/emails-local-standin.sql                               # roles, extensions schema
+--   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020100000_baseline_pms_project_emails.sql  # table + stand-in keyword search
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020120000_emails_embeddings.sql
---   psql -f supabase/emails-local-test.sql                                              # ends with ALL TESTS PASSED
+--   psql -f supabase/emails-local-test.sql                                                     # ends with ALL TESTS PASSED
 -- (run from the repo root: the test re-applies the migration by relative path).
--- To exercise the first-application rename (the live function present, no
--- pms_emails_search_lexical yet), rename the stand-in before the migration:
---   psql -c 'alter function public.pms_emails_search_lexical(text,text,integer) rename to search_project_emails'
+-- The baseline leaves the keyword function under its live name, so this
+-- exercises the first-application rename exactly as production will.
 --
 -- Covers: the thread key, the cleaning rule (reply cut, forward kept, footers,
 -- urls, quote prefixes, cap, blank), the queue and store helpers (newest
@@ -73,20 +74,20 @@ end $$;
 
 -- ── 1. rows ───────────────────────────────────────────────────────────────────
 truncate public.pms_project_emails;
-insert into public.pms_project_emails (record_id, project_id, conversation_id, subject, from_name, from_address, direction, email_date, body_text, preview, has_attachments) values
+insert into public.pms_project_emails (record_id, project_id, conversation_id, subject, from_name, from_address, email_date, body_text, preview, has_attachments) values
 -- a three-reply thread on p1 about the chiller disconnect
-('e1', 'p1', 'conv-1', 'Chiller disconnect',     'Bob',  'bob@gc.com',    'incoming', '2026-10-01 09:00+00', 'Can we move the disconnect to the wall behind the chiller?', 'Can we move', false),
-('e2', 'p1', 'conv-1', 'RE: Chiller disconnect', 'Anne', 'anne@setty.com','outgoing', '2026-10-01 11:00+00', E'Within sight of the unit is the rule, so the wall works.\n\nFrom: Bob\nSent: x\nTo: Anne\nSubject: Chiller disconnect\n\nCan we move the disconnect?', 'Within sight', false),
-('e3', 'p1', 'conv-1', 'RE: Chiller disconnect', 'Bob',  'bob@gc.com',    'incoming', '2026-10-02 08:00+00', E'Thanks, we will run the conduit along the wall then and close this out.\n\nFrom: Anne\nSent: x\nTo: Bob\nSubject: RE: Chiller disconnect\n\nWithin sight of the unit is the rule.', 'Thanks', false),
+('e1', 'p1', 'conv-1', 'Chiller disconnect',     'Bob',  'bob@gc.com',    '2026-10-01 09:00+00', 'Can we move the disconnect to the wall behind the chiller?', 'Can we move', false),
+('e2', 'p1', 'conv-1', 'RE: Chiller disconnect', 'Anne', 'anne@setty.com','2026-10-01 11:00+00', E'Within sight of the unit is the rule, so the wall works.\n\nFrom: Bob\nSent: x\nTo: Anne\nSubject: Chiller disconnect\n\nCan we move the disconnect?', 'Within sight', false),
+('e3', 'p1', 'conv-1', 'RE: Chiller disconnect', 'Bob',  'bob@gc.com',    '2026-10-02 08:00+00', E'Thanks, we will run the conduit along the wall then and close this out.\n\nFrom: Anne\nSent: x\nTo: Bob\nSubject: RE: Chiller disconnect\n\nWithin sight of the unit is the rule.', 'Thanks', false),
 -- an unrelated keyword hit on p1 (mentions "wall" too)
-('e4', 'p1', 'conv-2', 'Fire wall penetration',  'Cat',  'cat@arch.com',  'incoming', '2026-09-20 10:00+00', 'The duct through the rated wall needs a damper; please confirm the rating.', 'The duct', true),
+('e4', 'p1', 'conv-2', 'Fire wall penetration',  'Cat',  'cat@arch.com',  '2026-09-20 10:00+00', 'The duct through the rated wall needs a damper; please confirm the rating.', 'The duct', true),
 -- two rows with no conversation id and a subject-only thread
-('e5', 'p1', null,     'Grease trap sizing',     'Dan',  'dan@gc.com',    'incoming', '2026-09-10 10:00+00', 'The pit is too small for the scheduled unit.', 'The pit', false),
-('e6', 'p1', null,     'RE: Grease trap sizing', 'Anne', 'anne@setty.com','outgoing', '2026-09-11 10:00+00', 'Use the next size down, cut sheet attached.', 'Use the next', true),
+('e5', 'p1', null,     'Grease trap sizing',     'Dan',  'dan@gc.com',    '2026-09-10 10:00+00', 'The pit is too small for the scheduled unit.', 'The pit', false),
+('e6', 'p1', null,     'RE: Grease trap sizing', 'Anne', 'anne@setty.com','2026-09-11 10:00+00', 'Use the next size down, cut sheet attached.', 'Use the next', true),
 -- another project
-('e7', 'p2', 'conv-9', 'Chiller disconnect location', 'Eve', 'eve@gc.com', 'incoming', '2026-10-05 10:00+00', 'Where does the chiller disconnect go on this one?', 'Where', false),
+('e7', 'p2', 'conv-9', 'Chiller disconnect location', 'Eve', 'eve@gc.com', '2026-10-05 10:00+00', 'Where does the chiller disconnect go on this one?', 'Where', false),
 -- nothing to embed
-('e8', 'p2', null, '', 'Nobody', 'n@x.com', 'incoming', '2026-10-06 10:00+00', '   ', '', false);
+('e8', 'p2', null, '', 'Nobody', 'n@x.com', '2026-10-06 10:00+00', '   ', '', false);
 
 -- ── 2. queue and store ───────────────────────────────────────────────────────
 do $$
