@@ -1,6 +1,6 @@
 # Experiment: does semantic ranking help CA search? Scoring sheet
 
-Status: RUN 2026-10-20, PROVISIONAL PASS (columns C and D filled from the connector; coverage confirmation and the judge's columns E and F outstanding, see the decision box). Originally READY TO RUN (2026-10-17). Everything it needs is deployed: migration
+Status: RUN 2026-10-20, PASS ON HIT COUNTS; the judge step was skipped by decision (see the decision box). Switch-on shipped in the PR that carries this line. Originally READY TO RUN (2026-10-17). Everything it needs is deployed: migration
 `20261017150000` applied, connector build `2026-10-17-ca-items-semantic`
 live, embeddings backfilling on the sync cron. The pass rule below is the one
 written in `PROPOSAL-ca-items-embeddings.md` before anything was built; it is
@@ -146,8 +146,8 @@ re-run on the same ten questions.
 |---|---|
 | Date run | 2026-10-20 (searches); 2026-10-17 questions written, PR #365 |
 | Questions written by | Claude, from records found by browsing listings (PR #365); not yet replaced or endorsed by a CA engineer |
-| Judged by | (open) columns E and F need a person who sees the lists above |
-| Result (pass / fail) | PROVISIONAL PASS: Gained 7, Lost 0, against the rule Gained >= 3 and Lost = 0. Provisional because pre-check 1 (embedding coverage = 100%) was not confirmed before the run; the backfill started 2026-10-19 13:43 UTC at about 5 rows a minute and the question 2 record, absent on 10-17, is now found, so coverage is far along but unverified. Row 10 should be re-run once section 7b shows queued = 0 |
+| Judged by | Skipped. Sara decided on 2026-10-20 to go on the hit counts alone; columns E and F stay empty |
+| Result (pass / fail) | PASS: Gained 7, Lost 0, against the rule Gained >= 3 and Lost = 0. Embedding coverage was not confirmed at 100% before the run (the question 2 record, absent on 10-17, was found first on 10-20, so coverage was far along); the one miss, row 10, is the title-only record |
 | Floor used | 0.75 |
-| Decision and next PR | Not taken. If the coverage query confirms 100% and the judge's column F is not dominated by noise, the pass stands: set CA_ITEMS_SEMANTIC=1 and remove the `semantic` and `minSimilarity` tool arguments in one small PR, keep the embed job |
+| Decision and next PR | Semantic ranking ON for everyone: `CA_ITEMS_SEMANTIC` defaults on (set it to `0` to turn it off without a redeploy), the `semantic` and `minSimilarity` tool arguments are removed, the one-minute embed job stays. Row 10 can be re-run any time with the connector; the similarity floor stays 0.75 |
 | Anything surprising | Keyword mode returned zero items for 7 of 10 ordinary questions, so most of the gain is hybrid finding anything at all rather than ranking better. Every hybrid hit was ranked first. The one miss (row 10) is the title-only record, as predicted when the questions were written |
