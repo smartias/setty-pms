@@ -5,7 +5,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
   classifyCaQuery, buildCaSearchArgs, caRowToItem, caTotalOf, clampCaLimit, summarizeReconcile,
-  vectorLiteral, isEmbedding, summarizeEmbedRun, runEmbedPass,
+  vectorLiteral, isEmbedding, summarizeEmbedRun, runEmbedPass, emailEmbedStoreRow, emailEmbedLabel,
   CA_SEARCH_DEFAULT_LIMIT, CA_SEARCH_MAX_LIMIT, CA_EMBED_DIMS, CA_MIN_SIMILARITY,
 } from "./caItems.ts";
 
@@ -237,4 +237,32 @@ test("a single bad row is counted and skipped; a store that skips a moved row co
   assert.equal(out.failed, 1 + 2, "one embed failure, plus one skipped row per store write (two writes)");
   assert.equal(out.embedded, 6 - 2);
   assert.deepEqual(h.stores.map((g) => g.length), [5, 1]);
+});
+
+test("the embed pass can store email rows: record_id, hash and vector, nothing else", async () => {
+  const queue = [
+    { record_id: "e1", embed_text: "chiller disconnect", embed_hash: "h1" },
+    { record_id: "e2", embed_text: "", embed_hash: "h2" },
+  ];
+  const stores = []; const logs = [];
+  const out = await runEmbedPass({
+    maxRows: 10, fetchSize: 10, storeEvery: 5, budgetMs: 1500, now: () => 0,
+    fetchRows: async (limit) => queue.splice(0, limit),
+    embed: async (text) => { if (!text) throw new Error("empty"); return UNIT; },
+    store: async (rows) => { stores.push(rows); return rows.length; },
+    storeRow: emailEmbedStoreRow, label: emailEmbedLabel, log: (m) => logs.push(m),
+  });
+  assert.equal(out.queued, 2); assert.equal(out.embedded, 1); assert.equal(out.failed, 1);
+  assert.equal(stores.length, 1);
+  assert.deepEqual(Object.keys(stores[0][0]).sort(), ["embed_hash", "embedding", "record_id"]);
+  assert.equal(stores[0][0].record_id, "e1"); assert.equal(stores[0][0].embed_hash, "h1");
+  assert.match(stores[0][0].embedding, /^\[1,0,0,/);
+  assert.match(logs[0], /^embed failed for email e2: empty/);
+});
+
+test("without storeRow the embed pass still sends the CA shape", async () => {
+  const h = embedHarness(1);
+  const stores = [];
+  await runEmbedPass({ ...h.opts, store: async (rows) => { stores.push(rows); return rows.length; } });
+  assert.deepEqual(Object.keys(stores[0][0]).sort(), ["embed_hash", "embedding", "item_id", "item_type", "project_row_id"]);
 });

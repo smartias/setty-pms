@@ -857,6 +857,38 @@ has a KB branch, and any signed-in caller may read it. Read-only, like every dri
 - Deploy: `pms-mcp` only; no migration. Check `/health` shows build
   `2026-10-05-knowledgebase`, then start a fresh conversation.
 
+## Email embeddings, the connector half (`POST /pms-mcp/admin/emails-embed`)
+
+Step 2 of `PROPOSAL-emails-embeddings.md`; the database half (migration
+`20261020120000`, the helpers and the hybrid `search_project_emails`) is PR
+#372 and must be applied before this is scheduled.
+
+- **The embed job**: `POST /pms-mcp/admin/emails-embed`, same auth and sizing
+  as `ca-items-embed` (`{"max": N}`, default 20, max 200; store every 5; 1.5 s
+  deadline), `runEmbedPass` with `pms_emails_to_embed` /
+  `pms_emails_store_embeddings` injected (`emailEmbedStoreRow`). Schedule it
+  once a minute next to the CA job, copying the secret the same way:
+
+  ```sql
+  select cron.schedule('pms-emails-embed', '* * * * *',
+    replace((select command from cron.job where jobname = 'pms-documents-sync'),
+            'admin/documents-sync', 'admin/emails-embed'));
+  ```
+
+  About three days for the ~21,000-row backfill at the measured 5 rows a
+  minute; a second entry on a `30 seconds` schedule halves it. Coverage:
+  `supabase/emails-verify.sql` section 3.
+- **`search_emails`**: with a query, embeds it and passes `p_embedding` only
+  when the function secret `EMAILS_SEMANTIC=1` is set (OFF by default until
+  the ten-question experiment passes), or when the EXPERIMENT-ONLY `semantic`
+  argument says so for one call (`true` forces hybrid, `false` forces keyword;
+  it goes away in the switch-on PR as the CA one did). The answer carries
+  `searchMode` (`keyword` or `hybrid`, from the rows), `similarity` and
+  `threadCount` per row in hybrid mode, and a `semanticNote` when the model or
+  the hybrid call failed and the rows are keyword-ranked instead (the call is
+  retried without the embedding, so an unapplied migration degrades, never
+  breaks). Without a query nothing changes.
+
 ## Deploying
 
 One-command version: `deploy.ps1` in this folder pulls main, reads the BUILD

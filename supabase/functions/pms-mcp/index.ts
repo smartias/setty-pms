@@ -50,7 +50,7 @@ import {
 // classifier, RPC arguments and row mapping are pure. See caItems.ts.
 import {
   buildCaSearchArgs, caRowToItem, caTotalOf, clampCaLimit, summarizeReconcile,
-  CA_EMBED_MODEL, isEmbedding, vectorLiteral, runEmbedPass,
+  CA_EMBED_MODEL, isEmbedding, vectorLiteral, runEmbedPass, emailEmbedStoreRow, emailEmbedLabel,
 } from "./caItems.ts";
 
 // pms_documents: per-file attributes derived for the nightly sync. Pure; see documentMeta.ts.
@@ -1374,7 +1374,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-20-ca-items-semantic-on";
+const BUILD = "2026-10-20-emails-embed";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3340,15 +3340,19 @@ mcp.tool("search_emails", {
   description:
     "Full-text search the filed project email log across subject, sender, body, AND " +
     "attachment file names. With a query, ranked by relevance. Without a query, lists " +
-    "newest first. Returns metadata + preview; call read_email for a full body.",
+    "newest first. Returns metadata + preview; call read_email for a full body. When " +
+    "meaning-based ranking is on, a prose query also finds emails that say the same thing " +
+    "in other words, and a thread comes back as one row (its newest matching message, " +
+    "with threadCount).",
   inputSchema: z.object({
     query: z.string().optional().describe("Topic/keywords — searches subject, sender, body, and attachment names"),
     projectNumber: z.string().optional().describe("Scope to one project (number, id, or name)"),
     sender: z.string().optional().describe("Filter by sender email address (contains)"),
     direction: z.enum(["outgoing", "incoming"]).optional().describe("'outgoing' = sent by Setty, 'incoming' = received from outside"),
     limit: z.number().optional().describe("Max results (default 25, max 100)"),
+    semantic: z.boolean().optional().describe("EXPERIMENT ONLY: force meaning-based ranking on (true) or off (false) for this call, overriding the server default"),
   }),
-  handler: async ({ query, projectNumber, sender, direction, limit }) => {
+  handler: async ({ query, projectNumber, sender, direction, limit, semantic }) => {
     const lim = Math.min(Math.max(limit ?? 25, 1), 100);
     let pid: string | null = null;
     if (projectNumber) {
@@ -3357,8 +3361,32 @@ mcp.tool("search_emails", {
     }
     const q = (query ?? "").trim();
     let rows: any[];
+    let searchMode: string | undefined;
+    let semanticNote: string | undefined;
     if (q) {
-      rows = await sbRpc("search_project_emails", { q, proj: pid, lim });
+      // Embed the query when semantic ranking is wanted; keyword ranking is
+      // the fallback at every step (model down, migration not applied), and
+      // the answer says which one ranked the rows.
+      const wantSemantic = typeof semantic === "boolean" ? semantic : EMAILS_SEMANTIC;
+      const args: Record<string, unknown> = { q, proj: pid, lim };
+      if (wantSemantic) {
+        try { args.p_embedding = vectorLiteral(await embedText(q)); }
+        catch (e) {
+          console.warn("[search_emails] query embedding failed, keyword ranking only:", String((e as any)?.message ?? e));
+          semanticNote = "Meaning-based ranking was unavailable for this call; results are keyword-ranked.";
+        }
+      }
+      try {
+        rows = await sbRpc("search_project_emails", args);
+      } catch (e) {
+        if (!("p_embedding" in args)) throw e;
+        console.warn("[search_emails] hybrid call failed, retrying keyword only:", String((e as any)?.message ?? e));
+        semanticNote = "Meaning-based ranking was unavailable for this call; results are keyword-ranked.";
+        delete args.p_embedding;
+        rows = await sbRpc("search_project_emails", args);
+      }
+      rows = Array.isArray(rows) ? rows : [];
+      searchMode = rows[0]?.search_mode ?? ("p_embedding" in args ? "hybrid" : "keyword");
       if (sender && sender.trim()) {
         const s = sender.trim().toLowerCase();
         rows = rows.filter((r: any) => (r.from_address ?? "").toLowerCase().includes(s));
@@ -3376,6 +3404,8 @@ mcp.tool("search_emails", {
     }
     return asText({
       count: rows.length,
+      ...(searchMode ? { searchMode } : {}),
+      ...(semanticNote ? { semanticNote } : {}),
       ...(!rows.length && projectNumber ? {
         note: "No filed emails matched. This log only holds emails filed with the Setty PMS Outlook add-in; emails left in a mailbox or saved to the office drive never reach it.",
         reminder: SHAREPOINT_NUDGE,
@@ -3384,6 +3414,8 @@ mcp.tool("search_emails", {
         recordId: r.record_id, project: r.project_id, date: r.email_date, direction: r.direction,
         from: r.from_name || r.from_address, to: r.to_addresses, subject: r.subject, preview: r.preview,
         ...(typeof r.rank === "number" ? { rank: Math.round(r.rank * 1000) / 1000 } : {}),
+        ...(typeof r.similarity === "number" ? { similarity: Math.round(r.similarity * 1000) / 1000 } : {}),
+        ...(Number(r.thread_count) > 1 ? { threadCount: Number(r.thread_count) } : {}),
         hasAttachments: r.has_attachments,
       })),
     });
@@ -3610,6 +3642,12 @@ const CA_ITEMS_USE_TABLE = Deno.env.get("CA_ITEMS_USE_TABLE") !== "0";
 // built-in model, the same one the embed job uses for the rows; if the model
 // is unavailable the call falls back to keyword ranking and says so.
 const CA_ITEMS_SEMANTIC = Deno.env.get("CA_ITEMS_SEMANTIC") !== "0";
+// The same for the filed email log (PROPOSAL-emails-embeddings.md), OFF until
+// its own ten-question experiment passes: the function secret EMAILS_SEMANTIC=1
+// turns it on for every call. The experiment-only `semantic` argument of
+// search_emails overrides the flag for one call, either way, and goes away in
+// the switch-on PR as the CA one did.
+const EMAILS_SEMANTIC = Deno.env.get("EMAILS_SEMANTIC") === "1";
 let _embedSession: any = null;
 function embedSession(): any {
   if (_embedSession) return _embedSession;
@@ -11972,6 +12010,47 @@ app.post("/pms-mcp/admin/ca-items-embed", async (c) => {
   } catch (e) {
     const error = String((e as any)?.message ?? e);
     console.warn("[ca-items-embed] failed:", error);
+    return c.json({ error }, 500, DOCS_SYNC_CORS);
+  }
+});
+
+// ── Email embeddings (PROPOSAL-emails-embeddings.md) ─────────────────────────
+// The same loop over the filed email log: pms_emails_to_embed lists rows with
+// no embedding (newest first), pms_emails_store_embeddings writes a group.
+// Same auth, same sizing, scheduled once a minute next to pms-ca-items-embed
+// (README → Email embeddings). The ~21,000-row backfill is about three days of
+// one-minute calls at the measured pace; a second cron entry on a 30-second
+// schedule halves it. Until migration 20261020120000 is applied the queue RPC
+// does not exist and the call returns a 500 that names it.
+app.options("/pms-mcp/admin/emails-embed", (c) => c.body(null, 204, DOCS_SYNC_CORS));
+app.post("/pms-mcp/admin/emails-embed", async (c) => {
+  const cronGiven = c.req.header("x-pms-cron") || "";
+  const isCron = !!DOCS_SYNC_SECRET && cronGiven === DOCS_SYNC_SECRET;
+  if (!isCron) {
+    const auth = c.req.header("Authorization") || "";
+    const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!(await isAdminSupabaseJwt(jwt))) {
+      return c.json({ error: "Admins only (Supabase session required), or a valid x-pms-cron secret." }, 403, DOCS_SYNC_CORS);
+    }
+  }
+  let body: any = {};
+  try { body = await c.req.json(); } catch { /* cron sends an empty body */ }
+  const maxRows = Math.max(1, Math.min(Number(body?.max) || CA_EMBED_DEFAULT_ROWS, 200));
+  try {
+    const summary = await runEmbedPass({
+      maxRows, fetchSize: CA_EMBED_FETCH, storeEvery: CA_EMBED_STORE_EVERY, budgetMs: CA_EMBED_BUDGET_MS,
+      now: () => Date.now(),
+      fetchRows: (limit) => sbRpc("pms_emails_to_embed", { p_limit: limit }),
+      embed: (text) => embedText(text),
+      store: async (rows) => Number(await sbRpc("pms_emails_store_embeddings", { p_rows: rows })) || 0,
+      storeRow: emailEmbedStoreRow, label: emailEmbedLabel,
+      log: (msg) => console.warn("[emails-embed]", msg),
+    });
+    if (summary.failed) console.warn("[emails-embed]", JSON.stringify(summary));
+    return c.json(summary, 200, DOCS_SYNC_CORS);
+  } catch (e) {
+    const error = String((e as any)?.message ?? e);
+    console.warn("[emails-embed] failed:", error);
     return c.json({ error }, 500, DOCS_SYNC_CORS);
   }
 });
