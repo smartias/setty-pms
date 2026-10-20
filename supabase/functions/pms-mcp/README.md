@@ -834,6 +834,57 @@ a save: the trigger warns and returns, and `pms_ca_items_reconcile()` repairs.
 - `read_rfi_submittal`, `save_ca_review` and `backload_ca_item` still read and
   write the blob; nothing writes the table but the trigger.
 
+## Email embeddings (`pms_project_emails`, migration `20261020120000`)
+
+Step 1 of `PROPOSAL-emails-embeddings.md`: the storage and the search half of
+meaning-based ranking for the filed email log, for every project whatever its
+status. Nothing uses it until the connector PR (step 2) ships, and the
+keyword search behaves exactly as before.
+
+- **The live keyword function is kept, not rewritten.** `search_project_emails`
+  was created in the SQL editor; migration `20261020110000` is its text,
+  captured with `pg_get_functiondef` on 2026-10-20, under the name
+  `pms_emails_search_lexical` (it ranks with `ts_rank` over the table's
+  `search_tsv` column). `20261020120000` renames the live function to that
+  name if the capture has not run yet, drops whatever else is still called
+  `search_project_emails`, and creates the new `search_project_emails(q,
+  proj, lim, p_embedding, p_min_similarity)`, which delegates every keyword
+  ranking to the lexical function. With no embedding (every caller today) the
+  wrapper returns the lexical rows in the lexical order, `search_mode:
+  "keyword"`. The two migrations can be applied in either order.
+- **Hybrid mode** (an embedding and a non-blank query): the lexical list and a
+  cosine nearest-neighbour list (floor `p_min_similarity`, default 0.75) are
+  fused by reciprocal rank as `search_ca_items` does, then collapsed to **one
+  row per thread** (Outlook `conversation_id`, or the subject minus RE:/FW:
+  when it is missing): the newest matched message of the thread carries the
+  thread's best score and `thread_count` says how many matched messages it
+  stands for. A keyword-only hit still appears, so nothing the keyword search
+  finds is lost.
+- **What gets embedded** (`pms_emails_embed_text`): the subject minus its
+  prefixes and the NEW text of the message. The body is cut at the first
+  reply marker (`-----Original Message-----`, an "On … wrote:" line, a
+  From:/Sent:/To: header block) when the text above it is a message of its
+  own (40+ characters); a forward with a one-line note keeps the forwarded
+  content. Known portal and legal footers, URLs, quote prefixes and rule lines
+  go; 1,500-character cap. Defined once, in SQL. A tuning change is a
+  migration that also runs the one-off re-queue at the bottom of the file.
+- **Job helpers**: `pms_emails_to_embed(p_limit)` lists rows with no embedding,
+  newest first (a partial index makes it an index walk, so it does NOT re-hash
+  21,000 bodies a minute as the CA helper does), and
+  `pms_emails_store_embeddings(p_rows)` writes a batch, refusing a row whose
+  text no longer hashes to what was embedded. Both are `service_role` only.
+- **Baseline** `20261020100000` creates the table and a stand-in keyword
+  function only where they are missing (a Supabase Preview branch, a local
+  replay); in production, which has both, every statement is skipped by its
+  guard. Columns, nullability and indexes are production's as read on
+  2026-10-20; `search_tsv` and `direction` are generated there because
+  nothing else fills them in a replay.
+- **Verify** with `supabase/emails-verify.sql` (capture query, object list,
+  keyword-unchanged check, coverage, queue sample, latency, thread collapse);
+  the behaviour test is `supabase/emails-local-test.sql` with
+  `supabase/emails-local-standin.sql` (roles only; local Postgres 16 with
+  pgvector).
+
 ## The Knowledgebase (`browse_knowledgebase`, 1.22.0)
 
 SETTYfy's internal reference share (`IntranetFiles/Knowledgebase` on
