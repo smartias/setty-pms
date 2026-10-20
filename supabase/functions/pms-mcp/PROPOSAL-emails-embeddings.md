@@ -11,7 +11,8 @@ that `PROPOSAL-ca-items-embeddings.md` put emails on.
 Give `search_emails` the same meaning-based ranking the RFI and submittal
 search now has, so "the exchange about the chiller disconnect" finds the
 thread even when nobody wrote those words. Store one 384-number embedding per
-filed email next to the row, fill it with the same one-minute job pattern,
+filed email next to the row, for every project in the PMS (design, CA,
+completed, on hold), fill it with the same one-minute job pattern,
 fuse it with today's keyword ranking in the search function, and keep it OFF
 behind a flag until a ten-question experiment on real emails passes the same
 rule the CA search had to pass. Two things make email different from RFIs
@@ -105,6 +106,8 @@ changes in behaviour. (`pg_get_functiondef` in the SQL editor gives the text.)
   `queued = 0`), measure search latency.
 - Ten questions about emails, written before searching, each with an
   expected thread found by browsing a project's email tab, not by searching.
+  Spread them across phases: at least three from design-phase projects and
+  at least three from CA, so the result is not a CA-only result.
   Same sheet layout and the same rule: **Gained 3 or more AND Lost 0**, each
   question run with the flag off and on, limit 5, firm-wide. One extra check:
   no thread appears twice in any hybrid top five.
@@ -113,22 +116,46 @@ changes in behaviour. (`pg_get_functiondef` in the SQL editor gives the text.)
 
 ## Pre-check before any of it (one query)
 
-How much of each active CA project's mail is actually filed? Run in the
-Supabase SQL editor:
+The embedding column and the hybrid search cover **every row in
+`pms_project_emails`, for every project**, whatever its status. CA projects
+are not special here: a design-phase project's mail about a code question or
+an owner decision is searched the same way. So the pre-check looks at the
+whole firm, not the CA list.
+
+How much of each project's mail is actually filed? Run in the Supabase SQL
+editor (one row per project, active statuses first):
 
 ```sql
-select p.project->>'projectNumber' as project, p.project->>'name' as name,
+select p.project->>'status' as status,
+       p.project->>'projectNumber' as project, p.project->>'name' as name,
        count(e.record_id) as filed_emails,
        max(e.email_date)::date as newest_filed
 from public.pms_projects p
 left join public.pms_project_emails e on e.project_id = p.id
-where p.project->>'status' = 'In Construction Administration'
-group by 1, 2 order by 3 desc;
+group by 1, 2, 3
+order by (p.project->>'status' in ('Completed','Cancelled','Lost')), 4 desc;
+```
+
+And the one-line summary by status, which is the number that decides:
+
+```sql
+select p.project->>'status' as status,
+       count(*) as projects,
+       count(*) filter (where e.n > 0) as with_filed_mail,
+       coalesce(sum(e.n), 0) as filed_emails
+from public.pms_projects p
+left join (select project_id, count(*) as n
+           from public.pms_project_emails group by project_id) e
+  on e.project_id = p.id
+group by 1 order by 4 desc;
 ```
 
 Projects with few or no filed emails are where a meaning-based search would
-look confident and be wrong. If most active projects are near zero, the
-filing habit is the thing to fix first and this proposal waits.
+look confident and be wrong. If most active projects (In Progress, In for
+Review, Top Priority, In Construction Administration) are near zero, the
+filing habit is the thing to fix first and this proposal waits. Completed and
+Cancelled projects still get embedded; old mail is often exactly what a
+"have we seen this before" question needs.
 
 ## Risks and what limits them
 
