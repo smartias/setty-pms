@@ -149,7 +149,11 @@ export function summarizeEmbedRun(c: EmbedRunCounts): Record<string, unknown> {
 // Rows are stored in small groups so a kill loses at most `storeEvery` rows,
 // and the deadline is checked before every row. Many short calls, one a
 // minute from pg_cron, beat one long one.
-export type EmbedRow = { project_row_id: string; item_type: string; item_id: string; embed_text?: string | null; embed_hash: string };
+// A queue row carries the text and its hash plus whatever identifies it: the
+// CA queue uses (project_row_id, item_type, item_id), the email queue a
+// record_id. `storeRow` shapes what the store RPC receives and `label` names a
+// row in the log; both default to the CA shape so the CA route is unchanged.
+export type EmbedRow = Record<string, unknown> & { embed_text?: string | null; embed_hash: string };
 export type EmbedPassOpts = {
   maxRows: number;            // rows this call may take off the queue
   fetchSize: number;          // rows per queue read
@@ -159,9 +163,19 @@ export type EmbedPassOpts = {
   fetchRows: (limit: number) => Promise<EmbedRow[]>;
   embed: (text: string) => Promise<ArrayLike<number>>;
   store: (rows: Record<string, unknown>[]) => Promise<number>;   // rows actually written
+  storeRow?: (row: EmbedRow, embedding: string) => Record<string, unknown>;
+  label?: (row: EmbedRow) => string;
   log?: (msg: string) => void;
 };
+export const caEmbedStoreRow = (r: EmbedRow, embedding: string): Record<string, unknown> =>
+  ({ project_row_id: r.project_row_id, item_type: r.item_type, item_id: r.item_id, embed_hash: r.embed_hash, embedding });
+export const caEmbedLabel = (r: EmbedRow): string => `${r.project_row_id} ${r.item_type} ${r.item_id}`;
+export const emailEmbedStoreRow = (r: EmbedRow, embedding: string): Record<string, unknown> =>
+  ({ record_id: r.record_id, embed_hash: r.embed_hash, embedding });
+export const emailEmbedLabel = (r: EmbedRow): string => `email ${r.record_id}`;
 export async function runEmbedPass(o: EmbedPassOpts): Promise<Record<string, unknown>> {
+  const storeRow = o.storeRow ?? caEmbedStoreRow;
+  const label = o.label ?? caEmbedLabel;
   const started = o.now();
   const over = () => o.now() - started > o.budgetMs;
   let queued = 0, embedded = 0, failed = 0, batches = 0, stoppedEarly = false;
@@ -189,12 +203,12 @@ export async function runEmbedPass(o: EmbedPassOpts): Promise<Record<string, unk
       try {
         const v = await o.embed(String(r.embed_text ?? ""));
         if (!isEmbedding(v)) throw new Error("Embedding model returned an unexpected shape.");
-        pending.push({ project_row_id: r.project_row_id, item_type: r.item_type, item_id: r.item_id, embed_hash: r.embed_hash, embedding: vectorLiteral(v) });
+        pending.push(storeRow(r, vectorLiteral(v)));
         okInBatch++;
         if (pending.length >= o.storeEvery) await flush();
       } catch (e) {
         failed++;
-        o.log?.(`embed failed for ${r.project_row_id} ${r.item_type} ${r.item_id}: ${String((e as any)?.message ?? e)}`);
+        o.log?.(`embed failed for ${label(r)}: ${String((e as any)?.message ?? e)}`);
       }
     }
     // A batch with no successes means the model is down, not the rows: stop
