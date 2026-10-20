@@ -1,6 +1,6 @@
 # Proposal: semantic search on CA items, as a bounded experiment
 
-Status: MIGRATION APPLIED (#362), CONNECTOR DEPLOYED (#363, #366). 2026-10-17: the
+Status: EXPERIMENT PASSED ON HIT COUNTS (2026-10-20, 9 of 10 hybrid vs 2 of 10 keyword, nothing lost); SEMANTIC RANKING ON BY DEFAULT. Migration applied (#362), connector deployed (#363, #366, #367). 2026-10-17: the
 embed pass moved out of `documents-sync` into its own one-minute route
 (`admin/ca-items-embed`) after the first version was killed by the edge
 runtime's 2 s CPU cap before storing a row; the sizing below (200 rows per

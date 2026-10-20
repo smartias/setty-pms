@@ -1374,7 +1374,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-17-ca-items-embed-route";
+const BUILD = "2026-10-20-ca-items-semantic-on";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3603,11 +3603,13 @@ async function teamWithShares(projectNumber: string | null | undefined): Promise
 const CA_ITEMS_USE_TABLE = Deno.env.get("CA_ITEMS_USE_TABLE") !== "0";
 
 // Semantic (hybrid) ranking for prose queries, PROPOSAL-ca-items-embeddings.md.
-// OFF by default: the function secret CA_ITEMS_SEMANTIC=1 turns it on for
-// every call, and the tool's `semantic` argument overrides per call while the
-// experiment runs both modes side by side. The query is embedded with the edge
-// runtime's built-in model, the same one the sync job uses for the rows.
-const CA_ITEMS_SEMANTIC = Deno.env.get("CA_ITEMS_SEMANTIC") === "1";
+// ON by default since the ten-question experiment passed on hit counts
+// (EXPERIMENT-ca-items-semantic.md, run 2026-10-20: hybrid found 9 of 10,
+// keyword 2 of 10, nothing lost). The function secret CA_ITEMS_SEMANTIC=0 is
+// the kill switch, no redeploy. The query is embedded with the edge runtime's
+// built-in model, the same one the embed job uses for the rows; if the model
+// is unavailable the call falls back to keyword ranking and says so.
+const CA_ITEMS_SEMANTIC = Deno.env.get("CA_ITEMS_SEMANTIC") !== "0";
 let _embedSession: any = null;
 function embedSession(): any {
   if (_embedSession) return _embedSession;
@@ -3628,7 +3630,9 @@ mcp.tool("search_rfis_submittals", {
     "Search Construction Administration RFIs and submittals (including historical / Newforma- " +
     "imported records). Filter by project, type (rfi/submittal), status, discipline, or keyword " +
     "(matches number, subject, discipline, spec section, and the full question/response/comments " +
-    "text). Returns compact rows with a snippet — call read_rfi_submittal for the full text. With " +
+    "text). A prose query is also matched by meaning, so everyday wording finds records that use " +
+    "different words (a \"radiator hookup\" question finds the FTR connection RFI). Returns compact " +
+    "rows with a snippet — call read_rfi_submittal for the full text. With " +
     "no project, searches firm-wide. For a project whose files live on the office network drive, the " +
     "result also lists item folders filed under the CA folder on the drive that have NO log entry yet " +
     "(`driveOnly`), so they can be logged with backload_ca_item.",
@@ -3640,10 +3644,8 @@ mcp.tool("search_rfis_submittals", {
     discipline: z.string().optional().describe("Discipline filter, e.g. Electrical, Mechanical"),
     openOnly: z.boolean().optional().describe("Only items still needing attention (open RFIs / in-review submittals)"),
     limit: z.number().optional().describe("Max results (default 30, max 100)"),
-    semantic: z.boolean().optional().describe("EXPERIMENT ONLY: true adds meaning-based ranking to a prose query (an embedding of the query fused with the keyword ranking), false forces keyword-only; omit to follow the connector's default. Numbers and spec sections are never affected."),
-    minSimilarity: z.number().min(0).max(1).optional().describe("EXPERIMENT ONLY, with semantic ranking: lowest cosine similarity (0-1) a meaning-based match may have; default 0.75. 0 ranks every item by closeness, for diagnosing a miss."),
   }),
-  handler: async ({ projectNumber, type, query, status, discipline, openOnly, limit, semantic, minSimilarity }) => {
+  handler: async ({ projectNumber, type, query, status, discipline, openOnly, limit }) => {
     const lim = clampCaLimit(limit);
     let pid: string | null = null;
     if (projectNumber) {
@@ -3664,15 +3666,13 @@ mcp.tool("search_rfis_submittals", {
     let tableNote: string | undefined;
     let total: number | null = null;   // matches before the limit (table path only)
     let semanticNote: string | undefined;
-    let usedFloor: number | undefined;   // the similarity floor the hybrid call ran with
     if (CA_ITEMS_USE_TABLE) {
       try {
         // Embed the query only when semantic ranking is wanted AND the query is
         // prose: the classifier decides the shape first, so a number or spec
         // query never pays for an embedding it would not use.
         let embedding: number[] | null = null;
-        const wantSemantic = semantic ?? CA_ITEMS_SEMANTIC;
-        if (wantSemantic && buildCaSearchArgs({ query, rowIds: [] }).mode === "text") {
+        if (CA_ITEMS_SEMANTIC && buildCaSearchArgs({ query, rowIds: [] }).mode === "text") {
           try { embedding = await embedText(String(query)); }
           catch (e) {
             console.warn("[search_rfis_submittals] query embedding failed, keyword ranking only:", String((e as any)?.message ?? e));
@@ -3681,9 +3681,8 @@ mcp.tool("search_rfis_submittals", {
         }
         const { args, mode } = buildCaSearchArgs({
           query, rowIds: projects.map((p: any) => String(p.id ?? "")), type: type ?? null,
-          status, discipline, openOnly, limit: lim, embedding, minSimilarity,
+          status, discipline, openOnly, limit: lim, embedding,
         });
-        if (mode === "hybrid") usedFloor = args.p_min_similarity;
         const rows = await sbRpc("search_ca_items", args);
         out = (Array.isArray(rows) ? rows : []).map((r: any) => caRowToItem(r, mode !== "list"));
         total = caTotalOf(rows);
@@ -3746,7 +3745,6 @@ mcp.tool("search_rfis_submittals", {
     return asText({
       count: total ?? out.length, returned: Math.min(out.length, lim), items: out.slice(0, lim), source,
       ...(searchMode && searchMode !== "list" ? { searchMode } : {}),
-      ...(searchMode === "hybrid" ? { minSimilarity: usedFloor } : {}),
       ...(tableNote ? { note: tableNote } : {}),
       ...(semanticNote ? { semanticNote } : {}),
       ...(driveOnly.length ? { driveOnly } : {}), ...(driveNote ? { driveNote } : {}),

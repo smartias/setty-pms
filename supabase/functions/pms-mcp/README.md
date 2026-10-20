@@ -818,16 +818,16 @@ a save: the trigger warns and returns, and `pms_ca_items_reconcile()` repairs.
 
   The response reports `queued`, `embedded`, `failed`, `batches`, `ms` and
   `stoppedEarly`; the ~2,900-row backfill takes about two and a half hours of
-  one-minute calls. On a prose query, when the function secret
-  `CA_ITEMS_SEMANTIC=1` is set or the tool's `semantic: true` argument is
-  passed, the query is embedded too and `search_ca_items` fuses the keyword
-  ranking with the nearest vectors (reciprocal rank, similarity floor 0.75,
-  or the tool's `minSimilarity` argument); the answer says `searchMode:
-  "hybrid"` and the `minSimilarity` it ran with. Numbers, spec sections and
-  plain listings never use it. Default OFF: the `semantic` argument exists so
-  the ten-question experiment can run both modes side by side, and goes away
-  when the experiment ends. If the model is unavailable the call falls back
-  to keyword ranking with a `semanticNote`.
+  one-minute calls. On a prose query the query is embedded too and `search_ca_items` fuses
+  the keyword ranking with the nearest vectors (reciprocal rank, similarity
+  floor 0.75); the answer says `searchMode: "hybrid"`. Numbers, spec sections
+  and plain listings never use it. ON by default since the ten-question
+  experiment passed on hit counts (`EXPERIMENT-ca-items-semantic.md`, run
+  2026-10-20: hybrid found 9 of 10, keyword 2 of 10, nothing lost); the
+  function secret `CA_ITEMS_SEMANTIC=0` is the kill switch, no redeploy. The
+  experiment-only `semantic` and `minSimilarity` tool arguments are gone. If
+  the model is unavailable the call falls back to keyword ranking with a
+  `semanticNote`.
 - **Verify in production** with `supabase/ca-items-verify.sql` (section 7b for
   embedding coverage); the behaviour test is `supabase/ca-items-local-test.sql`
   (local Postgres 16 with pgvector).
