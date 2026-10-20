@@ -24,7 +24,11 @@
 -- created in the SQL editor and its text is not in this repository (step 0 of
 -- the proposal captures it). This migration renames that live function to
 -- pms_emails_search_lexical, untouched, and the new search_project_emails
--- delegates every keyword ranking to it. The only things assumed about it:
+-- delegates every keyword ranking to it. The capture migration may be applied
+-- before or after this one: before, it creates pms_emails_search_lexical
+-- itself and the rename here is skipped (the old search_project_emails is
+-- then dropped below); after, it re-creates the renamed function with the
+-- same text, a no-op. The only things assumed about it:
 -- it takes (q text, proj text, lim integer), returns one row per email with a
 -- `record_id` and a numeric `rank`, and returns them best first. The capture
 -- migration (20261020110000, written from pg_get_functiondef) states the
@@ -223,7 +227,19 @@ end $$;
 -- THREAD: the newest matched message of the thread carries the thread's best
 -- score and thread_count says how many matched messages it stands for. A row
 -- in one list only still appears, so nothing the keyword search finds is lost.
-drop function if exists public.search_project_emails(text, text, integer, extensions.vector, real);
+-- Whatever is still called search_project_emails goes (the previous version of
+-- this function on a re-apply, or the live keyword function when the capture
+-- migration had already put pms_emails_search_lexical in place so the rename
+-- above was skipped). PostgREST must see exactly one function of that name.
+do $$
+declare v_fn regprocedure;
+begin
+  for v_fn in select p.oid::regprocedure from pg_proc p
+               where p.proname = 'search_project_emails' and p.pronamespace = 'public'::regnamespace
+  loop
+    execute format('drop function %s', v_fn);
+  end loop;
+end $$;
 
 create function public.search_project_emails(
   q                text,
