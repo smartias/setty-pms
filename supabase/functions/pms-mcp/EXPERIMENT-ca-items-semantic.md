@@ -1,6 +1,6 @@
 # Experiment: does semantic ranking help CA search? Scoring sheet
 
-Status: READY TO RUN (2026-10-17). Everything it needs is deployed: migration
+Status: RUN 2026-10-20, PROVISIONAL PASS (columns C and D filled from the connector; coverage confirmation and the judge's columns E and F outstanding, see the decision box). Originally READY TO RUN (2026-10-17). Everything it needs is deployed: migration
 `20261017150000` applied, connector build `2026-10-17-ca-items-semantic`
 live, embeddings backfilling on the sync cron. The pass rule below is the one
 written in `PROPOSAL-ca-items-embeddings.md` before anything was built; it is
@@ -65,16 +65,16 @@ not from a search. Keep ten.
 
 | # | A. Question, in the asker's words | B. Expected item(s), written before searching | C. Keyword top-5 hit? (Y/N) | D. Hybrid top-5 hit? (Y/N) | E. Hybrid-only items the judge calls useful | F. Items in hybrid top-5 the judge calls irrelevant | Notes |
 |---|---|---|---|---|---|---|---|
-| 1 | roof fan on a curb or a concrete pad | `SAPX256009.03 rfi 014` | | | | | |
-| 2 | radiator hookup detail missing | `SAPX246005.00 rfi 003` | | | | | |
-| 3 | toilet drain has to go around a beam | `SAPX196006.00 rfi 121.1` | | | | | |
-| 4 | smoke damper closed, does the air handler stop | `SAPX219002.00 rfi 024` | | | | | |
-| 5 | controls tied to building automation or stand alone | `SAPX256010.01 rfi 009` | | | | | |
-| 6 | no room for the damper in the shaft | `SAPX196006.00 rfi 265` | | | | | |
-| 7 | grease trap pit too small to fit the unit | `SAPX246005.00 rfi 004` | | | | | |
-| 8 | pipe pressure test passed with conditions | `SAPX219002.00 submittal 232113-011-0` | | | | | |
-| 9 | conduit rejected, brand not approved | `SAPX256010.01 submittal 260553-001-0` | | | | | |
-| 10 | temporary cooling during construction | `SAPX236024.00 submittal S01500-01-02` | | | | | |
+| 1 | roof fan on a curb or a concrete pad | `SAPX256009.03 rfi 014` | N | Y | | | Hybrid #1. Keyword top-5 were concrete-pad items (Remsen Hall pad, pad shop drawings); the expected record was absent. |
+| 2 | radiator hookup detail missing | `SAPX246005.00 rfi 003` | N | Y | | | Hybrid #1. Keyword returned nothing ("hookup" is in no record). On 2026-10-17 hybrid also returned nothing because the record had no embedding yet; this run is the valid one. |
+| 3 | toilet drain has to go around a beam | `SAPX196006.00 rfi 121.1` | N | Y | | | Hybrid #1. Keyword returned nothing. |
+| 4 | smoke damper closed, does the air handler stop | `SAPX219002.00 rfi 024` | N | Y | | | Hybrid #1. Keyword returned nothing. |
+| 5 | controls tied to building automation or stand alone | `SAPX256010.01 rfi 009` | Y | Y | | | Both #1 (control row). |
+| 6 | no room for the damper in the shaft | `SAPX196006.00 rfi 265` | Y | Y | | | Both #1 (control row). |
+| 7 | grease trap pit too small to fit the unit | `SAPX246005.00 rfi 004` | N | Y | | | Hybrid #1. Keyword returned nothing. |
+| 8 | pipe pressure test passed with conditions | `SAPX219002.00 submittal 232113-011-0` | N | Y | | | Hybrid #1. Keyword returned nothing. |
+| 9 | conduit rejected, brand not approved | `SAPX256010.01 submittal 260553-001-0` | N | Y | | | Hybrid #1. Keyword returned nothing. |
+| 10 | temporary cooling during construction | `SAPX236024.00 submittal S01500-01-02` | N | N | | | Neither. Keyword returned nothing; hybrid top-5 were cold-weather concrete, cooling tower, dry cooler, vibration isolation, a chiller. The record is title-only ("Temp AC Units"); re-check after coverage reaches 100%. |
 
 Why these ten: each pairs everyday wording with a record that says the same
 thing in different words (radiator vs "FTR", toilet drain vs "water closet
@@ -85,16 +85,44 @@ controls: keyword search should hit them, and hybrid must not lose them.
 Row 10's record is thin (title only, no body), which is the hardest case
 for both modes.
 
+### What each search returned (for the judge)
+
+Run 2026-10-20 13:00-13:05 UTC through the PMS connector from a Claude Code
+session, `search_rfis_submittals` with the exact question, `limit: 5`, no
+project filter, `semantic: false` then `semantic: true`; every hybrid answer
+reported `searchMode: "hybrid"` and `minSimilarity: 0.75`. The expected record
+is marked with an asterisk. The judge fills E and F from these lists.
+
+| # | Keyword top-5 (semantic off) | Hybrid top-5 (semantic on) |
+|---|---|---|
+| 1 | SAPX176006.00 rfi 070 Concrete Pad for Remsen Hall; SAPX216012.00 sub 032100-001-2 and 032100-001-1 Concrete & Reinforcement for Concrete Pads; SAPX196006.00 sub 221116-003-0 Pump Room And Concrete Pads; SAPX219002.00 sub 232113.33-014-1 Vaults PD | *SAPX256009.03 rfi 014 Exhaust Fan Mounting Detail Clarification; SAPX216012.00 rfi 092 Support for AXF fans (pad vs curb); SAPX176021.01 sub 233423-01 Fans (roof curbs note); SAPX176006.00 rfi 070 Concrete Pad for Remsen Hall; SAPX216012.00 sub 032100-001-2 Concrete Pads |
+| 2 | none | *SAPX246005.00 rfi 003 FTR Connection Detail Clarification; SAPX236009.00 sub 238236-001-1 R1 Fin Tube Radiators & Electric Duct Heaters; SAPX236009.00 sub 238236-002-0 Fin Tube Radiators Control Valves; SAPX219002.00 sub 236416-001-1 Water Source Chiller PD; SAPX226013.00 rfi 038 RTU-3 Mixed Air Temp Sensor |
+| 3 | none | *SAPX196006.00 rfi 121.1 Bathroom CN 2-314 Water Closet; SAPX236012.00 sub 224200-001-0 Plumbing Fixtures; SAPX226013.00 rfi 031 AD-Area Drain; SAPX226013.00 rfi 011 Janitor's Closet plumbing conflict with foundation wall; SAPX176006.00 rfi 077 Emergency Shower Floor Drain |
+| 4 | none | *SAPX219002.00 rfi 024 Fire Alarm - Fire smoke damper-AHU interface; SAPX226013.00 sub 233300-003-0 Dampers-Automatic, Fire, Fire-Smoke; SAPX216012.00 sub 233114-022-0 Fire Dampers; SAPX216022.00 rfi 027 Smoke Dampers & Duct Smoke Detectors Clarification; SAPX226013.00 rfi 116 Smoke Vent - Fire Vent - FA Device Coordination |
+| 5 | *SAPX256010.01 rfi 009 HVAC Controls System; SAPX206004.00 rfi 113 Gas Furnace & Heaters (2 results only) | *SAPX256010.01 rfi 009 HVAC Controls System; SAPX206004.00 rfi 113 Gas Furnace & Heaters; SAPX176006.00 sub 230900-003-0 HVAC Controls; SAPX256010.01 rfi 016 HVAC Controls and Sequence; SAPX176021.01 sub 230900-03 HVAC Controls Bldg 10 |
+| 6 | *SAPX196006.00 rfi 265 SF Fan ALD location; SAPX226013.00 rfi 207 Electrical Room 502 Shaft Wall Venting; SAPX196006.00 sub 233423-002-0 Fans product data; SAPX226013.00 sub 230719-001-0 HVAC Piping Insulation; SAPX196006.00 sub 233113-005-0 4th Fl Sheet Metal | *SAPX196006.00 rfi 265 SF Fan ALD location; SAPX226013.00 rfi 207 Electrical Room 502 Shaft Wall Venting; SAPX196006.00 rfi 171 Coordination-Recycle Room FD Locations; SAPX216012.00 rfi 136 Existing Damper Confirmation; SAPX216012.00 sub 233114-021-0 Control Dampers |
+| 7 | none | *SAPX246005.00 rfi 004 Grease Interceptor Pit; SAPX196006.00 rfi RFI-089 Floor Drain Trap Primer; SAPX226013.00 sub 221323-003-0 Grease Interceptor Support Details; SAPX226013.00 rfi 182 Trap Primers Above Ceiling; SAPX246009.00 sub 15440-005-1 P-Trap |
+| 8 | none | *SAPX219002.00 sub 232113-011-0 Hydrostatic Test Results; SAPX246009.00 rfi 032 Failed Hydrostatic Test - DF Domestic Water Piping; SAPX219002.00 sub 331000-002-0 Water Distribution Piping-Testing Procedures; SAPX196006.00 sub 232113-020-0 MOP-Hydrostatic Testing for Carrier Pipe; SAPX219002.00 sub 232113.33-010-0 Geothermal - Pressure Testing |
+| 9 | none | *SAPX256010.01 sub 260553-001-0 Raceways & Boxes (GN); SAPX236021.00 rfi 023 Existing Electrical Conduits; SAPX226009.00 rfi 019 Conduit Type; SAPX196006.00 rfi BID-262 E614 Conduit; SAPX236021.00 rfi 005 Existing Conduit Conditions |
+| 10 | none | SAPX176021.01 rfi 018 Cold Weather Concrete; SAPX176021.01 sub 236500-02 Cooling Tower; SAPX176021.01 sub 236500-01 Dry Cooler; SAPX176021.01 sub 230548.13-02 Vibration Isolation Equip- Clg Twr; SAPX219002.00 sub 236416-001-0 Water Source Chiller PD (expected record absent) |
+
+Two things the lists show beyond the hit counts. Seven of the ten keyword
+legs returned nothing at all: the questions are ordinary length, but keyword
+mode needs every word to appear, so a five-word question usually fails. And
+in the hybrid lists the expected record is first in nine rows, with the rest
+of the top five mostly neighbours of the same kind (other hydrostatic tests,
+other damper RFIs), which is what the judge's column E is for.
+
 ## Tally
 
 | Measure | Count |
 |---|---|
-| Rows where keyword hit (C = Y) | |
-| Rows where hybrid hit (D = Y) | |
-| **Gained**: rows where hybrid hit and keyword missed (D = Y, C = N) | |
-| **Lost**: rows where keyword hit and hybrid missed (C = Y, D = N) | |
-| Useful hybrid-only items across all rows (column E, total) | |
-| Irrelevant items in hybrid top-5 across all rows (column F, total) | |
+| Rows where keyword hit (C = Y) | 2 |
+| Rows where hybrid hit (D = Y) | 9 |
+| **Gained**: rows where hybrid hit and keyword missed (D = Y, C = N) | 7 |
+| **Lost**: rows where keyword hit and hybrid missed (C = Y, D = N) | 0 |
+| Useful hybrid-only items across all rows (column E, total) | judge to fill |
+| Irrelevant items in hybrid top-5 across all rows (column F, total) | judge to fill |
 
 ## The rule, written before the experiment
 
@@ -116,10 +144,10 @@ re-run on the same ten questions.
 
 | | |
 |---|---|
-| Date run | |
-| Questions written by | |
-| Judged by | |
-| Result (pass / fail) | |
+| Date run | 2026-10-20 (searches); 2026-10-17 questions written, PR #365 |
+| Questions written by | Claude, from records found by browsing listings (PR #365); not yet replaced or endorsed by a CA engineer |
+| Judged by | (open) columns E and F need a person who sees the lists above |
+| Result (pass / fail) | PROVISIONAL PASS: Gained 7, Lost 0, against the rule Gained >= 3 and Lost = 0. Provisional because pre-check 1 (embedding coverage = 100%) was not confirmed before the run; the backfill started 2026-10-19 13:43 UTC at about 5 rows a minute and the question 2 record, absent on 10-17, is now found, so coverage is far along but unverified. Row 10 should be re-run once section 7b shows queued = 0 |
 | Floor used | 0.75 |
-| Decision and next PR | |
-| Anything surprising | |
+| Decision and next PR | Not taken. If the coverage query confirms 100% and the judge's column F is not dominated by noise, the pass stands: set CA_ITEMS_SEMANTIC=1 and remove the `semantic` and `minSimilarity` tool arguments in one small PR, keep the embed job |
+| Anything surprising | Keyword mode returned zero items for 7 of 10 ordinary questions, so most of the gain is hybrid finding anything at all rather than ranking better. Every hybrid hit was ranked first. The one miss (row 10) is the title-only record, as predicted when the questions were written |
