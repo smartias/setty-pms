@@ -860,6 +860,10 @@ keyword search behaves exactly as before.
   thread's best score and `thread_count` says how many matched messages it
   stands for. A keyword-only hit still appears, so nothing the keyword search
   finds is lost.
+- **Thread key fix** (migration `20261021120000`, from the 2026-10-21 experiment): a row filed
+  with no `conversation_id` joins a conversation of the same project and normalised subject when
+  one exists, so the original message and its reply are one row, not two. With none to join it
+  keeps the subject key. Same signature and ranking; apply by hand after `20261020120000`.
 - **What gets embedded** (`pms_emails_embed_text`): the subject minus its
   prefixes and the NEW text of the message. The body is cut at the first
   reply marker (`-----Original Message-----`, an "On … wrote:" line, a

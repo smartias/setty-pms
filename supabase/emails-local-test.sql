@@ -7,6 +7,7 @@
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020100000_baseline_pms_project_emails.sql  # table + stand-in keyword search
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020110000_search_project_emails_capture.sql # the live keyword search, captured
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020120000_emails_embeddings.sql
+--   (the test applies 20261021120000_email_thread_key_join_null_conversation.sql itself, in section 5b)
 --   psql -f supabase/emails-local-test.sql                                                     # ends with ALL TESTS PASSED
 -- (run from the repo root: the test re-applies the migration by relative path).
 -- Drop the capture line to exercise the first-application rename instead
@@ -18,7 +19,8 @@
 -- unchanged (same rows, same order, search_mode 'keyword'), hybrid mode (a
 -- three-reply thread collapses to one row with thread_count 3 and the newest
 -- message, a keyword-only hit survives, the similarity floor, the project
--- filter, the subject-based thread key), re-applying the migration, and the
+-- filter, the subject-based thread key, a null-conversation row joining its
+-- conversation), re-applying the migrations, and the
 -- privilege surface.
 
 \set ON_ERROR_STOP on
@@ -212,6 +214,40 @@ begin
   assert r.count = 2, 'exactly one of each function';
   raise notice 're-apply ok';
 end $$;
+
+-- ── 5b. thread fix: a row with no conversation id joins the conversation of the same subject ──
+-- (migration 20261021120000). Applied after the re-apply above, which restores the older function.
+insert into public.pms_project_emails (record_id, project_id, conversation_id, subject, from_name, from_address, email_date, body_text, preview, has_attachments, msg_id, saved_at, sp_folder_url, saved_to_sharepoint, embedding, embedded_hash, embedded_at)
+select record_id, project_id, conversation_id, subject, from_name, from_address, email_date::timestamptz, body_text, preview, has_attachments, 'm-' || record_id, now(), '', false, pg_temp.tv(0, -1), 'h', now()
+from (values
+('e9',  'p1', null,     'Stormwater tank location',     'Chuck', 'c@arch.com',   '2026-10-20 16:00+00', 'The tank goes under the first floor slab.', 'The tank', true),
+('e10', 'p1', 'conv-5', 'Re: Stormwater tank location', 'Chuck', 'c@arch.com',   '2026-10-20 21:00+00', 'Please confirm the tank location and utilities.', 'Please confirm', false),
+('e11', 'p2', null,     'Stormwater tank location',     'Zed',   'z@arch.com',   '2026-10-20 18:00+00', 'A different project with the same subject.', 'A different', false)
+) as v(record_id, project_id, conversation_id, subject, from_name, from_address, email_date, body_text, preview, has_attachments);
+
+\i supabase/migrations/20261021120000_email_thread_key_join_null_conversation.sql
+do $$
+declare ids text[]; n int; r record;
+begin
+  select array_agg(record_id order by record_id) into ids from public.search_project_emails('zzzz nothing', 'p1', 10, pg_temp.tv(0, -1));
+  assert ids = array['e10'], 'null-conversation row joins the conversation, newest carries it: ' || coalesce(ids::text, 'null');
+  select thread_count into strict n from public.search_project_emails('zzzz nothing', 'p1', 10, pg_temp.tv(0, -1));
+  assert n = 2, 'joined thread counts both messages: ' || n;
+  -- the same subject in another project must not join
+  select array_agg(record_id order by record_id) into ids from public.search_project_emails('zzzz nothing', null, 10, pg_temp.tv(0, -1));
+  assert ids = array['e10', 'e11'], 'other project keeps its own row: ' || coalesce(ids::text, 'null');
+  -- the earlier cases still hold
+  select array_agg(record_id) into ids from public.search_project_emails('grease', 'p1', 10, pg_temp.tv(-1, 0));
+  assert ids = array['e6'], 'subject-only thread still collapses: ' || coalesce(ids::text, 'null');
+  select count(*) into r from public.search_project_emails('wall', 'p1', 10, pg_temp.tv(1, 0));
+  assert r.count = 2, 'chiller behaviour unchanged';
+  select count(*) into r from public.search_project_emails('wall', 'p1', 10);
+  assert r.count = 4, 'keyword mode unchanged';
+  -- idempotent
+  perform 1;
+  raise notice 'thread join ok';
+end $$;
+\i supabase/migrations/20261021120000_email_thread_key_join_null_conversation.sql
 
 -- ── 6. privilege surface ─────────────────────────────────────────────────────
 do $$
