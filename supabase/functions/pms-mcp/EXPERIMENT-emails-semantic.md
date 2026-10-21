@@ -59,7 +59,7 @@ Keyword returned zero rows for questions 2, 3 and 10.
 
 ### Thread check (third pass condition)
 
-Question 2, hybrid top five: #1 `addin-mvgx4uq04f1d6` ("PS 9R Stormwater Tank Location", `conversation_id` null) and #5 `addin-mvh6c2ra3rt9k` ("Re: PS 9R Stormwater Tank Location", `conversation_id` set) are the same exchange shown as two rows. The collapse falls back to the normalised subject only when `conversation_id` is null, so a null row and a non-null row with the same subject never merge. Not checked: questions 4 and 5 show two rows each with the same subject (steam relocation; TAB Report); their conversation ids were not compared before the database connection dropped.
+Question 2, hybrid top five: #1 `addin-mvgx4uq04f1d6` ("PS 9R Stormwater Tank Location", `conversation_id` null) and #5 `addin-mvh6c2ra3rt9k` ("Re: PS 9R Stormwater Tank Location", `conversation_id` set) are the same exchange shown as two rows. The collapse falls back to the normalised subject only when `conversation_id` is null, so a null row and a non-null row with the same subject never merge. Checked afterwards: questions 4 and 5 each show two rows with the same subject (steam relocation; TAB Report), but each pair has two different `conversation_id` values, so they are separate conversations and not duplicates. Question 2 is the only breach.
 
 ### Observations
 
@@ -76,4 +76,4 @@ Question 2, hybrid top five: #1 `addin-mvgx4uq04f1d6` ("PS 9R Stormwater Tank Lo
 | Judged by | Not judged; counts only |
 | Rule | Gained >= 3 AND Lost = 0 AND no thread twice in a hybrid top five |
 | Result | Gained 3 (strict) or 6 (thread), Lost 0. **Fails the third condition** on question 2 |
-| Next | Fix the collapse so a null-`conversation_id` row and a set one with the same subject merge, then re-run question 2 and check questions 4 and 5 by `conversation_id`. If clean, switch on as for CA. Decide separately whether to raise the 0.75 floor (the numbers above say it will not help) |
+| Next | Fix the collapse so a null-`conversation_id` row and a set one with the same subject merge, then re-run question 2. If clean, switch on as for CA. Decide separately whether to raise the 0.75 floor (the numbers above say it will not help) |
