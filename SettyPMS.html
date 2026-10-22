@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-10-08-pms-v166-proposal-record-writeback";
+    window.__appVersion = "2026-10-22-pms-v167-calendar-quiet-outside-ny";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2131,12 +2131,18 @@ async function eagerSaveProjectV2(project, versions, lastSavedRef) {
 // what made "it synced" mean different things for different people.
 const NYC_CAL_OWNER = "sara.arias@setty.com";
 const NYC_CAL_NAME  = "NYC Shared Calendar";
-const NYC_CAL_NOT_FOUND = "The NYC Shared Calendar isn't visible to your Microsoft account. Ask Sara to share it with you (\"Can edit\") and accept the invitation in Outlook, then reload the PMS.";
+const NYC_CAL_NOT_FOUND = "Calendar sync is currently set up for the NY office's shared calendar only, and it isn't visible to your Microsoft account. If you're on the NY team and expected access, ask Sara to share the NYC Shared Calendar with you (\"Can edit\"), accept the invitation in Outlook, then reload the PMS.";
 const NYC_CAL_NO_EDIT = "You're not on the NYC Shared Calendar's permission list with \"Can edit\". Ask Sara to add you (calendar Properties → Permissions), then try again.";
 
 let _nycCal = null;          // { base, id, via: "owner"|"local", canEdit, name }
 let _nycCalPromise = null;   // de-dupes concurrent resolves (dashboard sweep fires many at once)
 let _nycCalAttempts = [];    // what was tried on the last failed resolve — surfaced by the debug button
+// When the shared calendar can't be reached, remember that for a while instead
+// of re-listing calendars on every lookup. Offices outside NY never have it,
+// and before this every chunk of the dashboard sweep re-asked Graph twice.
+// `force` (the "Check my calendar access" button) always re-tries.
+let _nycCalFailedAt = 0;
+const NYC_CAL_RETRY_MS = 10 * 60 * 1000;
 
 function nycEventSubject(projectName, projectNumber, milestoneName) {
   return (projectNumber ? projectNumber + " " : "") + (projectName || "Project") + " - " + milestoneName;
@@ -2161,6 +2167,7 @@ function nycCalendarErrorMessage(e) {
 async function resolveNycCalendar(force = false) {
   if (_nycCal && !force) return _nycCal;
   if (_nycCalPromise && !force) return _nycCalPromise;
+  if (!force && _nycCalFailedAt && Date.now() - _nycCalFailedAt < NYC_CAL_RETRY_MS) return null;
   // The pre-8/17 code pinned a per-user calendar id in localStorage forever;
   // it could hold a wrong calendar. Clear it — resolution is per session now.
   try { localStorage.removeItem("setty_pms_cal_id"); } catch (_) {}
@@ -2194,6 +2201,7 @@ async function resolveNycCalendar(force = false) {
     } catch (e) { attempts.push("my calendars: " + String(e.message || e).slice(0, 100)); }
     _nycCal = null;
     _nycCalAttempts = attempts;
+    _nycCalFailedAt = Date.now();
     return null;
   })();
   try { return await _nycCalPromise; } finally { _nycCalPromise = null; }
@@ -2307,12 +2315,15 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
 async function fetchCalendarEventDate(eventId, hints = {}) {
   const cal = await resolveNycCalendar();
   try {
-    let ev = null;
-    if (cal) ev = await locateNycEvent(cal.base, { eventId, uid: hints.uid, subject: hints.subject });
+    // Shared calendar not reachable from this account (every office outside
+    // NY, or a broken share): unknown state, and no per-event Graph calls —
+    // a non-NY dashboard sweep used to make one for every synced milestone.
+    if (!cal) return null;
+    let ev = await locateNycEvent(cal.base, { eventId, uid: hints.uid, subject: hints.subject });
     // Legacy: before 8/17 the app fell back to the user's PERSONAL calendar
     // when the shared one wasn't visible; those events still live there.
     if (!ev && eventId) ev = await graphFetch("GET", "/me/events/" + eventId + "?$select=id,start,isAllDay,iCalUId");
-    if (!ev) return cal ? { found: false } : null;
+    if (!ev) return { found: false };
     // All-day events carry the calendar date in the dateTime string itself,
     // so the first 10 chars are the date regardless of timezone representation
     const date = (ev.start?.dateTime || "").slice(0, 10);
