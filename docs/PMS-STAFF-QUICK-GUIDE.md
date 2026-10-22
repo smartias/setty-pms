@@ -10,7 +10,7 @@ Try the fixes in section 2 before you report anything; they clear most problems.
 
 | Tool | What it is | How you open it |
 |---|---|---|
-| **PMS** | The project record: projects, milestones, RFIs, submittals, QA reviews, notes, proposals | Browser, at `<PMS web address>`. Bookmark it. |
+| **PMS** | The project record: projects, milestones, RFIs, submittals, QA reviews, notes, proposals | Browser, at https://smartias.github.io/setty-pms/SettyPMS.html#dashboard. Bookmark it. |
 | **Outlook add-in** | Files an email to a project's log from inside Outlook, and offers a "suggested project" for the email you are reading | The Setty PMS button in Outlook's ribbon. It is installed for you centrally. |
 | **Claude connector** | Lets Claude answer questions about a project from the PMS record, filed email, documents and drawings, and draft back into the PMS | Claude, then Settings, Connectors, Setty PMS. See the [connector guide](PMS-CONNECTOR-GUIDE.md). |
 | **Field Photos** | Phone app for site photos, tied to a project | Install from the link your office shares. |
