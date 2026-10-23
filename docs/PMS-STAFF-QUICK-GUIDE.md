@@ -50,7 +50,7 @@ Your Outlook is pointing at an old copy of the add-in. Remove the Setty add-in f
 ## 4. Things that are not bugs
 
 - **A new project is not in the PMS or Claude.** Projects need a record before anyone can see them. Ask a PMS admin to register it.
-- **You can see every project, including other offices.** That is by design. Only projects marked Confidential are restricted.
+- **You can see every project, including other offices.** That is by design. Marking a project Confidential hides it from the Claude connector only; everyone signed in can still open it in the PMS web app. If a job must stay private, keep it out of the PMS for now.
 - **You cannot see fee or billing fields.** Those are hidden unless your role has the fees permission.
 - **A file you added an hour ago is not in Claude's results.** The document index rebuilds about daily. Ask Claude to browse the folder live instead.
 - **Closed-out projects are missing from Claude.** Say "include archived".
