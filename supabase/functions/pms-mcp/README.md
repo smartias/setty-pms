@@ -890,10 +890,12 @@ keyword search behaves exactly as before.
   and "** WARNING: … outside the organization" lines; `pms_emails_strip_banners`,
   migration `20261029150000`, shared with the snippet) go; 1,500-character
   cap. Defined once, in SQL. A tuning change is a migration that ends with
-  the one-off in `20261029150000`: it marks each row whose text changed as
-  stale (`embedded_at = null`, vector KEPT so the row stays searchable on
-  its old text until the job reaches it) and blanks the vector of a row
-  whose cleaned text is now empty.
+  a one-off like the one in `20261029150000`: it marks the rows that can
+  have changed as stale (`embedded_at = null`, vector KEPT so the row stays
+  searchable on its old text until the job reaches it) by a cheap test on
+  the body, never by re-cleaning the table in the SQL editor, which runs a
+  pasted file as one transaction and rolled the first version back when
+  that re-clean timed out.
 - **Job helpers**: `pms_emails_to_embed(p_limit)` lists never-embedded rows
   first and stale rows after them, newest first in each (two partial indexes,
   two index walks, so it does NOT re-hash 21,000 bodies a minute as the CA

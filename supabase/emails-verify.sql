@@ -38,7 +38,9 @@ select 'wrapper', w.record_id, w.rank from public.search_project_emails('chiller
 -- ── 3. Coverage (run during and after the backfill) ──────────────────────────
 select count(*)                                   as emails,
        count(*) filter (where embedding is not null) as embedded,
-       count(*) filter (where embedding is not null and embedded_at is null) as stale,   -- text changed, old vector in use until re-embedded
+       count(*) filter (where embedding is not null and embedded_at is null) as stale,   -- marked for re-embedding, old vector in use until the job reaches it
+       count(*) filter (where embedding is not null and embedded_at is null
+                          and public.pms_emails_embed_text(subject, body_text) is null)   as stale_empty,   -- never listed by the queue; expect 0
        count(*) filter (where embedding is null
                           and public.pms_emails_embed_text(subject, body_text) is not null) as queued,
        count(*) filter (where embedding is null

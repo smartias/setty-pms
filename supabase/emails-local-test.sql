@@ -173,35 +173,33 @@ begin
   assert ids = array['e20'], 'stored stale row leaves the queue: ' || ids::text;
   delete from public.pms_project_emails where record_id = 'e20';
 
-  -- the one-off: a changed text keeps its vector and is marked; a text that is
-  -- now blank loses its vector
+  -- the one-off: a row with banner words at the top of the body is marked
+  -- (vector kept); a row without them is not, whatever its hash; a row
+  -- whose cleaned text is empty is marked too but never listed by the queue
   insert into public.pms_project_emails (record_id, project_id, conversation_id, subject, from_name, from_address, email_date, body_text, preview, has_attachments, msg_id, saved_at, sp_folder_url, saved_to_sharepoint, embedding, embedded_hash, embedded_at)
   values ('e21', 'p2', null, '', 'N', 'n@x.com', '2026-01-02 10:00+00', E'External Email: This message originated outside the organization.\n', '', false, 'm-e21', now(), '', false, pg_temp.tv(0.5, 0.5), 'old', now());
-  update public.pms_project_emails set embedded_hash = 'old', body_text = E'[EXTERNAL]\nThe pit is too small for the scheduled unit.' where record_id = 'e5';
-  update public.pms_project_emails set embedded_hash = 'old' where record_id = 'e6';   -- no banner words: the one-off skips it
-  update public.pms_project_emails e
-  set embedding     = case when t.embed_text is null then null else e.embedding end,
-      embedded_hash = case when t.embed_text is null then null else e.embedded_hash end,
-      embedded_at   = null
-  from (select record_id, public.pms_emails_embed_text(subject, body_text) as embed_text
-        from public.pms_project_emails
-        where embedding is not null
-          -- only a body with banner words can have changed; skips the regex work on the rest
-          and body_text ~* '(often get e-?mail from|learn why this is important|external|from outside)') t
-  where t.record_id = e.record_id
-    and e.embedded_hash is distinct from md5(coalesce(t.embed_text, ''));
+  update public.pms_project_emails set body_text = E'[EXTERNAL]\nThe pit is too small for the scheduled unit.' where record_id = 'e5';
+  update public.pms_project_emails set embedded_hash = 'old' where record_id = 'e6';   -- no banner words: not marked
+  update public.pms_project_emails set body_text = repeat('x ', 300) || 'External Email: in the quoted part only' where record_id = 'e7';
+  update public.pms_project_emails
+  set embedded_at = null
+  where embedding is not null
+    and embedded_at is not null
+    and left(body_text, 400) ~* '(often get e-?mail from|learn why this is important|external|from outside)';
   select * into strict r from public.pms_project_emails where record_id = 'e5';
-  assert r.embedding is not null and r.embedded_at is null, 'changed text: vector kept, marked stale';
-  select * into strict r from public.pms_project_emails where record_id = 'e21';
-  assert r.embedding is null and r.embedded_hash is null, 'blank text: vector dropped';
-  select * into strict r from public.pms_project_emails where record_id = 'e4';
-  assert r.embedded_at is not null, 'a row whose hash matches is untouched';
+  assert r.embedding is not null and r.embedded_at is null, 'banner at the top: vector kept, marked stale';
   select * into strict r from public.pms_project_emails where record_id = 'e6';
-  assert r.embedded_at is not null, 'a body without banner words is not re-cleaned';
-  update public.pms_project_emails set embedded_hash = 'h' where record_id = 'e6';
+  assert r.embedded_at is not null, 'no banner words: not marked';
+  select * into strict r from public.pms_project_emails where record_id = 'e7';
+  assert r.embedded_at is not null, 'banner words beyond the top 400 characters: not marked';
+  select * into strict r from public.pms_project_emails where record_id = 'e21';
+  assert r.embedding is not null and r.embedded_at is null, 'banner-only body: marked, vector kept';
+  select array_agg(record_id) into ids from public.pms_emails_to_embed(100);
+  assert ids = array['e5'], 'queue lists the marked row with text, not the empty one: ' || coalesce(ids::text, 'null');
   delete from public.pms_project_emails where record_id = 'e21';
+  update public.pms_project_emails set body_text = 'Where does the chiller disconnect go on this one?' where record_id = 'e7';
   update public.pms_project_emails set embedded_at = now() where embedding is not null;
-  update public.pms_project_emails set embedded_hash = 'h' where record_id = 'e5';
+  update public.pms_project_emails set embedded_hash = 'h' where record_id in ('e5', 'e6');
   raise notice 'stale queue ok';
 end $$;
 
@@ -414,12 +412,10 @@ begin
   assert r.count = 2, 're-apply keeps data and behaviour';
   select count(*) into r from pg_proc where proname in ('search_project_emails', 'pms_emails_search_lexical') and pronamespace = 'public'::regnamespace;
   assert r.count = 2, 'exactly one of each function';
-  -- the one-off ran again: rows whose hash is real (e1, e4 were stored by the
-  -- helper) stay as they are; the fixture rows with a fake hash are marked
-  select count(*) into r from public.pms_project_emails where record_id in ('e1', 'e4') and embedded_at is null;
-  assert r.count = 0, 're-applied one-off leaves matching rows alone';
-  select count(*) into r from public.pms_project_emails where embedded_hash = 'h' and embedded_at is null and embedding is not null;
-  assert r.count > 0, 're-applied one-off marks mismatching rows, keeping their vector';
+  -- the one-off ran again: only the embedded row with banner words at the top (e5)
+  -- are marked, with their vector kept; the others are untouched
+  select array_agg(record_id order by record_id) into r from public.pms_project_emails where embedded_at is null and embedding is not null;
+  assert r.array_agg = array['e5'], 're-applied one-off marks only banner-topped rows: ' || coalesce(r.array_agg::text, 'null');
   raise notice 're-apply ok';
 end $$;
 
