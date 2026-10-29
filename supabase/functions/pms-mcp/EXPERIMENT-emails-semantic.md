@@ -1,6 +1,7 @@
 # Experiment: does semantic ranking help email search? Scoring sheet
 
-Status: RUN 2026-10-29 16:13-16:20 UTC. The questions were committed and pushed
+Status: RUN 2026-10-29 16:13-16:20 UTC; RE-RUN of the hybrid legs after the
+thread-collapse fix later the same day (see "Re-run after the collapse fix"). The questions were committed and pushed
 (16:12 UTC) before the first search. Result against the written rule: see the
 tally; the hit clauses are met exactly at their threshold and the one-thread-
 one-row clause is not met on two rows. Everything the run
@@ -163,6 +164,48 @@ against seven of eight in the CA experiment. The third gained row (6) is a
 control that keyword missed only because another thread filled its five
 rows. Ten questions with one expected thread each can show that hybrid finds
 things keyword cannot, not how often.
+
+## Re-run after the collapse fix (2026-10-29, after PR #378 was applied)
+
+The first run failed the one-thread-one-row clause on rows 5 and 6. The
+production query on those messages (record ids `addin-mqjw3tda4ey8f`,
+`addin-mqsoydlhwug9g`, `addin-mvtp7gz35nyyg`, `addin-mvsuocxqywdd0`) showed
+why: the two Kissena messages carry different conversation ids that decode to
+a per-mailbox GUID followed by an identical 16-byte tail (one conversation
+filed from two mailboxes), and one Bunker Hill message has no conversation id
+at all. Migration `20261029120000` adds a second collapse pass on project and
+subject. After it was applied in production the ten hybrid legs were run again,
+same wording, `limit: 5`, firm-wide, `semantic: true`. Keyword mode is
+unchanged by the migration and was not re-run.
+
+| Row | Before the fix | After the fix |
+|---|---|---|
+| 5 | CUNY BMS thread [3] first; the Kissena "Inspection Approved" subject in rows 3 and 4 (03-31, and 03-27 [3]) | CUNY BMS thread [3] still first; Kissena once, as one row with a count of 5; a fifth distinct result ("Commissioning Services", similarity 0.884) moves up |
+| 6 | JMU thread first; "DGS Bunker Hill ES - Energy Model" in rows 2 and 3 (10-29 [4], 10-26) | JMU thread still first; Bunker Hill Energy Model once, with a count of 5; a fifth distinct result (PS 138X Energy Modeler meeting [3]) moves up |
+| 1-4, 7-10 | | Identical lists, same order, same hits and misses |
+
+Tally after the fix: keyword hits 2, hybrid hits 5 (rows 2, 5, 6, 8, 9), Gained
+3, Lost 0, repeated subject in 0 of 10 lists. By the rule as written, all
+three clauses are now met.
+
+What this does and does not show:
+
+- **The hit clauses did not change.** The fix touches grouping, not ranking, and
+  the re-run confirms every hit and every miss is where it was. The result is
+  at the threshold (Gained exactly 3), as before.
+- **The repeat clause was re-measured on the same ten questions after the
+  failure was seen and fixed.** That is fair for a grouping bug with a known
+  cause, and the new SQL tests cover the cases directly, but it is not an
+  independent confirmation.
+- **Two things are still visible in the lists.** Two notifications for one
+  submittal ("Submittal Forwarded" and "Submittal Responded to and Closed", row
+  10) are not merged because their subjects differ. And similarity does not
+  separate right from wrong: the expected threads scored 0.858 (row 8) and
+  0.862 (row 9), while wrong neighbours scored up to 0.875 (row 7), so raising
+  the 0.75 floor would not clean the lists up.
+- **Where hybrid misses, it shows five plausible-looking wrong results.** Keyword
+  mode would have shown none. Nothing in the answer says how confident the
+  match is.
 
 ## The rule, written before the experiment
 
