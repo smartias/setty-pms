@@ -1374,7 +1374,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-29-emails-semantic-on";
+const BUILD = "2026-10-29-emails-snippet";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3343,8 +3343,9 @@ mcp.tool("search_emails", {
     "newest first. Returns metadata + preview; call read_email for a full body. A prose " +
     "query is also matched by meaning, so everyday wording finds emails that say the same " +
     "thing in other words, and an exchange comes back as one row (its newest matching " +
-    "message, with threadCount). Results for a prose query always list the closest " +
-    "emails, so check the subject and project before relying on one.",
+    "message, with threadCount, and bestRecordId naming the message that matched best). " +
+    "Each row carries a snippet and keywordHit; when no row matched the words the answer " +
+    "says so, and the rows are only the closest by meaning.",
   inputSchema: z.object({
     query: z.string().optional().describe("Topic/keywords — searches subject, sender, body, and attachment names"),
     projectNumber: z.string().optional().describe("Scope to one project (number, id, or name)"),
@@ -3363,6 +3364,7 @@ mcp.tool("search_emails", {
     let rows: any[];
     let searchMode: string | undefined;
     let semanticNote: string | undefined;
+    let keywordNote: string | undefined;
     if (q) {
       // Embed the query unless EMAILS_SEMANTIC=0; keyword ranking is the
       // fallback at every step (model down, migration not applied), and the
@@ -3386,6 +3388,12 @@ mcp.tool("search_emails", {
       }
       rows = Array.isArray(rows) ? rows : [];
       searchMode = rows[0]?.search_mode ?? ("p_embedding" in args ? "hybrid" : "keyword");
+      // Hybrid rows say whether any message of the exchange matched the words.
+      // When none did, the list is the closest by meaning only; say so once,
+      // because the rows look the same either way (review item 2).
+      if (searchMode === "hybrid" && rows.length && rows.every((r: any) => r.keyword_hit === false)) {
+        keywordNote = "No filed email contains these words; the rows are the closest by meaning. Check the subject and project before relying on one.";
+      }
       if (sender && sender.trim()) {
         const s = sender.trim().toLowerCase();
         rows = rows.filter((r: any) => (r.from_address ?? "").toLowerCase().includes(s));
@@ -3405,6 +3413,7 @@ mcp.tool("search_emails", {
       count: rows.length,
       ...(searchMode ? { searchMode } : {}),
       ...(semanticNote ? { semanticNote } : {}),
+      ...(keywordNote ? { note: keywordNote } : {}),
       ...(!rows.length && projectNumber ? {
         note: "No filed emails matched. This log only holds emails filed with the Setty PMS Outlook add-in; emails left in a mailbox or saved to the office drive never reach it.",
         reminder: SHAREPOINT_NUDGE,
@@ -3415,6 +3424,9 @@ mcp.tool("search_emails", {
         ...(typeof r.rank === "number" ? { rank: Math.round(r.rank * 1000) / 1000 } : {}),
         ...(typeof r.similarity === "number" ? { similarity: Math.round(r.similarity * 1000) / 1000 } : {}),
         ...(Number(r.thread_count) > 1 ? { threadCount: Number(r.thread_count) } : {}),
+        ...(typeof r.keyword_hit === "boolean" ? { keywordHit: r.keyword_hit } : {}),
+        ...(r.best_record_id && r.best_record_id !== r.record_id ? { bestRecordId: r.best_record_id } : {}),
+        ...(r.snippet ? { snippet: r.snippet } : {}),
         hasAttachments: r.has_attachments,
       })),
     });
