@@ -855,11 +855,15 @@ keyword search behaves exactly as before.
 - **Hybrid mode** (an embedding and a non-blank query): the lexical list and a
   cosine nearest-neighbour list (floor `p_min_similarity`, default 0.75) are
   fused by reciprocal rank as `search_ca_items` does, then collapsed to **one
-  row per thread** (Outlook `conversation_id`, or the subject minus RE:/FW:
-  when it is missing): the newest matched message of the thread carries the
-  thread's best score and `thread_count` says how many matched messages it
-  stands for. A keyword-only hit still appears, so nothing the keyword search
-  finds is lost.
+  row per exchange**: first by Outlook `conversation_id` (or the project and
+  subject minus RE:/FW: when it is missing), then groups that share a project
+  and a subject are merged (migration `20261029120000`), because one exchange
+  filed from two mailboxes carries two conversation ids that differ only in a
+  per-mailbox prefix. The newest matched message represents the exchange, it
+  carries the best score, and `thread_count` says how many matched messages it
+  stands for. Two different threads in one project with the same generic
+  subject show as one row. A keyword-only hit still appears, so nothing the
+  keyword search finds is lost.
 - **What gets embedded** (`pms_emails_embed_text`): the subject minus its
   prefixes and the NEW text of the message. The body is cut at the first
   reply marker (`-----Original Message-----`, an "On … wrote:" line, a
