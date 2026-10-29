@@ -208,3 +208,152 @@ Only after step 0's rule says yes.
 If step 0 says the cap cuts few emails and the quoted history is not where
 the misses live, this proposal ends there with the numbers recorded, and the
 next place to look is ranking, not text.
+
+---
+
+# Review: other ways to raise the quality of what email search returns
+
+Written 2026-10-29 at Sara's request, the day the switch-on shipped, from the
+experiment lists and the function as it stands. Each item says what it costs,
+what it buys, and what evidence there is. Ranked by that ratio, not by size.
+None of these is built; the first four could ship together in one small PR.
+
+## 1. Return a snippet, because `preview` is empty
+
+**Evidence.** Every row the experiment returned had `"preview": ""`. The PMS
+add-in writes `preview: emailRecord.preview || ""` and the field is blank for
+every message seen, so the consumer (the Claude chat reading the answer) sees
+subject, sender and date, and nothing of the body. It cannot tell a right
+result from a wrong neighbour without a `read_email` call per row, which it
+rarely makes.
+
+**Change.** In `search_project_emails`, add a `snippet` column: in keyword
+mode the `ts_headline` of `body_text` for the query (what `search_ca_items`
+does); in hybrid mode the first 240 characters of the cleaned new text
+(`pms_emails_embed_text` minus the subject line), which is the text the vector
+was made from. The connector passes it through as `snippet`.
+
+**Cost.** One migration, one line in the connector, no re-embed. Half a day.
+**Buys.** The single largest lever here: it turns "five plausible-looking
+subjects" into five readable candidates, so the wrong ones are visibly wrong.
+
+## 2. Say when nothing matched the words
+
+**Evidence.** Keyword mode returned nothing for 7 of 10 questions; hybrid
+then returned five rows each time, with nothing in the answer to say that none
+of them contains the words asked for. The rows look the same whether the
+thread exists or not.
+
+**Change.** The function already knows whether a row came from the lexical
+list (`lex_ix` is not null). Return a boolean `keyword_hit` per row; in the
+connector, when no row has it, add a top-level note: "No filed email contains
+these words; the rows are the closest by meaning. Check the subject and
+project." Also carry `similarity` as today.
+
+**Cost.** Ten lines. **Buys.** The reader's calibration, which the experiment
+showed the similarity number alone does not give (right threads at 0.858 and
+0.862, a wrong one at 0.875).
+
+## 3. Let the keyword side contribute on a long question
+
+**Evidence.** `websearch_to_tsquery` ANDs every word, so a six-word question
+matches only a message containing all six, and the lexical list is empty for
+most prose questions. The fusion then runs on the vector list alone.
+
+**Change.** In `pms_emails_search_lexical` (now in the repo, migration
+`20261020110000`), when the AND query returns nothing, retry with the words
+OR-ed (`websearch_to_tsquery` understands `or`), ranked by `ts_rank`, and mark
+the rows `partial`. The fused rank then has a lexical signal for rows that
+share two or three words with the question, which is what a right answer
+usually does.
+
+**Cost.** One migration, one afternoon, plus a local test for AND-then-OR.
+**Buys.** Unmeasured; plausible gain on questions where the right thread
+shares the key noun with the question (rows 1, 3, 7, 10 all do). Lost = 0 is
+guaranteed by construction, because the AND list is tried first.
+
+## 4. Collapse the Newforma notification pairs
+
+**Evidence.** Row 10 showed "Submittal Forwarded: ... 11600-044-1" and
+"Submittal Responded to and Closed: ... 11600-044-1" as two rows. They are
+one submittal's life, but the subjects differ before the item name, so the
+collapse keeps them apart.
+
+**Change.** `pms_emails_thread_subject` strips the notification prefixes
+Newforma puts in front of the subject ("RFI Forwarded:", "Submittal
+Forwarded:", "Submittal Responded to and Closed:", "Submittal Reviewer
+Response:", "RFI Responded to and Closed:") the way it strips RE:/FW: today.
+The CA intake proposal lists the same prefixes.
+
+**Cost.** One regex change plus two local test cases; no re-embed (the thread
+key is computed at search time). **Buys.** One row per submittal or RFI for
+the portal-notification mail, which is most of the CA mail in the log.
+
+## 5. Put the attachment names and the sender in the embedded text
+
+**Evidence.** The keyword index (`search_tsv`) covers subject, sender, body
+and attachment names; the embedding covers only subject and body. A question
+like "the cut sheet Gilbane sent for the chiller" has two of its three
+handles outside the vector.
+
+**Change.** Prepend `from_name` and append the attachment names (file
+extensions stripped, underscores to spaces) to the text `pms_emails_embed_text`
+returns, inside the cap. **Cost.** It changes every row's hash, so it is a
+FULL re-embed (three days at the measured pace). Only worth doing bundled
+with step 1 of the proposal above, which re-embeds anyway, so the two changes
+share one backfill. **Buys.** Unmeasured; include two such questions in the
+next ten-thread test.
+
+## 6. Add a date window to the tool
+
+**Evidence.** `search_emails` takes query, project, sender, direction and
+limit. There is no way to ask for "last month" or "before the bid", and an
+exchange on a long-running project can have the same subject for two years.
+
+**Change.** `after` and `before` arguments (ISO dates) passed through to the
+function as two more parameters applied in the `sem` and `lex` candidate
+sets, not after the fact (a post-filter on five rows would empty the list).
+The captured lexical function needs the two parameters too.
+
+**Cost.** One migration, one connector change, one day. **Buys.** A filter
+engineers reach for constantly, and a cheaper candidate set when it is used.
+
+## 7. Show the best-matching message, not only the newest
+
+**Evidence.** The collapse returns the newest matched message of an exchange.
+In row 5 the newest message is a one-line reply; the message that actually
+answers the question is older in the same thread. The reader opens the wrong
+one first.
+
+**Change.** Return both: the newest (for the date and the "where is this
+thread now") and `best_record_id` with its similarity, so `read_email` can go
+straight to the message that matched. **Cost.** A few lines in `merged`.
+**Buys.** One fewer `read_email` round trip when the match is in an old
+message.
+
+## 8. Things looked at and NOT recommended now
+
+- **Raising or lowering the 0.75 similarity floor.** The experiment lists put
+  right and wrong rows in the same band (0.83 to 0.90). A higher floor would
+  have dropped the row-8 and row-9 hits; a lower one changes nothing above
+  the limit. Leave it.
+- **Weighting the vector list above the keyword list in the fusion.** With
+  the keyword list empty for most prose questions, the weights do not act.
+  Revisit after item 3, when both lists are usually non-empty.
+- **An HNSW index.** Latency was not measured (section 5 of
+  `supabase/emails-verify.sql` is still to run). Until a search is slow it
+  is a cost with no benefit.
+- **A second, larger model.** The edge runtime ships `gte-small` only.
+  Anything larger means an outside service, which the proposal ruled out for
+  confidentiality, and this review keeps that rule.
+- **Filing coverage.** Ten of sixteen active projects browsed on 2026-10-29
+  had no filed email at all. That is the biggest quality limit of the whole
+  feature and no search change touches it; it belongs to the portal-intake
+  proposal and to the filing habit, not here.
+
+## Suggested order
+
+Items 1, 2, 4 and 7 are one small PR (a migration and a connector change, no
+re-embed): a readable, honest result list. Item 3 next, with its own test.
+Item 6 when someone asks for it, or with item 3. Item 5 rides with step 1 of
+the proposal above so there is one re-embed, not two.
