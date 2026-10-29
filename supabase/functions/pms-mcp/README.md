@@ -884,14 +884,22 @@ keyword search behaves exactly as before.
   reply marker (`-----Original Message-----`, an "On … wrote:" line, a
   From:/Sent:/To: header block) when the text above it is a message of its
   own (40+ characters); a forward with a one-line note keeps the forwarded
-  content. Known portal and legal footers, URLs, quote prefixes and rule lines
-  go; 1,500-character cap. Defined once, in SQL. A tuning change is a
-  migration that also runs the one-off re-queue at the bottom of the file.
-- **Job helpers**: `pms_emails_to_embed(p_limit)` lists rows with no embedding,
-  newest first (a partial index makes it an index walk, so it does NOT re-hash
-  21,000 bodies a minute as the CA helper does), and
-  `pms_emails_store_embeddings(p_rows)` writes a batch, refusing a row whose
-  text no longer hashes to what was embedded. Both are `service_role` only.
+  content. Known portal and legal footers, URLs, quote prefixes, rule lines
+  and the mail-client banners above a message (Outlook's "Some people who
+  received this message don't often get email from …", "External Email:"
+  and "** WARNING: … outside the organization" lines; `pms_emails_strip_banners`,
+  migration `20261029150000`, shared with the snippet) go; 1,500-character
+  cap. Defined once, in SQL. A tuning change is a migration that ends with
+  the one-off in `20261029150000`: it marks each row whose text changed as
+  stale (`embedded_at = null`, vector KEPT so the row stays searchable on
+  its old text until the job reaches it) and blanks the vector of a row
+  whose cleaned text is now empty.
+- **Job helpers**: `pms_emails_to_embed(p_limit)` lists never-embedded rows
+  first and stale rows after them, newest first in each (two partial indexes,
+  two index walks, so it does NOT re-hash 21,000 bodies a minute as the CA
+  helper does), and `pms_emails_store_embeddings(p_rows)` writes a batch,
+  refusing a row whose text no longer hashes to what was embedded. Both are
+  `service_role` only.
 - **Baseline** `20261020100000` creates the table and a stand-in keyword
   function only where they are missing (a Supabase Preview branch, a local
   replay); in production, which has both, every statement is skipped by its
