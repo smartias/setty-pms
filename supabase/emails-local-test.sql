@@ -7,6 +7,7 @@
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020100000_baseline_pms_project_emails.sql  # table + stand-in keyword search
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020110000_search_project_emails_capture.sql # the live keyword search, captured
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020120000_emails_embeddings.sql
+--   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261029120000_emails_thread_collapse_by_subject.sql
 --   psql -f supabase/emails-local-test.sql                                                     # ends with ALL TESTS PASSED
 -- (run from the repo root: the test re-applies the migration by relative path).
 -- Drop the capture line to exercise the first-application rename instead
@@ -201,8 +202,51 @@ begin
   raise notice 'hybrid mode ok';
 end $$;
 
--- ── 5. re-apply the migration (idempotent: columns, index, rename guard, function) ──
+-- ── 4b. one exchange filed twice (20261029120000) ───────────────────────────
+-- The production cases of 2026-10-29: the same conversation filed from two
+-- mailboxes (two conversation ids, one subject), a row filed with no
+-- conversation id, a thread whose subject was edited, and the same subject in
+-- another project, which must stay separate.
+insert into public.pms_project_emails (record_id, project_id, conversation_id, subject, from_name, from_address, email_date, body_text, preview, has_attachments, msg_id, saved_at, sp_folder_url, saved_to_sharepoint, embedding, embedded_hash, embedded_at)
+select record_id, project_id, conversation_id, subject, 'N', 'n@x.com', email_date::timestamptz, 'body ' || record_id, '', false, 'm-' || record_id, now(), '', false, pg_temp.tv(0.1, -1), 'h', now()
+from (values
+  ('e9',  'p3', 'AAQk-MAILBOX1-TAIL', 'Inspection approved at Kissena',        '2026-10-10 10:00+00'),
+  ('e10', 'p3', 'AAQk-MAILBOX2-TAIL', 'RE: Inspection approved at Kissena',     '2026-10-09 10:00+00'),
+  ('e11', 'p3', null,                 'FW: Inspection approved at Kissena',     '2026-10-08 10:00+00'),
+  ('e13', 'p3', 'AAQk-MAILBOX1-TAIL', 'Kissena inspection: revised drawings',   '2026-10-07 10:00+00'),
+  ('e12', 'p4', 'AAQk-MAILBOX3-OTHER','Inspection approved at Kissena',        '2026-10-11 10:00+00'),
+  ('e14', 'p4', null,                 'Inspection approved at Kissena',         '2026-10-12 10:00+00')
+) as v(record_id, project_id, conversation_id, subject, email_date);
+
+do $$
+declare r record; n int; rows_ text;
+begin
+  select count(*) into n from public.search_project_emails('zzzz nothing', null, 10, pg_temp.tv(0.1, -1));
+  assert n = 2, 'one row per project exchange, not per message or per conversation id: ' || n;
+
+  select * into strict r from public.search_project_emails('zzzz nothing', null, 10, pg_temp.tv(0.1, -1)) where project_id = 'p3';
+  assert r.record_id = 'e9', 'p3 shows its newest message: ' || r.record_id;
+  assert r.thread_count = 4, 'p3 counts both mailboxes, the null-id row and the edited-subject message: ' || r.thread_count;
+  assert r.search_mode = 'hybrid' and r.similarity > 0.99, 'p3 row shape';
+
+  select * into strict r from public.search_project_emails('zzzz nothing', null, 10, pg_temp.tv(0.1, -1)) where project_id = 'p4';
+  assert r.record_id = 'e14' and r.thread_count = 2, 'p4 is separate from p3 and merges its own null-id row: ' || r.record_id || ' ' || r.thread_count;
+
+  -- project filter and limit still apply to the merged rows
+  select count(*) into n from public.search_project_emails('zzzz nothing', 'p3', 10, pg_temp.tv(0.1, -1));
+  assert n = 1, 'project filter on merged rows';
+  select count(*) into n from public.search_project_emails('zzzz nothing', null, 1, pg_temp.tv(0.1, -1));
+  assert n = 1, 'limit on merged rows';
+
+  -- keyword mode is untouched by the second pass: every message is its own row
+  select count(*) into n from public.search_project_emails('body', 'p3', 10);
+  assert n = 4, 'keyword mode still returns messages, not exchanges: ' || n;
+  raise notice 'exchange collapse ok';
+end $$;
+
+-- ── 5. re-apply the migrations (idempotent: columns, index, rename guard, function) ──
 \i supabase/migrations/20261020120000_emails_embeddings.sql
+\i supabase/migrations/20261029120000_emails_thread_collapse_by_subject.sql
 do $$
 declare r record;
 begin
