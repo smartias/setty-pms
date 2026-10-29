@@ -1374,7 +1374,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-20-emails-embed";
+const BUILD = "2026-10-29-emails-semantic-on";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3340,19 +3340,19 @@ mcp.tool("search_emails", {
   description:
     "Full-text search the filed project email log across subject, sender, body, AND " +
     "attachment file names. With a query, ranked by relevance. Without a query, lists " +
-    "newest first. Returns metadata + preview; call read_email for a full body. When " +
-    "meaning-based ranking is on, a prose query also finds emails that say the same thing " +
-    "in other words, and a thread comes back as one row (its newest matching message, " +
-    "with threadCount).",
+    "newest first. Returns metadata + preview; call read_email for a full body. A prose " +
+    "query is also matched by meaning, so everyday wording finds emails that say the same " +
+    "thing in other words, and an exchange comes back as one row (its newest matching " +
+    "message, with threadCount). Results for a prose query always list the closest " +
+    "emails, so check the subject and project before relying on one.",
   inputSchema: z.object({
     query: z.string().optional().describe("Topic/keywords — searches subject, sender, body, and attachment names"),
     projectNumber: z.string().optional().describe("Scope to one project (number, id, or name)"),
     sender: z.string().optional().describe("Filter by sender email address (contains)"),
     direction: z.enum(["outgoing", "incoming"]).optional().describe("'outgoing' = sent by Setty, 'incoming' = received from outside"),
     limit: z.number().optional().describe("Max results (default 25, max 100)"),
-    semantic: z.boolean().optional().describe("EXPERIMENT ONLY: force meaning-based ranking on (true) or off (false) for this call, overriding the server default"),
   }),
-  handler: async ({ query, projectNumber, sender, direction, limit, semantic }) => {
+  handler: async ({ query, projectNumber, sender, direction, limit }) => {
     const lim = Math.min(Math.max(limit ?? 25, 1), 100);
     let pid: string | null = null;
     if (projectNumber) {
@@ -3364,12 +3364,11 @@ mcp.tool("search_emails", {
     let searchMode: string | undefined;
     let semanticNote: string | undefined;
     if (q) {
-      // Embed the query when semantic ranking is wanted; keyword ranking is
-      // the fallback at every step (model down, migration not applied), and
-      // the answer says which one ranked the rows.
-      const wantSemantic = typeof semantic === "boolean" ? semantic : EMAILS_SEMANTIC;
+      // Embed the query unless EMAILS_SEMANTIC=0; keyword ranking is the
+      // fallback at every step (model down, migration not applied), and the
+      // answer says which one ranked the rows.
       const args: Record<string, unknown> = { q, proj: pid, lim };
-      if (wantSemantic) {
+      if (EMAILS_SEMANTIC) {
         try { args.p_embedding = vectorLiteral(await embedText(q)); }
         catch (e) {
           console.warn("[search_emails] query embedding failed, keyword ranking only:", String((e as any)?.message ?? e));
@@ -3642,12 +3641,12 @@ const CA_ITEMS_USE_TABLE = Deno.env.get("CA_ITEMS_USE_TABLE") !== "0";
 // built-in model, the same one the embed job uses for the rows; if the model
 // is unavailable the call falls back to keyword ranking and says so.
 const CA_ITEMS_SEMANTIC = Deno.env.get("CA_ITEMS_SEMANTIC") !== "0";
-// The same for the filed email log (PROPOSAL-emails-embeddings.md), OFF until
-// its own ten-question experiment passes: the function secret EMAILS_SEMANTIC=1
-// turns it on for every call. The experiment-only `semantic` argument of
-// search_emails overrides the flag for one call, either way, and goes away in
-// the switch-on PR as the CA one did.
-const EMAILS_SEMANTIC = Deno.env.get("EMAILS_SEMANTIC") === "1";
+// The same for the filed email log (PROPOSAL-emails-embeddings.md). ON by
+// default since its own ten-question experiment (EXPERIMENT-emails-semantic.md,
+// run 2026-10-29, re-run after the thread-collapse fix: hybrid found 5 of 10,
+// keyword 2 of 10, nothing lost, no thread repeated). The function secret
+// EMAILS_SEMANTIC=0 is the kill switch, no redeploy.
+const EMAILS_SEMANTIC = Deno.env.get("EMAILS_SEMANTIC") !== "0";
 let _embedSession: any = null;
 function embedSession(): any {
   if (_embedSession) return _embedSession;

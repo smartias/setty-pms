@@ -933,11 +933,12 @@ Step 2 of `PROPOSAL-emails-embeddings.md`; the database half (migration
   About three days for the ~21,000-row backfill at the measured 5 rows a
   minute; a second entry on a `30 seconds` schedule halves it. Coverage:
   `supabase/emails-verify.sql` section 3.
-- **`search_emails`**: with a query, embeds it and passes `p_embedding` only
-  when the function secret `EMAILS_SEMANTIC=1` is set (OFF by default until
-  the ten-question experiment passes), or when the EXPERIMENT-ONLY `semantic`
-  argument says so for one call (`true` forces hybrid, `false` forces keyword;
-  it goes away in the switch-on PR as the CA one did). The answer carries
+- **`search_emails`**: with a prose query, embeds it and passes `p_embedding`.
+  ON by default since the ten-question experiment (2026-10-29,
+  `EXPERIMENT-emails-semantic.md`: hybrid found 5 of 10, keyword 2 of 10,
+  nothing lost, no repeated thread after migration `20261029120000`); the
+  function secret `EMAILS_SEMANTIC=0` is the kill switch, no redeploy, and the
+  experiment-only `semantic` tool argument is gone. The answer carries
   `searchMode` (`keyword` or `hybrid`, from the rows), `similarity` and
   `threadCount` per row in hybrid mode, and a `semanticNote` when the model or
   the hybrid call failed and the rows are keyword-ranked instead (the call is
