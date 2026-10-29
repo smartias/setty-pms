@@ -872,7 +872,13 @@ keyword search behaves exactly as before.
   `best_record_id` (the message the snippet is cut from, when it is not the
   newest one shown). The same migration strips Newforma's notification
   prefixes ("Submittal Forwarded:", "Responded to and Closed:", and so on)
-  in the thread key, so one submittal's notices are one row.
+  in the thread key, so one submittal's notices are one row. Migration
+  `20261029140000` cuts the keyword snippet from the cleaned text: first the
+  subject plus the new text of the message (what its vector was made from),
+  and only when the words are nowhere in it, the whole body with its quoted
+  header lines, reply markers, external-sender banners, rule lines, urls and
+  quote prefixes removed, so a match in the quoted history shows without the
+  "Subject: RE: …" line around it.
 - **What gets embedded** (`pms_emails_embed_text`): the subject minus its
   prefixes and the NEW text of the message. The body is cut at the first
   reply marker (`-----Original Message-----`, an "On … wrote:" line, a
