@@ -9,6 +9,7 @@
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020120000_emails_embeddings.sql
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261029120000_emails_thread_collapse_by_subject.sql
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261029130000_emails_search_snippet.sql
+--   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261029140000_emails_search_snippet_cleaned.sql
 --   psql -f supabase/emails-local-test.sql                                                     # ends with ALL TESTS PASSED
 -- (run from the repo root: the test re-applies the migration by relative path).
 -- Drop the capture line to exercise the first-application rename instead
@@ -287,10 +288,40 @@ begin
   raise notice 'snippet and flags ok';
 end $$;
 
+-- ── 4d. keyword snippet from the cleaned text (20261029140000) ───────────────
+do $$
+declare r record;
+begin
+  -- the words are in the new text: the snippet is cut from the cleaned text, so
+  -- the quoted From:/Sent:/To:/Subject: lines below the reply marker never show
+  select * into strict r from public.search_project_emails('conduit', 'p1', 10) where record_id = 'e3';
+  assert r.snippet like '%[conduit]%', 'cleaned keyword snippet marks the match: ' || r.snippet;
+  assert r.snippet not like '%From:%' and r.snippet not like '%Subject:%', 'no header lines in the snippet: ' || r.snippet;
+
+  -- the words are only in the quoted history: the quoted match still shows,
+  -- marked, with the header lines around it removed
+  select * into strict r from public.search_project_emails('sight', 'p1', 10) where record_id = 'e3';
+  assert r.keyword_hit and r.snippet like '%[sight]%', 'quoted-only match is marked: ' || r.snippet;
+  assert r.snippet not like '%From:%' and r.snippet not like '%Subject:%', 'headers stripped from the quoted fallback: ' || r.snippet;
+
+  -- the words are only in the subject: the subject is marked and the author's
+  -- own text follows it, instead of a fall-through to the quoted history
+  select * into strict r from public.search_project_emails('location', 'p2', 10) where record_id = 'e7';
+  assert r.snippet like 'Chiller disconnect [location] Where does the chiller%', 'subject-only match shows the new text: ' || r.snippet;
+
+  -- same rule in hybrid mode, and the snippet is one line
+  select * into strict r from public.search_project_emails('conduit', 'p1', 10, pg_temp.tv(1, 0)) where record_id = 'e3';
+  assert r.keyword_hit and r.best_record_id = 'e3', 'hybrid: e3 is the best message of its exchange';
+  assert r.snippet like '%[conduit]%' and r.snippet not like '%From:%', 'hybrid cleaned snippet: ' || r.snippet;
+  assert r.snippet !~ E'\n', 'snippet has no newlines';
+  raise notice 'cleaned snippet ok';
+end $$;
+
 -- ── 5. re-apply the migrations (idempotent: columns, index, rename guard, function) ──
 \i supabase/migrations/20261020120000_emails_embeddings.sql
 \i supabase/migrations/20261029120000_emails_thread_collapse_by_subject.sql
 \i supabase/migrations/20261029130000_emails_search_snippet.sql
+\i supabase/migrations/20261029140000_emails_search_snippet_cleaned.sql
 do $$
 declare r record;
 begin
