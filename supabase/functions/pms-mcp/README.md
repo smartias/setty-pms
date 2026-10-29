@@ -863,7 +863,16 @@ keyword search behaves exactly as before.
   carries the best score, and `thread_count` says how many matched messages it
   stands for. Two different threads in one project with the same generic
   subject show as one row. A keyword-only hit still appears, so nothing the
-  keyword search finds is lost.
+  keyword search finds is lost. Migration `20261029130000` adds three result
+  columns, because the add-in never fills `preview`: `snippet` (a keyword hit
+  gets `ts_headline` of the body with the matches `[marked]`; a meaning-only
+  hit gets the first 240 characters of the cleaned new text of the exchange's
+  best-matching message), `keyword_hit` (false when the row was found by
+  meaning alone; the connector adds a `note` when no row has it), and
+  `best_record_id` (the message the snippet is cut from, when it is not the
+  newest one shown). The same migration strips Newforma's notification
+  prefixes ("Submittal Forwarded:", "Responded to and Closed:", and so on)
+  in the thread key, so one submittal's notices are one row.
 - **What gets embedded** (`pms_emails_embed_text`): the subject minus its
   prefixes and the NEW text of the message. The body is cut at the first
   reply marker (`-----Original Message-----`, an "On … wrote:" line, a

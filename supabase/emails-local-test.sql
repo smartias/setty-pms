@@ -8,6 +8,7 @@
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020110000_search_project_emails_capture.sql # the live keyword search, captured
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261020120000_emails_embeddings.sql
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261029120000_emails_thread_collapse_by_subject.sql
+--   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261029130000_emails_search_snippet.sql
 --   psql -f supabase/emails-local-test.sql                                                     # ends with ALL TESTS PASSED
 -- (run from the repo root: the test re-applies the migration by relative path).
 -- Drop the capture line to exercise the first-application rename instead
@@ -244,9 +245,52 @@ begin
   raise notice 'exchange collapse ok';
 end $$;
 
+-- ── 4c. snippet, keyword_hit, best_record_id, Newforma prefixes (20261029130000) ──
+do $$
+declare r record; n int; ids text[];
+begin
+  -- thread key strips the portal prefixes, repeatedly
+  assert public.pms_emails_thread_subject('FW: Submittal Responded to and Closed: RE: Panelboard - Submittal:262416-001-0')
+         = 'panelboard - submittal:262416-001-0', 'newforma prefixes';
+  assert public.pms_emails_thread_subject('RFI Forwarded: Diffuser vs Light - RFI:381.1') = 'diffuser vs light - rfi:381.1', 'rfi prefix';
+  assert public.pms_emails_thread_subject('Action Required: 60736219, Submittal 238219') = '60736219, submittal 238219', 'action required prefix';
+
+  -- keyword mode: every row is its own best match, matched the words, and the snippet marks them
+  for r in select * from public.search_project_emails('wall', 'p1', 10) loop
+    assert r.keyword_hit and r.best_record_id = r.record_id, 'keyword row flags: ' || r.record_id;
+    assert r.snippet like '%[wall]%', 'keyword snippet marks the match: ' || r.snippet;
+  end loop;
+
+  -- hybrid, matched the words: snippet from the best message of the exchange, marked
+  select * into strict r from public.search_project_emails('wall', 'p1', 10, pg_temp.tv(1, 0)) where record_id = 'e4';
+  assert r.keyword_hit and r.best_record_id = 'e4' and r.snippet like '%[wall]%', 'hybrid keyword row: ' || r.snippet;
+  select * into strict r from public.search_project_emails('wall', 'p1', 10, pg_temp.tv(1, 0)) where record_id = 'e3';
+  assert r.keyword_hit and r.best_record_id in ('e1', 'e2', 'e3'), 'thread best record is a member: ' || r.best_record_id;
+  assert length(r.snippet) > 0, 'thread snippet present';
+
+  -- hybrid, meaning only: the newest message is shown, the best-matching one is named and quoted
+  select * into strict r from public.search_project_emails('zzzz nothing', 'p1', 10, pg_temp.tv(1, 0));
+  assert r.record_id = 'e3' and r.best_record_id = 'e1', 'newest shown, best named: ' || r.record_id || ' ' || r.best_record_id;
+  assert not r.keyword_hit, 'meaning-only row has no keyword hit';
+  assert r.snippet like 'Can we move the disconnect%', 'meaning-only snippet is the best message''s cleaned text: ' || r.snippet;
+  assert r.snippet not like '%Chiller disconnect%' or position('Can we move' in r.snippet) = 1, 'snippet does not start with the subject';
+
+  -- one submittal's notifications collapse to one row
+  insert into public.pms_project_emails (record_id, project_id, conversation_id, subject, from_name, from_address, email_date, body_text, preview, has_attachments, msg_id, saved_at, sp_folder_url, saved_to_sharepoint, embedding, embedded_hash, embedded_at)
+  values
+   ('e15', 'p5', 'c-a', 'Submittal Forwarded: Panelboard - Submittal:262416-001-0', 'N', 'n@x.com', '2026-10-15 10:00+00', 'please review by 10/26', '', false, 'm-e15', now(), '', false, pg_temp.tv(-0.5, -0.5), 'h', now()),
+   ('e16', 'p5', 'c-b', 'Submittal Responded to and Closed: Panelboard - Submittal:262416-001-0', 'N', 'n@x.com', '2026-10-29 10:00+00', 'accepted as noted', '', true, 'm-e16', now(), '', false, pg_temp.tv(-0.5, -0.5), 'h', now());
+  select count(*) into n from public.search_project_emails('zzzz nothing', 'p5', 10, pg_temp.tv(-0.5, -0.5));
+  assert n = 1, 'notification pair is one row: ' || n;
+  select * into strict r from public.search_project_emails('zzzz nothing', 'p5', 10, pg_temp.tv(-0.5, -0.5));
+  assert r.record_id = 'e16' and r.thread_count = 2, 'pair shows the closed notice with a count of 2';
+  raise notice 'snippet and flags ok';
+end $$;
+
 -- ── 5. re-apply the migrations (idempotent: columns, index, rename guard, function) ──
 \i supabase/migrations/20261020120000_emails_embeddings.sql
 \i supabase/migrations/20261029120000_emails_thread_collapse_by_subject.sql
+\i supabase/migrations/20261029130000_emails_search_snippet.sql
 do $$
 declare r record;
 begin
