@@ -1,6 +1,8 @@
 # Proposal: meaning-based search for the filed email log
 
-Status: PROPOSED (2026-10-20). Nothing built. Written the day the CA items
+Status: BUILT AND SWITCHED ON (2026-10-29): the experiment passed the written rule
+at its threshold (`EXPERIMENT-emails-semantic.md`); `EMAILS_SEMANTIC=0` turns it
+off. Originally PROPOSED (2026-10-20), nothing built. Written the day the CA items
 experiment passed (`EXPERIMENT-ca-items-semantic.md`: hybrid found 9 of 10,
 keyword 2 of 10, nothing lost), because the same model, the same job and the
 same pass rule transfer to emails with little new code. This is the "later"
