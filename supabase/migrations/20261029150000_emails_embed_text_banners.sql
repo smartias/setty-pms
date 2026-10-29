@@ -35,13 +35,11 @@
 --     after them, newest first in each, still as two index walks;
 --   * pms_emails_store_embeddings is unchanged: it overwrites the vector
 --     and stamps embedded_at, and its hash guard still applies.
--- The one-off at the bottom marks the stale rows (and blanks the vector of
--- a row whose cleaned text is now empty, which must not match anything).
--- Running it again is a no-op for rows already re-embedded. It re-cleans
--- only bodies that contain banner words (about 20 s locally for 7,000 such
--- rows among 22,000); if the SQL editor cuts it off, run the same statement
--- with an `and email_date >= '…' and email_date < '…'` slice added to its
--- inner where clause, a year at a time.
+-- The one-off at the bottom marks the rows that can have changed, by a
+-- cheap test on the top of the body (under a second); the job does the
+-- re-cleaning as it re-embeds them. Running it again re-marks rows the job
+-- has already refreshed (they get the same vector once more), so run it
+-- once.
 --
 -- Apply after 20261029140000; safe to run twice. No connector change: the
 -- embed job reads pms_emails_to_embed as before. The verify script's
@@ -371,16 +369,21 @@ grant execute on function public.search_project_emails(text, text, integer, exte
 
 -- ── One-off: mark the rows whose embed text changed ──────────────────────────
 -- Keeps the vector (the row stays searchable by meaning, on its old text)
--- and clears embedded_at so the job re-embeds it. A row whose cleaned text
--- is now empty loses its vector: it was made of banner text only.
-update public.pms_project_emails e
-set embedding     = case when t.embed_text is null then null else e.embedding end,
-    embedded_hash = case when t.embed_text is null then null else e.embedded_hash end,
-    embedded_at   = null
-from (select record_id, public.pms_emails_embed_text(subject, body_text) as embed_text
-      from public.pms_project_emails
-      where embedding is not null
-        -- only a body with banner words can have changed; skips the regex work on the rest
-        and body_text ~* '(often get e-?mail from|learn why this is important|external|from outside)') t
-where t.record_id = e.record_id
-  and e.embedded_hash is distinct from md5(coalesce(t.embed_text, ''));
+-- and clears embedded_at so the job re-embeds it. A banner is removed only
+-- from the NEW text of a message, which is the top of the body, so a row
+-- can only have changed if banner words appear in its first 400 characters;
+-- that test is a cheap scan (0.6 s for 22,000 rows of 12 KB locally) and
+-- marks nothing whose only banner is in the quoted history. It does not
+-- re-clean anything: the first version of this file did, and it timed out
+-- in the Supabase SQL editor, which runs a pasted file as ONE transaction,
+-- so nothing of it applied. The job re-cleans each marked row when it
+-- reaches it, and a marked row whose text did not change simply gets the
+-- same vector again.
+-- A row whose cleaned text is now empty (an empty subject AND a banner-only
+-- body) is never listed by the queue and keeps its old vector; the verify
+-- script's coverage query lists such rows, and there should be none.
+update public.pms_project_emails
+set embedded_at = null
+where embedding is not null
+  and embedded_at is not null
+  and left(body_text, 400) ~* '(often get e-?mail from|learn why this is important|external|from outside)';
