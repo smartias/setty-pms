@@ -879,8 +879,14 @@ keyword search behaves exactly as before.
   header lines, reply markers, external-sender banners, rule lines, urls and
   quote prefixes removed, so a match in the quoted history shows without the
   "Subject: RE: …" line around it.
-- **What gets embedded** (`pms_emails_embed_text`): the subject minus its
-  prefixes and the NEW text of the message. The body is cut at the first
+- **What gets embedded** (`pms_emails_embed_text`, the five-argument form
+  since migration `20261030100000`): the subject minus its prefixes, a
+  `From <name> (<organisation>)` line (the organisation is the sender's
+  domain minus its ending, left out for gmail/outlook-style mailboxes), an
+  `Attachments: <names>` line (extensions off, underscores to spaces, image
+  stubs skipped, cut at 300 characters) and the NEW text of the message;
+  the two-argument form, subject and body only, is what the search snippet
+  is cut from. The body is cut at the first
   reply marker (`-----Original Message-----`, an "On … wrote:" line, a
   From:/Sent:/To: header block) when the text above it is a message of its
   own (40+ characters); a forward with a one-line note keeps the forwarded

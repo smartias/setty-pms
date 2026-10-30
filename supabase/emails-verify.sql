@@ -40,11 +40,11 @@ select count(*)                                   as emails,
        count(*) filter (where embedding is not null) as embedded,
        count(*) filter (where embedding is not null and embedded_at is null) as stale,   -- marked for re-embedding, old vector in use until the job reaches it
        count(*) filter (where embedding is not null and embedded_at is null
-                          and public.pms_emails_embed_text(subject, body_text) is null)   as stale_empty,   -- never listed by the queue; expect 0
+                          and public.pms_emails_embed_text(subject, body_text, from_name, from_address, attachment_names) is null)   as stale_empty,   -- never listed by the queue; expect 0
        count(*) filter (where embedding is null
-                          and public.pms_emails_embed_text(subject, body_text) is not null) as queued,
+                          and public.pms_emails_embed_text(subject, body_text, from_name, from_address, attachment_names) is not null) as queued,
        count(*) filter (where embedding is null
-                          and public.pms_emails_embed_text(subject, body_text) is null)     as nothing_to_embed,
+                          and public.pms_emails_embed_text(subject, body_text, from_name, from_address, attachment_names) is null)     as nothing_to_embed,
        max(embedded_at)                           as newest_embedding
 from public.pms_project_emails;
 
