@@ -1374,7 +1374,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-29-emails-snippet";
+const BUILD = "2026-10-30-related-projects-note";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.22.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -2180,6 +2180,21 @@ async function relatedProjectsOf(p: any): Promise<any | null> {
     note: "Sibling PMS records of the same real-world effort (phases, sister buildings, related contracts). " +
       "Look siblings up by projectNumber or name with get_project / project_briefing.",
   };
+}
+
+// The search tools are scoped to ONE project. When that project belongs to a
+// Related Projects group the answer must say so, or a scoped search silently
+// misses the sibling records (10 Market vs 22 Market: one contract, two logs).
+function relatedSearchNoteText(related: any): string | null {
+  if (!related?.siblings?.length) return null;
+  const sibs = related.siblings
+    .map((s: any) => [s.projectNumber, s.name ? "(" + s.name + ")" : null].filter(Boolean).join(" "))
+    .join(", ");
+  return "This project is in the Related Projects group \"" + related.group + "\" with sibling record(s) " +
+    sibs + ". Their records are NOT included here — run the same search on each sibling to cover the whole effort.";
+}
+async function relatedSearchNote(p: any): Promise<string | null> {
+  return relatedSearchNoteText(await relatedProjectsOf(p));
 }
 
 function slimProjectForDetail(p: any) {
@@ -3356,9 +3371,12 @@ mcp.tool("search_emails", {
   handler: async ({ query, projectNumber, sender, direction, limit }) => {
     const lim = Math.min(Math.max(limit ?? 25, 1), 100);
     let pid: string | null = null;
+    let relatedNote: string | null = null;
     if (projectNumber) {
       pid = await resolveProjectId(projectNumber);
       if (!pid) return asText({ error: `No project matching \"${projectNumber}\"` });
+      const proj = await getProjectById(pid);
+      if (proj) relatedNote = await relatedSearchNote(proj);
     }
     const q = (query ?? "").trim();
     let rows: any[];
@@ -3414,6 +3432,7 @@ mcp.tool("search_emails", {
       ...(searchMode ? { searchMode } : {}),
       ...(semanticNote ? { semanticNote } : {}),
       ...(keywordNote ? { note: keywordNote } : {}),
+      ...(relatedNote ? { relatedProjects: relatedNote } : {}),
       ...(!rows.length && projectNumber ? {
         note: "No filed emails matched. This log only holds emails filed with the Setty PMS Outlook add-in; emails left in a mailbox or saved to the office drive never reach it.",
         reminder: SHAREPOINT_NUDGE,
@@ -3707,6 +3726,7 @@ mcp.tool("search_rfis_submittals", {
     // a cache read, not the per-call blob scan the table replaces. p.id is the
     // pms_projects row id: the client saves `{ id: p.id, project: p }`.
     const projects = pid ? [await getProjectById(pid)].filter(Boolean) : await getProjects();
+    const relatedNote = pid && projects[0] ? await relatedSearchNote(projects[0]) : null;
     const q = (query ?? "").toLowerCase().trim();
     const disc = (discipline ?? "").toLowerCase().trim();
     let out: any[] = [];
@@ -3796,6 +3816,7 @@ mcp.tool("search_rfis_submittals", {
       ...(searchMode && searchMode !== "list" ? { searchMode } : {}),
       ...(tableNote ? { note: tableNote } : {}),
       ...(semanticNote ? { semanticNote } : {}),
+      ...(relatedNote ? { relatedProjects: relatedNote } : {}),
       ...(driveOnly.length ? { driveOnly } : {}), ...(driveNote ? { driveNote } : {}),
     });
   },

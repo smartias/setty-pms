@@ -74,6 +74,18 @@ function incomingLinks(project, kind, entityId) {
   return out;
 }
 
+// Copy of the note the search tools attach when the scoped project has
+// siblings (search_emails / search_rfis_submittals). Pure, so drift-checked
+// by body below like the link functions.
+function relatedSearchNoteText(related) {
+  if (!related?.siblings?.length) return null;
+  const sibs = related.siblings
+    .map((s) => [s.projectNumber, s.name ? "(" + s.name + ")" : null].filter(Boolean).join(" "))
+    .join(", ");
+  return "This project is in the Related Projects group \"" + related.group + "\" with sibling record(s) " +
+    sibs + ". Their records are NOT included here — run the same search on each sibling to cover the whole effort.";
+}
+
 // Sync copy of relatedProjectsOf's FILTER — the async shell around it is
 // fetch plumbing; what can regress is the matching, so that is what's tested.
 function relatedSiblings(p, all) {
@@ -184,6 +196,16 @@ check(sibs.some((s) => s.projectNumber === "SAPX3" && s.archived === true), "arc
 check(relatedSiblings(fam[4], fam) === null, "empty relatedGroup must resolve to null, not every-blank-project");
 check(relatedSiblings({ id: "z", relatedGroup: "   " }, fam) === null, "whitespace-only group must resolve to null");
 
+// The note the search tools attach: names every sibling, silent when alone.
+check(relatedSearchNoteText(null) === null, "no related group → no note");
+check(relatedSearchNoteText({ group: "G", siblings: [] }) === null, "group with no siblings → no note");
+const note = relatedSearchNoteText({ group: "280 Broadway", siblings: sibs });
+check(typeof note === "string" && note.includes('"280 Broadway"'), "note must name the group: " + note);
+check(note.includes("SAPX2 (Tower B)") && note.includes("SAPX3 (Study)"), "note must name every sibling with number and name: " + note);
+check(note.includes("NOT included"), "note must say sibling records are not in this result: " + note);
+check(relatedSearchNoteText({ group: "G", siblings: [{ projectNumber: null, name: "Pipeline Pursuit" }] })
+  .includes("(Pipeline Pursuit)"), "a numberless (pipeline) sibling must still be named");
+
 // ── drift detection against index.ts ────────────────────────────────────────
 
 import { readFileSync } from "node:fs";
@@ -209,7 +231,7 @@ const normalise = (body) => body
 
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const here = readFileSync(new URL(import.meta.url), "utf8");
-for (const fn of ["linkEntityLabel", "outgoingLinks", "incomingLinks"]) {
+for (const fn of ["linkEntityLabel", "outgoingLinks", "incomingLinks", "relatedSearchNoteText"]) {
   const a = extractBody(shipped, fn);
   const b = extractBody(here, fn);
   check(a !== null, `could not find ${fn} in index.ts — extractor needs updating`);
