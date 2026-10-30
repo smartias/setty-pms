@@ -11,6 +11,7 @@
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261029130000_emails_search_snippet.sql
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261029140000_emails_search_snippet_cleaned.sql
 --   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261029150000_emails_embed_text_banners.sql
+--   psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261030100000_emails_embed_text_sender_attachments.sql
 --   psql -f supabase/emails-local-test.sql                                                     # ends with ALL TESTS PASSED
 -- (run from the repo root: the test re-applies the migration by relative path).
 -- Drop the capture line to exercise the first-application rename instead
@@ -83,6 +84,29 @@ begin
   assert t = E'Health Dept Chiller Lead Times\nGerry,\n\nHere you go - we added for the pump controls.\n\nThanks,\nAndrew', 'embed text without the notice: ' || t;
   assert public.pms_emails_embed_text('', E'External Email: This message originated outside the organization.\n') is null, 'banner-only body is blank';
 
+  -- the 5-argument text: sender and attachment names between subject and body (20261030100000)
+  t := public.pms_emails_embed_text('RE: Health Dept Chiller Lead Times', 'Here you go.', 'Andrew Davidson', 'andrew.davidson@southern-air.com',
+         '["image001.jpg", "Quote-141054-3 Health Department Chiller revised with Pump Control.pdf", "image002.png"]');
+  assert t = E'Health Dept Chiller Lead Times\nFrom Andrew Davidson (southern-air)\nAttachments: Quote-141054-3 Health Department Chiller revised with Pump Control\nHere you go.', 'full text: ' || t;
+  t := public.pms_emails_embed_text('S', 'b', 'Bob', 'bob@gmail.com', null);
+  assert t = E'S\nFrom Bob\nb', 'generic mailbox: no organisation: ' || t;
+  t := public.pms_emails_embed_text('S', 'b', null, '', null);
+  assert t = E'S\nb', 'no sender: no From line: ' || t;
+  t := public.pms_emails_embed_text('S', 'b', 'A', 'a@firm.co.uk', '["CH-1_submittal.pdf", "CH-1_submittal.pdf", "x.y", "Spec_Section_23_64_16.docx"]');
+  assert t = E'S\nFrom A (firm)\nAttachments: CH-1 submittal, Spec Section 23 64 16\nb', 'names cleaned, de-duplicated, short ones skipped: ' || t;
+  t := public.pms_emails_embed_text('S', 'b', 'A', 'a@x.com', '"not an array"');
+  assert t = E'S\nFrom A (x)\nb', 'attachments not an array: ' || t;
+  t := public.pms_emails_embed_text('Only', null, 'A', 'a@x.com', null);
+  assert t = E'Only\nFrom A (x)', 'subject and sender only: ' || t;
+  t := public.pms_emails_embed_text('S', 'b', 'A', 'a@x.com', (select jsonb_agg('file_' || g || '_' || repeat('n', 20) || '.pdf') from generate_series(1, 20) g));
+  assert length(split_part(t, E'\n', 3)) = 300 and split_part(t, E'\n', 4) = 'b', 'attachments line cut at 300, body kept: ' || length(split_part(t, E'\n', 3));
+  t := public.pms_emails_embed_text('S', repeat('word ', 1000), 'A', 'a@x.com', '["long_name.pdf"]');
+  assert length(t) = 1500 and t like E'S\nFrom A (x)\nAttachments: long name\nword%', 'total cap, body is what is cut: ' || left(t, 60);
+  assert public.pms_emails_embed_text(null, null, null, null, null) is null, '5-arg blank is null';
+  assert public.pms_emails_embed_text('', '  ', 'Nobody', 'n@x.com', '["a_file.pdf"]') is null, 'no subject and no body: nothing to embed, whoever sent it';
+  -- the 2-argument form is untouched (it is what the snippet is cut from)
+  assert public.pms_emails_embed_text('RE: S', 'b') = E'S\nb', '2-arg form unchanged';
+
   -- cap and blanks
   assert length(public.pms_emails_embed_text('S', repeat('word ', 1000))) = 1500, 'cap 1500';
   assert public.pms_emails_embed_text('', '   ') is null and public.pms_emails_embed_text(null, null) is null, 'blank is null';
@@ -121,11 +145,11 @@ begin
   select array_agg(record_id) into ids from public.pms_emails_to_embed(0);
   assert array_length(ids, 1) = 1, 'limit clamps to 1';
   select embed_text into strict r from public.pms_emails_to_embed(100) where record_id = 'e2';
-  assert r.embed_text = E'Chiller disconnect\nWithin sight of the unit is the rule, so the wall works.', 'queue carries cleaned text: ' || r.embed_text;
+  assert r.embed_text = E'Chiller disconnect\nFrom Anne (setty)\nWithin sight of the unit is the rule, so the wall works.', 'queue carries the full text: ' || r.embed_text;
 
   -- store: a good row, a row with a stale hash, a row with no embedding key, garbage
   n := public.pms_emails_store_embeddings(jsonb_build_array(
-    jsonb_build_object('record_id', 'e1', 'embed_hash', md5(public.pms_emails_embed_text('Chiller disconnect', 'Can we move the disconnect to the wall behind the chiller?')), 'embedding', pg_temp.tv(1, 0)::text),
+    jsonb_build_object('record_id', 'e1', 'embed_hash', md5(public.pms_emails_embed_text('Chiller disconnect', 'Can we move the disconnect to the wall behind the chiller?', 'Bob', 'bob@gc.com', null)), 'embedding', pg_temp.tv(1, 0)::text),
     jsonb_build_object('record_id', 'e4', 'embed_hash', 'stale', 'embedding', pg_temp.tv(1, 0)::text),
     jsonb_build_object('record_id', 'e5', 'embed_hash', 'x'),
     'garbage'));
@@ -167,7 +191,7 @@ begin
 
   -- storing it stamps embedded_at and it leaves the queue
   n := public.pms_emails_store_embeddings(jsonb_build_array(
-    jsonb_build_object('record_id', 'e4', 'embed_hash', md5(public.pms_emails_embed_text('Fire wall penetration', 'The duct through the rated wall needs a damper; please confirm the rating.')), 'embedding', pg_temp.tv(0, 1)::text)));
+    jsonb_build_object('record_id', 'e4', 'embed_hash', md5(public.pms_emails_embed_text('Fire wall penetration', 'The duct through the rated wall needs a damper; please confirm the rating.', 'Cat', 'cat@arch.com', null)), 'embedding', pg_temp.tv(0, 1)::text)));
   assert n = 1, 'stale row stored';
   select array_agg(record_id) into ids from public.pms_emails_to_embed(100);
   assert ids = array['e20'], 'stored stale row leaves the queue: ' || ids::text;
@@ -405,6 +429,7 @@ end $$;
 \i supabase/migrations/20261029130000_emails_search_snippet.sql
 \i supabase/migrations/20261029140000_emails_search_snippet_cleaned.sql
 \i supabase/migrations/20261029150000_emails_embed_text_banners.sql
+\i supabase/migrations/20261030100000_emails_embed_text_sender_attachments.sql
 do $$
 declare r record;
 begin
@@ -412,10 +437,12 @@ begin
   assert r.count = 2, 're-apply keeps data and behaviour';
   select count(*) into r from pg_proc where proname in ('search_project_emails', 'pms_emails_search_lexical') and pronamespace = 'public'::regnamespace;
   assert r.count = 2, 'exactly one of each function';
-  -- the one-off ran again: only the embedded row with banner words at the top (e5)
-  -- are marked, with their vector kept; the others are untouched
-  select array_agg(record_id order by record_id) into r from public.pms_project_emails where embedded_at is null and embedding is not null;
-  assert r.array_agg = array['e5'], 're-applied one-off marks only banner-topped rows: ' || coalesce(r.array_agg::text, 'null');
+  -- the one-offs ran again: 20261030100000 marks every embedded row stale,
+  -- vector kept, and the queue lists them with the 5-argument text
+  select count(*) filter (where embedded_at is null) as stale, count(*) as embedded into r from public.pms_project_emails where embedding is not null;
+  assert r.stale = r.embedded and r.embedded > 0, 're-applied one-off marks every embedded row: ' || r.stale || '/' || r.embedded;
+  select embed_text into strict r from public.pms_emails_to_embed(100) where record_id = 'e4';
+  assert r.embed_text like E'Fire wall penetration\nFrom Cat (arch)\n%', 'stale rows are queued with the full text: ' || r.embed_text;
   raise notice 're-apply ok';
 end $$;
 
