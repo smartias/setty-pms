@@ -74,16 +74,35 @@ function incomingLinks(project, kind, entityId) {
   return out;
 }
 
-// Copy of the note the search tools attach when the scoped project has
-// siblings (search_emails / search_rfis_submittals). Pure, so drift-checked
-// by body below like the link functions.
-function relatedSearchNoteText(related) {
-  if (!related?.siblings?.length) return null;
-  const sibs = related.siblings
+// Copies of the pure helpers behind the Related Projects group search
+// (search_emails / search_rfis_submittals). Drift-checked by body below.
+function relatedSearchNoteText(group, siblings, included) {
+  if (!siblings?.length) return null;
+  const sibs = siblings
     .map((s) => [s.projectNumber, s.name ? "(" + s.name + ")" : null].filter(Boolean).join(" "))
     .join(", ");
-  return "This project is in the Related Projects group \"" + related.group + "\" with sibling record(s) " +
-    sibs + ". Their records are NOT included here — run the same search on each sibling to cover the whole effort.";
+  return included
+    ? "Includes records from sibling project(s) " + sibs + " in the Related Projects group \"" + group +
+      "\". Each row's project says which record it came from. Pass includeRelated: false to search only the named project."
+    : "This project is in the Related Projects group \"" + group + "\" with sibling record(s) " + sibs +
+      ". Their records are NOT included (includeRelated: false).";
+}
+function flagCrossProjectDuplicates(items) {
+  const norm = (s) => String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  const keyOf = (it) => [it.type, norm(it.number), norm(it.subject)].join("|");
+  const byKey = new Map();
+  for (const it of items) {
+    if (!norm(it.number) || !norm(it.subject) || norm(it.subject) === "—") continue;
+    const k = keyOf(it);
+    byKey.set(k, [...(byKey.get(k) ?? []), it]);
+  }
+  return items.map((it) => {
+    const others = (byKey.get(keyOf(it)) ?? []).filter((o) => o !== it && o.project !== it.project);
+    return others.length
+      ? { ...it, possibleDuplicate: others.map((o) => ({ project: o.project, status: o.status })),
+          duplicateNote: "The same item appears to be logged on a sibling project too; statuses may differ. Check which log is current." }
+      : it;
+  });
 }
 
 // Sync copy of relatedProjectsOf's FILTER — the async shell around it is
@@ -196,15 +215,39 @@ check(sibs.some((s) => s.projectNumber === "SAPX3" && s.archived === true), "arc
 check(relatedSiblings(fam[4], fam) === null, "empty relatedGroup must resolve to null, not every-blank-project");
 check(relatedSiblings({ id: "z", relatedGroup: "   " }, fam) === null, "whitespace-only group must resolve to null");
 
-// The note the search tools attach: names every sibling, silent when alone.
-check(relatedSearchNoteText(null) === null, "no related group → no note");
-check(relatedSearchNoteText({ group: "G", siblings: [] }) === null, "group with no siblings → no note");
-const note = relatedSearchNoteText({ group: "280 Broadway", siblings: sibs });
-check(typeof note === "string" && note.includes('"280 Broadway"'), "note must name the group: " + note);
-check(note.includes("SAPX2 (Tower B)") && note.includes("SAPX3 (Study)"), "note must name every sibling with number and name: " + note);
-check(note.includes("NOT included"), "note must say sibling records are not in this result: " + note);
-check(relatedSearchNoteText({ group: "G", siblings: [{ projectNumber: null, name: "Pipeline Pursuit" }] })
+// The note the search tools attach: names every sibling, says whether they
+// were searched, silent when the project stands alone.
+check(relatedSearchNoteText("G", null, true) === null, "no siblings → no note");
+check(relatedSearchNoteText("G", [], true) === null, "group with no siblings → no note");
+const inc = relatedSearchNoteText("280 Broadway", sibs, true);
+check(inc.includes('"280 Broadway"'), "note must name the group: " + inc);
+check(inc.includes("SAPX2 (Tower B)") && inc.includes("SAPX3 (Study)"), "note must name every sibling with number and name: " + inc);
+check(inc.startsWith("Includes records") && inc.includes("includeRelated: false"), "included note must say siblings are in and how to opt out: " + inc);
+const exc = relatedSearchNoteText("280 Broadway", sibs, false);
+check(exc.includes("NOT included"), "opt-out note must say sibling records are not in this result: " + exc);
+check(relatedSearchNoteText("G", [{ projectNumber: null, name: "Pipeline Pursuit" }], true)
   .includes("(Pipeline Pursuit)"), "a numberless (pipeline) sibling must still be named");
+
+// Cross-project duplicates: the Dutchess PCO#52 case is flagged on BOTH
+// copies with the other's status; same number with a different subject (each
+// project's own RFI 001) is not; nothing is ever dropped.
+const rows = [
+  { project: "SAPX176021.01", type: "submittal", number: "012600-056-0", subject: "PCO#52 - 22 Market 2nd Fl. IT Room", status: "Void" },
+  { project: "SAPX176022.01", type: "submittal", number: "012600-056-0", subject: "PCO#52  - 22 market 2nd Fl. IT Room", status: "Returned" },
+  { project: "SAPX176021.01", type: "rfi", number: "001", subject: "Roof drain", status: "Closed" },
+  { project: "SAPX176022.01", type: "rfi", number: "001", subject: "cabinet heaters CV 4-5", status: "Closed" },
+  { project: "SAPX176022.01", type: "submittal", number: "012600-056-0", subject: "PCO#52 - 22 Market 2nd Fl. IT Room", status: "Returned" },
+  { project: "SAPX176021.01", type: "rfi", number: "002", subject: "—", status: "Open" },
+  { project: "SAPX176022.01", type: "rfi", number: "002", subject: "—", status: "Open" },
+];
+const flagged = flagCrossProjectDuplicates(rows);
+check(flagged.length === rows.length, "duplicate flagging must never drop rows");
+check(flagged[0].possibleDuplicate?.some((d) => d.project === "SAPX176022.01" && d.status === "Returned"),
+  "PCO#52 on 10 Market must point at the 22 Market copy and its status: " + JSON.stringify(flagged[0]));
+check(flagged[1].possibleDuplicate?.[0]?.status === "Void", "PCO#52 on 22 Market must point back with status Void (case/space-insensitive subject)");
+check(!flagged[2].possibleDuplicate && !flagged[3].possibleDuplicate, "same RFI number with different subjects must NOT be flagged");
+check(flagged[4].possibleDuplicate?.every((d) => d.project !== "SAPX176022.01"), "a same-project repeat must not be flagged as a cross-project duplicate");
+check(!flagged[5].possibleDuplicate && !flagged[6].possibleDuplicate, "subjectless rows must not be matched on number alone");
 
 // ── drift detection against index.ts ────────────────────────────────────────
 
@@ -231,7 +274,7 @@ const normalise = (body) => body
 
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const here = readFileSync(new URL(import.meta.url), "utf8");
-for (const fn of ["linkEntityLabel", "outgoingLinks", "incomingLinks", "relatedSearchNoteText"]) {
+for (const fn of ["linkEntityLabel", "outgoingLinks", "incomingLinks", "relatedSearchNoteText", "flagCrossProjectDuplicates"]) {
   const a = extractBody(shipped, fn);
   const b = extractBody(here, fn);
   check(a !== null, `could not find ${fn} in index.ts — extractor needs updating`);

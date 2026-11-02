@@ -1374,7 +1374,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-02-best-practices-in-knowledge";
+const BUILD = "2026-11-02-related-projects-merged-search";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.23.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -2163,13 +2163,18 @@ const LINKED_FROM_NOTE = 'Each row reads "<from> <relationship> this item" — e
 // into PMS records: phases, sister buildings, a study and its build-out.
 // relatedRole says what THIS record is within the group. Same normalization
 // as the app (trim + case-fold).
-async function relatedProjectsOf(p: any): Promise<any | null> {
+// The sibling records themselves, through getProjects() so projects.view
+// still applies: a sibling the caller cannot see is never searched.
+async function siblingProjectsOf(p: any): Promise<any[]> {
   const norm = (s: any) => String(s || "").trim().toLowerCase();
   const g = norm(p?.relatedGroup);
-  if (!g) return null;
+  if (!g) return [];
   const all = await getProjects();
-  const siblings = all
-    .filter((x: any) => x.id !== p.id && norm(x.relatedGroup) === g)
+  return all.filter((x: any) => x.id !== p.id && norm(x.relatedGroup) === g);
+}
+async function relatedProjectsOf(p: any): Promise<any | null> {
+  if (!String(p?.relatedGroup || "").trim()) return null;
+  const siblings = (await siblingProjectsOf(p))
     .map((x: any) => ({
       projectNumber: x.projectNumber || null, name: x.name || null,
       role: x.relatedRole || null, status: x.status || null,
@@ -2182,19 +2187,41 @@ async function relatedProjectsOf(p: any): Promise<any | null> {
   };
 }
 
-// The search tools are scoped to ONE project. When that project belongs to a
-// Related Projects group the answer must say so, or a scoped search silently
-// misses the sibling records (10 Market vs 22 Market: one contract, two logs).
-function relatedSearchNoteText(related: any): string | null {
-  if (!related?.siblings?.length) return null;
-  const sibs = related.siblings
+// A project-scoped search covers the project's whole Related Projects group by
+// default (10 Market vs 22 Market: one contract, two logs). The answer always
+// says which siblings were searched, or that they were left out on request.
+function relatedSearchNoteText(group: any, siblings: any[], included: boolean): string | null {
+  if (!siblings?.length) return null;
+  const sibs = siblings
     .map((s: any) => [s.projectNumber, s.name ? "(" + s.name + ")" : null].filter(Boolean).join(" "))
     .join(", ");
-  return "This project is in the Related Projects group \"" + related.group + "\" with sibling record(s) " +
-    sibs + ". Their records are NOT included here — run the same search on each sibling to cover the whole effort.";
+  return included
+    ? "Includes records from sibling project(s) " + sibs + " in the Related Projects group \"" + group +
+      "\". Each row's project says which record it came from. Pass includeRelated: false to search only the named project."
+    : "This project is in the Related Projects group \"" + group + "\" with sibling record(s) " + sibs +
+      ". Their records are NOT included (includeRelated: false).";
 }
-async function relatedSearchNote(p: any): Promise<string | null> {
-  return relatedSearchNoteText(await relatedProjectsOf(p));
+
+// Sibling logs can hold the same item twice (logged on both projects, often
+// with different statuses). Number alone is not enough: each project has its
+// own RFI 001. Same type + number + subject across projects is flagged, never
+// dropped, so both statuses stay visible.
+function flagCrossProjectDuplicates(items: any[]): any[] {
+  const norm = (s: any) => String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  const keyOf = (it: any) => [it.type, norm(it.number), norm(it.subject)].join("|");
+  const byKey = new Map();
+  for (const it of items) {
+    if (!norm(it.number) || !norm(it.subject) || norm(it.subject) === "—") continue;
+    const k = keyOf(it);
+    byKey.set(k, [...(byKey.get(k) ?? []), it]);
+  }
+  return items.map((it) => {
+    const others = (byKey.get(keyOf(it)) ?? []).filter((o: any) => o !== it && o.project !== it.project);
+    return others.length
+      ? { ...it, possibleDuplicate: others.map((o: any) => ({ project: o.project, status: o.status })),
+          duplicateNote: "The same item appears to be logged on a sibling project too; statuses may differ. Check which log is current." }
+      : it;
+  });
 }
 
 function slimProjectForDetail(p: any) {
@@ -3360,23 +3387,40 @@ mcp.tool("search_emails", {
     "thing in other words, and an exchange comes back as one row (its newest matching " +
     "message, with threadCount, and bestRecordId naming the message that matched best). " +
     "Each row carries a snippet and keywordHit; when no row matched the words the answer " +
-    "says so, and the rows are only the closest by meaning.",
+    "says so, and the rows are only the closest by meaning. A project in a Related Projects group " +
+    "(phases, sister buildings) is searched together with its siblings by default; each row's " +
+    "projectNumber says which project the email is filed under.",
   inputSchema: z.object({
     query: z.string().optional().describe("Topic/keywords — searches subject, sender, body, and attachment names"),
     projectNumber: z.string().optional().describe("Scope to one project (number, id, or name)"),
     sender: z.string().optional().describe("Filter by sender email address (contains)"),
     direction: z.enum(["outgoing", "incoming"]).optional().describe("'outgoing' = sent by Setty, 'incoming' = received from outside"),
+    includeRelated: z.boolean().optional().describe("With a project: also search its Related Projects siblings (default true)"),
     limit: z.number().optional().describe("Max results (default 25, max 100)"),
   }),
-  handler: async ({ query, projectNumber, sender, direction, limit }) => {
+  handler: async ({ query, projectNumber, sender, direction, includeRelated, limit }) => {
     const lim = Math.min(Math.max(limit ?? 25, 1), 100);
     let pid: string | null = null;
     let relatedNote: string | null = null;
+    // Project row id → project number, for labelling rows; the email table
+    // stores only the row id.
+    const numberOf = new Map<string, string>();
+    let pids: Array<string | null> = [null];
     if (projectNumber) {
       pid = await resolveProjectId(projectNumber);
       if (!pid) return asText({ error: `No project matching \"${projectNumber}\"` });
+      pids = [pid];
       const proj = await getProjectById(pid);
-      if (proj) relatedNote = await relatedSearchNote(proj);
+      if (proj) {
+        numberOf.set(String(proj.id), proj.projectNumber || proj.name || String(proj.id));
+        const siblings = await siblingProjectsOf(proj);
+        const withSiblings = includeRelated !== false && siblings.length > 0;
+        if (withSiblings) for (const sb of siblings) {
+          pids.push(String(sb.id));
+          numberOf.set(String(sb.id), sb.projectNumber || sb.name || String(sb.id));
+        }
+        relatedNote = relatedSearchNoteText(proj.relatedGroup, siblings, withSiblings);
+      }
     }
     const q = (query ?? "").trim();
     let rows: any[];
@@ -3387,25 +3431,35 @@ mcp.tool("search_emails", {
       // Embed the query unless EMAILS_SEMANTIC=0; keyword ranking is the
       // fallback at every step (model down, migration not applied), and the
       // answer says which one ranked the rows.
-      const args: Record<string, unknown> = { q, proj: pid, lim };
+      let embedding: string | undefined;
       if (EMAILS_SEMANTIC) {
-        try { args.p_embedding = vectorLiteral(await embedText(q)); }
+        try { embedding = vectorLiteral(await embedText(q)); }
         catch (e) {
           console.warn("[search_emails] query embedding failed, keyword ranking only:", String((e as any)?.message ?? e));
           semanticNote = "Meaning-based ranking was unavailable for this call; results are keyword-ranked.";
         }
       }
-      try {
-        rows = await sbRpc("search_project_emails", args);
-      } catch (e) {
-        if (!("p_embedding" in args)) throw e;
-        console.warn("[search_emails] hybrid call failed, retrying keyword only:", String((e as any)?.message ?? e));
-        semanticNote = "Meaning-based ranking was unavailable for this call; results are keyword-ranked.";
-        delete args.p_embedding;
-        rows = await sbRpc("search_project_emails", args);
-      }
-      rows = Array.isArray(rows) ? rows : [];
-      searchMode = rows[0]?.search_mode ?? ("p_embedding" in args ? "hybrid" : "keyword");
+      // search_project_emails takes one project, so a Related Projects group
+      // is one call per project, merged on rank (the same query ranks every
+      // project on the same scale).
+      let usedEmbedding = embedding !== undefined;
+      const perProject = await Promise.all(pids.map(async (proj) => {
+        const args: Record<string, unknown> = { q, proj, lim };
+        if (embedding !== undefined) args.p_embedding = embedding;
+        try {
+          return await sbRpc("search_project_emails", args);
+        } catch (e) {
+          if (!("p_embedding" in args)) throw e;
+          console.warn("[search_emails] hybrid call failed, retrying keyword only:", String((e as any)?.message ?? e));
+          semanticNote = "Meaning-based ranking was unavailable for this call; results are keyword-ranked.";
+          usedEmbedding = false;
+          delete args.p_embedding;
+          return await sbRpc("search_project_emails", args);
+        }
+      }));
+      rows = perProject.flatMap((r: any) => Array.isArray(r) ? r : []);
+      if (pids.length > 1) rows = rows.sort((a: any, b: any) => (Number(b.rank) || 0) - (Number(a.rank) || 0)).slice(0, lim);
+      searchMode = rows[0]?.search_mode ?? (usedEmbedding ? "hybrid" : "keyword");
       // Hybrid rows say whether any message of the exchange matched the words.
       // When none did, the list is the closest by meaning only; say so once,
       // because the rows look the same either way (review item 2).
@@ -3422,7 +3476,8 @@ mcp.tool("search_emails", {
         select: "record_id,project_id,subject,from_name,from_address,to_addresses,direction,email_date,preview,has_attachments",
         order: "email_date.desc.nullslast", limit: String(lim),
       });
-      if (pid) params.append("project_id", "eq." + pid);
+      if (pids.length > 1) params.append("project_id", "in.(" + pids.join(",") + ")");
+      else if (pid) params.append("project_id", "eq." + pid);
       if (sender && sender.trim()) params.append("from_address", "ilike.*" + sender.trim().replace(/[*(),]/g, " ") + "*");
       if (direction) params.append("direction", "eq." + direction);
       rows = await sbGet("pms_project_emails?" + params.toString());
@@ -3438,7 +3493,9 @@ mcp.tool("search_emails", {
         reminder: SHAREPOINT_NUDGE,
       } : {}),
       emails: rows.map((r: any) => ({
-        recordId: r.record_id, project: r.project_id, date: r.email_date, direction: r.direction,
+        recordId: r.record_id, project: r.project_id,
+        ...(numberOf.has(String(r.project_id)) ? { projectNumber: numberOf.get(String(r.project_id)) } : {}),
+        date: r.email_date, direction: r.direction,
         from: r.from_name || r.from_address, to: r.to_addresses, subject: r.subject, preview: r.preview,
         ...(typeof r.rank === "number" ? { rank: Math.round(r.rank * 1000) / 1000 } : {}),
         ...(typeof r.similarity === "number" ? { similarity: Math.round(r.similarity * 1000) / 1000 } : {}),
@@ -3701,7 +3758,9 @@ mcp.tool("search_rfis_submittals", {
     "text). A prose query is also matched by meaning, so everyday wording finds records that use " +
     "different words (a \"radiator hookup\" question finds the FTR connection RFI). Returns compact " +
     "rows with a snippet — call read_rfi_submittal for the full text. With " +
-    "no project, searches firm-wide. For a project whose files live on the office network drive, the " +
+    "no project, searches firm-wide. A project in a Related Projects group (phases, sister buildings) " +
+    "is searched together with its siblings by default; each row's `project` says which log it came " +
+    "from, and an item logged on two siblings is flagged `possibleDuplicate`. For a project whose files live on the office network drive, the " +
     "result also lists item folders filed under the CA folder on the drive that have NO log entry yet " +
     "(`driveOnly`), so they can be logged with backload_ca_item.",
   inputSchema: z.object({
@@ -3711,9 +3770,10 @@ mcp.tool("search_rfis_submittals", {
     status: z.string().optional().describe("Exact status filter, e.g. Open, Closed, Returned"),
     discipline: z.string().optional().describe("Discipline filter, e.g. Electrical, Mechanical"),
     openOnly: z.boolean().optional().describe("Only items still needing attention (open RFIs / in-review submittals)"),
+    includeRelated: z.boolean().optional().describe("With a project: also search its Related Projects siblings (default true)"),
     limit: z.number().optional().describe("Max results (default 30, max 100)"),
   }),
-  handler: async ({ projectNumber, type, query, status, discipline, openOnly, limit }) => {
+  handler: async ({ projectNumber, type, query, status, discipline, openOnly, includeRelated, limit }) => {
     const lim = clampCaLimit(limit);
     let pid: string | null = null;
     if (projectNumber) {
@@ -3726,7 +3786,12 @@ mcp.tool("search_rfis_submittals", {
     // a cache read, not the per-call blob scan the table replaces. p.id is the
     // pms_projects row id: the client saves `{ id: p.id, project: p }`.
     const projects = pid ? [await getProjectById(pid)].filter(Boolean) : await getProjects();
-    const relatedNote = pid && projects[0] ? await relatedSearchNote(projects[0]) : null;
+    // Siblings go AFTER the named project: projects[0] stays the one the drive
+    // listing below reads.
+    const siblings = pid && projects[0] ? await siblingProjectsOf(projects[0]) : [];
+    const withSiblings = includeRelated !== false && siblings.length > 0;
+    if (withSiblings) projects.push(...siblings);
+    const relatedNote = siblings.length ? relatedSearchNoteText(projects[0].relatedGroup, siblings, withSiblings) : null;
     const q = (query ?? "").toLowerCase().trim();
     const disc = (discipline ?? "").toLowerCase().trim();
     let out: any[] = [];
@@ -3812,7 +3877,8 @@ mcp.tool("search_rfis_submittals", {
     // `count` is every match (the RPC's window total on the table path, the
     // full scan's length in memory); `returned` is what this answer holds.
     return asText({
-      count: total ?? out.length, returned: Math.min(out.length, lim), items: out.slice(0, lim), source,
+      count: total ?? out.length, returned: Math.min(out.length, lim),
+      items: withSiblings ? flagCrossProjectDuplicates(out.slice(0, lim)) : out.slice(0, lim), source,
       ...(searchMode && searchMode !== "list" ? { searchMode } : {}),
       ...(tableNote ? { note: tableNote } : {}),
       ...(semanticNote ? { semanticNote } : {}),
