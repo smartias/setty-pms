@@ -75,6 +75,9 @@
   .undobar.show { display:flex; }
   .inbox select.discSel { background:var(--card2); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:3px 6px; font-size:12px; }
   tbody tr.justnew td { background:rgba(16,185,129,.07); }
+  .rptopts { display:flex; flex-direction:column; gap:12px; padding:16px 18px; }
+  .rptopts .row { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  .rptopts select { background:var(--card2); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:7px 9px; font:inherit; min-width:240px; }
 </style>
 </head>
 <body>
@@ -91,6 +94,7 @@
   <select id="picker" onchange="selectProject(this.value)"></select>
   <span id="picknote" class="picknote"></span>
   <span class="right">
+    <button type="button" class="ghost" style="font-size:12px" onclick="openReport()" title="Open RFIs &amp; submittals across all CA projects, filtered by PM — printable (save as PDF) or CSV for Excel">📊 Open-items report</button>
     <label class="muted" for="who">You</label>
     <input id="who" placeholder="your name (for the log)" style="width:170px" oninput="saveWho()" />
   </span>
@@ -860,6 +864,124 @@ async function writeArray(arrKey, mutate, returnAdded, projId){
   const back=await r.json();
   if(!r.ok||!back.length) throw new Error("Project changed since you opened it (someone else saved). Re-pick the project and retry — nothing was written.");
   return returnAdded?added:true;
+}
+
+/* =========================== OPEN-ITEMS REPORT (by PM) ===========================
+   Cross-project report of RFIs + submittals for one PM (or all), independent of
+   the project picker. Data is loaded when the dialog opens so the "Open report"
+   click can call window.open synchronously (pop-up blockers allow that). */
+let REPORT=null;
+const RFI_OPEN=["Open","Pending Sub Response"], SUB_OPEN=["Received","Under Review","Pending Sub Review","Resubmittal Required"];
+function localISO(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function daysUntil(due){ if(!/^\d{4}-\d{2}-\d{2}/.test(due||""))return null; const a=new Date(localISO(new Date())+"T00:00:00"), b=new Date(due.slice(0,10)+"T00:00:00"); return Math.round((b-a)/86400000); }
+function dueLabel(r){ const n=daysUntil(r.dueDate); if(n===null)return "No due date"; if(n<0)return "OVERDUE "+(-n)+" day"+(n===-1?"":"s"); if(n===0)return "Due today"; return "Due in "+n+" day"+(n===1?"":"s"); }
+function pmsItemLink(projId, kind, num){
+  if(!projId||!num||!/^http/.test(location.protocol)) return "";
+  return location.origin+location.pathname.replace(/[^\/]*$/,"SettyPMS.html")+"#project:"+projId+":"+kind+":"+encodeURIComponent(num);
+}
+function reportAssignees(r, team){
+  const names=(r.assignedTo||[]).map(id=>{const m=(team||[]).find(t=>t.id===id);return m?(m.name||m.role):null;}).filter(Boolean);
+  let s=names.join(", "); if(r.subAssigned) s+=(s?" · ":"")+"sub: "+r.subAssigned; return s||"Unassigned";
+}
+async function openReport(){
+  LAST_FOCUS=document.activeElement;
+  const m=document.getElementById("modal");
+  m.innerHTML=`<div class="mhead"><h3 id="modalTitle">📊 Open-items report</h3><button class="x" aria-label="Close" onclick="closeEditor()">×</button></div><div class="rptopts"><p class="muted">Loading RFIs &amp; submittals across Construction-Admin projects…</p></div>`;
+  document.getElementById("overlay").classList.add("show");
+  try{
+    const ids=PROJECTS.map(p=>p.id);
+    const rows=ids.length?await fetchJson(`pms_projects?id=in.(${ids.join(",")})&select=id,name:project->>name,number:project->>projectNumber,pm:project->>projectManager,rfis:project->rfis,submittals:project->submittals,team:project->teamMembers`):[];
+    const items=[];
+    for(const row of rows){
+      const base={projId:row.id, projName:row.name||"(unnamed)", projNum:row.number||"", pm:(row.pm||"").trim()};
+      for(const r of (row.rfis||[])) items.push({...base, kind:"rfi", rec:r, assigned:reportAssignees(r,row.team), open:RFI_OPEN.includes(r.status||"")});
+      for(const r of (row.submittals||[])) items.push({...base, kind:"submittal", rec:r, assigned:reportAssignees(r,row.team), open:SUB_OPEN.includes(r.status||"")});
+    }
+    const pms=[...new Set(rows.map(r=>(r.pm||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+    const noPm=rows.some(r=>!(r.pm||"").trim());
+    REPORT={items};
+    let saved=""; try{ saved=localStorage.getItem("rfiTrackReportPM")||""; }catch(e){}
+    const opts=`<option value="__all__">All PMs</option>`+pms.map(p=>`<option value="${esc(p)}" ${p===saved?"selected":""}>${esc(p)}</option>`).join("")+(noPm?`<option value="__none__">(no PM set on project)</option>`:"");
+    m.querySelector(".rptopts").innerHTML=`
+      <div class="row"><div class="fld"><label for="rpPM">Project Manager</label><select id="rpPM" onchange="reportPreview()">${opts}</select></div></div>
+      <div class="row">
+        <label><input type="checkbox" id="rpRfi" checked onchange="reportPreview()"> RFIs</label>
+        <label><input type="checkbox" id="rpSub" checked onchange="reportPreview()"> Submittals</label>
+        <label title="Open RFIs = Open, Pending Sub Response. Open submittals = Received, Under Review, Pending Sub Review, Resubmittal Required."><input type="checkbox" id="rpOpen" checked onchange="reportPreview()"> Open items only</label>
+        <label><input type="checkbox" id="rpOver" onchange="reportPreview()"> Overdue only</label>
+      </div>
+      <div id="rpCount" role="status" class="muted" style="font-size:13px"></div>
+      <div class="muted" style="font-size:12px">Covers the ${rows.length} project${rows.length===1?"":"s"} marked "In Construction Administration". PM comes from the project's <b>Project Manager</b> field in the PMS. Each item number links to the item in the PMS; "Files" links to its SharePoint folder when one is set.</div>`;
+    m.insertAdjacentHTML("beforeend",`<div class="mfoot"><button class="ghost" onclick="closeEditor()">Close</button><span class="spacer"></span><button onclick="reportCSV()">⬇ CSV (Excel)</button><button class="primary" onclick="reportPrint()">🖨 Open printable report</button></div>`);
+    reportPreview(); document.getElementById("rpPM").focus();
+  }catch(e){ m.querySelector(".rptopts").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
+}
+function reportOpts(){ const v=id=>document.getElementById(id); return {pm:v("rpPM").value, rfi:v("rpRfi").checked, sub:v("rpSub").checked, open:v("rpOpen").checked, over:v("rpOver").checked}; }
+function reportRows(o){
+  const rows=REPORT.items.filter(it=>{
+    if(it.kind==="rfi"&&!o.rfi) return false; if(it.kind==="submittal"&&!o.sub) return false;
+    if(o.pm==="__none__"){ if(it.pm) return false; } else if(o.pm!=="__all__"&&it.pm!==o.pm) return false;
+    if(o.open&&!it.open) return false;
+    if(o.over){ const n=daysUntil(it.rec.dueDate); if(!(it.open&&n!==null&&n<0)) return false; }
+    return true; });
+  // PM → project → most urgent due date first (no due date last).
+  const dk=it=>{ const n=daysUntil(it.rec.dueDate); return n===null?1e9:n; };
+  return rows.sort((a,b)=>a.pm.localeCompare(b.pm)||(a.projNum||a.projName).localeCompare(b.projNum||b.projName)||dk(a)-dk(b)||String(a.rec.number||"").localeCompare(String(b.rec.number||"")));
+}
+function reportPreview(){
+  const o=reportOpts(); try{ localStorage.setItem("rfiTrackReportPM", o.pm); }catch(e){}
+  const rows=reportRows(o); const over=rows.filter(it=>it.open&&(daysUntil(it.rec.dueDate)??0)<0).length;
+  document.getElementById("rpCount").innerHTML=`<b>${rows.length}</b> item${rows.length===1?"":"s"} · <span style="color:${over?"#f87171":"inherit"}">${over} overdue</span> · ${new Set(rows.map(r=>r.projId)).size} project(s)`;
+}
+function reportPMLabel(o){ return o.pm==="__all__"?"All PMs":o.pm==="__none__"?"No PM set":o.pm; }
+function reportFileStem(o){ return `OpenItems_${reportPMLabel(o).replace(/[^\w.-]+/g,"_")}_${localISO(new Date())}`; }
+function reportCSV(){
+  const o=reportOpts(); const rows=reportRows(o);
+  if(!rows.length){ toast("Nothing to export with these filters",false); return; }
+  // =HYPERLINK makes the link clickable when the CSV opens in Excel/Sheets.
+  const hl=(url,label)=>url?`=HYPERLINK("${url.replace(/"/g,'""')}","${String(label||"Open").replace(/"/g,'""')}")`:"";
+  const cols=[["PM",it=>it.pm],["Project #",it=>it.projNum],["Project",it=>it.projName],["Type",it=>it.kind==="rfi"?"RFI":"Submittal"],["Number",it=>it.rec.number],
+    ["Title / Description",it=>it.kind==="rfi"?(it.rec.title||it.rec.description):(it.rec.description||it.rec.title)],["Spec",it=>it.rec.specSection||""],
+    ["Assigned To",it=>it.assigned],["Received",it=>it.rec.dateReceived],["Due",it=>it.rec.dueDate],["Due Status",it=>it.open?dueLabel(it.rec):"—"],["Status",it=>it.rec.status],
+    ["PMS Link",it=>hl(pmsItemLink(it.projId,it.kind,it.rec.number),"Open "+(it.rec.number||""))],["SharePoint Folder",it=>/^https?:/i.test(it.rec.spFolderUrl||"")?hl(it.rec.spFolderUrl,"Files"):""]];
+  const lines=[cols.map(c=>csvCell(c[0])).join(",")];
+  for(const it of rows) lines.push(cols.map(c=>csvCell(c[1](it))).join(","));
+  const blob=new Blob(["﻿"+lines.join("\r\n")],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=reportFileStem(o)+".csv";
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+function reportPrint(){
+  const o=reportOpts(); const rows=reportRows(o);
+  if(!rows.length){ toast("Nothing to report with these filters",false); return; }
+  const w=window.open("","_blank"); if(!w){ toast("Pop-up blocked — allow pop-ups for this page, or use CSV",false); return; }
+  const over=rows.filter(it=>it.open&&(daysUntil(it.rec.dueDate)??0)<0).length;
+  const scope=[o.rfi&&"RFIs",o.sub&&"Submittals"].filter(Boolean).join(" & ")+(o.over?" — overdue only":o.open?" — open items":" — all statuses");
+  const groups=[]; for(const it of rows){ const k=it.pm+"\u0000"+it.projId; let g=groups[groups.length-1]; if(!g||g.k!==k){ g={k,it,rows:[]}; groups.push(g); } g.rows.push(it); }
+  const body=groups.map(g=>{
+    const tr=g.rows.map(it=>{ const r=it.rec, n=daysUntil(r.dueDate), late=it.open&&n!==null&&n<0, soon=it.open&&n!==null&&n>=0&&n<=3;
+      const link=pmsItemLink(it.projId,it.kind,r.number); const num=esc(r.number||"—");
+      const title=it.kind==="rfi"?(r.title||r.description):(r.description||r.title);
+      const files=/^https?:/i.test(r.spFolderUrl||"")?`<a href="${esc(r.spFolderUrl)}" target="_blank" rel="noreferrer">Files</a>`:"";
+      return `<tr class="${late?"late":soon?"soon":""}"><td>${it.kind==="rfi"?"RFI":"Submittal"}</td><td class="num">${link?`<a href="${esc(link)}" target="_blank" rel="noreferrer">${num}</a>`:num}</td><td>${esc(title||"—")}${r.specSection?`<div class="dim">${esc(r.specSection)}</div>`:""}</td><td>${esc(it.assigned)}</td><td>${esc(r.dateReceived||"—")}</td><td>${esc(r.dueDate||"—")}</td><td class="due">${it.open?esc(dueLabel(r)):"—"}</td><td>${esc(r.status||"—")}</td><td>${files}</td></tr>`; }).join("");
+    return `<h2>${esc(g.it.projNum?g.it.projNum+" — ":"")}${esc(g.it.projName)} <span class="dim">· PM: ${esc(g.it.pm||"(none)")} · ${g.rows.length} item${g.rows.length===1?"":"s"}</span></h2>
+      <table><thead><tr><th>Type</th><th>#</th><th>Title / Description</th><th>Assigned to</th><th>Received</th><th>Due</th><th>Due status</th><th>Status</th><th>Files</th></tr></thead><tbody>${tr}</tbody></table>`; }).join("");
+  const title=`Open RFIs & Submittals — ${reportPMLabel(o)}`;
+  w.document.write(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>${esc(reportFileStem(o))}</title><style>
+    body{font:12px/1.4 system-ui,Segoe UI,sans-serif;color:#111;margin:24px;background:#fff}
+    h1{font-size:18px;margin:0 0 4px} h2{font-size:13px;margin:18px 0 6px;color:#1F3864;break-after:avoid} .dim{color:#666;font-weight:400;font-size:11px}
+    .sum{margin:6px 0 4px} .sum b.late{color:#b91c1c}
+    table{width:100%;border-collapse:collapse;margin-bottom:6px} th,td{border:1px solid #ccc;padding:4px 6px;text-align:left;vertical-align:top} th{background:#eef2f7;font-size:11px}
+    tr{break-inside:avoid} td.num{white-space:nowrap;font-weight:700} td.due{white-space:nowrap}
+    tr.late td{background:#fdecec} tr.late td.due{color:#b91c1c;font-weight:700} tr.soon td.due{color:#b45309;font-weight:600}
+    a{color:#1d4ed8} .bar{margin:10px 0} @media print{.bar{display:none} body{margin:10mm}}
+  </style></head><body>
+    <h1>${esc(title)}</h1>
+    <div class="dim">${esc(scope)} · generated ${esc(new Date().toLocaleString())}${getWho()?" by "+esc(getWho()):""}</div>
+    <div class="sum"><b>${rows.length}</b> item${rows.length===1?"":"s"} across ${new Set(rows.map(r=>r.projId)).size} project(s) · <b class="${over?"late":""}">${over} overdue</b></div>
+    <div class="bar"><button onclick="window.print()">🖨 Print / Save as PDF</button></div>
+    ${body}
+  </body></html>`);
+  w.document.close();
 }
 
 settyAuthReady.then(init);

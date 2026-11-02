@@ -33,6 +33,13 @@ In short:
    then reviews it. Same records as the main PMS, so a review saved from either surface
    shows in both.
 
+6. **Open-items report by PM** (📊 button, top-right). Pick a Project Manager (taken from
+   the project's *Project Manager* field), RFIs and/or submittals, and "open only" /
+   "overdue only". It covers every CA project, not just the one picked. **🖨 Open printable
+   report** gives a page grouped by project (number links into the PMS item, "Files" to its
+   SharePoint folder, overdue rows in red) that you print or save as PDF; **⬇ CSV** gives
+   the same rows with clickable links for Excel.
+
 ## Safe by design
 
 - **Import is append-only / NEW-only** — it only adds items not already logged, and is
