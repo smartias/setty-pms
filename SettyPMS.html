@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-10-22-pms-v167-calendar-quiet-outside-ny";
+    window.__appVersion = "2026-11-02-pms-v168-intake-unreviewed";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -10808,9 +10808,28 @@ function addWD(dateStr, days) {
 
 function isOverdue(item) {
   if (!item.dueDate) return false;
+  // Auto-imported from a portal email and not yet confirmed by a person
+  // (connector admin/ca-items-intake): never counted as overdue, so a
+  // mis-read email can't raise an alarm. See IntakeBadge.
+  if (item.intakeReviewed === false) return false;
   const closed = ["Closed", "Void", "Responded", "Returned"];
   if (closed.includes(item.status)) return false;
   return new Date(item.dueDate + "T00:00:00") < new Date();
+}
+
+// Items the connector's scheduled intake appended from a Procore email carry
+// intakeReviewed:false until a person confirms them in the item modal.
+function isUnreviewedIntake(item) { return !!item && item.intakeReviewed === false; }
+function IntakeBadge({ item }) {
+  if (!isUnreviewedIntake(item)) return null;
+  const vendor = (item.intake && item.intake.vendor) || "a portal email";
+  return (
+    <span title={"Logged automatically from " + vendor + ". Open it to check the discipline and assignee, then Confirm. Not counted as overdue until confirmed."}
+      style={{ display: "inline-block", marginLeft: 6, padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+        fontFamily: "inherit", background: P.yellowDim || "rgba(245,158,11,.15)", color: P.yellow, verticalAlign: "middle" }}>
+      Unreviewed
+    </span>
+  );
 }
 
 // ── SLA / deadline urgency ────────────────────────────────────────────────────
@@ -11050,6 +11069,13 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       recordAiReviewFeedback(classifyAiReviewOutcome(ai.suggestedResponse, form[respKey]), form);
     }
     onSave(form); onClose();
+  }
+  // Scheduled-intake items: the person confirms the discipline/assignee and
+  // the item starts counting (overdue, dashboards) like any other.
+  function confirmIntake() {
+    const next = { ...form, intakeReviewed: true, intake: { ...(form.intake || {}), reviewedAt: new Date().toISOString() } };
+    setForm(next);
+    onSave(next);
   }
   function acceptAiResponse() {
     if (!ai?.suggestedResponse || responseApplied) return;
@@ -11297,6 +11323,17 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 3000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "24px 16px", overflowY: "auto" }}>
       <div style={{ background: P.card, border: `1px solid ${P.accent}`, borderRadius: 14, padding: 28, width: 760, maxWidth: "98vw" }}>
+        {/* Scheduled-intake banner: logged from a portal email, not yet confirmed */}
+        {isUnreviewedIntake(form) && (
+          <div role="status" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: "rgba(245,158,11,.10)", border: "1px solid " + P.yellow, borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>
+            <span style={{ fontSize: 12.5 }}>
+              📥 Logged automatically from {(form.intake && form.intake.vendor) || "a portal email"}{form.intake && form.intake.at ? " on " + String(form.intake.at).slice(0, 10) : ""}.
+              {" "}Check the discipline, assignee and dates, then confirm. Until then it is not counted as overdue.
+            </span>
+            <span style={{ flex: 1 }} />
+            <Btn small onClick={confirmIntake} title="Mark this item as checked. It then counts like any other item.">✓ Confirm</Btn>
+          </div>
+        )}
         {/* Review-ready banner: a fresh Claude review landed while this modal was open */}
         {freshReviewAt && (
           <div style={{ display: "flex", alignItems: "center", gap: 10, background: P.accentDim, border: "1px solid " + P.accent, borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>
@@ -11719,6 +11756,7 @@ function RFIsView({ project, onChange, staff, clients }) {
         <KpiBox label="Overdue" val={String(overdueCount)} color={overdueCount > 0 ? P.red : P.green} />
         <KpiBox label="Pending Sub" val={String(pendingSubCnt)} color={pendingSubCnt > 0 ? P.yellow : P.textDim} />
         <KpiBox label="Closed" val={String(rfis.filter(r => r.status === "Closed").length)} color={P.green} />
+        {rfis.some(isUnreviewedIntake) && <KpiBox label="Unreviewed" val={String(rfis.filter(isUnreviewedIntake).length)} color={P.yellow} />}
       </div>
 
       {/* Controls */}
@@ -11774,7 +11812,7 @@ function RFIsView({ project, onChange, staff, clients }) {
               }).filter(Boolean);
               return (
                 <tr key={r.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
-                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}</td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}<IntakeBadge item={r} /></td>
                   <td>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{r.title || <span style={{ color: P.textDim }}>No title</span>}</div>
                     {r.description && <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>{r.description.slice(0, 80)}{r.description.length > 80 ? "…" : ""}</div>}
@@ -11787,7 +11825,7 @@ function RFIsView({ project, onChange, staff, clients }) {
                   <td style={{ fontSize: 12, color: P.textMuted, whiteSpace: "nowrap" }}>{r.dateReceived || "—"}</td>
                   <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>
                     <div style={{ color: overdue ? P.red : P.textMuted, marginBottom: 3 }}>{r.dueDate || "—"}</div>
-                    <SlaChip dueDate={r.dueDate} isClosed={RFI_CLOSED_STATUSES.includes(r.status)} />
+                    <SlaChip dueDate={r.dueDate} isClosed={RFI_CLOSED_STATUSES.includes(r.status) || isUnreviewedIntake(r)} />
                   </td>
                   <td><Badge color={sc} text={r.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}</td>
                   <td>
@@ -11891,6 +11929,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
         <KpiBox label="Pending Sub" val={String(pendingSubCnt)} color={pendingSubCnt > 0 ? P.yellow : P.textDim} />
         <KpiBox label="Returned" val={String(subs.filter(s => s.status === "Returned").length)} color={P.green} />
         <KpiBox label="Resubmittal Req." val={String(subs.filter(s => s.status === "Resubmittal Required").length)} color={P.red} />
+        {subs.some(isUnreviewedIntake) && <KpiBox label="Unreviewed" val={String(subs.filter(isUnreviewedIntake).length)} color={P.yellow} />}
       </div>
 
       {/* Controls */}
@@ -11994,7 +12033,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
               }).filter(Boolean);
               return (
                 <tr key={s.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
-                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{s.number}</td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{s.number}<IntakeBadge item={s} /></td>
                   <td>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{s.description || <span style={{ color: P.textDim }}>No description</span>}</div>
                     {s.registerItemId && <div style={{ fontSize: 10, color: P.green, marginTop: 2 }}>✓ From register</div>}
@@ -12007,7 +12046,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
                   <td style={{ fontSize: 12, color: P.textMuted, whiteSpace: "nowrap" }}>{s.dateReceived || "—"}</td>
                   <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>
                     <div style={{ color: overdue ? P.red : P.textMuted, marginBottom: 3 }}>{s.dueDate || "—"}</div>
-                    <SlaChip dueDate={s.dueDate} isClosed={SUBMITTAL_CLOSED_STATUSES.includes(s.status)} />
+                    <SlaChip dueDate={s.dueDate} isClosed={SUBMITTAL_CLOSED_STATUSES.includes(s.status) || isUnreviewedIntake(s)} />
                   </td>
                   <td>{s.stamp && s.stamp !== "—" ? <Badge color={stc} text={s.stamp} /> : <span style={{ color: P.textDim, fontSize: 12 }}>—</span>}</td>
                   <td><Badge color={sc} text={s.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}</td>
@@ -22752,7 +22791,7 @@ function Dashboard({ projects, regionFilter, onNavigateToProject, onUpdateProjec
       projectStatus: p.status, contractStatus: p.contractStatus || "",
     }))),
     ...active.flatMap(p => (p.rfis || [])
-      .filter(r => !["Closed","Void","Responded"].includes(r.status))
+      .filter(r => !["Closed","Void","Responded"].includes(r.status) && !isUnreviewedIntake(r))
       .map(r => ({
         id: r.id, type: "rfi", name: r.number + (r.title ? " — " + r.title : ""),
         dueDate: r.dueDate, pctComplete: 0, notes: r.status,
@@ -22760,7 +22799,7 @@ function Dashboard({ projects, regionFilter, onNavigateToProject, onUpdateProjec
         projectStatus: p.status, _rfi: r, _project: p,
       }))),
     ...active.flatMap(p => (p.submittals || [])
-      .filter(s => !["Returned","Void"].includes(s.status))
+      .filter(s => !["Returned","Void"].includes(s.status) && !isUnreviewedIntake(s))
       .map(s => ({
         id: s.id, type: "submittal", name: s.number + (s.description ? " — " + s.description : ""),
         dueDate: s.dueDate, pctComplete: 0, notes: s.status,
