@@ -1,6 +1,8 @@
 # Proposal: log RFIs and submittals from portal emails automatically
 
-Status: PROPOSED (2026-10-19). Nothing built. Written for the decision to move
+Status: STEP 1 BUILT FOR PROCORE (2026-11-02): `caIntake.js` + `caIntake.test.mjs`
+(see "Step 1 progress" at the end). Steps 2 and 3 not built. Originally
+PROPOSED 2026-10-19. Written for the decision to move
 RFI and submittal processing from Newforma into the PMS: if the volume goes up
 five to six times, typing each item in by hand is the step that breaks first.
 
@@ -209,3 +211,31 @@ file with the decision.
 
 The estimates assume the formats above hold; PMWeb is the unknown until a
 full sample is read.
+
+## Step 1 progress (2026-11-02, Procore first)
+
+Built: `caIntake.js` at the repo root (the four parsers, the vendor table and
+`collapse`, moved out of the tracker page unchanged except as below) and
+`caIntake.test.mjs` (fixtures trimmed from real filed emails). The tracker
+loads it as a module (`window.CaIntake`).
+
+Fixed or added, all found by reading the filed Procore mail:
+
+- **`#RFI-91` subjects** now parse (the miss named above).
+- **Procore submittals were never parsed at all**: the vendor table mapped
+  `procoretech` to RFIs only. Added `parseProcoreSub` for "Submittal
+  Distributed", "Approver … Updated their Response" and "Submitter … Updated
+  their Response". Procore's `<spec>-<item>.<rev>` (`110000-1.1`) maps to the
+  log's Newforma-style base `110000-001` rev 1, so the tracker's existing
+  `matchSub` handles it. Distributed, or a Setty approver response, reads as
+  Returned with the stamp from `Response:`; another approver's response reads
+  as Under Review; a submitter update as Received.
+- **Responded RFIs imported as Open**: the old title-casing turned "Response
+  to RFI" into "Response To RFI", which missed the status map.
+
+Not done in this step: Newforma body labels, PMWeb, `externalNumbers[]`. For
+step 2, Deno cannot import a repo-root file at deploy, so the connector will
+need a copy of `caIntake.js` with a drift test, the same arrangement as
+`sheetRefs.js`.
+
+The step 0 count is still to run (it needs SQL-editor access).

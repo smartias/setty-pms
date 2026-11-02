@@ -142,6 +142,8 @@
 <script type="module">
   import * as SheetRefs from "./sheetRefs.js";
   window.SheetRefs = SheetRefs;
+  import * as CaIntake from "./caIntake.js";
+  window.CaIntake = CaIntake;
 </script>
 <script src="setty-auth.js"></script>
 <script>
@@ -161,16 +163,7 @@ if (window.settyAuth) {
 }
 
 const CA_STATUS = "In Construction Administration";
-const VENDORS = [
-  { match:/procoretech/i, vendor:"Procore",        kind:"rfi",       arrKey:"rfis",       parse:parseProcore },
-  { match:/forma/i,       vendor:"Autodesk Forma", kind:"submittal", arrKey:"submittals", parse:parseForma   },
-  // Newforma cutover: notifications often arrive FORWARDED by a person
-  // ("RFI Forwarded: ... - RFI:214:xxxx" / "Submittal Forwarded: <title> -
-  // <proj> - Submittal:232113-012-1:xxxx"), so the sender address says
-  // nothing — these vendors gate on the parser (subject shape), not sender.
-  { match:/./, vendor:"Newforma", kind:"rfi",       arrKey:"rfis",       parse:parseNewformaFwdRfi },
-  { match:/./, vendor:"Newforma", kind:"submittal", arrKey:"submittals", parse:parseNewformaFwdSub },
-];
+// Portal email parsers + vendor table live in caIntake.js (window.CaIntake).
 
 /* ---- enums (mirror SettyPMS.html) ---- */
 const RFI_STATUSES = ["Open","Pending Sub Response","Responded","Closed","Void"];
@@ -190,9 +183,6 @@ const STATUS_COLOR = {
   "Received":{bg:"#1e3a5f",t:"#60a5fa"}, "Under Review":{bg:"#2a1a3b",t:"#a78bfa"}, "Pending Sub Review":{bg:"#3b2a1a",t:"#f59e0b"},
   "Returned":{bg:"#1a3a2a",t:"#34d399"}, "Resubmittal Required":{bg:"#3b1a1a",t:"#f87171"},
 };
-const RFI_STATUS = { "New RFI":"Open", "Response to RFI":"Responded", "Status Update on RFI":"Responded", "RFI Closed":"Closed" };
-const SUB_STATUS = { "open":"Received", "required":"Received", "closed":"Returned", "void":"Void" };
-const SUB_REVISION_STATUS = "Resubmittal Required";
 
 /* ---- utils ---- */
 const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -204,47 +194,6 @@ function saveWho(){ try{ localStorage.setItem("rfiTrackUser", getWho()); }catch(
 function toast(msg, ok){ const t=document.getElementById("toast"); t.setAttribute("role", ok?"status":"alert"); t.textContent=ok?msg:"Error: "+msg; t.className="toast show "+(ok?"ok":"bad"); setTimeout(()=>t.className="toast", ok?3500:8000); }
 function toggleGuide(){ const b=document.getElementById("gbody"), c=document.getElementById("gchev"); const open=b.style.display!=="none"; b.style.display=open?"none":"block"; c.textContent=open?"▸":"▾"; const g=document.getElementById("gtoggle"); if(g)g.setAttribute("aria-expanded",String(!open)); try{localStorage.setItem("rfiTrackGuide",open?"0":"1");}catch(e){} }
 
-/* ---- sync parse helpers ---- */
-function normDate(s){ if(!s)return""; const m=s.match(/([A-Za-z]{3,9})\s+(\d{1,2}),\s*(\d{4})/); if(!m)return""; const mo=["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"].indexOf(m[1].slice(0,3).toLowerCase()); return mo<0?"":`${m[3]}-${String(mo+1).padStart(2,"0")}-${m[2].padStart(2,"0")}`; }
-const dayOf = iso => (iso||"").slice(0,10);
-const between = (body,a,b)=>{ const i=body.indexOf(a); if(i<0)return""; let j=b.map(x=>{const k=body.indexOf(x,i+a.length);return k<0?Infinity:k;}).reduce((m,x)=>Math.min(m,x),Infinity); return body.slice(i+a.length, j===Infinity?i+a.length+800:j).replace(/\s+\n/g,"\n").trim(); };
-const label = (body,name)=>{ const re=new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\s*:?\\s*\\n+\\s*([^\\n]+)","i"); const m=body.match(re); return m?m[1].trim():""; };
-function parseProcore(email){ const subj=email.subject||"",body=(email.body_text||"").replace(/\r/g,""); if(/overdue RFI/i.test(subj))return null;
-  const sm=subj.match(/(New RFI|Response to RFI|Status Update on RFI|RFI Closed)\s*,?\s*#?(\d+)/i); if(!sm)return null;
-  const event=sm[1].replace(/\b\w/g,c=>c.toUpperCase()).replace(/Rfi/g,"RFI"); const titleM=body.match(/RFI\s+\d+:\s*(.+)/)||subj.match(/#\d+,\s*(.+)$/);
-  return { extNum:String(+sm[2]), date:email.email_date, event, title:(titleM?titleM[1]:"").trim(), dueDate:normDate(label(body,"Due Date")),
-    askedBy:label(body,"Asked by"), question:between(body,"Question:",["Attachments","Additional Information","Official Responses"]),
-    dateInit:normDate(label(body,"Date Initiated")), recordId:email.record_id, spFolder:email.sp_folder_url||"" }; }
-function parseForma(email){ const subj=email.subject||"",body=(email.body_text||"").replace(/\r/g,""); const sm=subj.match(/Submittal\s*#(\d+)/i); if(!sm)return null;
-  const isRev=/new revision/i.test(subj); const im=body.match(/item\s*#\d+\s*(?:\(Rev\s*(\d+)\))?\s*(.+)/i); const details=body.slice(Math.max(0,body.indexOf("Item Details")));
-  return { extNum:String(+sm[1]), date:email.email_date, isRev, rev:im&&im[1]?+im[1]:0, title:(im?im[2]:"").trim(),
-    specSection:label(details,"Sub Spec Section")||label(details,"Spec Section"), formaStatus:(label(details,"Status")||"").trim(),
-    dueDate:normDate(label(details,"Due Date")), ballInCourt:label(details,"Ball in court"), recordId:email.record_id, spFolder:email.sp_folder_url||"" }; }
-// Newforma "RFI Forwarded:" — subject carries the number and title; the body
-// varies too much to trust, so only subject-derived fields are filled.
-function parseNewformaFwdRfi(email){ const subj=email.subject||""; if(!/RFI\s*Forwarded\s*:/i.test(subj)) return null;
-  const nm=subj.match(/-\s*RFI:(\d+)/i)||subj.match(/RFI:(\d+)\s*:?\w*$/i); if(!nm) return null;
-  const tm=subj.match(/RFI\s*Forwarded:\s*(.+?)\s*-\s*RFI:/i); const segs=tm?tm[1].split(" - "):[];
-  const title=(segs.length?segs[segs.length-1]:"").trim();
-  return { extNum:String(+nm[1]), date:email.email_date, event:"New RFI", title, dueDate:"", askedBy:email.from_name||"",
-    question:"", dateInit:dayOf(email.email_date), recordId:email.record_id, spFolder:email.sp_folder_url||"" }; }
-// Newforma "Submittal Forwarded:" — the id IS the log's spec-based number
-// (232113-012, optional trailing -rev), so matching runs on the full id.
-function parseNewformaFwdSub(email){ const subj=email.subject||""; if(!/Submittal\s*Forwarded\s*:/i.test(subj)) return null;
-  const nm=subj.match(/Submittal:\s*([\d.]+(?:-\d+)+)/i); if(!nm) return null;
-  const raw=nm[1]; const rm=raw.match(/^([\d.]+-\d+)-(\d+)$/); const baseId=rm?rm[1]:raw; const rev=rm?+rm[2]:0;
-  const tm=subj.match(/Submittal\s*Forwarded:\s*(.+?)\s*-\s*\d/i); // title ends where the numeric project segment begins
-  return { extNum:baseId, date:email.email_date, isRev:rev>0, rev, title:(tm?tm[1]:"").trim(),
-    specSection:(baseId.match(/^\d{6}/)||[""])[0], formaStatus:"", dueDate:"", ballInCourt:email.from_name||"",
-    recordId:email.record_id, spFolder:email.sp_folder_url||"" }; }
-function collapse(events, kind){ const by={}; for(const e of events){ (by[e.extNum]=by[e.extNum]||[]).push(e); }
-  return Object.entries(by).map(([num,evs])=>{ evs.sort((a,b)=>new Date(a.date)-new Date(b.date)); const last=evs[evs.length-1],first=evs[0];
-    if(kind==="rfi") return { extNum:num, title:last.title||first.title, status:RFI_STATUS[last.event]||"Open", dueDate:last.dueDate||first.dueDate,
-      from:first.askedBy, question:first.question||last.question, dateReceived:first.dateInit, lastDate:dayOf(last.date), recordId:first.recordId, spFolder:first.spFolder };
-    const rev=Math.max(...evs.map(e=>e.rev));
-    return { extNum:num, title:last.title, specSection:last.specSection, rev, status:last.isRev?SUB_REVISION_STATUS:(SUB_STATUS[(last.formaStatus||"").toLowerCase()]||"Received"),
-      dueDate:last.dueDate, ballInCourt:last.ballInCourt, lastDate:dayOf(last.date), recordId:last.recordId, spFolder:last.spFolder };
-  }).sort((a,b)=>{ const x=+a.extNum, y=+b.extNum; return (isNaN(x)||isNaN(y)) ? String(a.extNum).localeCompare(String(b.extNum)) : x-y; }); }
 const digits  = s => (String(s||"").match(/\d+/)||[""])[0].replace(/^0+/,"")||"0";
 const itemSeg = s => { const m=String(s||"").match(/-(\d+)-\d+$/); return m?String(+m[1]):null; };
 const revSeg  = s => { const m=String(s||"").match(/-(\d+)$/); return m?+m[1]:0; };
@@ -287,8 +236,8 @@ function toRfiRecord(it,pid,vendor){ return { id:`sync-procore-${pid}-${it.extNu
   dateReceived:it.dateReceived||"", dueDate:it.dueDate||"", dateResponded:(it.status==="Responded"||it.status==="Closed")?it.lastDate:"", response:"",
   status:it.status, notes:`Imported from ${vendor} · RFI #${it.extNum}`, spFolderUrl:it.spFolder||"", links:[], source:"procore", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" }; }
 function toSubRecord(it,pid,vendor){ const nf=/[-.]/.test(String(it.extNum)); return { id:`sync-${nf?"nf":"forma"}-${pid}-${it.extNum}`, number:nf?`${it.extNum}-${it.rev||0}`:`SUB-${String(it.extNum).padStart(3,"0")}`, specSection:it.specSection||"",
-  description:(it.title||"").slice(0,200), from:it.ballInCourt||"", discipline:inferDiscipline(it,"submittal"), assignedTo:[], subAssigned:"", dateReceived:"", dueDate:it.dueDate||"",
-  dateReturned:it.status==="Returned"?it.lastDate:"", comments:"", status:it.status, stamp:"—", resubNumber:it.rev||0,
+  description:(it.title||"").slice(0,200), from:it.ballInCourt||"", discipline:inferDiscipline(it,"submittal"), assignedTo:[], subAssigned:"", dateReceived:it.dateReceived||"", dueDate:it.dueDate||"",
+  dateReturned:it.status==="Returned"?it.lastDate:"", comments:"", status:it.status, stamp:it.stamp||"—", resubNumber:it.rev||0,
   notes:`Imported from ${vendor} · Submittal #${it.extNum}${it.rev?` (Rev ${it.rev})`:""}`, spFolderUrl:it.spFolder||"", links:[], registerItemId:"", source:"forma", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" }; }
 
 async function fetchJson(path){ const r=await fetch(SUPABASE_URL+"/rest/v1/"+path,{headers:H}); if(!r.ok)throw new Error(path+" -> HTTP "+r.status+" "+(await r.text()).slice(0,120)); return r.json(); }
@@ -426,14 +375,14 @@ async function selectProject(pid){
     ]);
     const logged=projRows[0]||{}; const loggedRFIs=logged.rfis||[], loggedSubs=logged.submittals||[];
     const inbox={rfi:[],submittal:[]};
-    for(const v of VENDORS){
+    const CI=window.CaIntake; if(!CI) throw new Error("caIntake.js did not load — reload the page.");
+    for(const v of CI.VENDORS){
       // The parser is the real gate (each returns null unless the subject has
       // its vendor's shape), so forwarded notifications parse regardless of
       // who forwarded them; v.match keeps the sender fast-path for the
       // direct-notification vendors.
-      const pool=v.match.source==="."?emails:emails.filter(e=>v.match.test(e.from_address||"")||v.match.test(e.subject||""));
-      const parsed=pool.map(v.parse).filter(Boolean); if(!parsed.length)continue;
-      const items=collapse(parsed,v.kind);
+      const parsed=CI.vendorPool(v,emails).map(v.parse).filter(Boolean); if(!parsed.length)continue;
+      const items=CI.collapse(parsed,v.kind);
       for(const it of items){
         if(v.kind==="rfi"){ it.match=matchRFI(it.extNum,it.title,loggedRFIs); it.verdict=it.match?"matched":"new"; it.record=toRfiRecord(it,pid,v.vendor); }
         else { const m=matchSub(it.extNum,loggedSubs); it.match=m&&m.row; it.loggedRev=m?m.maxRev:null; it.verdict=!m?"new":(it.rev>m.maxRev?"update":"matched"); it.record=toSubRecord(it,pid,v.vendor); }

@@ -52,6 +52,12 @@ In short:
 - **Slim sync records** — imported items store metadata + a link to the source email
   (the 📁 button), not a copy of the body, so they barely add to the project's size.
 
+## Parsers
+
+The portal email parsers (Procore RFIs and submittals, Autodesk Forma, Newforma
+forwards) live in `caIntake.js`, tested by `node --test caIntake.test.mjs`. A
+new email format gets a fixture there first.
+
 ## Dependency
 
 The sync only sees emails **filed into the PMS** (via the Outlook add-in or the sweep tool).
