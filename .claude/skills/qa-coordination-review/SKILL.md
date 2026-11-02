@@ -140,7 +140,12 @@ Three rules govern everything below:
    preferences), and `project_briefing` if you lack context on where the job
    stands. Open items and lessons feed the review: an open item that touches
    a discipline is a targeted check; a lesson learned is an extra checklist
-   row in spirit even before QA formalizes it.
+   row in spirit even before QA formalizes it. `search_knowledge` also
+   returns the firm's approved **best practices** (`bestPractices`) for the
+   matching discipline — apply each one that is applicable to the set under
+   review (its discipline, systems and phase), treat it like a checklist row,
+   and skip the rest silently; they are firm-wide, so not every practice
+   fits every job.
 
 ## Backgrounds inventory — ALWAYS run, ALWAYS report
 

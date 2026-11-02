@@ -112,7 +112,9 @@ response wording on any contested RFI or rejected submittal.
    references` and `view_drawing` on the sheets the question is about.
 4. `search_knowledge` for the project/agency — lessons learned and agency
    preferences that bear on this item (a manufacturer the owner has rejected
-   before, a detail this agency always comments on).
+   before, a detail this agency always comments on). Its `bestPractices`
+   list is the firm's approved, discipline-level guidance: apply the ones
+   applicable to this item's discipline and system; ignore the rest.
 5. **The whole record for THIS question, not only the current set.** Reviewer
    feedback on 2026-09-16 (Tabler RFI-121.1, BPL RFI-105) traced every weak
    suggestion to one of these being skipped:
