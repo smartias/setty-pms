@@ -1,7 +1,8 @@
 # Proposal: log RFIs and submittals from portal emails automatically
 
 Status: STEP 1 BUILT FOR PROCORE (2026-11-02): `caIntake.js` + `caIntake.test.mjs`
-(see "Step 1 progress" at the end). Steps 2 and 3 not built. Originally
+(see "Step 1 progress" at the end). Step 2 connector route built 2026-11-02
+(Procore only; see "Step 2 progress"); the PMS Unreviewed badge is next. Step 3 not built. Originally
 PROPOSED 2026-10-19. Written for the decision to move
 RFI and submittal processing from Newforma into the PMS: if the volume goes up
 five to six times, typing each item in by hand is the step that breaks first.
@@ -239,3 +240,28 @@ need a copy of `caIntake.js` with a drift test, the same arrangement as
 `sheetRefs.js`.
 
 The step 0 count is still to run (it needs SQL-editor access).
+
+## Step 2 progress (2026-11-02)
+
+Built: `POST /pms-mcp/admin/ca-items-intake` (`caIntakeRun.ts`, tests in
+`caIntakeRun.test.mjs`; setup in the connector README → Portal email intake).
+Matching and record building moved into `caIntake.js` too (`buildInbox`,
+`planIntake`), so the tracker and the route share one decision. Choices made
+against the plan above:
+
+- **Procore only** unattended. Forma and Newforma stay on the tracker's
+  manual import until the cross-portal number matching (`externalNumbers[]`)
+  exists.
+- **Append-only.** Status and revision events on an item already logged are
+  NOT applied yet (the plan's step 2.3 "updates the item's status"). New items
+  only, so nothing a person edited can be changed by the sync.
+- **Recent items only** (latest email within 14 days), so the first run does
+  not create the closed backlog.
+- **Dry run until `CA_INTAKE_LIVE=1`**, so the schedule can run and be read in
+  the logs before it writes.
+- Matching reads the project blob inside the version-guarded write, not
+  `pms_ca_items`: the blob is the source of truth and the projection can lag.
+
+Still to do for step 2: the PMS Unreviewed badge and Confirm button, and
+leaving unreviewed items out of overdue counts, follow-up reminders and the
+weekly digest.

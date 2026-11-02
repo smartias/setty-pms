@@ -194,51 +194,8 @@ function saveWho(){ try{ localStorage.setItem("rfiTrackUser", getWho()); }catch(
 function toast(msg, ok){ const t=document.getElementById("toast"); t.setAttribute("role", ok?"status":"alert"); t.textContent=ok?msg:"Error: "+msg; t.className="toast show "+(ok?"ok":"bad"); setTimeout(()=>t.className="toast", ok?3500:8000); }
 function toggleGuide(){ const b=document.getElementById("gbody"), c=document.getElementById("gchev"); const open=b.style.display!=="none"; b.style.display=open?"none":"block"; c.textContent=open?"▸":"▾"; const g=document.getElementById("gtoggle"); if(g)g.setAttribute("aria-expanded",String(!open)); try{localStorage.setItem("rfiTrackGuide",open?"0":"1");}catch(e){} }
 
-const digits  = s => (String(s||"").match(/\d+/)||[""])[0].replace(/^0+/,"")||"0";
-const itemSeg = s => { const m=String(s||"").match(/-(\d+)-\d+$/); return m?String(+m[1]):null; };
-const revSeg  = s => { const m=String(s||"").match(/-(\d+)$/); return m?+m[1]:0; };
-function matchRFI(extNum,title,logged){ const t=(title||"").toLowerCase().trim(); return logged.find(r=>digits(r.number)===extNum)||logged.find(r=>t&&(r.title||"").toLowerCase().includes(t))||null; }
-function matchSub(extNum,logged){
-  // Newforma ids are the full spec-based number ("232113-012") — match by
-  // prefix on the logged number; bare numeric ids keep the Forma item-segment rule.
-  if(/[-.]/.test(String(extNum))){
-    const base=String(extNum);
-    // Only the base itself or base-<rev> count (never base+extra digits), and
-    // the revision is RELATIVE to the base: a bare logged "232113-012" is rev 0
-    // (revSeg would misread its item segment "-012" as rev 12 — Codex P1).
-    const h=logged.filter(s=>{const n=String(s.number||""); return n===base||n.startsWith(base+"-");});
-    if(!h.length) return null;
-    const relRev=n=>{ n=String(n||""); if(n===base) return 0; const m=n.slice(base.length).match(/^-(\d+)$/); return m?+m[1]:0; };
-    return {row:h[0],maxRev:Math.max(...h.map(s=>relRev(s.number)))};
-  }
-  const h=logged.filter(s=>itemSeg(s.number)===extNum); return h.length?{row:h[0],maxRev:Math.max(...h.map(s=>revSeg(s.number)))}:null; }
-/* ---- discipline inference: spec division first, title/question keywords second, "" (unclassified) when unsure ---- */
-const DISC_BY_DIV = { "03":"Structural","04":"Structural","05":"Structural","08":"Architectural","09":"Architectural",
-  "21":"Fire Protection","22":"Plumbing","23":"Mechanical","26":"Electrical","27":"Technology","28":"Technology",
-  "31":"Civil","32":"Civil","33":"Civil" };
-const DISC_KEYWORDS = [
-  [/fire\s*(protection|alarm|pump|suppression)|sprinkler|standpipe/i,"Fire Protection"],
-  [/plumbing|domestic\s*water|sanitary|storm\s*(drain|piping)|floor\s*drain|water\s*heater|fixture\s*carrier/i,"Plumbing"],
-  [/mechanical|hvac|duct|diffuser|\bahu\b|\brtu\b|\bvav\b|chiller|boiler|cooling\s*tower|heat\s*pump|exhaust\s*fan|refrigerant|hydronic/i,"Mechanical"],
-  [/electrical|switchgear|switchboard|panelboard|transformer|conduit|breaker|lighting|receptacle|generator|busway|feeder/i,"Electrical"],
-  [/low[\s-]*voltage|telecom|data\s*(cabling|outlet)|security\s*(system|camera)|cctv|access\s*control|audio[\s/-]*visual|paging|nurse\s*call/i,"Technology"],
-];
-function inferDiscipline(it, kind){
-  const vocab = kind==="rfi"?RFI_DISC:SUB_DISC;
-  const div = (String(it.specSection||"").trim().match(/^(\d{2})/)||[])[1];
-  if(div && DISC_BY_DIV[div] && vocab.includes(DISC_BY_DIV[div])) return DISC_BY_DIV[div];
-  const hay = (it.title||"")+" "+(it.question||"");
-  for(const [re,d] of DISC_KEYWORDS) if(re.test(hay) && vocab.includes(d)) return d;
-  return "";
-}
-function toRfiRecord(it,pid,vendor){ return { id:`sync-procore-${pid}-${it.extNum}`, number:`RFI-${String(it.extNum).padStart(3,"0")}`, title:it.title||"",
-  description:(it.question||"").replace(/\s+/g," ").trim().slice(0,200), from:it.from||"", discipline:inferDiscipline(it,"rfi"), assignedTo:[], subAssigned:"",
-  dateReceived:it.dateReceived||"", dueDate:it.dueDate||"", dateResponded:(it.status==="Responded"||it.status==="Closed")?it.lastDate:"", response:"",
-  status:it.status, notes:`Imported from ${vendor} · RFI #${it.extNum}`, spFolderUrl:it.spFolder||"", links:[], source:"procore", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" }; }
-function toSubRecord(it,pid,vendor){ const nf=/[-.]/.test(String(it.extNum)); return { id:`sync-${nf?"nf":"forma"}-${pid}-${it.extNum}`, number:nf?`${it.extNum}-${it.rev||0}`:`SUB-${String(it.extNum).padStart(3,"0")}`, specSection:it.specSection||"",
-  description:(it.title||"").slice(0,200), from:it.ballInCourt||"", discipline:inferDiscipline(it,"submittal"), assignedTo:[], subAssigned:"", dateReceived:it.dateReceived||"", dueDate:it.dueDate||"",
-  dateReturned:it.status==="Returned"?it.lastDate:"", comments:"", status:it.status, stamp:it.stamp||"—", resubNumber:it.rev||0,
-  notes:`Imported from ${vendor} · Submittal #${it.extNum}${it.rev?` (Rev ${it.rev})`:""}`, spFolderUrl:it.spFolder||"", links:[], registerItemId:"", source:"forma", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" }; }
+// Matching (NEW / matched / UPDATE), discipline inference and the record
+// builders live in caIntake.js (buildInbox), shared with the connector's intake.
 
 async function fetchJson(path){ const r=await fetch(SUPABASE_URL+"/rest/v1/"+path,{headers:H}); if(!r.ok)throw new Error(path+" -> HTTP "+r.status+" "+(await r.text()).slice(0,120)); return r.json(); }
 
@@ -374,21 +331,8 @@ async function selectProject(pid){
       fetchJson(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
     ]);
     const logged=projRows[0]||{}; const loggedRFIs=logged.rfis||[], loggedSubs=logged.submittals||[];
-    const inbox={rfi:[],submittal:[]};
     const CI=window.CaIntake; if(!CI) throw new Error("caIntake.js did not load — reload the page.");
-    for(const v of CI.VENDORS){
-      // The parser is the real gate (each returns null unless the subject has
-      // its vendor's shape), so forwarded notifications parse regardless of
-      // who forwarded them; v.match keeps the sender fast-path for the
-      // direct-notification vendors.
-      const parsed=CI.vendorPool(v,emails).map(v.parse).filter(Boolean); if(!parsed.length)continue;
-      const items=CI.collapse(parsed,v.kind);
-      for(const it of items){
-        if(v.kind==="rfi"){ it.match=matchRFI(it.extNum,it.title,loggedRFIs); it.verdict=it.match?"matched":"new"; it.record=toRfiRecord(it,pid,v.vendor); }
-        else { const m=matchSub(it.extNum,loggedSubs); it.match=m&&m.row; it.loggedRev=m?m.maxRev:null; it.verdict=!m?"new":(it.rev>m.maxRev?"update":"matched"); it.record=toSubRecord(it,pid,v.vendor); }
-      }
-      inbox[v.kind]=[...(inbox[v.kind]||[]),...items]; // vendors of the same kind merge, never overwrite
-    }
+    const inbox=CI.buildInbox(emails,loggedRFIs,loggedSubs,pid);
     CURRENT={ proj, rfis:loggedRFIs, submittals:loggedSubs, inbox, teams:{[pid]:(logged.team||[])} };
     renderProject();
   }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
