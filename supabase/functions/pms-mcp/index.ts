@@ -33,6 +33,7 @@ import {
 } from "./azureFiles.ts";
 // The firm Knowledgebase share (team KB): firm-wide read-only, no project gate. Pure; see knowledgebase.ts.
 import { KB_TEAM, isKbTeam, parseKbExclude, kbExcluded, walkKb, kbSearch } from "./knowledgebase.ts";
+import { runIntakePass, intakeSince } from "./caIntakeRun.ts";
 // Raw-bytes path (1.19.0): signed single-file links behind download_document /
 // upload_document and the /file/<token> routes. Pure; see fileLinks.ts.
 import {
@@ -1374,7 +1375,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-02-related-projects-merged-search";
+const BUILD = "2026-11-02-ca-items-intake";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.23.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -12267,6 +12268,64 @@ app.post("/pms-mcp/admin/unrostered-alert", async (c) => {
     email: String(r.email).toLowerCase(), calls_at_alert: Number(r.calls) || 0, alerted_to: UNROSTERED_ALERT_TO,
   })));
   return c.json({ sent: true, to: UNROSTERED_ALERT_TO, emails: fresh.map((r: any) => r.email) }, 200, DOCS_SYNC_CORS);
+});
+
+// ── Portal email intake (PROPOSAL-portal-email-intake.md, step 2) ─────────────
+// Appends NEW Procore RFIs and submittals from the filed email log to the
+// project's CA log, unattended, so nobody has to open the RFI / Submittal
+// Tracker and press Import. The parsing and matching are caIntake.js, the
+// same module the tracker runs (a byte-identical copy of the repo-root file;
+// caIntakeDrift.test.mjs fails if they diverge). The loop is caIntakeRun.ts.
+// Append-only: an item already logged (or a newer revision of one) is never
+// edited; each new record carries intakeReviewed:false for a person to
+// confirm in the PMS. Same auth as documents-sync; schedule every 15 minutes
+// (README → Portal email intake). Body: {"dryRun":true} reports what it would
+// add and writes nothing; {"days":N} (default 14, max 90) is how far back an
+// item's latest email may be; {"maxProjects":N} (default 40). It is a DRY RUN
+// (reports, writes nothing) unless the function secret CA_INTAKE_LIVE=1 is
+// set, so it can be scheduled and watched in the logs before it writes;
+// removing the secret is the off switch, no redeploy.
+const CA_INTAKE_VENDORS = ["Procore"];
+const CA_INTAKE_EMAIL_FILTER = "from_address=ilike.*procoretech*";
+const CA_INTAKE_BUDGET_MS = 40_000;
+app.options("/pms-mcp/admin/ca-items-intake", (c) => c.body(null, 204, DOCS_SYNC_CORS));
+app.post("/pms-mcp/admin/ca-items-intake", async (c) => {
+  const cronGiven = c.req.header("x-pms-cron") || "";
+  const isCron = !!DOCS_SYNC_SECRET && cronGiven === DOCS_SYNC_SECRET;
+  if (!isCron) {
+    const auth = c.req.header("Authorization") || "";
+    const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!(await isAdminSupabaseJwt(jwt))) {
+      return c.json({ error: "Admins only (Supabase session required), or a valid x-pms-cron secret." }, 403, DOCS_SYNC_CORS);
+    }
+  }
+  const live = Deno.env.get("CA_INTAKE_LIVE") === "1";
+  let body: any = {};
+  try { body = await c.req.json(); } catch { /* cron sends an empty body */ }
+  const days = Math.max(1, Math.min(Number(body?.days) || 14, 90));
+  const maxProjects = Math.max(1, Math.min(Number(body?.maxProjects) || 40, 200));
+  const sel = "record_id,subject,from_name,from_address,email_date,body_text,sp_folder_url";
+  try {
+    const summary = await runIntakePass({
+      since: intakeSince(Date.now(), days), at: new Date().toISOString(), vendors: CA_INTAKE_VENDORS,
+      dryRun: !live || body?.dryRun === true, budgetMs: CA_INTAKE_BUDGET_MS, maxProjects, now: () => Date.now(),
+      recentProjectIds: async (sinceIso) =>
+        (await sbGetAll(`pms_project_emails?select=project_id&${CA_INTAKE_EMAIL_FILTER}&email_date=gte.${encodeURIComponent(sinceIso)}&order=project_id.asc`))
+          .map((r: any) => String(r.project_id)),
+      emailsFor: (pid) => sbGetAll(`pms_project_emails?select=${sel}&project_id=eq.${encodeURIComponent(pid)}&${CA_INTAKE_EMAIL_FILTER}&order=email_date.asc`),
+      writeProject: (pid, mutate) => updateProjectRecord(pid, mutate),
+      log: (msg) => console.warn("[ca-items-intake]", msg),
+    });
+    // Logged whenever it found something, so a dry run can be read in the logs.
+    if (summary.created.rfi || summary.created.submittal || summary.failed.length) {
+      console.warn(`[ca-items-intake]${summary.dryRun ? " DRY RUN (would add)" : ""}`, JSON.stringify(summary));
+    }
+    return c.json({ ...summary, live }, 200, DOCS_SYNC_CORS);
+  } catch (e) {
+    const error = String((e as any)?.message ?? e);
+    console.warn("[ca-items-intake] failed:", error);
+    return c.json({ error }, 500, DOCS_SYNC_CORS);
+  }
 });
 
 // ── drawings index sweep ─────────────────────────────────────────────────────

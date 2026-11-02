@@ -184,3 +184,123 @@ export function collapse(events, kind) {
     };
   }).sort((a, b) => { const x = +a.extNum, y = +b.extNum; return (isNaN(x) || isNaN(y)) ? String(a.extNum).localeCompare(String(b.extNum)) : x - y; });
 }
+
+/* ---------- matching against the logged items ---------- */
+// Moved unchanged from RFISubmittalSync_Preview.html so the tracker and the
+// connector's scheduled intake decide NEW / matched / UPDATE the same way.
+export const RFI_DISC = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Multi-Discipline", "Other"];
+export const SUB_DISC = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Architectural", "Structural", "Civil", "Other"];
+export const digits = (s) => (String(s || "").match(/\d+/) || [""])[0].replace(/^0+/, "") || "0";
+const itemSeg = (s) => { const m = String(s || "").match(/-(\d+)-\d+$/); return m ? String(+m[1]) : null; };
+const revSeg = (s) => { const m = String(s || "").match(/-(\d+)$/); return m ? +m[1] : 0; };
+export function matchRFI(extNum, title, logged) {
+  const t = (title || "").toLowerCase().trim();
+  return logged.find((r) => digits(r.number) === extNum) || logged.find((r) => t && (r.title || "").toLowerCase().includes(t)) || null;
+}
+export function matchSub(extNum, logged) {
+  // Newforma/Procore ids are the full spec-based number ("232113-012") — match
+  // by prefix on the logged number; bare numeric ids keep the Forma
+  // item-segment rule.
+  if (/[-.]/.test(String(extNum))) {
+    const base = String(extNum);
+    // Only the base itself or base-<rev> count (never base+extra digits), and
+    // the revision is RELATIVE to the base: a bare logged "232113-012" is rev 0
+    // (revSeg would misread its item segment "-012" as rev 12 — Codex P1).
+    const h = logged.filter((s) => { const n = String(s.number || ""); return n === base || n.startsWith(base + "-"); });
+    if (!h.length) return null;
+    const relRev = (n) => { n = String(n || ""); if (n === base) return 0; const m = n.slice(base.length).match(/^-(\d+)$/); return m ? +m[1] : 0; };
+    return { row: h[0], maxRev: Math.max(...h.map((s) => relRev(s.number))) };
+  }
+  const h = logged.filter((s) => itemSeg(s.number) === extNum);
+  return h.length ? { row: h[0], maxRev: Math.max(...h.map((s) => revSeg(s.number))) } : null;
+}
+
+/* ---------- discipline inference: spec division first, keywords second, "" when unsure ---------- */
+const DISC_BY_DIV = { "03": "Structural", "04": "Structural", "05": "Structural", "08": "Architectural", "09": "Architectural",
+  "21": "Fire Protection", "22": "Plumbing", "23": "Mechanical", "26": "Electrical", "27": "Technology", "28": "Technology",
+  "31": "Civil", "32": "Civil", "33": "Civil" };
+const DISC_KEYWORDS = [
+  [/fire\s*(protection|alarm|pump|suppression)|sprinkler|standpipe/i, "Fire Protection"],
+  [/plumbing|domestic\s*water|sanitary|storm\s*(drain|piping)|floor\s*drain|water\s*heater|fixture\s*carrier/i, "Plumbing"],
+  [/mechanical|hvac|duct|diffuser|\bahu\b|\brtu\b|\bvav\b|chiller|boiler|cooling\s*tower|heat\s*pump|exhaust\s*fan|refrigerant|hydronic/i, "Mechanical"],
+  [/electrical|switchgear|switchboard|panelboard|transformer|conduit|breaker|lighting|receptacle|generator|busway|feeder/i, "Electrical"],
+  [/low[\s-]*voltage|telecom|data\s*(cabling|outlet)|security\s*(system|camera)|cctv|access\s*control|audio[\s/-]*visual|paging|nurse\s*call/i, "Technology"],
+];
+export function inferDiscipline(it, kind) {
+  const vocab = kind === "rfi" ? RFI_DISC : SUB_DISC;
+  const div = (String(it.specSection || "").trim().match(/^(\d{2})/) || [])[1];
+  if (div && DISC_BY_DIV[div] && vocab.includes(DISC_BY_DIV[div])) return DISC_BY_DIV[div];
+  const hay = (it.title || "") + " " + (it.question || "");
+  for (const [re, d] of DISC_KEYWORDS) if (re.test(hay) && vocab.includes(d)) return d;
+  return "";
+}
+
+/* ---------- log records ---------- */
+export function toRfiRecord(it, pid, vendor) {
+  return { id: `sync-procore-${pid}-${it.extNum}`, number: `RFI-${String(it.extNum).padStart(3, "0")}`, title: it.title || "",
+    description: (it.question || "").replace(/\s+/g, " ").trim().slice(0, 200), from: it.from || "", discipline: inferDiscipline(it, "rfi"), assignedTo: [], subAssigned: "",
+    dateReceived: it.dateReceived || "", dueDate: it.dueDate || "", dateResponded: (it.status === "Responded" || it.status === "Closed") ? it.lastDate : "", response: "",
+    status: it.status, notes: `Imported from ${vendor} · RFI #${it.extNum}`, spFolderUrl: it.spFolder || "", links: [], source: "procore", extNumber: String(it.extNum), sourceEmailId: it.recordId || "" };
+}
+export function toSubRecord(it, pid, vendor) {
+  const nf = /[-.]/.test(String(it.extNum));
+  return { id: `sync-${nf ? "nf" : "forma"}-${pid}-${it.extNum}`, number: nf ? `${it.extNum}-${it.rev || 0}` : `SUB-${String(it.extNum).padStart(3, "0")}`, specSection: it.specSection || "",
+    description: (it.title || "").slice(0, 200), from: it.ballInCourt || "", discipline: inferDiscipline(it, "submittal"), assignedTo: [], subAssigned: "", dateReceived: it.dateReceived || "", dueDate: it.dueDate || "",
+    dateReturned: it.status === "Returned" ? it.lastDate : "", comments: "", status: it.status, stamp: it.stamp || "—", resubNumber: it.rev || 0,
+    notes: `Imported from ${vendor} · Submittal #${it.extNum}${it.rev ? ` (Rev ${it.rev})` : ""}`, spFolderUrl: it.spFolder || "", links: [], registerItemId: "", source: "forma", extNumber: String(it.extNum), sourceEmailId: it.recordId || "" };
+}
+
+/* ---------- inbox: every portal item on one project, with its verdict ---------- */
+// The tracker's 📥 To import strip. Each item carries `vendor`, `verdict`
+// ("new" | "matched" | "update"), the matched row, and the record an import
+// would append.
+export function buildInbox(emails, loggedRFIs, loggedSubs, pid, vendors = VENDORS) {
+  const inbox = { rfi: [], submittal: [] };
+  for (const v of vendors) {
+    const parsed = vendorPool(v, emails).map(v.parse).filter(Boolean);
+    if (!parsed.length) continue;
+    const items = collapse(parsed, v.kind);
+    for (const it of items) {
+      it.vendor = v.vendor;
+      if (v.kind === "rfi") { it.match = matchRFI(it.extNum, it.title, loggedRFIs); it.verdict = it.match ? "matched" : "new"; it.record = toRfiRecord(it, pid, v.vendor); }
+      else { const m = matchSub(it.extNum, loggedSubs); it.match = m && m.row; it.loggedRev = m ? m.maxRev : null; it.verdict = !m ? "new" : (it.rev > m.maxRev ? "update" : "matched"); it.record = toSubRecord(it, pid, v.vendor); }
+    }
+    inbox[v.kind] = [...inbox[v.kind], ...items]; // vendors of the same kind merge, never overwrite
+  }
+  return inbox;
+}
+
+/* ---------- scheduled intake: what to append, unattended ---------- */
+// The connector's admin/ca-items-intake route calls this per project. It is
+// deliberately narrower than the tracker's manual import:
+//   - only the vendors named (Procore by default; Newforma forwards can carry
+//     a different number for an item already logged, so they stay manual);
+//   - only verdict "new" (a newer revision of a logged submittal is an UPDATE
+//     a person handles in the tracker, never an automatic write);
+//   - only items with an email on or after `since` (YYYY-MM-DD), so the first
+//     run does not backfill years of closed items. The item's FULL history is
+//     still used to build it (status, question, received date);
+//   - never an id already in the log.
+// Each record is marked intakeReviewed:false; the PMS shows it as Unreviewed
+// until a person confirms the discipline and assignee.
+export function planIntake(emails, project, pid, opts = {}) {
+  const vendorNames = opts.vendors || ["Procore"];
+  const since = opts.since || "";
+  const at = opts.at || new Date().toISOString();
+  const rfis = Array.isArray(project && project.rfis) ? project.rfis : [];
+  const subs = Array.isArray(project && project.submittals) ? project.submittals : [];
+  const inbox = buildInbox(emails, rfis, subs, pid, VENDORS.filter((v) => vendorNames.includes(v.vendor)));
+  const out = { rfis: [], submittals: [], skipped: { matched: 0, update: 0, old: 0 } };
+  const have = new Set([...rfis, ...subs].map((r) => r && r.id));
+  for (const kind of ["rfi", "submittal"]) {
+    for (const it of inbox[kind]) {
+      if (it.verdict !== "new") { out.skipped[it.verdict === "update" ? "update" : "matched"]++; continue; }
+      if (since && (it.lastDate || "") < since) { out.skipped.old++; continue; }
+      if (have.has(it.record.id)) { out.skipped.matched++; continue; }
+      have.add(it.record.id);
+      const rec = { ...it.record, intakeReviewed: false, intake: { at, by: "ca-items-intake", vendor: it.vendor } };
+      (kind === "rfi" ? out.rfis : out.submittals).push(rec);
+    }
+  }
+  return out;
+}

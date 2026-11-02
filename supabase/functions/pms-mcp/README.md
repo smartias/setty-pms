@@ -976,6 +976,66 @@ Step 2 of `PROPOSAL-emails-embeddings.md`; the database half (migration
   retried without the embedding, so an unapplied migration degrades, never
   breaks). Without a query nothing changes.
 
+## Portal email intake (`POST /pms-mcp/admin/ca-items-intake`, 2026-11-02)
+
+Step 2 of `PROPOSAL-portal-email-intake.md`. Appends NEW **Procore** RFIs and
+submittals from the filed email log to each Construction-Administration
+project's CA log, so nobody has to open the RFI / Submittal Tracker and press
+Import.
+
+- **Same decisions as the tracker.** Parsing and matching are `caIntake.js`, a
+  byte-identical copy of the repo-root module the tracker loads
+  (`caIntakeDrift.test.mjs` fails if they diverge: fix with
+  `cp caIntake.js supabase/functions/pms-mcp/caIntake.js` from the repo root).
+  The loop is `caIntakeRun.ts` (tests: `caIntakeRun.test.mjs`).
+- **Append-only.** Only items the log does not have are added; an item already
+  logged, or a newer revision of a logged submittal (the tracker's UPDATE),
+  is never edited. Writes go through `updateProjectRecord` (version-guarded);
+  a race fails that project for this run and the next run retries. A PM with
+  the project open merges the additions without a prompt (cloud-added array
+  items merge silently in the PMS 3-way merge).
+- **Narrow on purpose.** Procore only (Newforma forwards can carry a second
+  number for an item already logged, so Forma/Newforma stay manual in the
+  tracker); CA projects only, never archived ones; only items whose latest
+  email is within `days` (default 14, max 90), so the first run does not
+  backfill old closed items (those stay importable by hand). An item's full
+  email history still builds it.
+- **Marked for review.** Each new record has `intakeReviewed: false` and
+  `intake: {at, by: "ca-items-intake", vendor}`. Same ids as the tracker's
+  import (`sync-procore-<pid>-<n>`, `sync-nf-<pid>-<base>`), so a manual import
+  and the intake never double up.
+- **Body:** `{"dryRun":true}` reports what it would add and writes nothing;
+  `{"days":N}`; `{"maxProjects":N}` (default 40, max 200). 40 s wall-clock
+  budget; `stoppedEarly` when it hits it. The response lists `items` (project,
+  kind, number, title, status), `created`, `skipped`, `notInCA`, `failed`.
+- **Auth:** the `x-pms-cron` secret, or a PMS admin Supabase JWT.
+- **Dry run until switched on.** Without the function secret
+  `CA_INTAKE_LIVE=1` every call is a dry run (`"live": false` in the
+  response). Removing the secret (or `select
+  cron.unschedule('pms-ca-items-intake');`) is the off switch; no redeploy.
+
+Turning it on, in order:
+
+1. Deploy (Actions → "Deploy pms-mcp" → Run workflow on `main`) and confirm
+   `/health` reports build `2026-11-02-ca-items-intake`.
+2. Schedule it, copying the secret from the job that already carries it. It
+   is still a dry run:
+
+   ```sql
+   select cron.schedule('pms-ca-items-intake', '7,22,37,52 * * * *',
+     replace((select command from cron.job where jobname = 'pms-documents-sync'),
+             'admin/documents-sync', 'admin/ca-items-intake'));
+   ```
+
+3. Read what it would add: Edge Functions → pms-mcp → Logs, search
+   `ca-items-intake`. Each run that finds something logs
+   `[ca-items-intake] DRY RUN (would add) {...}` with the items. Check them
+   against Procore.
+4. Go live, but only once the PMS shows the **Unreviewed** badge for
+   `intakeReviewed: false` items (the companion PMS change): Edge Functions →
+   Secrets → add `CA_INTAKE_LIVE` = `1`. The next
+   run writes; its log line no longer says DRY RUN.
+
 ## Deploying
 
 One-command version: `deploy.ps1` in this folder pulls main, reads the BUILD

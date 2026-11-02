@@ -10,7 +10,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import {
   parseProcore, parseProcoreSub, parseForma, parseNewformaFwdRfi, parseNewformaFwdSub,
-  collapse, normDate, VENDORS, vendorPool,
+  collapse, normDate, VENDORS, vendorPool, planIntake, RFI_DISC, SUB_DISC,
 } from "./caIntake.js";
 
 const mail = (subject, body, extra = {}) => ({
@@ -145,5 +145,26 @@ test("tracker page loads caIntake.js and no longer carries its own parsers", () 
   const html = readFileSync(new URL("./RFISubmittalSync_Preview.html", import.meta.url), "utf8");
   assert.match(html, /import \* as CaIntake from "\.\/caIntake\.js"/);
   assert.doesNotMatch(html, /function parseProcore\(/);
-  assert.match(html, /CI\.VENDORS/);
+  assert.match(html, /CI\.buildInbox\(/);
+  assert.doesNotMatch(html, /function matchRFI\(|function toRfiRecord\(/);
+});
+
+test("the page's discipline lists match the module's (the import preview offers the page's)", () => {
+  const html = readFileSync(new URL("./RFISubmittalSync_Preview.html", import.meta.url), "utf8");
+  const arr = (name) => JSON.parse(html.match(new RegExp("const " + name + " = (\\[[^\\]]*\\]);"))[1]);
+  assert.deepEqual(arr("RFI_DISC"), RFI_DISC);
+  assert.deepEqual(arr("SUB_DISC"), SUB_DISC);
+});
+
+test("planIntake: Procore only, new only, since-gated, marked Unreviewed", () => {
+  const emails = [
+    mail("P: New RFI #RFI-91, Condensate lines in cellar", RFI_BODY_PREFIXED, { email_date: "2026-10-30T10:00:00Z" }),
+    mail("P: New RFI #4, Old", "", { email_date: "2026-01-01T10:00:00Z" }),
+    mail("Submittal Forwarded: X - 1 - Submittal:017800-001-0:u5vTT", "", { from_address: "a@b.com", email_date: "2026-10-30T10:00:00Z" }),
+  ];
+  const plan = planIntake(emails, { rfis: [], submittals: [] }, "p1", { since: "2026-10-20", at: "T" });
+  assert.deepEqual(plan.rfis.map((r) => r.number), ["RFI-091"]);
+  assert.equal(plan.submittals.length, 0, "Newforma forwards stay manual");
+  assert.equal(plan.skipped.old, 1);
+  assert.deepEqual([plan.rfis[0].intakeReviewed, plan.rfis[0].intake], [false, { at: "T", by: "ca-items-intake", vendor: "Procore" }]);
 });
