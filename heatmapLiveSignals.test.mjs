@@ -88,3 +88,26 @@ test("shipped SettyIntelligence.html still contains the tested logic", () => {
   assert.ok(mig.includes("where status in ('open', 'ready_to_backcheck')"), "migration counts only open QA findings");
   assert.ok(mig.includes("due_date is not null and due_date < current_date"), "migration computes overdue from real due dates");
 });
+
+// ── heatmap cache (20261102150000_heatmap_cache.sql) ────────────────────────
+// Guards verified against a scratch Postgres 16 when the migration was written;
+// these pin them so a later edit cannot quietly drop one.
+test("heatmap cache migration keeps its safety properties", () => {
+  const mig = readFileSync(new URL("./supabase/migrations/20261102150000_heatmap_cache.sql", import.meta.url), "utf8");
+  const has = (needle, label) => assert.ok(mig.includes(needle), label);
+  has("grant select on table public.pms_portfolio_heatmap_cache to anon, authenticated;",
+    "explicit cache grant (without it anon gets 'permission denied' instead of the live fallback)");
+  has("for select to authenticated using (true);", "cache rows visible to signed-in users only");
+  has("revoke all on function public.pms_portfolio_heatmap_refresh() from public, anon, authenticated;",
+    "only service_role / cron may trigger the expensive refresh");
+  has("return public.pms_portfolio_heatmap_compute();", "live fallback when no cache row is visible");
+  has("if exists (select 1 from pg_extension where extname = 'pg_cron') then", "cron scheduling guarded for replays without pg_cron");
+  has("set statement_timeout = '5min'; select public.pms_portfolio_heatmap_refresh();", "refresh runs with its own timeout, off the request path");
+});
+
+test("the heat map shows how old its snapshot is", () => {
+  const shipped = readFileSync(new URL("./SettyIntelligence.html", import.meta.url), "utf8");
+  assert.ok(shipped.includes('sb("POST", "/rest/v1/rpc/pms_portfolio_heatmap_asof", {})'), "snapshot time is fetched");
+  assert.ok(shipped.includes("const HEAT_STALE_MIN = 45;"), "stale threshold present");
+  assert.ok(shipped.includes("Click a bubble to open that project's brief.${heatSnapLine()}</div>"), "snapshot line rendered in banner");
+});

@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-11-02-intel-v36-heatmap-live";
+    window.__appVersion = "2026-11-02-intel-v37-heatmap-cache";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -817,6 +817,11 @@ async function loadHeat() {
     const live = (await sb("POST", "/rest/v1/rpc/pms_heatmap_live_signals", {})) || {};
     state.heat.live = Object.fromEntries(Object.entries(live).map(([k, v]) => [String(k).trim().toUpperCase(), v]));
   } catch (e) { state.heat.live = {}; }
+  // When the heatmap snapshot was computed (pms_portfolio_heatmap_cache, refreshed
+  // every 15 min by pg_cron). Null for signed-out viewers and before the first
+  // refresh, who get a live computation instead.
+  try { state.heat.snap = (await sb("POST", "/rest/v1/rpc/pms_portfolio_heatmap_asof", {})) || null; }
+  catch (e) { state.heat.snap = null; }
   state.heat.loaded = true; state.heat.loading = false;
   state.counts.heatmap = state.heat.rows.filter(r => heatTier(r) === "hot").length;
   render();
@@ -879,6 +884,20 @@ function qaCounts(r) {
   const s = liveSig(r.num) || {};
   const ls = s.qa_lifesafety || 0, ag = s.qa_agency || 0, cost = s.qa_cost || 0, open = s.qa_open || 0;
   return { ls, ag, cost, other: Math.max(0, open - ls - ag - cost), open };
+}
+// Snapshot freshness for the info banner. Past HEAT_STALE_MIN the line turns
+// red: the 15-minute refresh job has stopped, and the map is showing old data.
+const HEAT_STALE_MIN = 45;
+function heatSnapLine() {
+  const s = state.heat.snap;
+  if (!s || !s.computed_at) return "";
+  const at = new Date(s.computed_at);
+  const mins = Math.max(0, Math.round((Date.now() - at.getTime()) / 60000));
+  const clock = at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const age = mins < 1 ? "just now" : mins === 1 ? "1 min ago" : mins + " min ago";
+  return mins > HEAT_STALE_MIN
+    ? ` <span style="color:var(--red)" title="The heat map refreshes every 15 minutes in the background. A snapshot this old means the refresh job has stopped — tell an admin.">⚠ Snapshot from ${esc(clock)} (${esc(age)}) — background refresh may have stopped.</span>`
+    : ` <span style="color:var(--muted)" title="Computed in the background every 15 minutes so the tab loads instantly.">Snapshot from ${esc(clock)} (${esc(age)}), refreshes every 15 min.</span>`;
 }
 const liveTag = ` <span style="color:var(--muted);font-size:11px" title="Live from the PMS CA log — overdue is a real due-date comparison against today.">live</span>`;
 
@@ -1051,14 +1070,14 @@ function renderHeatmap() {
     </tr>`;
   }).join("");
   $("view").innerHTML = `
-    <div class="status info" style="display:block;margin-bottom:14px">🔥 <b>${hot}</b> of ${rows.length} projects shown are running hot. Bubble <b>size</b> = weighted attention load (30-day email activity, open RFIs &amp; submittals — <b>live</b> from the PMS CA log where items are logged, register snapshot elsewhere — open QA findings by severity, action items, overdue &amp; upcoming milestones, scope risks, 🚧 contractor RFI friction, 💰/💳 payment &amp; AR flags) · <b>color</b> = tier. AR comes from Accounting's weekly Directors Report; client-level balances flag every project of a slow-paying client. On-hold projects are deprioritized. Click a bubble to open that project's brief.</div>
+    <div class="status info" style="display:block;margin-bottom:14px">🔥 <b>${hot}</b> of ${rows.length} projects shown are running hot. Bubble <b>size</b> = weighted attention load (30-day email activity, open RFIs &amp; submittals — <b>live</b> from the PMS CA log where items are logged, register snapshot elsewhere — open QA findings by severity, action items, overdue &amp; upcoming milestones, scope risks, 🚧 contractor RFI friction, 💰/💳 payment &amp; AR flags) · <b>color</b> = tier. AR comes from Accounting's weekly Directors Report; client-level balances flag every project of a slow-paying client. On-hold projects are deprioritized. Click a bubble to open that project's brief.${heatSnapLine()}</div>
     <div class="toolbar">
       <div class="field"><label for="hmAgency">Agency</label>
         <select id="hmAgency" onchange="state.heat.f.agency=this.value; render()"><option value="">All</option>${opt(agencies, h.f.agency)}</select></div>
       <div class="field" style="display:flex;align-items:center;gap:8px;padding-bottom:8px">
         <input type="checkbox" id="hmQuiet" class="selbox" ${h.f.quiet ? "checked" : ""} onchange="state.heat.f.quiet=this.checked; render()"/>
         <label for="hmQuiet" style="margin:0;cursor:pointer">Show quiet &amp; on-hold projects</label></div>
-      <button class="btn btn-ghost" style="margin-left:auto" onclick="state.heat.loaded=false; render()">↻ Refresh</button>
+      <button class="btn btn-ghost" style="margin-left:auto" onclick="state.heat.loaded=false; render()" title="Reloads the latest snapshot (recomputed every 15 minutes in the background)">↻ Refresh</button>
     </div>
     <div class="card" style="position:relative">
       <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px">${legend}</div>
