@@ -1374,9 +1374,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-30-related-projects-note";
+const BUILD = "2026-11-02-best-practices-in-knowledge";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.22.0",
+  name: "setty-pms", version: "1.23.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -10777,13 +10777,41 @@ const slimLesson = (r: any) => ({
   status: r.status,
 });
 
+// Best practices (1.23.0): approved pms_best_practices rows ride along with
+// search_knowledge results. They are firm-wide distillations of repeated
+// lessons (no project_id, no agency), so they serve on any project whose
+// discipline/query they match — the "as applicable" layer QA reviews asked
+// for (Sara, 2026-11-02). Approved-only, same rule as lessons: 'suggested'
+// and 'draft' are a review queue, not knowledge.
+function filterPractices(rows: any[], f: { query?: string; discipline?: string }): any[] {
+  const has = (v: unknown, needle: string) => String(v ?? "").toLowerCase().includes(needle);
+  let out = rows;
+  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => has(r.discipline, d)); }
+  if (f.query) {
+    const q = f.query.toLowerCase().trim();
+    out = out.filter((r: any) =>
+      [r.title, r.practice_text, r.coord_theme, r.system, r.issue_type, r.discipline]
+        .some((v: unknown) => has(v, q)));
+  }
+  return out;
+}
+const slimPractice = (r: any) => ({
+  practiceId: r.practice_id, title: r.title, discipline: r.discipline || undefined,
+  system: r.system || undefined, theme: r.coord_theme || undefined,
+  practice: r.practice_text, confidence: r.confidence || undefined,
+  date: (r.date_added || "").slice(0, 10) || undefined, status: r.status,
+});
+
 mcp.tool("search_knowledge", {
   description:
     "Search Setty's reviewed PROJECT KNOWLEDGE: research findings, decisions, constraints and lessons people and Claude sessions " +
     "have captured about projects, agencies, systems and processes, each one human-approved before " +
     "it is served here. Use when starting work on a project ('what do we already know about X?'), " +
     "when a problem feels like it may have happened before, or to check whether a finding is " +
-    "already captured before save_knowledge. Complements search_agency_preferences (verified " +
+    "already captured before save_knowledge. Results ALSO carry the firm's approved BEST PRACTICES " +
+    "(bestPractices) matching the same discipline/query — distilled, director-approved guidance that " +
+    "applies across projects; weave the applicable ones into QA reviews, submittal reviews and kickoffs. " +
+    "Complements search_agency_preferences (verified " +
     "agency process rules — check both for agency questions). Pass mine: true to ALSO see your own " +
     "pending and rejected submissions with the reviewer's notes; other people's pending entries " +
     "are never shown.",
@@ -10827,6 +10855,21 @@ mcp.tool("search_knowledge", {
 
     const out = filterKnowledge(visible, { query, agency, discipline });
 
+    // Approved best practices ride along unless the caller filtered by agency:
+    // practices carry no agency, so an agency-scoped question is not theirs to
+    // answer. A projectNumber scope does NOT exclude them — they are firm-wide
+    // and apply to any project the discipline/query matches.
+    let practices: any[] = [];
+    if (!agency?.trim()) {
+      const pRows = await sbGetAll(
+        "pms_best_practices?select=practice_id,title,discipline,system,issue_type," +
+        "coord_theme,practice_text,confidence,status,date_added&status=" +
+        (includeArchived ? "in.(approved,archived)" : "eq.approved") +
+        "&order=date_added.desc",
+      );
+      practices = filterPractices(pRows, { query, discipline });
+    }
+
     let own: any[] | undefined;
     if (mine) {
       const caller = currentCaller();
@@ -10844,6 +10887,9 @@ mcp.tool("search_knowledge", {
       count: out.length,
       truncated: out.length > KNOWLEDGE_RESULT_CAP,
       lessons: out.slice(0, KNOWLEDGE_RESULT_CAP).map(slimLesson),
+      bestPracticeCount: practices.length,
+      bestPractices: practices.slice(0, KNOWLEDGE_RESULT_CAP).map(slimPractice),
+      ...(agency?.trim() ? { bestPracticesNote: "Best practices carry no agency, so they are omitted from agency-filtered searches — repeat without the agency filter to see them." } : {}),
       ...(own !== undefined ? {
         mySubmissions: own,
         mySubmissionsNote: own.length
