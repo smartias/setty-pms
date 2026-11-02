@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-11-02-intel-v35-practice-edit";
+    window.__appVersion = "2026-11-02-intel-v36-heatmap-live";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -810,6 +810,13 @@ async function loadHeat() {
   // assumption. Keyed by project NUMBER, same as the heatmap rows.
   try { state.heat.blocked = (await sb("POST", "/rest/v1/rpc/pms_blocked_dependencies", {})) || {}; }
   catch (e) { state.heat.blocked = {}; }
+  // Live CA + QA signals (pms_ca_items / pms_qa_findings via
+  // pms_heatmap_live_signals). RLS limits both tables to authenticated, so a
+  // signed-out viewer gets {} here and the register snapshot keeps serving.
+  try {
+    const live = (await sb("POST", "/rest/v1/rpc/pms_heatmap_live_signals", {})) || {};
+    state.heat.live = Object.fromEntries(Object.entries(live).map(([k, v]) => [String(k).trim().toUpperCase(), v]));
+  } catch (e) { state.heat.live = {}; }
   state.heat.loaded = true; state.heat.loading = false;
   state.counts.heatmap = state.heat.rows.filter(r => heatTier(r) === "hot").length;
   render();
@@ -831,6 +838,12 @@ async function loadHeat() {
 //    = the CLIENT's total across every project, because payment problems are a
 //    client behavior, not a project behavior — sibling projects get flagged too.
 //  • On-hold projects: score ×0.25 and never "hot" (💰/🚧/💳 badges still show)
+//  • live CA + QA (11/2 per Sara): RFI/submittal counts prefer the live PMS CA
+//    log — overdue there is a real due-date check against today — over the
+//    frozen register snapshot, for any project with logged items (the sources
+//    overlap for backloaded items, so preferring, not adding, avoids double
+//    counting). Open QA findings score by severity (life-safety 3, agency 2,
+//    cost 1, other 0.25) and any open life-safety finding makes a project hot.
 const isOnHold = r => /\bon.?hold\b/i.test(r.status || "");
 const inConstruction = r => /construction/i.test(r.status || "");
 // Contractor friction — only scores during construction. 19 RFIs/60d ≈ +15;
@@ -849,6 +862,25 @@ function arScore(r) {
   return proj + cli;
 }
 const blockedDeps = num => (state.heat.blocked || {})[num] || [];
+// Live CA counts from the PMS CA log; falls back to the register snapshot for
+// projects with nothing logged yet (hybrid Newforma cutover).
+const liveSig = num => (state.heat.live || {})[String(num || "").trim().toUpperCase()] || null;
+function caCounts(r) {
+  const s = liveSig(r.num);
+  if (s && ((s.rfis_total || 0) + (s.subs_total || 0)) > 0) {
+    return { live: true, rfis_open: s.rfis_open || 0, rfis_overdue: s.rfis_overdue || 0,
+             subs_open: s.subs_open || 0, subs_overdue: s.subs_overdue || 0 };
+  }
+  return { live: false, rfis_open: r.rfis_open || 0, rfis_overdue: r.rfis_overdue || 0,
+           subs_open: r.subs_open || 0, subs_overdue: r.subs_overdue || 0 };
+}
+// Open QA findings (pms_qa_findings), severity-weighted in heatScore.
+function qaCounts(r) {
+  const s = liveSig(r.num) || {};
+  const ls = s.qa_lifesafety || 0, ag = s.qa_agency || 0, cost = s.qa_cost || 0, open = s.qa_open || 0;
+  return { ls, ag, cost, other: Math.max(0, open - ls - ag - cost), open };
+}
+const liveTag = ` <span style="color:var(--muted);font-size:11px" title="Live from the PMS CA log — overdue is a real due-date comparison against today.">live</span>`;
 
 // ── Blocked-dependency escalation ───────────────────────────────────────────
 // A blocked dependency is an input we are waiting on (waiting_on, asked_since)
@@ -880,13 +912,15 @@ const blockedScore = num => blockedDeps(num).reduce((a, d) => a + dependencyRisk
 const blockedHot = num => blockedDeps(num).some(d => dependencyRisk(d) >= ESCALATE_AT);
 
 function heatScore(r) {
+  const ca = caCounts(r), qa = qaCounts(r);
   const base =
       Math.min(r.emails_30d || 0, 40) * 0.15
     + Math.min(r.pay_flags || 0, 3) * 2
     + frictionScore(r)
     + arScore(r)
-    + r.rfis_open + r.rfis_overdue * 2
-    + r.subs_open * 0.5 + r.subs_overdue * 1.5
+    + ca.rfis_open + ca.rfis_overdue * 2
+    + ca.subs_open * 0.5 + ca.subs_overdue * 1.5
+    + qa.ls * 3 + qa.ag * 2 + qa.cost + qa.other * 0.25
     + (r.actions_open || 0) + (r.actions_overdue || 0)
     + r.ms_overdue * 2 + (r.ms_due_30d || 0)
     + r.risks_high * 1.5 + r.risks_med * 0.75 + r.risks_low * 0.25
@@ -900,8 +934,10 @@ const frictionHot = r => inConstruction(r) && ((r.rfis_60d || 0) >= 10 || (r.rfi
 const arHot = r => (r.ar_days || 0) >= 60 && (r.ar_due || 0) >= 5000;
 function heatTier(r) {
   if (isOnHold(r)) return "hold";
-  if (r.rfis_overdue > 0 || r.subs_overdue > 0 || r.ms_overdue > 0
+  const ca = caCounts(r);
+  if (ca.rfis_overdue > 0 || ca.subs_overdue > 0 || r.ms_overdue > 0
       || (r.actions_overdue || 0) > 0 || (r.pay_flags || 0) > 0
+      || qaCounts(r).ls > 0
       || frictionHot(r) || arHot(r) || blockedHot(r.num)) return "hot";
   return heatScore(r) >= 1.5 ? "watch" : "quiet";
 }
@@ -926,7 +962,7 @@ const frictionBadge = r => frictionHot(r)
 const arBadge = r => (r.ar_due || 0) > 0 && (r.ar_days || 0) > 30
   ? ` <span title="${fmtK(r.ar_due)} unpaid on this project (oldest invoice ${r.ar_days}d past due)${r.ar_client && (r.ar_client_days||0) > 60 ? ` — ${esc(r.ar_client)} owes ${fmtK(r.ar_client_due)} firm-wide, oldest ${r.ar_client_days}d` : ""}">💳</span>` : "";
 const HEAT_TIER = {
-  hot:   { fill: "rgba(239,68,68,.28)",  stroke: "#ef4444", label: "🔴 Hot — overdue RFIs/submittals/actions/milestones or 💰 payment flags" },
+  hot:   { fill: "rgba(239,68,68,.28)",  stroke: "#ef4444", label: "🔴 Hot — overdue RFIs/submittals/actions/milestones, life-safety QA findings or 💰 payment flags" },
   watch: { fill: "rgba(245,158,11,.26)", stroke: "#f59e0b", label: "🟡 Watch — active work, nothing overdue" },
   quiet: { fill: "rgba(100,116,139,.18)",stroke: "#64748b", label: "⚪ Quiet — little activity, no open items" },
   hold:  { fill: "rgba(100,116,139,.10)",stroke: "#475569", label: "⏸ On hold — deprioritized" },
@@ -992,29 +1028,30 @@ function renderHeatmap() {
   const tableRows = [...rows].sort((a, b) => heatScore(b) - heatScore(a)).map(r => {
     const tier = heatTier(r), t = HEAT_TIER[tier];
     const tierWord = { hot: "Hot", watch: "Watch", quiet: "Quiet", hold: "On hold" }[tier] || tier;
-    // `overdue` here is Procore's own "Open - Overdue" label frozen at import
-    // time, NOT a live due-date comparison. Stamp it with the register's load
-    // date so a five-week-old snapshot cannot read as today's news.
-    const cell = (open, overdue, word, asof) => {
+    // Provenance rides with the count: a project with rows in the live PMS CA
+    // log shows `live` (real due-date check), anything still served from the
+    // frozen Procore register keeps its as-of load-date stamp.
+    const cell = (open, overdue, word, tag) => {
       if (!open) return `<span style="color:var(--muted)">—</span>`;
       const od = overdue ? ` <span style="color:var(--red)">(${overdue} ${word})</span>` : "";
-      return `${open}${od}${overdue ? asOfTag(asof) : ""}`;
+      return `${open}${od}${overdue ? (tag || "") : ""}`;
     };
+    const ca = caCounts(r), qa = qaCounts(r);
     const risks = r.risks_high + r.risks_med + r.risks_low;
     return `<tr class="hm-tr" data-num="${esc(r.num)}" style="cursor:pointer;border-bottom:1px solid var(--border)">
       <td style="padding:7px 10px 7px 0"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${t.stroke};margin-right:8px"></span><span class="sr-only">${tierWord} tier: </span><button type="button" class="hm-open" data-num="${esc(r.num)}"><b>${esc(r.name || r.num)}</b></button>${payBadge(r)}${frictionBadge(r)}${arBadge(r)} <span style="color:var(--muted);font-size:11px">${esc(r.num)}</span></td>
       <td style="padding:7px 10px;color:var(--dim)">${esc(r.agency || "")}</td>
       <td style="padding:7px 10px;font-weight:800;color:${t.stroke}">${Math.round(heatScore(r) * 10) / 10}${heatTier(r) === "hold" ? ` <span style="color:var(--muted);font-size:11px">⏸ on hold</span>` : ""}</td>
       <td style="padding:7px 10px">${r.emails_30d ? `${r.emails_30d} <span style="color:var(--muted);font-size:11px">emails</span>` : `<span style="color:var(--muted)">—</span>`}</td>
-      <td style="padding:7px 10px">${cell(r.rfis_open, r.rfis_overdue, "overdue", registerAsOf(r.num, "rfis_asof"))}</td>
-      <td style="padding:7px 10px">${cell(r.subs_open, r.subs_overdue, "overdue", registerAsOf(r.num, "subs_asof"))}</td>
+      <td style="padding:7px 10px">${cell(ca.rfis_open, ca.rfis_overdue, "overdue", ca.live ? liveTag : asOfTag(registerAsOf(r.num, "rfis_asof")))}</td>
+      <td style="padding:7px 10px">${cell(ca.subs_open, ca.subs_overdue, "overdue", ca.live ? liveTag : asOfTag(registerAsOf(r.num, "subs_asof")))}</td>
       <td style="padding:7px 10px">${cell(r.actions_open, r.actions_overdue, "overdue")}</td>
       <td style="padding:7px 10px">${r.ms_overdue ? `<span style="color:var(--red)">${r.ms_overdue} overdue</span>` : ""}${r.ms_overdue && r.ms_due_30d ? " · " : ""}${r.ms_due_30d ? `${r.ms_due_30d} due soon` : ""}${!r.ms_overdue && !r.ms_due_30d ? `<span style="color:var(--muted)">—</span>` : ""}</td>
-      <td style="padding:7px 10px">${risks ? `${risks}${r.risks_high ? ` <span style="color:var(--red)">(${r.risks_high} high)</span>` : ""}` : `<span style="color:var(--muted)">—</span>`}${r.open_requests ? ` <span style="color:var(--dim);font-size:11px">+${r.open_requests} req</span>` : ""}</td>
+      <td style="padding:7px 10px">${risks ? `${risks}${r.risks_high ? ` <span style="color:var(--red)">(${r.risks_high} high)</span>` : ""}` : `<span style="color:var(--muted)">—</span>`}${qa.open ? ` <span style="color:${qa.ls ? "var(--red)" : "var(--dim)"};font-size:11px">+${qa.open} QA${qa.ls ? ` (${qa.ls} life-safety)` : ""}</span>` : ""}${r.open_requests ? ` <span style="color:var(--dim);font-size:11px">+${r.open_requests} req</span>` : ""}</td>
     </tr>`;
   }).join("");
   $("view").innerHTML = `
-    <div class="status info" style="display:block;margin-bottom:14px">🔥 <b>${hot}</b> of ${rows.length} projects shown are running hot. Bubble <b>size</b> = weighted attention load (30-day email activity, open RFIs &amp; submittals, action items, overdue &amp; upcoming milestones, scope risks, 🚧 contractor RFI friction, 💰/💳 payment &amp; AR flags) · <b>color</b> = tier. AR comes from Accounting's weekly Directors Report; client-level balances flag every project of a slow-paying client. On-hold projects are deprioritized. Click a bubble to open that project's brief.</div>
+    <div class="status info" style="display:block;margin-bottom:14px">🔥 <b>${hot}</b> of ${rows.length} projects shown are running hot. Bubble <b>size</b> = weighted attention load (30-day email activity, open RFIs &amp; submittals — <b>live</b> from the PMS CA log where items are logged, register snapshot elsewhere — open QA findings by severity, action items, overdue &amp; upcoming milestones, scope risks, 🚧 contractor RFI friction, 💰/💳 payment &amp; AR flags) · <b>color</b> = tier. AR comes from Accounting's weekly Directors Report; client-level balances flag every project of a slow-paying client. On-hold projects are deprioritized. Click a bubble to open that project's brief.</div>
     <div class="toolbar">
       <div class="field"><label for="hmAgency">Agency</label>
         <select id="hmAgency" onchange="state.heat.f.agency=this.value; render()"><option value="">All</option>${opt(agencies, h.f.agency)}</select></div>
@@ -1043,6 +1080,7 @@ function renderHeatmap() {
 }
 function heatTipHTML(r) {
   const line = (icon, txt) => `<div style="margin-top:3px">${icon} ${txt}</div>`;
+  const ca = caCounts(r), qa = qaCounts(r);
   const L = [];
   if (isOnHold(r)) L.push(line("⏸", `<span style="color:var(--muted)">on hold — deprioritized (score ×0.25)</span>`));
   if (r.pay_flags) L.push(line("💰", `<span style="color:var(--red)"><b>${r.pay_flags}</b> payment-risk thread${r.pay_flags===1?"":"s"} (90d)</span>${r.pay_last ? ` · latest ${esc(r.pay_last)}` : ""}${r.pay_subj ? `<div style="color:var(--muted);font-size:11px;margin-left:20px">"${esc(String(r.pay_subj).slice(0,70))}"</div>` : ""}`));
@@ -1052,8 +1090,9 @@ function heatTipHTML(r) {
   if (r.ar_client && (r.ar_client_days || 0) > 60 && (r.ar_client_due || 0) > (r.ar_due || 0))
     L.push(line("🏦", `client <b>${esc(r.ar_client)}</b> owes <span style="color:var(--red)"><b>${fmtK(r.ar_client_due)}</b></span> firm-wide · oldest ${r.ar_client_days}d`));
   if (r.emails_30d) L.push(line("📨", `<b>${r.emails_30d}</b> email${r.emails_30d===1?"":"s"} in the last 30 days`));
-  if (r.rfis_open) L.push(line("❓", `<b>${r.rfis_open}</b> open RFI${r.rfis_open===1?"":"s"}${r.rfis_overdue ? ` · <span style="color:var(--red)">${r.rfis_overdue} overdue</span>${asOfTag(registerAsOf(r.num, "rfis_asof"))}` : ""}`));
-  if (r.subs_open) L.push(line("📦", `<b>${r.subs_open}</b> open submittal${r.subs_open===1?"":"s"}${r.subs_overdue ? ` · <span style="color:var(--red)">${r.subs_overdue} overdue</span>${asOfTag(registerAsOf(r.num, "subs_asof"))}` : ""}`));
+  if (ca.rfis_open) L.push(line("❓", `<b>${ca.rfis_open}</b> open RFI${ca.rfis_open===1?"":"s"}${ca.rfis_overdue ? ` · <span style="color:var(--red)">${ca.rfis_overdue} overdue</span>${ca.live ? liveTag : asOfTag(registerAsOf(r.num, "rfis_asof"))}` : ""}`));
+  if (ca.subs_open) L.push(line("📦", `<b>${ca.subs_open}</b> open submittal${ca.subs_open===1?"":"s"}${ca.subs_overdue ? ` · <span style="color:var(--red)">${ca.subs_overdue} overdue</span>${ca.live ? liveTag : asOfTag(registerAsOf(r.num, "subs_asof"))}` : ""}`));
+  if (qa.open) L.push(line("🔎", `<b>${qa.open}</b> open QA finding${qa.open===1?"":"s"}${qa.ls ? ` · <span style="color:var(--red)">${qa.ls} life-safety</span>` : ""}${qa.ag ? ` · ${qa.ag} agency` : ""}${qa.cost ? ` · ${qa.cost} cost` : ""}`));
   if (r.actions_open) L.push(line("✅", `<b>${r.actions_open}</b> open action item${r.actions_open===1?"":"s"}${r.actions_overdue ? ` · <span style="color:var(--red)">${r.actions_overdue} overdue</span>` : ""}`));
   // Blocked dependencies read as prose, not a count. The number is meaningless
   // ("1 blocked dependency"); what matters is who owes what, what we drew
