@@ -40,6 +40,14 @@ In short:
    SharePoint folder, overdue rows in red) that you print or save as PDF; **⬇ CSV** gives
    the same rows with clickable links for Excel.
 
+7. **CA platform per project.** The bar above the lists says which portal the job runs
+   on (Procore, Autodesk Build, Newforma, PMWeb, or email only), the GC, and a link
+   straight to the project's page on that platform. Until someone confirms it, the
+   platform is a guess from the filed notification emails (shown with a `?`, and
+   in the picker as e.g. `· Procore?`). **Confirm…** saves it to the project
+   (`project.caPortal`) and adds the link to the project's External links, so the
+   main PMS shows it and installs it as a folder shortcut. Passwords never go here.
+
 ## Safe by design
 
 - **Import is append-only / NEW-only** — it only adds items not already logged, and is

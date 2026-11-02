@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-02-pms-v168-intake-unreviewed";
+    window.__appVersion = "2026-11-02-pms-v169-ca-platform";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -5297,6 +5297,9 @@ const LINK_TYPE_ICONS = {
   "Matterport":    "🏠",
   "Client FTP":    "📁",
   "Procore":       "🔨",
+  "Autodesk Build": "🏗",
+  "Newforma":      "📨",
+  "PMWeb":         "🌐",
   "Client Portal": "🌐",
   "Network Folder": "🗂",  // not installed as .url (UNC paths don't open in browsers)
   "Other":         "🔗",
@@ -28975,7 +28978,11 @@ function OneNoteNotebookField({ project, onSave, onClear }) {
   );
 }
 
-const EXTERNAL_LINK_TYPES = ["Client FTP", "BIM 360", "Matterport", "Procore", "Client Portal", "Network Folder", "Dropbox", "Box", "Google Drive", "Other"];
+// "Autodesk Build", "Newforma" and "PMWeb" are CA portals: the RFI / Submittal
+// Tracker saves a project's portal link here with caPortal:true (alongside
+// project.caPortal = {platform, gc, by, at}), so it shows in this list and
+// installs as a folder shortcut like any other link.
+const EXTERNAL_LINK_TYPES = ["Client FTP", "BIM 360", "Matterport", "Procore", "Autodesk Build", "Newforma", "PMWeb", "Client Portal", "Network Folder", "Dropbox", "Box", "Google Drive", "Other"];
 
 function ExternalLinksField({ project, onChange }) {
   const links = project.externalLinks || [];
@@ -29007,13 +29014,24 @@ function ExternalLinksField({ project, onChange }) {
     "Matterport": { bg: "var(--c-1a1a2a)", text: "var(--c-a78bfa)" },
     "Client FTP": { bg: "var(--c-1a2a1a)", text: "var(--c-4ade80)" },
     "Procore": { bg: "var(--c-2a1a1a)", text: "var(--c-f87171)" },
+    "Autodesk Build": { bg: "var(--c-1a2a3a)", text: "var(--c-4da6ff)" },
+    "Newforma": { bg: "var(--c-1e1e2a)", text: "var(--c-a78bfa)" },
+    "PMWeb": { bg: "var(--c-1a2220)", text: "var(--c-34d399)" },
     "Client Portal": { bg: "var(--c-1a2220)", text: "var(--c-34d399)" },
     "Network Folder": { bg: "var(--c-1a1e1a)", text: "var(--c-86efac)" },
     "Other": { bg: "var(--c-1e1e2a)", text: "var(--c-94a3b8)" },
   };
 
+  const ca = project.caPortal && project.caPortal.platform ? project.caPortal : null;
   return (
     <div>
+      {ca && (
+        <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 8 }}
+          title="Set in the RFI / Submittal Tracker (project bar above the RFI list)">
+          CA platform: <b style={{ color: P.text }}>{ca.platform}</b>{ca.gc ? " · GC: " + ca.gc : ""}
+          {ca.by ? <span style={{ color: P.textDim }}>{" · set by " + ca.by + (ca.at ? " " + String(ca.at).slice(0, 10) : "")}</span> : null}
+        </div>
+      )}
       {links.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
           {links.map(l => {

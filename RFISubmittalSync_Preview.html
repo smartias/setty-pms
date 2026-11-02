@@ -75,6 +75,11 @@
   .undobar.show { display:flex; }
   .inbox select.discSel { background:var(--card2); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:3px 6px; font-size:12px; }
   tbody tr.justnew td { background:rgba(16,185,129,.07); }
+  .portal { margin:14px 24px 0; border:1px solid var(--line); background:var(--card2); border-radius:10px; padding:10px 14px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:13px; }
+  .portal .plat { display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px; font-weight:700; background:#1e3a5f; color:#93c5fd; }
+  .portal .plat.guess { background:transparent; border:1px dashed #60a5fa; color:#93c5fd; }
+  .portal input, .portal select { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; }
+  .ptag { font-size:11px; color:#93c5fd; }
   .rptopts { display:flex; flex-direction:column; gap:12px; padding:16px 18px; }
   .rptopts .row { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
   .rptopts select { background:var(--card2); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:7px 9px; font:inherit; min-width:240px; }
@@ -89,7 +94,7 @@
 <main>
 <div class="pickbar">
   <label class="muted" for="filter">Filter projects</label>
-  <input id="filter" placeholder="filter projects…" oninput="rebuildPicker()" style="width:140px" />
+  <input id="filter" placeholder="filter projects / platform…" oninput="rebuildPicker()" style="width:140px" />
   <label class="sr-only" for="picker">Project</label>
   <select id="picker" onchange="selectProject(this.value)"></select>
   <span id="picknote" class="picknote"></span>
@@ -110,12 +115,13 @@
   <span class="spacer"></span><span id="filterCount" role="status" class="muted" style="font-size:12px"></span>
 </div>
 
+<div id="portal" class="portal" style="display:none" aria-live="polite"></div>
 <div class="guide" id="guide">
   <h2><button type="button" id="gtoggle" aria-expanded="true" aria-controls="gbody" onclick="toggleGuide()"><span id="gchev" aria-hidden="true">▾</span> <span aria-hidden="true">ℹ️</span> How RFIs &amp; Submittals work here — what to log, where, and when</button></h2>
   <div class="body" id="gbody">
     <table class="wf">
       <tr><td><span aria-hidden="true">1️⃣</span></td><td>An RFI/submittal email lands</td><td>Log or respond right from the <b>Outlook add-in</b> on that email — that's the day-to-day home for entering them, since you're already in the message.</td></tr>
-      <tr><td><span aria-hidden="true">2️⃣</span></td><td>It came through Procore / Forma</td><td>Those arrive as notification emails. Come here, pick the job, and <b><span aria-hidden="true">📥</span> Import</b> the new ones in bulk — no re-typing. <span class="muted">(Coming soon: these sync in on their own.)</span></td></tr>
+      <tr><td><span aria-hidden="true">2️⃣</span></td><td>It came through Procore / Forma</td><td>Those arrive as notification emails. Come here, pick the job, and <b><span aria-hidden="true">📥</span> Import</b> the new ones in bulk — no re-typing. <span class="muted">(Procore items also sync in on their own every 15 minutes, marked <b>Unreviewed</b>, once the automatic import is switched on.)</span></td></tr>
       <tr><td><span aria-hidden="true">3️⃣</span></td><td>You need the whole picture</td><td>This Tracker is the <b>project-wide view</b> — every RFI/submittal on a job, filter &amp; search by type/discipline/status, and <b>+ Add / edit</b> by hand when you're not in Outlook (a phoned-in RFI, cleanup, a one-off).</td></tr>
     </table>
     <div class="muted" style="font-size:12px;margin-top:8px">Only jobs marked <b>"In Construction Administration"</b> appear (<span aria-hidden="true">⚡</span> = has Procore/Forma email filed). Put your <b>name</b> in the "You" box (top-right) so the log shows who added or changed each item. Safe by design: it never overwrites someone else's edit — it asks you to refresh instead.</div>
@@ -144,6 +150,7 @@
   window.SheetRefs = SheetRefs;
   import * as CaIntake from "./caIntake.js";
   window.CaIntake = CaIntake;
+  window.dispatchEvent(new Event("caintake-ready"));
 </script>
 <script src="setty-auth.js"></script>
 <script>
@@ -197,6 +204,8 @@ function toggleGuide(){ const b=document.getElementById("gbody"), c=document.get
 // Matching (NEW / matched / UPDATE), discipline inference and the record
 // builders live in caIntake.js (buildInbox), shared with the connector's intake.
 
+// PostgREST returns at most 1000 rows per request; page past it.
+async function fetchAll(path){ const out=[]; for(let off=0;;off+=1000){ const page=await fetchJson(path+(path.includes("?")?"&":"?")+"limit=1000&offset="+off); out.push(...page); if(page.length<1000) return out; } }
 async function fetchJson(path){ const r=await fetch(SUPABASE_URL+"/rest/v1/"+path,{headers:H}); if(!r.ok)throw new Error(path+" -> HTTP "+r.status+" "+(await r.text()).slice(0,120)); return r.json(); }
 
 /* ---- Sheet-reference chips (mirror of SettyPMS SheetRefChips: same matcher
@@ -289,22 +298,102 @@ async function init(){
   document.getElementById("fStatus").value = FILTER.status;
   try{
     const [projRows, actRows] = await Promise.all([
-      fetchJson(`pms_projects?select=id,name:project->>name,number:project->>projectNumber,status:project->>status&order=id.asc`),
-      fetchJson(`pms_project_emails?or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*)&select=project_id`),
+      fetchJson(`pms_projects?select=id,name:project->>name,number:project->>projectNumber,status:project->>status,caPortal:project->caPortal,links:project->externalLinks&order=id.asc`),
+      fetchAll(`pms_project_emails?or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*,subject.ilike.*PMWeb*)&select=project_id,from_address,subject&order=record_id.asc`),
     ]);
-    const active=new Set((actRows||[]).map(r=>r.project_id));
-    PROJECTS=(projRows||[]).filter(p=>(p.status||"")===CA_STATUS).map(p=>({id:p.id,name:p.name||"(unnamed)",number:p.number||"",activity:active.has(p.id)}))
+    const detected=(window.CaIntake&&window.CaIntake.detectPlatforms)?window.CaIntake.detectPlatforms(actRows||[]):{};
+    PROJECTS=(projRows||[]).filter(p=>(p.status||"")===CA_STATUS).map(p=>projEntry(p,detected[p.id]))
       .sort((a,b)=>(b.activity-a.activity)||(a.number||a.name).localeCompare(b.number||b.name));
-    const caActive=PROJECTS.filter(p=>p.activity).length;
-    document.getElementById("picknote").textContent=`${PROJECTS.length} In Construction Administration · ${caActive} with Procore/Forma ⚡`;
+    const caActive=PROJECTS.filter(p=>p.activity).length, unset=PROJECTS.filter(p=>!p.platform).length;
+    document.getElementById("picknote").textContent=`${PROJECTS.length} In Construction Administration · ${caActive} with portal email${unset?` · ${unset} platform not set`:""}`;
     rebuildPicker();
     if(PROJECTS.length){ document.getElementById("picker").value="__ALL__"; selectAll(); }
     else document.getElementById("out").innerHTML=`<p class="empty">No projects are marked "In Construction Administration".</p>`;
   }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
 }
+/* =========================== CA PLATFORM (per project) ===========================
+   Which portal a job's RFIs/submittals run through, saved on the project as
+   project.caPortal = {platform, gc, by, at}. The sign-in link lives in the
+   project's External links (type = platform, caPortal:true), so the main PMS
+   lists it and installs it as a folder shortcut. Until someone saves it, the
+   platform is a GUESS from the filed notification emails (caIntake.detectPlatforms). */
+const PLATFORM_LINK_HINT = { "Procore":"https://app.procore.com/…/project/home", "Autodesk Build":"https://acc.autodesk.com/…", "Newforma":"https://…newforma… (Info Exchange)", "PMWeb":"https://…pmweb…" };
+function portalLinkOf(links, platform){ const l=(links||[]).filter(x=>x&&x.url); return l.find(x=>x.caPortal)||l.find(x=>x.type===platform)||null; }
+function projEntry(row, det){
+  const cp=row.caPortal&&typeof row.caPortal==="object"?row.caPortal:{};
+  const link=portalLinkOf(row.links, cp.platform||(det&&det.platform));
+  return { id:row.id, name:row.name||"(unnamed)", number:row.number||"", activity:!!det,
+    platform:cp.platform||"", gc:cp.gc||"", setBy:cp.by||"", setAt:cp.at||"",
+    detected:det?det.platform:"", detectedCounts:det?det.counts:{}, url:link?link.url:"", links:row.links||[] };
+}
+function platLabel(p){ return p.platform ? p.platform : (p.detected ? p.detected+"?" : ""); }
+function platTagHtml(p){ const l=platLabel(p); return l?` <span class="ptag" title="${p.platform?"CA platform (confirmed)":"Guessed from filed emails — not confirmed"}">${esc(l)}</span>`:""; }
+let PORTAL_EDIT=false;
+function renderPortal(){
+  const el=document.getElementById("portal"); const p=CURRENT&&!CURRENT.allMode&&PROJECTS.find(x=>x.id===CURRENT.proj.id);
+  if(!p){ el.style.display="none"; el.innerHTML=""; return; }
+  el.style.display="flex";
+  if(PORTAL_EDIT){
+    const cur=p.platform||p.detected||"";
+    el.innerHTML=`<b>CA platform</b>
+      <label class="sr-only" for="pfPlat">Platform</label><select id="pfPlat" onchange="portalPlatChanged()">${["",...window.CaIntake.CA_PLATFORMS].map(x=>`<option value="${esc(x)}" ${x===cur?"selected":""}>${x?esc(x):"— choose —"}</option>`).join("")}</select>
+      <label class="sr-only" for="pfUrl">Project link on the platform</label><input id="pfUrl" style="flex:1;min-width:240px" value="${esc(p.url)}" placeholder="${esc(PLATFORM_LINK_HINT[cur]||"https://…")}" ${cur==="Email only"?"disabled":""}>
+      <label class="sr-only" for="pfGc">General contractor</label><input id="pfGc" style="width:200px" value="${esc(p.gc)}" placeholder="General contractor (e.g. Gilbane)">
+      <button class="primary" onclick="savePortal()">Save</button><button class="ghost" onclick="PORTAL_EDIT=false;renderPortal()">Cancel</button>
+      <div class="muted" style="flex-basis:100%;font-size:12px">The link is the project's own page on the platform (copy it from the address bar while signed in). Saved to this project in the PMS, and added to its External links. Never paste a password here.</div>`;
+    return;
+  }
+  const counts=Object.entries(p.detectedCounts||{}).map(([k,v])=>`${v} ${k}`).join(", ");
+  const open=p.url?`<a href="${esc(p.url)}" target="_blank" rel="noreferrer">Open in ${esc(p.platform||p.detected||"portal")} ↗</a>`:"";
+  if(p.platform){
+    el.innerHTML=`<span class="muted">CA platform</span> <span class="plat">${esc(p.platform)}</span>${p.gc?` <span>GC: <b>${esc(p.gc)}</b></span>`:""} ${open||(p.platform!=="Email only"?`<span class="muted">no link saved</span>`:"")}
+      <span class="spacer" style="flex:1"></span><span class="muted" style="font-size:12px">${p.setBy?"set by "+esc(p.setBy):""}${p.setAt?" · "+esc(p.setAt.slice(0,10)):""}</span>
+      <button class="ghost" style="font-size:12px" onclick="PORTAL_EDIT=true;renderPortal()">Edit</button>`;
+  } else if(p.detected){
+    el.innerHTML=`<span class="muted">CA platform</span> <span class="plat guess">${esc(p.detected)}?</span> <span class="muted" style="font-size:12px">guessed from filed emails (${esc(counts)}) — not confirmed</span>
+      <span class="spacer" style="flex:1"></span><button class="primary" style="font-size:12px" onclick="PORTAL_EDIT=true;renderPortal()">Confirm…</button>`;
+  } else {
+    el.innerHTML=`<span class="muted">CA platform</span> <span class="muted">not set, and no portal emails filed</span><span class="spacer" style="flex:1"></span><button class="ghost" style="font-size:12px" onclick="PORTAL_EDIT=true;renderPortal()">Set platform</button>`;
+  }
+}
+function portalPlatChanged(){ const v=document.getElementById("pfPlat").value, u=document.getElementById("pfUrl"); u.disabled=v==="Email only"; u.placeholder=PLATFORM_LINK_HINT[v]||"https://…"; }
+async function savePortal(){
+  const p=PROJECTS.find(x=>x.id===CURRENT.proj.id); if(!p) return;
+  const platform=document.getElementById("pfPlat").value, gc=document.getElementById("pfGc").value.trim();
+  let url=platform==="Email only"?"":document.getElementById("pfUrl").value.trim();
+  if(!platform){ toast("Choose a platform",false); return; }
+  if(url&&!/^https:\/\//i.test(url)){ toast("The link must start with https://",false); return; }
+  const who=getWho(), at=new Date().toISOString();
+  try{
+    await writeProject(p.id, proj=>{
+      const links=Array.isArray(proj.externalLinks)?proj.externalLinks.slice():[];
+      const i=links.findIndex(l=>l&&l.caPortal);
+      const link=url?{ ...(i>=0?links[i]:{id:"ca-portal-"+uid()}), type:platform==="Autodesk Build"||platform==="Newforma"||platform==="PMWeb"||platform==="Procore"?platform:"Other",
+        label:platform+" (CA)", url, note:gc?"GC: "+gc:"", caPortal:true }:null;
+      if(i>=0){ if(link) links[i]=link; else links.splice(i,1); } else if(link) links.push(link);
+      return { ...proj, caPortal:{ platform, gc, by:who||null, at }, externalLinks:links };
+    });
+    Object.assign(p,{platform,gc,setBy:who,setAt:at,url});
+    PORTAL_EDIT=false; renderPortal(); rebuildPicker(); toast("CA platform saved ✓",true);
+  }catch(e){ toast(e.message,false); }
+}
+// Version-guarded read-modify-write of the whole project blob (writeArray's
+// sibling for top-level fields): aborts cleanly if someone saved meanwhile.
+async function writeProject(pid, mutate){
+  const rows=await fetchJson(`pms_projects?id=eq.${pid}&select=id,project,version`);
+  if(!rows.length) throw new Error("Project not found.");
+  const updated=mutate(rows[0].project), ver=rows[0].version;
+  const r=await fetch(SUPABASE_URL+`/rest/v1/pms_projects?id=eq.${pid}&version=eq.${ver}`,{
+    method:"PATCH", headers:{...H,"Content-Type":"application/json","Prefer":"return=representation"},
+    body:JSON.stringify({project:updated, version:ver+1, updated_at:new Date().toISOString()}) });
+  const back=await r.json();
+  if(!r.ok||!back.length) throw new Error("Project changed since you opened it (someone else saved). Re-pick the project and retry — nothing was written.");
+  return true;
+}
+
 function rebuildPicker(){ const f=(document.getElementById("filter").value||"").toLowerCase(); const sel=document.getElementById("picker"); const keep=sel.value;
-  const list=PROJECTS.filter(p=>!f||(p.number+" "+p.name).toLowerCase().includes(f));
-  sel.innerHTML=`<option value="__ALL__">★ All projects (${PROJECTS.length})</option>`+list.map(p=>`<option value="${p.id}">${p.activity?"⚡ ":""}${esc(p.number?p.number+" — ":"")}${esc(p.name)}${p.activity?" (has Procore email)":""}</option>`).join("");
+  const list=PROJECTS.filter(p=>!f||(p.number+" "+p.name+" "+platLabel(p)+" "+p.gc).toLowerCase().includes(f));
+  sel.innerHTML=`<option value="__ALL__">★ All projects (${PROJECTS.length})</option>`+list.map(p=>`<option value="${p.id}">${esc(p.number?p.number+" — ":"")}${esc(p.name)}${platLabel(p)?" · "+esc(platLabel(p)):""}</option>`).join("");
   if(keep==="__ALL__"||list.some(p=>p.id===keep)) sel.value=keep; }
 
 async function selectAll(){
@@ -322,6 +411,7 @@ async function selectAll(){
   }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
 }
 async function selectProject(pid){
+  PORTAL_EDIT=false;
   if(pid==="__ALL__") return selectAll();
   const proj=PROJECTS.find(p=>p.id===pid); if(!proj)return;
   document.getElementById("out").innerHTML=`<p class="empty">Loading ${esc(proj.name)}…</p>`;
@@ -370,6 +460,7 @@ function exportCSV(kind){
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
 function renderProject(){
+  renderPortal();
   const out=document.getElementById("out"); out.innerHTML=""; document.getElementById("filterbar").style.display="flex";
   let total=0, shownTot=0;
   if(FILTER.type!=="submittal"){ const s=renderSection("rfi","RFIs",CURRENT.rfis,CURRENT.inbox.rfi); out.appendChild(s.el); total+=s.total; shownTot+=s.shown; }
@@ -409,7 +500,8 @@ function renderSection(kind, title, logged, inbox){
     const head = pcol + (kind==="rfi" ? "<th scope='col'>RFI</th><th scope='col'>Title</th><th scope='col'>Discipline</th><th scope='col'>From</th><th scope='col'>Assigned</th><th scope='col'>Received</th><th scope='col'>Due</th><th scope='col'>Status</th>"
                               : "<th scope='col'>Item</th><th scope='col'>Title / Spec</th><th scope='col'>Discipline</th><th scope='col'>Assigned</th><th scope='col'>Stamp</th><th scope='col'>Received</th><th scope='col'>Due</th><th scope='col'>Status</th>");
     const rows=shown.map(r=>{
-      const pc=am?`<td class="muted" title="${esc(r.__projNum||"")}">${esc(r.__projName||r.__projNum||"")}</td>`:"";
+      const pp=am?PROJECTS.find(x=>x.id===r.__projId):null;
+      const pc=am?`<td class="muted" title="${esc(r.__projNum||"")}">${esc(r.__projName||r.__projNum||"")}${pp?platTagHtml(pp):""}</td>`:"";
       const asg=esc(assigneeNames(r));
       const open=`openEditor("${kind}",${esc(JSON.stringify(r.id))})`;
       // Keyboard path: real button on the number cell (stopPropagation so the
@@ -786,7 +878,8 @@ async function openReport(){
     const rows=ids.length?await fetchJson(`pms_projects?id=in.(${ids.join(",")})&select=id,name:project->>name,number:project->>projectNumber,pm:project->>projectManager,rfis:project->rfis,submittals:project->submittals,team:project->teamMembers`):[];
     const items=[];
     for(const row of rows){
-      const base={projId:row.id, projName:row.name||"(unnamed)", projNum:row.number||"", pm:(row.pm||"").trim()};
+      const pe=PROJECTS.find(x=>x.id===row.id)||{};
+      const base={projId:row.id, projName:row.name||"(unnamed)", projNum:row.number||"", pm:(row.pm||"").trim(), platform:platLabel(pe), portalUrl:pe.url||""};
       for(const r of (row.rfis||[])) items.push({...base, kind:"rfi", rec:r, assigned:reportAssignees(r,row.team), open:RFI_OPEN.includes(r.status||"")});
       for(const r of (row.submittals||[])) items.push({...base, kind:"submittal", rec:r, assigned:reportAssignees(r,row.team), open:SUB_OPEN.includes(r.status||"")});
     }
@@ -833,7 +926,7 @@ function reportCSV(){
   if(!rows.length){ toast("Nothing to export with these filters",false); return; }
   // =HYPERLINK makes the link clickable when the CSV opens in Excel/Sheets.
   const hl=(url,label)=>url?`=HYPERLINK("${url.replace(/"/g,'""')}","${String(label||"Open").replace(/"/g,'""')}")`:"";
-  const cols=[["PM",it=>it.pm],["Project #",it=>it.projNum],["Project",it=>it.projName],["Type",it=>it.kind==="rfi"?"RFI":"Submittal"],["Number",it=>it.rec.number],
+  const cols=[["PM",it=>it.pm],["Project #",it=>it.projNum],["Project",it=>it.projName],["Platform",it=>it.platform],["Type",it=>it.kind==="rfi"?"RFI":"Submittal"],["Number",it=>it.rec.number],
     ["Title / Description",it=>it.kind==="rfi"?(it.rec.title||it.rec.description):(it.rec.description||it.rec.title)],["Spec",it=>it.rec.specSection||""],
     ["Assigned To",it=>it.assigned],["Received",it=>it.rec.dateReceived],["Due",it=>it.rec.dueDate],["Due Status",it=>it.open?dueLabel(it.rec):"—"],["Status",it=>it.rec.status],
     ["PMS Link",it=>hl(pmsItemLink(it.projId,it.kind,it.rec.number),"Open "+(it.rec.number||""))],["SharePoint Folder",it=>/^https?:/i.test(it.rec.spFolderUrl||"")?hl(it.rec.spFolderUrl,"Files"):""]];
@@ -856,7 +949,7 @@ function reportPrint(){
       const title=it.kind==="rfi"?(r.title||r.description):(r.description||r.title);
       const files=/^https?:/i.test(r.spFolderUrl||"")?`<a href="${esc(r.spFolderUrl)}" target="_blank" rel="noreferrer">Files</a>`:"";
       return `<tr class="${late?"late":soon?"soon":""}"><td>${it.kind==="rfi"?"RFI":"Submittal"}</td><td class="num">${link?`<a href="${esc(link)}" target="_blank" rel="noreferrer">${num}</a>`:num}</td><td>${esc(title||"—")}${r.specSection?`<div class="dim">${esc(r.specSection)}</div>`:""}</td><td>${esc(it.assigned)}</td><td>${esc(r.dateReceived||"—")}</td><td>${esc(r.dueDate||"—")}</td><td class="due">${it.open?esc(dueLabel(r)):"—"}</td><td>${esc(r.status||"—")}</td><td>${files}</td></tr>`; }).join("");
-    return `<h2>${esc(g.it.projNum?g.it.projNum+" — ":"")}${esc(g.it.projName)} <span class="dim">· PM: ${esc(g.it.pm||"(none)")} · ${g.rows.length} item${g.rows.length===1?"":"s"}</span></h2>
+    return `<h2>${esc(g.it.projNum?g.it.projNum+" — ":"")}${esc(g.it.projName)} <span class="dim">· PM: ${esc(g.it.pm||"(none)")}${g.it.platform?` · ${g.it.portalUrl?`<a href="${esc(g.it.portalUrl)}" target="_blank" rel="noreferrer">${esc(g.it.platform)}</a>`:esc(g.it.platform)}`:""} · ${g.rows.length} item${g.rows.length===1?"":"s"}</span></h2>
       <table><thead><tr><th>Type</th><th>#</th><th>Title / Description</th><th>Assigned to</th><th>Received</th><th>Due</th><th>Due status</th><th>Status</th><th>Files</th></tr></thead><tbody>${tr}</tbody></table>`; }).join("");
   const title=`Open RFIs & Submittals — ${reportPMLabel(o)}`;
   w.document.write(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>${esc(reportFileStem(o))}</title><style>
@@ -877,7 +970,10 @@ function reportPrint(){
   w.document.close();
 }
 
-settyAuthReady.then(init);
+// init needs caIntake.js (platform detection); module scripts run after this
+// one, so wait for it, but never hang the page on a failed load.
+const caIntakeReady = new Promise(res => { if (window.CaIntake) return res(); window.addEventListener("caintake-ready", res, { once: true }); setTimeout(res, 5000); });
+Promise.all([settyAuthReady, caIntakeReady]).then(init);
 </script>
 </body>
 </html>
