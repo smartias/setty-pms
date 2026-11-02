@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-10-02-intel-v34-light-dark-theme";
+    window.__appVersion = "2026-11-02-intel-v35-practice-edit";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -1226,6 +1226,7 @@ function renderPracticeCard(p) {
     : _src === "email-mining" ? `<span class="pill pill-purple" title="Mined from project emails">🤖 email-mined</span>`
     : (n ? `<span class="pill pill-gray">from ${n} lesson${n===1?"":"s"}</span>` : "");
   const actions = [
+    `<button class="btn btn-ghost btn-sm" data-id="${esc(p.practice_id)}" onclick="openPracticeForm(this.dataset.id)">Edit</button>`,
     p.status !== "approved" ? `<button class="btn btn-success btn-sm" data-id="${esc(p.practice_id)}" onclick="setPracticeStatus(this.dataset.id,'approved')">✓ Approve</button>` : "",
     p.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(p.practice_id)}" onclick="setPracticeStatus(this.dataset.id,'archived')">✕ Reject</button>` : "",
   ].filter(Boolean).join(" ");
@@ -1286,7 +1287,7 @@ async function bulkStatus(kind, status) {
   const table = isL ? "pms_lessons" : isA ? "pms_agency_preferences" : isM ? "pms_meeting_items" : isS ? "pms_engineering_standards" : "pms_best_practices";
   const idcol = isL ? "lesson_id" : isA ? "pref_id" : isM ? "id" : isS ? "standard_id" : "practice_id";
   const payload = { status, updated_at: new Date().toISOString() };
-  if (status === "approved" && isL) payload.approved_by = state.user;
+  if (status === "approved" && (isL || kind === "P")) payload.approved_by = state.user;
   if (isL && (status === "approved" || status === "rejected")) payload.reviewed_at = new Date().toISOString();
   if (status === "active" && (isA || isS)) payload.date_verified = new Date().toISOString().slice(0,10);
   if (isM && (status === "confirmed" || status === "rejected")) { payload.reviewed_by = state.user || null; payload.reviewed_at = new Date().toISOString(); }
@@ -1301,12 +1302,94 @@ async function bulkStatus(kind, status) {
 }
 
 async function setPracticeStatus(id, status) {
+  if (status === "approved" && !state.user) { openNameModal(() => setPracticeStatus(id, status)); return; }
+  const payload = { status, updated_at: new Date().toISOString() };
+  if (status === "approved") payload.approved_by = state.user;
   try {
-    await sb("PATCH", "/rest/v1/pms_best_practices?practice_id=eq." + encodeURIComponent(id), { status, updated_at: new Date().toISOString() });
+    await sb("PATCH", "/rest/v1/pms_best_practices?practice_id=eq." + encodeURIComponent(id), payload);
     toast("Best practice " + status + ".", "success");
     state.practices = (await sb("GET", "/rest/v1/pms_best_practices?select=*&order=date_added.desc")) || [];
     render();
   } catch (e) { toast("Update failed: " + e.message, "error"); }
+}
+
+// ── Practice form (edit before approving — same pattern as the Lesson form) ────
+// Mined practices sometimes land under the wrong discipline, or need the
+// direction tightened before they go live on briefs. Edit here, then approve.
+function openPracticeForm(id) {
+  const p = (state.practices || []).find(x => x.practice_id === id);
+  if (!p) { toast("Practice not found — reload the tab.", "error"); return; }
+  const sel = (arr, val) => `<option value=""></option>` + arr.map(a => `<option value="${esc(a)}" ${a===val?"selected":""}>${esc(a)}</option>`).join("");
+  const themes = [...new Set((state.practices || []).map(x => x.coord_theme).filter(Boolean))].sort();
+  $("modalMount").innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="practiceModalTitle">
+        <h3 id="practiceModalTitle">Edit Best Practice</h3>
+        <div class="fieldset full">
+          <label for="bp_title">Title *</label>
+          <input id="bp_title" value="${esc(p.title||"")}"/>
+        </div>
+        <div class="fieldset full">
+          <label for="bp_text">Practice text * <span style="text-transform:none;font-weight:400;color:var(--muted)">(the clarification/direction that surfaces on project briefs)</span></label>
+          <textarea id="bp_text" rows="4">${esc(p.practice_text||"")}</textarea>
+        </div>
+        <div class="form-grid">
+          <div>
+            <label for="bp_discipline">Discipline</label>
+            <select id="bp_discipline">${sel(DISCIPLINES, p.discipline)}</select>
+          </div>
+          <div>
+            <label for="bp_theme">Theme</label>
+            <input id="bp_theme" list="bpThemeList" value="${esc(p.coord_theme||"")}" placeholder="e.g. Coordination"/>
+            <datalist id="bpThemeList">${themes.map(t=>`<option value="${esc(t)}"></option>`).join("")}</datalist>
+          </div>
+          <div>
+            <label for="bp_system">System</label>
+            <input id="bp_system" value="${esc(p.system||"")}"/>
+          </div>
+          <div>
+            <label for="bp_issue">Type</label>
+            <input id="bp_issue" list="bpIssueList" value="${esc(p.issue_type||"")}" placeholder="workflow, Coordination, …"/>
+            <datalist id="bpIssueList">${["workflow", ...ISSUE_TYPES].map(t=>`<option value="${esc(t)}"></option>`).join("")}</datalist>
+          </div>
+          <div>
+            <label for="bp_conf">Confidence</label>
+            <select id="bp_conf">${["low","medium","high"].map(c=>`<option value="${c}" ${(p.confidence||"medium")===c?"selected":""}>${c}</option>`).join("")}</select>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          ${p.status !== "approved" ? `<button class="btn btn-success" data-id="${esc(id)}" onclick="savePractice(this.dataset.id, true)">✓ Save &amp; approve</button>` : ""}
+          <button class="btn btn-primary" data-id="${esc(id)}" onclick="savePractice(this.dataset.id)">Save changes</button>
+        </div>
+      </div>
+    </div>`;
+  focusModal();
+}
+function savePractice(id, approve) {
+  // Capture the fields BEFORE any name modal replaces the form in modalMount.
+  const payload = {
+    title: $("bp_title").value.trim(),
+    practice_text: $("bp_text").value.trim(),
+    discipline: $("bp_discipline").value || null,
+    coord_theme: $("bp_theme").value.trim() || null,
+    system: $("bp_system").value.trim() || null,
+    issue_type: $("bp_issue").value.trim() || null,
+    confidence: $("bp_conf").value,
+    updated_at: new Date().toISOString(),
+  };
+  if (!payload.title || !payload.practice_text) { toast("Title and practice text are required.", "error"); return; }
+  if (approve && !state.user) { openNameModal(() => writePractice(id, payload, true)); return; }
+  writePractice(id, payload, approve);
+}
+async function writePractice(id, payload, approve) {
+  if (approve) { payload.status = "approved"; payload.approved_by = state.user || null; }
+  try {
+    await sb("PATCH", "/rest/v1/pms_best_practices?practice_id=eq." + encodeURIComponent(id), payload);
+    toast(approve ? "Saved & approved — it now surfaces on matching project briefs." : "Best practice updated.", "success");
+    closeModal();
+    await loadPractices();
+  } catch (e) { toast("Save failed: " + e.message, "error"); }
 }
 
 // ── Agency Preferences module (curated per-agency requirements & preferences) ─
