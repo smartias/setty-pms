@@ -28,6 +28,16 @@
 -- computation and see what RLS lets them see today.
 
 -- 1. The original computation, renamed. Body unchanged.
+--
+-- check_function_bodies is off for this one statement: the body reads
+-- pms_ar_invoices, which exists in production but was created there by hand
+-- and has no migration in this folder. A language-sql function is validated
+-- against its tables at CREATE time, so a fresh replay (the Supabase Preview
+-- check, a local reset) would stop here with "relation pms_ar_invoices does
+-- not exist". Skipping validation is what pg_dump does for the same reason;
+-- production is unaffected (the table is there), and the function still
+-- resolves its tables when it runs.
+set check_function_bodies = off;
 create or replace function public.pms_portfolio_heatmap_compute()
  returns jsonb
  language sql
@@ -237,6 +247,7 @@ left join acts ai on ai.slug = p.slug
 left join risk k on k.project_id = p.num
 left join ms on ms.slug = p.slug;
 $function$;
+reset check_function_bodies;
 
 -- 2. The cache: a single row.
 create table if not exists public.pms_portfolio_heatmap_cache (
