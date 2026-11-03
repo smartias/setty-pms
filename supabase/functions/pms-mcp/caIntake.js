@@ -44,6 +44,22 @@ export const label = (body, name) => {
   const re = new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*:?\\s*\\n+\\s*([^\\n]+)", "i");
   const m = body.match(re); return m ? m[1].trim() : "";
 };
+// Newforma prints "Label: value" on one line.
+export const lineLabel = (body, name) => {
+  const m = body.match(new RegExp("^[ \\t]*" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[ \\t]*:[ \\t]*(.+?)[ \\t]*$", "im"));
+  return m ? m[1].trim() : "";
+};
+// One comparable key per RFI number, whatever the portal prints:
+// "RFI-091", "#91", "91" → "91"; "RFI-005R" → "5R"; "121.1" / "RFI-121.1" → "121.1"
+// (a follow-up, NOT RFI 121); "BID-RFI-306" → "BID-306". Leading zeros of each
+// number group are dropped, decimals kept.
+export function rfiKey(s) {
+  let t = String(s == null ? "" : s).trim().toUpperCase().replace(/^#\s*/, "");
+  t = t.replace(/\bRFI\s*[-#:]?\s*/g, "").replace(/^[-\s]+|[-\s]+$/g, "");
+  return t.replace(/(^|[^\d.])0+(\d)/g, "$1$2");
+}
+// Display form for a log number: integer part padded to 3 ("5R" → "005R").
+export const rfiDisplay = (key) => String(key || "").replace(/^(\d+)/, (m) => m.padStart(3, "0"));
 // Procore prints "--" for an empty field.
 const val = (s) => { s = (s || "").trim(); return s === "--" ? "" : s; };
 const bodyOf = (email) => (email.body_text || "").replace(/\r/g, "");
@@ -120,29 +136,85 @@ export function parseForma(email) {
     ...base(email), extNum: String(+sm[1]), isRev, rev: im && im[1] ? +im[1] : 0, title: (im ? im[2] : "").trim(),
     specSection: label(details, "Sub Spec Section") || label(details, "Spec Section"), formaStatus: (label(details, "Status") || "").trim(),
     dueDate: normDate(label(details, "Due Date")), ballInCourt: label(details, "Ball in court"),
+    stamp: formaStamp(body),
   };
+}
+// "Final Response … Response\n\n\nApproved as noted" → "Approved as Noted".
+function formaStamp(body) {
+  const i = body.indexOf("Final Response"); if (i < 0) return "";
+  const r = label(body.slice(i + "Final Response".length), "Response");
+  return SUB_STAMPS.find((x) => x.toLowerCase() === r.toLowerCase()) || "";
 }
 
 /* ---------- Newforma forwards ---------- */
-// "RFI Forwarded:" — subject carries the number and title; the body varies
-// too much to trust, so only subject-derived fields are filled.
-export function parseNewformaFwdRfi(email) {
-  const subj = email.subject || ""; if (!/RFI\s*Forwarded\s*:/i.test(subj)) return null;
-  const nm = subj.match(/-\s*RFI:(\d+)/i) || subj.match(/RFI:(\d+)\s*:?\w*$/i); if (!nm) return null;
-  const tm = subj.match(/RFI\s*Forwarded:\s*(.+?)\s*-\s*RFI:/i); const segs = tm ? tm[1].split(" - ") : [];
-  const title = (segs.length ? segs[segs.length - 1] : "").trim();
-  return { ...base(email), extNum: String(+nm[1]), event: "New RFI", title, dueDate: "", askedBy: email.from_name || "", question: "", dateInit: dayOf(email.email_date) };
+// Subjects (all seen in the filed log, 2024-11..2026-10):
+//   "RFI Forwarded: Follow up to RFI 005 - Stony Brook University, Tabler Quad New Residence Hall - RFI:RFI-005R:SM1mU"
+//   "RFI Forwarded: SAPX196006.00_SUNY StonyBrook TblrQud - Load Bank Location - RFI:RFI-138:FCqqN"   (Setty's own Newforma)
+//   "RFI Forwarded: RFI-188.1 Follow Up to RFI-188-Access Panel Locations - 1018037.01_Stony Brook … - RFI:188.1:SM1mU"
+//   "RFI Forwarded: SAPX188032.00_NVCC Howsmon & Colgan - RFI-40 Lab Gas Valve Box Door Clarification - RFI:166:YvTUq"
+//   "Submittal Forwarded: SAPX259009.00_Gordonsville FireCompany - Diffusers, Registers & Grilles - Submittal:233713-001-0 :9PAkD"
+//   "Submittal Responded to and Closed: SAPX196006.00_… - 1st Floor Sheetmetal … - Submittal:233113-002-0:FCqqN"
+// The id sits between "RFI:"/"Submittal:" and the trailing Info Exchange tag.
+// Only a notification counts: "RE:", "FW:" and "Automatic reply:" are people
+// answering it, never a new event. The same item forwarded by the architect's
+// Newforma and by Setty's own (two tags, same id) collapses on the id; Setty's
+// own forwards stop once Newforma is retired internally.
+const NF_HEAD = /^\s*(RFI|Submittal)\s+(Forwarded|Responded to and Closed)\s*:\s*/i;
+// The subject's middle is "<a> - <b> - …"; one segment is the project (a
+// SAPX… code, a project number, or the body's "Project:" name, possibly cut
+// off with "..."), the rest is the title.
+function newformaTitle(core, body) {
+  const proj = lineLabel(body, "Project").replace(/^[\w.]+\s+/, "").toLowerCase();
+  const isProj = (seg) => {
+    const t = seg.trim(), lc = t.replace(/\.\.\.$/, "").trim().toLowerCase();
+    if (/^[A-Z]{3,4}\d{6}\.\d{2}_/.test(t) || /^\d{5,}(\.\d+)?_/.test(t)) return true;  // SAPX196006.00_…, 1018037.01_…
+    if (/^\d+$/.test(t)) return true;                                                  // a bare number segment
+    if (/\.\.\.$/.test(t)) return true;                                               // Newforma cut the project name short
+    return !!(proj && lc.length >= 8 && (proj.startsWith(lc) || lc.startsWith(proj)));
+  };
+  const segs = core.split(/\s+-\s+/).map((x) => x.trim()).filter(Boolean);
+  const keep = segs.filter((x) => !isProj(x));
+  return (keep.length ? keep : segs.slice(-1)).join(" - ");
 }
-// "Submittal Forwarded:" — the id IS the log's spec-based number
-// (232113-012, optional trailing -rev), so matching runs on the full id.
-export function parseNewformaFwdSub(email) {
-  const subj = email.subject || ""; if (!/Submittal\s*Forwarded\s*:/i.test(subj)) return null;
-  const nm = subj.match(/Submittal:\s*([\d.]+(?:-\d+)+)/i); if (!nm) return null;
-  const raw = nm[1]; const rm = raw.match(/^([\d.]+-\d+)-(\d+)$/); const baseId = rm ? rm[1] : raw; const rev = rm ? +rm[2] : 0;
-  const tm = subj.match(/Submittal\s*Forwarded:\s*(.+?)\s*-\s*\d/i); // title ends where the numeric project segment begins
+function newformaCommon(email, body) {
+  const internal = /@setty\.com\s*$/i.test(email.from_address || "");
+  const remarks = between(body, "Remarks", ["Download all files", "RFI Info", "Submittal Info"]);
   return {
-    ...base(email), extNum: baseId, isRev: rev > 0, rev, title: (tm ? tm[1] : "").trim(),
-    specSection: (baseId.match(/^\d{6}/) || [""])[0], formaStatus: "", dueDate: "", ballInCourt: email.from_name || "",
+    dueDate: normDate(lineLabel(body, "Due back")),
+    from: lineLabel(body, "From").replace(/\s*\(.*\)\s*$/, "") || email.from_name || "",
+    purpose: lineLabel(body, "Purpose"),
+    // Setty's own forwards carry the CA team's instructions template, not the question.
+    question: internal ? "" : remarks,
+    internal,
+  };
+}
+export function parseNewformaFwdRfi(email) {
+  const subj = email.subject || "", body = bodyOf(email);
+  const h = subj.match(NF_HEAD); if (!h || !/^RFI$/i.test(h[1])) return null;
+  const rest = subj.slice(h[0].length);
+  const nm = rest.match(/^(.*?)\s*-\s*RFI:\s*([^:]+?)\s*:\s*\w+\s*$/i); if (!nm) return null;
+  const key = rfiKey(nm[2]); if (!key || !/\d/.test(key)) return null;
+  const c = newformaCommon(email, body);
+  return {
+    ...base(email), extNum: key, rawId: nm[2].trim(), event: /Closed/i.test(h[2]) ? "RFI Closed" : "New RFI",
+    title: newformaTitle(nm[1], body), dueDate: c.dueDate, askedBy: c.from, question: c.question,
+    dateInit: dayOf(email.email_date), internal: c.internal,
+  };
+}
+// The submittal id IS the log's spec-based number (232113-012, optional
+// letter suffix "016C", trailing -rev), so matching runs on the base id.
+export function parseNewformaFwdSub(email) {
+  const subj = email.subject || "", body = bodyOf(email);
+  const h = subj.match(NF_HEAD); if (!h || !/^Submittal$/i.test(h[1])) return null;
+  const rest = subj.slice(h[0].length);
+  const nm = rest.match(/^(.*?)\s*-\s*Submittal:\s*([\d.]+-\d+[A-Za-z]?(?:-\d+)?)\s*:\s*\w+\s*$/i); if (!nm) return null;
+  const raw = nm[2]; const rm = raw.match(/^([\d.]+-\d+[A-Za-z]?)-(\d+)$/); const baseId = rm ? rm[1] : raw; const rev = rm ? +rm[2] : 0;
+  const c = newformaCommon(email, body);
+  const closed = /Closed/i.test(h[2]);
+  return {
+    ...base(email), extNum: baseId, isRev: rev > 0, rev, title: newformaTitle(nm[1], body),
+    specSection: (baseId.match(/^\d{5,6}(\.\d+)?/) || [""])[0], formaStatus: "", dueDate: c.dueDate,
+    ballInCourt: c.from, status: closed ? "Returned" : "", dateReceived: closed ? "" : dayOf(email.email_date), internal: c.internal,
   };
 }
 
@@ -171,7 +243,7 @@ export function collapse(events, kind) {
     if (kind === "rfi") return {
       extNum: num, title: last.title || first.title, status: RFI_EVENT_STATUS[last.event] || "Open", dueDate: last.dueDate || first.dueDate,
       from: first.askedBy, question: first.question || last.question, dateReceived: first.dateInit, lastDate: dayOf(last.date),
-      recordId: first.recordId, spFolder: first.spFolder,
+      recordId: first.recordId, spFolder: first.spFolder, lastEvent: last.event, lastRecordId: last.recordId,
     };
     const rev = Math.max(...evs.map((e) => e.rev));
     // Procore events carry their own status; Forma's comes from its Status field.
@@ -180,7 +252,7 @@ export function collapse(events, kind) {
     return {
       extNum: num, title: last.title || first.title, specSection: last.specSection || first.specSection, rev, status, stamp,
       dueDate: last.dueDate || first.dueDate, ballInCourt: last.ballInCourt, dateReceived: first.dateReceived || "", lastDate: dayOf(last.date),
-      recordId: last.recordId, spFolder: last.spFolder,
+      recordId: last.recordId, spFolder: last.spFolder, lastRecordId: last.recordId,
     };
   }).sort((a, b) => { const x = +a.extNum, y = +b.extNum; return (isNaN(x) || isNaN(y)) ? String(a.extNum).localeCompare(String(b.extNum)) : x - y; });
 }
@@ -193,9 +265,12 @@ export const SUB_DISC = ["Mechanical", "Electrical", "Plumbing", "Fire Protectio
 export const digits = (s) => (String(s || "").match(/\d+/) || [""])[0].replace(/^0+/, "") || "0";
 const itemSeg = (s) => { const m = String(s || "").match(/-(\d+)-\d+$/); return m ? String(+m[1]) : null; };
 const revSeg = (s) => { const m = String(s || "").match(/-(\d+)$/); return m ? +m[1] : 0; };
+// By the full RFI key (so follow-up 121.1 is not RFI 121, and 5R not 5),
+// then by title, which catches the same RFI under another system's number.
 export function matchRFI(extNum, title, logged) {
-  const t = (title || "").toLowerCase().trim();
-  return logged.find((r) => digits(r.number) === extNum) || logged.find((r) => t && (r.title || "").toLowerCase().includes(t)) || null;
+  const k = rfiKey(extNum), t = (title || "").toLowerCase().trim();
+  return logged.find((r) => rfiKey(r.number) === k || (r.extNumber != null && rfiKey(r.extNumber) === k))
+    || logged.find((r) => t.length >= 6 && (r.title || "").toLowerCase().includes(t)) || null;
 }
 export function matchSub(extNum, logged) {
   // Newforma/Procore ids are the full spec-based number ("232113-012") — match
@@ -211,7 +286,9 @@ export function matchSub(extNum, logged) {
     const relRev = (n) => { n = String(n || ""); if (n === base) return 0; const m = n.slice(base.length).match(/^-(\d+)$/); return m ? +m[1] : 0; };
     return { row: h[0], maxRev: Math.max(...h.map((s) => relRev(s.number))) };
   }
-  const h = logged.filter((s) => itemSeg(s.number) === extNum);
+  // Forma "#202": a spec-based log number carries it as the item segment
+  // ("237313.13-202-2"); an earlier tracker import logged it as "SUB-202".
+  const h = logged.filter((s) => itemSeg(s.number) === extNum || new RegExp("^SUB-?0*" + extNum + "$", "i").test(String(s.number || "")));
   return h.length ? { row: h[0], maxRev: Math.max(...h.map((s) => revSeg(s.number))) } : null;
 }
 
@@ -237,7 +314,7 @@ export function inferDiscipline(it, kind) {
 
 /* ---------- log records ---------- */
 export function toRfiRecord(it, pid, vendor) {
-  return { id: `sync-procore-${pid}-${it.extNum}`, number: `RFI-${String(it.extNum).padStart(3, "0")}`, title: it.title || "",
+  return { id: `sync-procore-${pid}-${it.extNum}`, number: `RFI-${rfiDisplay(it.extNum)}`, title: it.title || "",
     description: (it.question || "").replace(/\s+/g, " ").trim().slice(0, 200), from: it.from || "", discipline: inferDiscipline(it, "rfi"), assignedTo: [], subAssigned: "",
     dateReceived: it.dateReceived || "", dueDate: it.dueDate || "", dateResponded: (it.status === "Responded" || it.status === "Closed") ? it.lastDate : "", response: "",
     status: it.status, notes: `Imported from ${vendor} · RFI #${it.extNum}`, spFolderUrl: it.spFolder || "", links: [], source: "procore", extNumber: String(it.extNum), sourceEmailId: it.recordId || "" };
@@ -270,6 +347,64 @@ export function buildInbox(emails, loggedRFIs, loggedSubs, pid, vendors = VENDOR
   return inbox;
 }
 
+/* ---------- status updates on items already in the log ---------- */
+// A portal's closing or answering event moves a logged item FORWARD, never
+// back: RFI Open → Responded → Closed; submittal (any open state) → Returned.
+// Only explicit events count: Procore "Response to RFI" / "RFI Closed",
+// Newforma "Responded to and Closed", a Procore distribution or Setty approver
+// response, a Forma item whose status is Closed. "Status Update", reminders
+// and forwards never change a status. Void items are never touched.
+const RFI_RANK = { "Open": 0, "Pending Sub Response": 0, "Responded": 1, "Closed": 2 };
+const SUB_RANK = { "Received": 0, "Under Review": 0, "Pending Sub Review": 0, "Resubmittal Required": 0, "Returned": 1 };
+const RFI_UPDATE_EVENTS = { "Response to RFI": "Responded", "RFI Closed": "Closed" };
+// The ONE logged RFI this portal item is, by number only (a title match is
+// good enough to avoid creating a twin, not to change someone's record).
+function strictRfiRow(it, logged) {
+  const k = rfiKey(it.extNum);
+  const hits = logged.filter((r) => rfiKey(r.number) === k || (r.extNumber != null && rfiKey(r.extNumber) === k));
+  return hits.length === 1 ? hits[0] : null;
+}
+// The ONE logged submittal row that is this item AND revision. Spec-based
+// numbers carry the revision ("237313.13-202-2", "262416-001-0"); a bare
+// "SUB-202" row counts only when its resubNumber is that revision.
+function strictSubRow(it, logged) {
+  const ext = String(it.extNum), rev = +it.rev || 0;
+  const hits = logged.filter((s) => {
+    const n = String(s.number || "");
+    if (/[-.]/.test(ext)) return n === ext + "-" + rev || (rev === 0 && n === ext);
+    const m = n.match(/-(\d+)-(\d+)$/);
+    if (m) return String(+m[1]) === ext && +m[2] === rev;
+    return new RegExp("^SUB-?0*" + ext + "$", "i").test(n) && (+s.resubNumber || 0) === rev;
+  });
+  return hits.length === 1 ? hits[0] : null;
+}
+// What one collapsed portal item would change on its logged row, or null.
+// The patch only ever sets status, the responded/returned date when empty,
+// and (submittals) the stamp when none is recorded; text fields are never
+// written. `prev` holds the old values so a person can Undo it.
+// A change a person undid is not re-applied from the same (or an older)
+// event; only a newer portal event can move the item again.
+const undoneFor = (row, it) => !!(row && row.intakeStatus && row.intakeStatus.undone && (row.intakeStatus.eventDate || "") >= (it.lastDate || ""));
+export function statusUpdateFor(it, kind, logged, opts = {}) {
+  if (kind === "rfi") {
+    const to = RFI_UPDATE_EVENTS[it.lastEvent]; if (!to) return null;
+    const row = strictRfiRow(it, logged); if (!row || !row.id || undoneFor(row, it)) return null;
+    const from = row.status || "";
+    if (!(from in RFI_RANK) || RFI_RANK[to] <= RFI_RANK[from]) return null;
+    const patch = { status: to }, prev = { status: from };
+    if (!row.dateResponded && it.lastDate) { patch.dateResponded = it.lastDate; prev.dateResponded = row.dateResponded || ""; }
+    return { row, from, to, patch, prev };
+  }
+  if (it.status !== "Returned") return null;
+  const row = strictSubRow(it, logged); if (!row || !row.id || undoneFor(row, it)) return null;
+  const from = row.status || "";
+  if (!(from in SUB_RANK) || SUB_RANK.Returned <= SUB_RANK[from]) return null;
+  const patch = { status: "Returned" }, prev = { status: from };
+  if (!row.dateReturned && it.lastDate) { patch.dateReturned = it.lastDate; prev.dateReturned = row.dateReturned || ""; }
+  if (it.stamp && (!row.stamp || row.stamp === "—")) { patch.stamp = it.stamp; prev.stamp = row.stamp || "—"; }
+  return { row, from, to: "Returned", patch, prev };
+}
+
 /* ---------- scheduled intake: what to append, unattended ---------- */
 // The connector's admin/ca-items-intake route calls this per project. It is
 // deliberately narrower than the tracker's manual import:
@@ -283,18 +418,42 @@ export function buildInbox(emails, loggedRFIs, loggedSubs, pid, vendors = VENDOR
 //   - never an id already in the log.
 // Each record is marked intakeReviewed:false; the PMS shows it as Unreviewed
 // until a person confirms the discipline and assignee.
+// Which portals the unattended intake reads for one project. A confirmed CA
+// platform (project.caPortal, set in the tracker) names the ONE portal whose
+// mail becomes log items, so a Newforma job never also imports the Procore
+// copy of the same RFI under the contractor's number, and vice versa. With
+// nothing confirmed, Procore only (its numbering is the contractor's own and
+// it was the first portal proven against the log). PMWeb and email-only jobs
+// import nothing unattended.
+export const PLATFORM_VENDORS = { "Procore": ["Procore"], "Autodesk Build": ["Autodesk Forma"], "Newforma": ["Newforma"], "PMWeb": [], "Email only": [] };
+export function intakeVendorsFor(project) {
+  const p = project && project.caPortal && project.caPortal.platform;
+  return p && PLATFORM_VENDORS[p] ? PLATFORM_VENDORS[p] : ["Procore"];
+}
 export function planIntake(emails, project, pid, opts = {}) {
-  const vendorNames = opts.vendors || ["Procore"];
+  // opts.vendors is what the caller allows; the project's platform narrows it.
+  const allowed = opts.vendors || ["Procore"];
+  const vendorNames = intakeVendorsFor(project).filter((v) => allowed.includes(v));
   const since = opts.since || "";
   const at = opts.at || new Date().toISOString();
   const rfis = Array.isArray(project && project.rfis) ? project.rfis : [];
   const subs = Array.isArray(project && project.submittals) ? project.submittals : [];
   const inbox = buildInbox(emails, rfis, subs, pid, VENDORS.filter((v) => vendorNames.includes(v.vendor)));
-  const out = { rfis: [], submittals: [], skipped: { matched: 0, update: 0, old: 0 } };
+  const out = { rfis: [], submittals: [], updates: [], skipped: { matched: 0, update: 0, old: 0 } };
   const have = new Set([...rfis, ...subs].map((r) => r && r.id));
   for (const kind of ["rfi", "submittal"]) {
     for (const it of inbox[kind]) {
-      if (it.verdict !== "new") { out.skipped[it.verdict === "update" ? "update" : "matched"]++; continue; }
+      if (it.verdict !== "new") {
+        // A logged item: maybe its status moved forward in the portal (recent events only).
+        const u = opts.updates !== false && it.verdict === "matched" && !(since && (it.lastDate || "") < since)
+          ? statusUpdateFor(it, kind, kind === "rfi" ? rfis : subs) : null;
+        if (u) {
+          out.updates.push({ kind, id: u.row.id, number: u.row.number, from: u.from, to: u.to, patch: u.patch,
+            intakeStatus: { from: u.from, to: u.to, prev: u.prev, at, by: "ca-items-intake", vendor: it.vendor,
+              emailId: it.lastRecordId || it.recordId || "", eventDate: it.lastDate || "", reviewed: false } });
+        } else out.skipped[it.verdict === "update" ? "update" : "matched"]++;
+        continue;
+      }
       if (since && (it.lastDate || "") < since) { out.skipped.old++; continue; }
       if (have.has(it.record.id)) { out.skipped.matched++; continue; }
       have.add(it.record.id);
@@ -303,6 +462,21 @@ export function planIntake(emails, project, pid, opts = {}) {
     }
   }
   return out;
+}
+
+// Apply planIntake's updates to a project's arrays (pure; returns new arrays).
+// The row is found again by id, and its status must still be the one the plan
+// saw, so a person's edit between plan and write always wins.
+export function applyStatusUpdates(project, updates) {
+  const by = { rfi: (project.rfis || []).slice(), submittal: (project.submittals || []).slice() };
+  let applied = 0;
+  for (const u of updates || []) {
+    const arr = by[u.kind], i = arr.findIndex((r) => r && r.id === u.id);
+    if (i < 0 || (arr[i].status || "") !== u.from) continue;
+    arr[i] = { ...arr[i], ...u.patch, intakeStatus: u.intakeStatus };
+    applied++;
+  }
+  return { rfis: by.rfi, submittals: by.submittal, applied };
 }
 
 /* ---------- which CA platform a project runs on ---------- */
