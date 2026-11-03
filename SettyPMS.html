@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-02-pms-v169-ca-platform";
+    window.__appVersion = "2026-11-03-pms-v170-reply-in-procore";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -11003,6 +11003,55 @@ function classifyAiReviewOutcome(suggested, final) {
   return kept / wa.size >= 0.5 ? "edited" : "replaced";
 }
 
+// ── REPLY IN PROCORE: pure helpers (sliced out and tested by procoreReply.test.mjs) ──
+// Procore's RFI notification says "To respond to this RFI simply reply to this
+// email", so the response is drafted as a REAL reply to that notification in
+// the user's own mailbox (Graph createReply): Outlook keeps Procore's reply
+// address and threading headers, which a new message could not reproduce.
+// The filed log has no Reply-To, so the PMS never composes to an address itself.
+function procoreRfiNumberOf(item) {
+  const raw = String((item && (item.extNumber || item.number)) || "");
+  const m = raw.match(/(\d+)\s*$/) || raw.match(/(\d+)/);
+  return m ? String(+m[1]) : "";
+}
+// Subjects as filed: "...: New RFI #RFI-91, ...", "...: Response to RFI #662, ...",
+// "...: RFI Closed, #17, ...", "...: Status Update on RFI #664, ...".
+function procoreSubjectIsRfi(subject, n) {
+  if (!n) return false;
+  const re = new RegExp("(?:New RFI|Response to RFI|Status Update on RFI|RFI Closed)\\s*,?\\s*#\\s*(?:RFI[-\\s]?)?0*" + n + "(?!\\d)", "i");
+  return re.test(String(subject || ""));
+}
+// Which filed Procore email to reply to: the one the item was imported from,
+// else the newest "New RFI" notification (it carries the reply instruction),
+// else the newest open-item event. Never a "Closed" one: replying to a closed
+// RFI does nothing useful. rows: pms_project_emails, any order.
+function pickProcoreNotification(rows, item) {
+  const n = procoreRfiNumberOf(item);
+  const list = (rows || []).filter(r => r && /procoretech/i.test(r.from_address || ""));
+  const own = item && item.sourceEmailId ? list.find(r => r.record_id === item.sourceEmailId) : null;
+  if (own && procoreSubjectIsRfi(own.subject, n) && !/RFI Closed/i.test(own.subject || "")) return own;
+  const hits = list.filter(r => procoreSubjectIsRfi(r.subject, n) && !/RFI Closed/i.test(r.subject || ""))
+    .sort((a, b) => String(b.email_date || "").localeCompare(String(a.email_date || "")));
+  return hits.find(r => /New RFI/i.test(r.subject || "")) || hits[0] || null;
+}
+// The response field is rich text; Procore reads the reply as plain text.
+function procoreReplyText(html) {
+  return String(html || "")
+    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6])\s*>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "• ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&")
+    .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+// Is this project's RFI flow on Procore? Confirmed platform, or the item came from Procore.
+function isProcoreRfi(project, item) {
+  if (project && project.caPortal && project.caPortal.platform === "Procore") return true;
+  if (item && item.intake && item.intake.vendor === "Procore") return true;
+  return /^Imported from Procore/.test(String((item && item.notes) || ""));
+}
+// ── end REPLY IN PROCORE helpers ──
+
 function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }) {
   const [form, setForm] = useState({ ...item });
   const [emailStatus, setEmailStatus] = useState("idle");
@@ -11241,6 +11290,54 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       setF("status", isRFI ? "Pending Sub Response" : "Pending Sub Review");
       setEmailStatus("done"); setEmailMsg("✓ Sub forwarding draft created");
     } catch(e) { setEmailStatus("error"); setEmailMsg("✗ " + e.message); }
+  }
+
+  // Reply in Procore: find the RFI's Procore notification in the user's own
+  // mailbox and create a reply draft carrying the response; they review and
+  // press Send in Outlook (Mail.Send is not consented). The response is also
+  // copied to the clipboard, so every failure path still leaves it pasteable.
+  async function draftProcoreReply() {
+    const text = procoreReplyText(form.response);
+    if (!text) { setEmailStatus("error"); setEmailMsg("Write the response first."); return; }
+    try { await navigator.clipboard.writeText(text); } catch (e) { /* clipboard blocked; the draft still carries it */ }
+    setEmailStatus("sending"); setEmailMsg("Finding the Procore email…");
+    try {
+      const rows = await sbFetchV2("GET", "/rest/v1/pms_project_emails?project_id=eq." + encodeURIComponent(project.id)
+        + "&from_address=ilike.*procoretech*&select=record_id,msg_id,subject,from_address,email_date&order=email_date.desc&limit=300");
+      const note = pickProcoreNotification(rows, form);
+      if (!note) {
+        setEmailStatus("error");
+        setEmailMsg("No filed Procore email for RFI " + (procoreRfiNumberOf(form) || form.number) + ". The response is copied: open the Procore notification in Outlook, Reply, and paste.");
+        return;
+      }
+      const token = await getToken();
+      // 1) the filed message id is a Graph id in the mailbox of whoever filed it;
+      // 2) otherwise the same notification in this user's mailbox, by subject + sender.
+      let msg = null;
+      if (note.msg_id && !/^milestone:/.test(note.msg_id)) {
+        try { msg = await graphFetch("GET", "/me/messages/" + encodeURIComponent(note.msg_id) + "?$select=id,subject", undefined, token); } catch (e) { msg = null; }
+      }
+      if (!msg || !msg.id) {
+        const q = "/me/messages?$filter=" + encodeURIComponent("subject eq '" + String(note.subject).replace(/'/g, "''") + "'")
+          + "&$select=id,subject,from,receivedDateTime&$top=10";
+        const found = await graphFetch("GET", q, undefined, token);
+        const same = ((found && found.value) || []).filter(x => /procoretech/i.test((x.from && x.from.emailAddress && x.from.emailAddress.address) || ""))
+          .sort((a, b) => String(b.receivedDateTime || "").localeCompare(String(a.receivedDateTime || "")));
+        msg = same[0] || null;
+      }
+      if (!msg || !msg.id) {
+        setEmailStatus("error");
+        setEmailMsg("That Procore email isn't in your mailbox (it went to someone else). The response is copied: ask them to Reply to \"" + note.subject + "\" and paste it, or forward it to yourself first.");
+        return;
+      }
+      const draft = await graphFetch("POST", "/me/messages/" + encodeURIComponent(msg.id) + "/createReply", { comment: text }, token);
+      if (!draft || !draft.id) throw new Error("Outlook did not create the reply draft.");
+      // Opened after awaits, so a pop-up blocker may stop it; the draft is in Drafts either way.
+      let opened = null;
+      if (draft.webLink) { opened = window.open(draft.webLink, "_blank"); if (opened) opened.opener = null; }
+      setEmailStatus("done");
+      setEmailMsg("✓ Reply to the Procore email drafted" + (opened ? " (opened in Outlook on the web)" : ": open it from your Outlook Drafts folder") + ". Check it and press Send; Procore logs it as the response.");
+    } catch (e) { setEmailStatus("error"); setEmailMsg("✗ " + e.message + " (the response is copied to your clipboard)"); }
   }
 
   async function draftResponseEmail() {
@@ -11685,6 +11782,12 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
             <Btn small variant="ghost" onClick={draftAssignEmail}>✉ Assign Email</Btn>
             {(subList.length > 0 || form.subAssigned) && (
               <Btn small variant="ghost" onClick={draftSubEmail}>✉ Forward to Sub</Btn>
+            )}
+            {isRFI && isProcoreRfi(project, form) && (
+              <Btn small variant="primary" onClick={draftProcoreReply}
+                title="Drafts a reply to this RFI's Procore notification email in your Outlook, with the response above. Procore logs a reply to its email as the RFI response. You check it and press Send.">
+                ↩ Reply in Procore
+              </Btn>
             )}
             <Btn small variant="primary" onClick={draftResponseEmail}>
               ✉ {isRFI ? "Draft Response" : "Draft Return"}
