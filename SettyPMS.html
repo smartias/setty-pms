@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v170-reply-in-procore";
+    window.__appVersion = "2026-11-03-pms-v171-prime-ca-record";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -79,6 +79,13 @@
 <script type="module">
   import * as OneNoteImport from "./onenote-import.js";
   window.OneNoteImport = OneNoteImport;
+</script>
+<!-- Construction administration when Setty is PRIME (RFI / submittal numbering,
+     routing to subs, intake from contractor emails). Own block so a missing
+     file cannot take down the imports above; callers fall back without it. -->
+<script type="module">
+  import * as PrimeCa from "./primeCa.js";
+  window.PrimeCa = PrimeCa;
 </script>
   <script>
     // Theme preference: "system" (default, follows the OS), "light" or "dark".
@@ -6216,15 +6223,19 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml, metadata = nu
 }
 
 
-async function createOutlookDraft({ subject, bodyHtml, bodyText, metadata = null }) {
+async function createOutlookDraft({ subject, bodyHtml, bodyText, metadata = null, to = [], cc = [] }) {
   const token = await getToken();
   const footer = metadata ? buildEmailMetadataFooter(metadata) : "";
   const content = (bodyHtml || bodyText || "") + footer;
+  // Optional recipients (RFI/submittal distribution lists, the sub's email);
+  // the person still reviews the draft and presses Send in Outlook.
+  const recips = list => (list || []).filter(Boolean).map(address => ({ emailAddress: { address } }));
   const body = {
     subject,
     body: { contentType: "HTML", content },
-    toRecipients: [],
+    toRecipients: recips(to),
   };
+  if (cc && cc.length) body.ccRecipients = recips(cc);
   const res = await fetch("https://graph.microsoft.com/v1.0/me/messages", {
     method: "POST",
     headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
@@ -10773,7 +10784,9 @@ function caBackloadSeatUrl(project, type) {
     "Use the Setty PMS connector and the submittal-rfi-review skill: find the filed " + (isRFI ? "RFI" : "submittal") + " PDF or the transmittal / Procore / Forma notification email in the project, extract the item's number and fields, log it with backload_ca_item, then review it against the current issued set and the governing spec section" + (isRFI ? "" : " — including reading the submitted cut sheet to confirm the MARKED selection (what's circled/highlighted/checked) against the spec and schedule basis of design") + " and save the suggestion with save_ca_review so it appears in the PMS for my sign-off. If you can't find the source, ask me for the item number or the file.",
   ].join("\n"));
 }
-const RFI_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Multi-Discipline", "Other"];
+// Architectural / Structural / Civil: RFIs answered by our subconsultants on
+// jobs where Setty is prime.
+const RFI_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Architectural", "Structural", "Civil", "Multi-Discipline", "Other"];
 const SUBMITTAL_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Architectural", "Structural", "Civil", "Other"];
 
 const RFI_STATUS_COLORS = {
@@ -10870,11 +10883,45 @@ function SlaChip({ dueDate, isClosed }) {
   );
 }
 
-function newRFI(cos, dueDays) {
+// ─── PRIME CA HELPERS (primeCa.js → window.PrimeCa) ──────────────────────────
+// When Setty is prime there is no Procore/Newforma: the PMS log is the official
+// record. The rules live in primeCa.js (tested by primeCa.test.mjs); these
+// wrappers keep the page working if that module failed to load.
+function caSettyIsPrime(project) {
+  const L = window.PrimeCa;
+  return L ? L.settyIsPrime(project) : isSettyFirm(project && project.prime);
+}
+function caNumberValue(num) {
+  const m = String(num == null ? "" : num).match(/(\d+)(?:\.\d+)?\s*$/);
+  return m ? parseInt(m[1], 10) : null;
+}
+// Next log number: one past the highest ever used (items in the log plus the
+// project's high-water mark, which remembers deleted ones). The old rule,
+// count + 1, reissued numbers after a delete and could duplicate one.
+function caNextNumber(items, type, highWater) {
+  const L = window.PrimeCa;
+  if (L) return L.nextCaNumber(items, type, highWater);
+  let max = +highWater || 0;
+  (items || []).forEach(it => { const n = caNumberValue(it && it.number); if (n != null && n > max) max = n; });
+  return { number: (type === "rfi" ? "RFI-" : "SUB-") + String(max + 1).padStart(3, "0"), value: max + 1 };
+}
+// The project with a new RFI/submittal appended and the high-water mark bumped.
+function caWithNewItem(project, type, item) {
+  const key = type === "rfi" ? "rfis" : "submittals";
+  const hw = { ...(project.caNumberHighWater || {}) };
+  hw[type] = Math.max(+hw[type] || 0, caNumberValue(item.number) || 0);
+  return { ...project, [key]: [...(project[key] || []), item], caNumberHighWater: hw };
+}
+// { ok, reason }: on prime jobs an issued (or emailed-in) item is voided, not deleted.
+function caDeleteGuard(project, item, type) {
+  const L = window.PrimeCa;
+  return L ? L.canDeleteCaItem(project, item, type) : { ok: true, reason: "" };
+}
+
+function newRFI(cos, dueDays, highWater) {
   const today = new Date().toISOString().slice(0, 10);
-  const num = cos.length + 1;
   return {
-    id: uid(), number: "RFI-" + String(num).padStart(3, "0"),
+    id: uid(), number: caNextNumber(cos, "rfi", highWater).number,
     title: "", description: "", from: "", discipline: "Mechanical",
     assignedTo: [], subAssigned: "",
     dateReceived: today, dueDate: addWD(today, dueDays || 5),
@@ -10884,11 +10931,10 @@ function newRFI(cos, dueDays) {
   };
 }
 
-function newSubmittal(subs, dueDays) {
+function newSubmittal(subs, dueDays, highWater) {
   const today = new Date().toISOString().slice(0, 10);
-  const num = subs.length + 1;
   return {
-    id: uid(), number: "SUB-" + String(num).padStart(3, "0"),
+    id: uid(), number: caNextNumber(subs, "submittal", highWater).number,
     specSection: "", description: "", from: "", discipline: "Mechanical",
     assignedTo: [], subAssigned: "",
     dateReceived: today, dueDate: addWD(today, dueDays || 10),
@@ -11063,6 +11109,36 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const dueDays = isRFI ? (project.rfiDueDays || 5) : (project.submittalDueDays || 10);
 
   function setF(k, v) { setForm(f => ({ ...f, [k]: v })); }
+
+  // ── Sub routing when Setty is prime (primeCa.js) ──────────────────────────
+  // form.subRouting = { subId, firm, sentAt, dueDate, respondedAt }. The sub's
+  // deadline defaults to 2 working days before the contractor's, so there is
+  // time to check their answer and issue it under Setty's name.
+  const isPrimeJob = caSettyIsPrime(project);
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const routing = form.subRouting || {};
+  const subDueValue = routing.dueDate || (window.PrimeCa ? window.PrimeCa.subDueDefault(form.dueDate, todayISO) : form.dueDate);
+  const routingState = window.PrimeCa ? window.PrimeCa.subRoutingState(form, todayISO) : { state: "none", daysLate: 0 };
+  function setRouting(patch) { setForm(f => ({ ...f, subRouting: { ...(f.subRouting || {}), ...patch } })); }
+  // Changing the sub after it was sent keeps the old routing in
+  // subRoutingHistory, so the record still shows who had it and when.
+  function changeSub(id) {
+    setForm(f => {
+      const r = f.subRouting || {};
+      const next = { ...f, subAssigned: id };
+      if (r.sentAt && r.subId && r.subId !== id) {
+        next.subRoutingHistory = [...(f.subRoutingHistory || []), { ...r, replacedAt: new Date().toISOString() }];
+        next.subRouting = {};
+      } else if (!id) next.subRouting = {};
+      return next;
+    });
+  }
+  // The sub answered: the ball comes back to Setty.
+  function markSubAnswered() {
+    const pending = isRFI ? "Pending Sub Response" : "Pending Sub Review";
+    setForm(f => ({ ...f, subRouting: { ...(f.subRouting || {}), respondedAt: todayISO },
+      status: f.status === pending ? (isRFI ? "Open" : "Under Review") : f.status }));
+  }
 
   // ── Claude review (submittal-rfi-review skill) ──────────────────────────
   // The connector's save_ca_review writes an `aiReview` block onto the record;
@@ -11278,7 +11354,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700;width:160px'>Project</td><td style='padding:8px 12px'>" + (project.name || "—") + "</td></tr>"
         + "<tr><td style='padding:8px 12px;font-weight:700'>" + typLabel + " #</td><td style='padding:8px 12px'>" + form.number + "</td></tr>"
         + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Description</td><td style='padding:8px 12px'>" + (isRFI ? form.title : form.description) + "</td></tr>"
-        + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Response Needed By</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(form.dueDate) + "</td></tr>"
+        + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Response Needed By</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(isPrimeJob ? subDueValue : form.dueDate) + "</td></tr>"
       + "</table>"
       + questionEmailBlock()
       + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
@@ -11286,9 +11362,12 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       + aiEmailSection(false)
       + "<p style='font-size:11px;color:#44546A'>Please send your response to this email. Thank you.</p></div>";
     try {
-      await createOutlookDraft({ subject: typLabel + " — " + form.number + " — " + (isRFI ? form.title : form.description) + " · Sub Response Requested", bodyHtml });
+      const sub = subList.find(x => x.id === form.subAssigned) || null;
+      await createOutlookDraft({ subject: typLabel + " — " + form.number + " — " + (isRFI ? form.title : form.description) + " · Sub Response Requested", bodyHtml, to: sub && sub.email ? [sub.email] : [] });
       setF("status", isRFI ? "Pending Sub Response" : "Pending Sub Review");
-      setEmailStatus("done"); setEmailMsg("✓ Sub forwarding draft created");
+      if (isPrimeJob) setRouting({ subId: form.subAssigned, firm: (sub && (sub.firm || sub.name)) || "", sentAt: todayISO, dueDate: subDueValue, respondedAt: "" });
+      setEmailStatus("done");
+      setEmailMsg("✓ Sub forwarding draft created" + (sub && sub.email ? " (to " + sub.email + ")" : ". No email on file for this sub (Subconsultants tab), so add the recipient in Outlook") + ". Save to keep the routing.");
     } catch(e) { setEmailStatus("error"); setEmailMsg("✗ " + e.message); }
   }
 
@@ -11367,11 +11446,21 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       + "<p style='font-size:11px;color:#44546A'>Please contact us if you have any questions regarding the above.</p></div>";
     try {
       const prefix = isRFI ? "RFI Response" : ("Submittal Return — " + (form.stamp || ""));
-      await createOutlookDraft({ subject: prefix + ": " + form.number + " — " + (isRFI ? form.title : form.description) + " · " + (project.name || "Project"), bodyHtml });
+      // Distribution list (project.caDistribution) plus, for an item logged
+      // from a contractor's email, that sender.
+      const srcFrom = form.sourceEmail && /@/.test(form.sourceEmail.from || "") ? [form.sourceEmail.from] : [];
+      const dist = window.PrimeCa ? window.PrimeCa.distributionFor(project, type, srcFrom) : { to: srcFrom, cc: [] };
+      await createOutlookDraft({ subject: prefix + ": " + form.number + " — " + (isRFI ? form.title : form.description) + " · " + (project.name || "Project"), bodyHtml, to: dist.to, cc: dist.cc });
+      // Prime jobs: record when it was issued (the day the response draft was
+      // made, matching the status/date the lines below set).
+      if (isPrimeJob && !form.issuedAt) setF("issuedAt", new Date().toISOString());
       const today = new Date().toISOString().slice(0, 10);
       if (isRFI) { setF("status", "Responded"); setF("dateResponded", today); }
       else { setF("status", "Returned"); setF("dateReturned", today); }
-      setEmailStatus("done"); setEmailMsg("✓ Response draft created in Outlook Drafts");
+      setEmailStatus("done");
+      setEmailMsg("✓ Response draft created in Outlook Drafts" + (dist.to.length || dist.cc.length
+        ? " (To " + dist.to.length + ", Cc " + dist.cc.length + ")"
+        : isPrimeJob ? ". No distribution list set: add recipients in Outlook, or set the list above the log" : ""));
     } catch(e) { setEmailStatus("error"); setEmailMsg("✗ " + e.message); }
   }
 
@@ -11456,6 +11545,13 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
                 {project.name && <span>{project.name}</span>}
               </div>
             )}
+            {(form.sourceEmail || form.contractorRef) && (
+              <div style={{ fontSize: 11.5, color: P.textMuted, marginTop: 4 }}>
+                {form.contractorRef && <span>Contractor's #{form.contractorRef}</span>}
+                {form.contractorRef && form.sourceEmail && <span> · </span>}
+                {form.sourceEmail && <span title={form.sourceEmail.subject || ""}>📧 Logged from {form.sourceEmail.from || "an email"}{form.sourceEmail.date ? " of " + form.sourceEmail.date : ""}</span>}
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <select value={form.status} onChange={e => setF("status", e.target.value)}
@@ -11480,7 +11576,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           {/* From */}
           <Field label="From (GC / Prime)">
             <input value={form.from || ""} onChange={e => setF("from", e.target.value)}
-              placeholder={companyName || "Company name…"} style={{ width: "100%" }} />
+              placeholder={isPrimeJob ? "Contractor (GC)…" : (companyName || "Company name…")} style={{ width: "100%" }} />
           </Field>
 
           {/* Discipline */}
@@ -11545,11 +11641,31 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
 
           {/* Sub assignment */}
           <Field label="Sub-Consultant (if applicable)">
-            <select value={form.subAssigned || ""} onChange={e => setF("subAssigned", e.target.value)} style={{ width: "100%" }}>
+            <select value={form.subAssigned || ""} onChange={e => changeSub(e.target.value)} style={{ width: "100%" }}>
               <option value="">— None —</option>
-              {subList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              {/* Subconsultant records carry `firm` (SubsView); `name` was never set, so the list showed blanks. */}
+              {subList.map(s => <option key={s.id} value={s.id}>{s.firm || s.name || "(unnamed sub)"}{s.discipline ? " · " + s.discipline : ""}</option>)}
             </select>
           </Field>
+
+          {/* Sub routing (Setty is prime): the sub's own deadline and answer */}
+          {isPrimeJob && form.subAssigned && (
+            <Field label="Sub routing (Setty is prime)" style={{ gridColumn: "1 / -1" }}>
+              <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center", fontSize: 12 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>Sub due
+                  <input type="date" value={subDueValue || ""} onChange={e => setRouting({ dueDate: e.target.value })} />
+                </label>
+                <span>Sent: <b>{routing.sentAt || "not yet"}</b></span>
+                <span>Answered: <b>{routing.respondedAt || "—"}</b></span>
+                {routingState.state === "late" && <span style={{ color: P.red, fontWeight: 700 }}>Sub is {routingState.daysLate} day{routingState.daysLate === 1 ? "" : "s"} late</span>}
+                {routing.sentAt && !routing.respondedAt && <Btn small onClick={markSubAnswered} title="The sub has answered: the item comes back to Setty to check and issue">✓ Sub answered</Btn>}
+                {routing.respondedAt && <Btn small variant="ghost" onClick={() => setRouting({ respondedAt: "" })}>Undo answered</Btn>}
+              </div>
+              <div style={{ fontSize: 11, color: P.textDim, marginTop: 4 }}>
+                "✉ Forward to Sub" (below) records the date sent. The sub's deadline defaults to 2 working days before the contractor's, so there is time to check their answer and issue it under Setty's name.
+              </div>
+            </Field>
+          )}
 
           {/* ── QUESTION vs RESPONSE: two different documents, bannered apart so
               nobody has to guess where the contractor stops and Setty starts.
@@ -11806,6 +11922,233 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   );
 }
 
+// ─── PRIME CA: BALL-IN-COURT CHIP + CONTRACTOR-EMAIL INTAKE ───────────────────
+// Shown only when Setty is prime (project.prime is a Setty name): the log is
+// then the official record, so it has to say who owes the next move and has
+// to pick up RFIs/submittals the contractor emailed straight to us.
+const CA_BALL_COLORS = { setty: "accentLight", sub: "yellow", contractor: "textMuted" };
+function CaBallChip({ item, type, project }) {
+  const L = window.PrimeCa;
+  if (!L || !caSettyIsPrime(project)) return null;
+  const b = L.ballInCourt(item, type, project.subconsultants || []);
+  if (b.who === "none") return null;
+  const late = L.subRoutingState(item, new Date().toISOString().slice(0, 10));
+  const color = late.state === "late" ? P.red : (P[CA_BALL_COLORS[b.who]] || P.textMuted);
+  return (
+    <div title="Ball in court: who owes the next move on this item" style={{ fontSize: 10.5, fontWeight: 700, color, marginTop: 3, whiteSpace: "nowrap" }}>
+      ⚑ {b.label}{late.state === "late" ? " · " + late.daysLate + "d late" : ""}
+    </div>
+  );
+}
+
+// Banner + list of filed emails that look like a contractor's RFI/submittal
+// and are not logged yet. Emails reach pms_project_emails when someone files
+// them to the project with the Outlook add-in. "Log" creates the item (next
+// number, received date and question from the email, sourceEmail recorded)
+// and opens it; "Not one" remembers the dismissal on the project.
+function CaPrimePanel({ project, type, onChange, onOpen }) {
+  const isRFI = type === "rfi";
+  const noun = isRFI ? "RFI" : "submittal";
+  const [cands, setCands] = React.useState(null); // null = loading
+  const [err, setErr] = React.useState("");
+  const [busy, setBusy] = React.useState("");
+  const [showAll, setShowAll] = React.useState(false);
+  const prime = caSettyIsPrime(project);
+  const dismissedSig = (project.caIntakeDismissed || []).length + ":" + (project.rfis || []).length + ":" + (project.submittals || []).length;
+  React.useEffect(() => {
+    if (!prime) return undefined;
+    let alive = true;
+    (async () => {
+      try {
+        const L = window.PrimeCa;
+        if (!L) throw new Error("the prime-CA module (primeCa.js) did not load; reload the page");
+        const rows = await sbFetchV2("GET", "/rest/v1/pms_project_emails?project_id=eq." + encodeURIComponent(project.id)
+          + "&select=record_id,subject,from_name,from_address,email_date&order=email_date.desc&limit=500");
+        if (alive) { setCands(L.findIntakeCandidates(rows || [], project).filter(c => c.type === type)); setErr(""); }
+      } catch (e) { if (alive) { setCands([]); setErr(e.message || String(e)); } }
+    })();
+    return () => { alive = false; };
+  }, [project.id, dismissedSig, prime]);
+  if (!prime) return null;
+
+  async function logIt(c) {
+    setBusy(c.recordId);
+    try {
+      let body = "";
+      try {
+        const rows = await sbFetchV2("GET", "/rest/v1/pms_project_emails?record_id=eq." + encodeURIComponent(c.recordId) + "&select=body_text&limit=1");
+        body = (rows && rows[0] && rows[0].body_text) || "";
+      } catch (e) { body = ""; } // the item still logs; the question can be pasted in
+      const hw = (project.caNumberHighWater || {})[type];
+      const base = isRFI ? newRFI(project.rfis || [], project.rfiDueDays || 5, hw) : newSubmittal(project.submittals || [], project.submittalDueDays || 10, hw);
+      const item = window.PrimeCa.itemFromCandidate(base, c, body, isRFI ? (project.rfiDueDays || 5) : (project.submittalDueDays || 10));
+      onChange(caWithNewItem(project, type, item));
+      onOpen(item);
+    } finally { setBusy(""); }
+  }
+  function dismiss(ids) {
+    onChange({ ...project, caIntakeDismissed: [...new Set([...(project.caIntakeDismissed || []), ...ids])] });
+  }
+
+  const list = cands || [];
+  const shown = showAll ? list : list.slice(0, 8);
+  return (
+    <div style={{ border: "1px solid " + P.accent, background: P.accentDim, borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
+      <div style={{ fontSize: 12.5 }}>
+        <b>Setty is prime on this project.</b> This log is the official record: numbers are never reused, and an item that
+        has gone to the contractor is set to Void, not deleted. Route items to a subconsultant from the item (✉ Forward to Sub);
+        the ⚑ line under each status shows who owes the next move.
+      </div>
+      <CaDistributionEditor project={project} type={type} onChange={onChange} />
+      <div style={{ marginTop: 8, fontSize: 12 }}>
+        {cands === null && <span style={{ color: P.textDim }}>Checking filed emails for new {noun}s…</span>}
+        {err && <span style={{ color: P.red }}>Couldn't check filed emails: {err}</span>}
+        {cands !== null && !err && list.length === 0 && (
+          <span style={{ color: P.textDim }}>No unlogged {noun} emails from the contractor. (Emails show up here once they are filed to this project with the Outlook add-in.)</span>
+        )}
+        {list.length > 0 && (
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>📥 {list.length} filed email{list.length === 1 ? " looks" : "s look"} like a new {noun} and {list.length === 1 ? "isn't" : "aren't"} in the log:</div>
+            <table style={{ width: "100%" }}>
+              <tbody>
+                {shown.map(c => (
+                  <tr key={c.recordId}>
+                    <td style={{ fontSize: 12, whiteSpace: "nowrap", color: P.textMuted }}>{c.date || "—"}</td>
+                    <td style={{ fontSize: 12, color: P.textMuted }}>{c.fromName || c.fromAddress}</td>
+                    <td style={{ fontSize: 12 }}>{c.subject}{c.ref ? <span style={{ color: P.textDim }}> · contractor's #{c.ref}</span> : null}</td>
+                    <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
+                      <Btn small onClick={() => logIt(c)} disabled={!!busy} title={"Add it to the log as the next " + noun + " number and open it to check"}>{busy === c.recordId ? "⏳" : "+ Log " + noun}</Btn>{" "}
+                      <Btn small variant="ghost" onClick={() => dismiss([c.recordId])} disabled={!!busy} title={"Not a new " + noun + " (hide it from this list)"}>Not one</Btn>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+              {list.length > shown.length && <Btn small variant="ghost" onClick={() => setShowAll(true)}>Show all {list.length}</Btn>}
+              {list.length > 1 && <Btn small variant="ghost" onClick={() => { if (window.confirm("Hide all " + list.length + " emails from this list? Use this when they are old or not " + noun + "s. They stay filed; they just stop showing here.")) dismiss(list.map(c => c.recordId)); }}>Hide all</Btn>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── CA LOG EXPORT (the official record) ─────────────────────────────────────
+// A clean, dated export of the RFI or submittal log for an owner, an audit or
+// a dispute: every item with its dates (received, due, sent to sub, sub due,
+// sub answered, issued) and where it came from. Excel = CSV with a UTF-8 BOM
+// so Excel keeps dashes and accents; PDF = a print-ready page (Save as PDF).
+function caExportLog(project, type, fmtKind) {
+  const L = window.PrimeCa;
+  if (!L) { window.alert("The export module (primeCa.js) did not load. Reload the page and try again."); return; }
+  const { headers, rows } = L.caLogRows(project, type);
+  const label = type === "rfi" ? "RFI" : "Submittal";
+  const now = new Date();
+  const who = (typeof settyAuth !== "undefined" && settyAuth && settyAuth.email && settyAuth.email()) || "";
+  const projLabel = (project.projectNumber ? project.projectNumber + " · " : "") + (project.name || "Project");
+  const fileBase = (project.projectNumber || project.name || "project").replace(/[^a-zA-Z0-9]/g, "_") + "_" + label + "_Log_" + now.toISOString().slice(0, 10);
+  const stampLine = "Exported " + now.toLocaleString("en-US") + (who ? " by " + who : "") + " from the Setty PMS · " + rows.length + " item" + (rows.length === 1 ? "" : "s");
+  if (fmtKind === "csv") {
+    const esc = v => { const t = v == null ? "" : String(v); return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+    const lines = [[projLabel + " — " + label + " Log"], [stampLine], [], headers, ...rows].map(r => r.map(esc).join(","));
+    const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = fileBase + ".csv"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return;
+  }
+  const h = v => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const html = "<!doctype html><html><head><meta charset='utf-8'><title>" + h(fileBase) + "</title><style>"
+    + "@page{size:landscape;margin:12mm}body{font-family:Segoe UI,Arial,sans-serif;font-size:9pt;color:#111}"
+    + "h1{font-size:15pt;margin:0 0 2px}.m{color:#555;margin-bottom:10px}table{border-collapse:collapse;width:100%}"
+    + "th,td{border:1px solid #bbb;padding:3px 5px;vertical-align:top;text-align:left}th{background:#1F3864;color:#fff;font-size:8pt}"
+    + "tr:nth-child(even) td{background:#f4f6f9}thead{display:table-header-group}tr{page-break-inside:avoid}</style></head><body>"
+    + "<h1>" + h(projLabel) + " — " + label + " Log</h1><div class='m'>" + h(stampLine) + "</div>"
+    + "<table><thead><tr>" + headers.map(x => "<th>" + h(x) + "</th>").join("") + "</tr></thead><tbody>"
+    + rows.map(r => "<tr>" + r.map(x => "<td>" + h(x) + "</td>").join("") + "</tr>").join("")
+    + "</tbody></table></body></html>";
+  const w = window.open("", "_blank");
+  if (!w) { window.alert("Your browser blocked the print window. Allow pop-ups for this site, then try again."); return; }
+  w.document.write(html); w.document.close(); w.focus();
+  setTimeout(() => { try { w.print(); } catch (e) { /* the page stays open to print by hand */ } }, 400);
+}
+function CaExportButtons({ project, type }) {
+  return (
+    <span style={{ display: "inline-flex", gap: 6 }}>
+      <Btn small variant="ghost" onClick={() => caExportLog(project, type, "csv")} title="Download the whole log, with every date, as a spreadsheet that opens in Excel">⬇ Excel</Btn>
+      <Btn small variant="ghost" onClick={() => caExportLog(project, type, "pdf")} title="Open a dated, print-ready copy of the whole log (choose Save as PDF)">🖨 PDF</Btn>
+    </span>
+  );
+}
+
+// Who gets every outgoing response / return on this project (project.caDistribution[type]).
+// Used by "Draft Response" / "Draft Return" in the item; the person still checks the draft and presses Send.
+function CaDistributionEditor({ project, type, onChange }) {
+  const cur = ((project.caDistribution || {})[type]) || {};
+  const [open, setOpen] = React.useState(false);
+  const [to, setTo] = React.useState(cur.to || "");
+  const [cc, setCc] = React.useState(cur.cc || "");
+  React.useEffect(() => { if (!open) { setTo(cur.to || ""); setCc(cur.cc || ""); } }, [open, cur.to, cur.cc]);
+  const L = window.PrimeCa;
+  const count = t => (L ? L.parseEmails(t).length : 0);
+  const contacts = React.useMemo(() => {
+    try { return buildMergedDirectory(project).filter(c => c.email); } catch (e) { return []; }
+  }, [project]);
+  const addTo = (setter, val, email) => setter((val.trim() ? val.trim().replace(/[;,]$/, "") + "; " : "") + email);
+  const noun = type === "rfi" ? "RFI response" : "submittal return";
+  if (!open) {
+    return (
+      <div style={{ marginTop: 8, fontSize: 12 }}>
+        ✉ Every {noun} goes to: {count(cur.to) || count(cur.cc)
+          ? <b>{count(cur.to)} To, {count(cur.cc)} Cc</b>
+          : <span style={{ color: P.yellow }}>no distribution list yet</span>}
+        {" "}<Btn small variant="ghost" onClick={() => setOpen(true)}>Edit list</Btn>
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 8, fontSize: 12, background: P.card, border: "1px solid " + P.border, borderRadius: 8, padding: "10px 12px" }}>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>Distribution list for every {noun}</div>
+      <label style={{ display: "block", marginBottom: 6 }}>To (owner, GC…)
+        <input value={to} onChange={e => setTo(e.target.value)} placeholder="name@company.com; …" style={{ width: "100%" }} />
+      </label>
+      <label style={{ display: "block", marginBottom: 6 }}>Cc (subs, Setty team…)
+        <input value={cc} onChange={e => setCc(e.target.value)} placeholder="name@company.com; …" style={{ width: "100%" }} />
+      </label>
+      {contacts.length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ color: P.textDim, marginBottom: 4 }}>From this project's directory:</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {contacts.slice(0, 40).map(c => (
+              <span key={c.email} style={{ border: "1px solid " + P.border, borderRadius: 12, padding: "2px 8px" }}>
+                {c.name || c.email}{c.company ? " · " + c.company : ""}
+                {" "}<a href="#" onClick={e => { e.preventDefault(); addTo(setTo, to, c.email); }} style={{ color: P.accentLight }}>+To</a>
+                {" "}<a href="#" onClick={e => { e.preventDefault(); addTo(setCc, cc, c.email); }} style={{ color: P.accentLight }}>+Cc</a>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8 }}>
+        <Btn small onClick={() => { onChange({ ...project, caDistribution: { ...(project.caDistribution || {}), [type]: { to, cc } } }); setOpen(false); }}>Save list</Btn>
+        <Btn small variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
+        <span style={{ color: P.textDim, alignSelf: "center" }}>{count(to)} To · {count(cc)} Cc. An item logged from a contractor's email also goes back to that sender.</span>
+      </div>
+    </div>
+  );
+}
+
+// Items whose subconsultant is past their internal deadline (prime jobs only).
+function caSubLateCount(project, items) {
+  const L = window.PrimeCa;
+  if (!L || !caSettyIsPrime(project)) return 0;
+  const today = new Date().toISOString().slice(0, 10);
+  return (items || []).filter(it => !["Closed", "Void"].includes(it.status) && L.subRoutingState(it, today).state === "late").length;
+}
+
 // ─── RFIs VIEW ────────────────────────────────────────────────────────────────
 
 function RFIsView({ project, onChange, staff, clients }) {
@@ -11826,8 +12169,8 @@ function RFIsView({ project, onChange, staff, clients }) {
   }, []);
 
   function addRFI() {
-    const r = newRFI(rfis, project.rfiDueDays || 5);
-    onChange({ ...project, rfis: [...rfis, r] });
+    const r = newRFI(rfis, project.rfiDueDays || 5, (project.caNumberHighWater || {}).rfi);
+    onChange(caWithNewItem(project, "rfi", r));
     setEditing(r);
   }
 
@@ -11837,6 +12180,8 @@ function RFIsView({ project, onChange, staff, clients }) {
 
   function deleteRFI(id) {
     const rfi = rfis.find(r => r.id === id);
+    const guard = caDeleteGuard(project, rfi, "rfi");
+    if (!guard.ok) { window.alert("RFI " + (rfi?.number || "") + " can't be deleted.\n\n" + guard.reason); return; }
     if (!window.confirm("Delete RFI " + (rfi?.number || "") + (rfi?.title ? " — \"" + rfi.title + "\"" : "") + "?\n\nAll notes, responses, and linked data will be lost. This cannot be undone.")) return;
     onChange({ ...project, rfis: rfis.filter(r => r.id !== id) });
   }
@@ -11851,6 +12196,7 @@ function RFIsView({ project, onChange, staff, clients }) {
   const openCount     = rfis.filter(r => RFI_OPEN_STATUSES.includes(r.status)).length;
   const overdueCount  = rfis.filter(r => isOverdue(r)).length;
   const pendingSubCnt = rfis.filter(r => r.status === "Pending Sub Response").length;
+  const subLateCnt    = caSubLateCount(project, rfis);
   const staffList     = project.teamMembers || [];
 
   return (
@@ -11863,7 +12209,10 @@ function RFIsView({ project, onChange, staff, clients }) {
         <KpiBox label="Pending Sub" val={String(pendingSubCnt)} color={pendingSubCnt > 0 ? P.yellow : P.textDim} />
         <KpiBox label="Closed" val={String(rfis.filter(r => r.status === "Closed").length)} color={P.green} />
         {rfis.some(isUnreviewedIntake) && <KpiBox label="Unreviewed" val={String(rfis.filter(isUnreviewedIntake).length)} color={P.yellow} />}
+        {subLateCnt > 0 && <KpiBox label="Sub late" val={String(subLateCnt)} color={P.red} />}
       </div>
+
+      <CaPrimePanel project={project} type="rfi" onChange={onChange} onOpen={setEditing} />
 
       {/* Controls */}
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
@@ -11884,6 +12233,7 @@ function RFIsView({ project, onChange, staff, clients }) {
               color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}>
             🤖 Backload from PDF/email
           </a>
+          <CaExportButtons project={project} type="rfi" />
           <Btn small onClick={addRFI}>+ Add RFI</Btn>
         </div>
       </div>
@@ -11933,7 +12283,7 @@ function RFIsView({ project, onChange, staff, clients }) {
                     <div style={{ color: overdue ? P.red : P.textMuted, marginBottom: 3 }}>{r.dueDate || "—"}</div>
                     <SlaChip dueDate={r.dueDate} isClosed={RFI_CLOSED_STATUSES.includes(r.status) || isUnreviewedIntake(r)} />
                   </td>
-                  <td><Badge color={sc} text={r.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}</td>
+                  <td><Badge color={sc} text={r.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}<CaBallChip item={r} type="rfi" project={project} /></td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
                       <Btn small variant="ghost" onClick={() => setEditing(r)}>Open</Btn>
@@ -11985,8 +12335,8 @@ function SubmittalsView({ project, onChange, staff, clients }) {
   const [newRegItem, setNewRegItem] = useState({ specSection: "", description: "", discipline: "Mechanical" });
 
   function addSubmittal() {
-    const s = newSubmittal(subs, project.submittalDueDays || 10);
-    onChange({ ...project, submittals: [...subs, s] });
+    const s = newSubmittal(subs, project.submittalDueDays || 10, (project.caNumberHighWater || {}).submittal);
+    onChange(caWithNewItem(project, "submittal", s));
     setEditing(s);
   }
 
@@ -11996,6 +12346,8 @@ function SubmittalsView({ project, onChange, staff, clients }) {
 
   function deleteSubmittal(id) {
     const sub2 = subs.find(s => s.id === id);
+    const guard = caDeleteGuard(project, sub2, "submittal");
+    if (!guard.ok) { window.alert("Submittal " + (sub2?.number || "") + " can't be deleted.\n\n" + guard.reason); return; }
     if (!window.confirm("Delete Submittal " + (sub2?.number || "") + (sub2?.description ? " — \"" + sub2.description + "\"" : "") + "?\n\nAll review comments and linked data will be lost. This cannot be undone.")) return;
     onChange({ ...project, submittals: subs.filter(s => s.id !== id) });
   }
@@ -12008,8 +12360,8 @@ function SubmittalsView({ project, onChange, staff, clients }) {
   }
 
   function createFromRegister(item) {
-    const s = { ...newSubmittal(subs, project.submittalDueDays || 10), specSection: item.specSection, description: item.description, discipline: item.discipline, registerItemId: item.id };
-    onChange({ ...project, submittals: [...subs, s] });
+    const s = { ...newSubmittal(subs, project.submittalDueDays || 10, (project.caNumberHighWater || {}).submittal), specSection: item.specSection, description: item.description, discipline: item.discipline, registerItemId: item.id };
+    onChange(caWithNewItem(project, "submittal", s));
     setEditing(s);
   }
 
@@ -12023,6 +12375,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
   const openCount    = subs.filter(s => SUB_OPEN_STATUSES.includes(s.status)).length;
   const overdueCount = subs.filter(s => isOverdue(s)).length;
   const pendingSubCnt= subs.filter(s => s.status === "Pending Sub Review").length;
+  const subLateCnt   = caSubLateCount(project, subs);
   const staffList    = project.teamMembers || [];
 
   return (
@@ -12036,7 +12389,10 @@ function SubmittalsView({ project, onChange, staff, clients }) {
         <KpiBox label="Returned" val={String(subs.filter(s => s.status === "Returned").length)} color={P.green} />
         <KpiBox label="Resubmittal Req." val={String(subs.filter(s => s.status === "Resubmittal Required").length)} color={P.red} />
         {subs.some(isUnreviewedIntake) && <KpiBox label="Unreviewed" val={String(subs.filter(isUnreviewedIntake).length)} color={P.yellow} />}
+        {subLateCnt > 0 && <KpiBox label="Sub late" val={String(subLateCnt)} color={P.red} />}
       </div>
+
+      <CaPrimePanel project={project} type="submittal" onChange={onChange} onOpen={setEditing} />
 
       {/* Controls */}
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
@@ -12060,6 +12416,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
           <Btn small variant="ghost" onClick={() => setShowRegister(v => !v)}>
             {showRegister ? "Hide Register" : "📋 Submittal Register" + (register.length > 0 ? ` (${register.length})` : "")}
           </Btn>
+          <CaExportButtons project={project} type="submittal" />
           <Btn small onClick={addSubmittal}>+ Add Submittal</Btn>
         </div>
       </div>
@@ -12155,7 +12512,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
                     <SlaChip dueDate={s.dueDate} isClosed={SUBMITTAL_CLOSED_STATUSES.includes(s.status) || isUnreviewedIntake(s)} />
                   </td>
                   <td>{s.stamp && s.stamp !== "—" ? <Badge color={stc} text={s.stamp} /> : <span style={{ color: P.textDim, fontSize: 12 }}>—</span>}</td>
-                  <td><Badge color={sc} text={s.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}</td>
+                  <td><Badge color={sc} text={s.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}<CaBallChip item={s} type="submittal" project={project} /></td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
                       <Btn small variant="ghost" onClick={() => setEditing(s)}>Open</Btn>
