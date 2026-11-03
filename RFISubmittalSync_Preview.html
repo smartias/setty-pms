@@ -34,7 +34,8 @@
   .sec > .head h2 { font-size:15px; margin:0; } .sec > .head .count { color:var(--muted); font-weight:400; font-size:13px; }
   .sec > .head .spacer { flex:1; }
   .inbox { background:#1a2436; border-bottom:1px solid var(--line); }
-  .inbox .ihead { padding:9px 16px; font-size:13px; color:#fbbf24; font-weight:600; }
+  .inbox .ihead { padding:9px 16px; font-size:13px; color:#fbbf24; font-weight:600; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .inbox .ihead .legend { margin:0 0 0 auto; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th,td { text-align:left; padding:7px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { color:var(--muted); font-weight:600; font-size:12px; }
@@ -45,6 +46,15 @@
   .badge.new { background:var(--new); color:#1c1917; } .badge.matched { background:var(--matched); color:#cbd5e1; }
   .badge.update { background:var(--update); color:#082f49; }
   .pill { display:inline-block; padding:2px 8px; border-radius:6px; font-size:11px; font-weight:600; }
+  .badge.unrev { background:rgba(245,158,11,.15); color:#fbbf24; }
+  /* Due-date chip — same thresholds as the main PMS SlaChip (overdue / today / ≤2 days / later). */
+  .due { display:inline-block; padding:1px 7px; border-radius:10px; font-size:10.5px; font-weight:700; white-space:nowrap; margin-left:6px; }
+  .due.late { background:rgba(248,113,113,.13); color:#f87171; border:1px solid rgba(248,113,113,.35); }
+  .due.soon { background:rgba(245,158,11,.13); color:#fbbf24; border:1px solid rgba(245,158,11,.35); }
+  .due.ok { background:rgba(16,185,129,.12); color:#34d399; border:1px solid rgba(16,185,129,.3); }
+  tbody tr.late td { background:rgba(248,113,113,.06); }
+  td.date { white-space:nowrap; }
+  .sec > .head .count .late { color:#f87171; font-weight:700; } .sec > .head .count .unrev { color:#fbbf24; font-weight:700; }
   .muted { color:var(--muted); } .right { text-align:right; }
   .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
   td.num .rowbtn { background:none; border:none; padding:0; margin:0; font:inherit; color:var(--accent); cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
@@ -67,7 +77,17 @@
   .fld label { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:700; }
   .fld input, .fld select, .fld textarea { background:var(--card2); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:7px 9px; font:inherit; }
   .fld textarea { min-height:60px; resize:vertical; }
-  .mfoot { padding:14px 18px; border-top:1px solid var(--line); display:flex; gap:10px; align-items:center; }
+  /* Sticky inside the scrolling overlay so Save / Cancel stay in reach on a tall form. */
+  .mfoot { padding:14px 18px; border-top:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; position:sticky; bottom:0; background:var(--card); border-radius:0 0 12px 12px; z-index:2; }
+  .mfoot .danger { margin-right:10px; }
+  .menu { position:relative; display:inline-block; }
+  .menu > button[aria-haspopup] { background:transparent; font-size:12px; }
+  .menu .items { position:absolute; bottom:calc(100% + 6px); left:0; min-width:300px; background:#0b1220; border:1px solid var(--line); border-radius:10px; padding:6px; display:none; z-index:5; box-shadow:0 10px 30px rgba(0,0,0,.5); }
+  .menu.open .items { display:block; }
+  .menu .items a, .menu .items button { display:block; width:100%; text-align:left; background:none; border:0; border-radius:6px; padding:7px 10px; color:var(--txt); font:inherit; font-weight:600; text-decoration:none; cursor:pointer; }
+  .menu .items a:hover, .menu .items button:hover, .menu .items a:focus-visible, .menu .items button:focus-visible { background:#1a2233; outline:none; }
+  .menu .items .hint { display:block; font-size:11px; color:var(--muted); font-weight:400; margin-top:1px; white-space:normal; }
+  .intake { display:flex; align-items:center; gap:10px; flex-wrap:wrap; background:rgba(245,158,11,.10); border:1px solid #f59e0b; border-radius:8px; padding:8px 12px; margin:12px 18px 0; font-size:12.5px; }
   .mfoot .spacer { flex:1; } .mfoot .by { font-size:11px; color:var(--muted); }
   .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#0b1220; border:1px solid var(--line); border-radius:10px; padding:10px 16px; font-size:13px; font-weight:600; display:none; z-index:60; }
   .toast.show { display:block; } .toast.ok { color:var(--ok); border-color:#14532d; } .toast.bad { color:#fca5a5; border-color:#7f1d1d; }
@@ -125,11 +145,7 @@
       <tr><td><span aria-hidden="true">3️⃣</span></td><td>You need the whole picture</td><td>This Tracker is the <b>project-wide view</b> — every RFI/submittal on a job, filter &amp; search by type/discipline/status, and <b>+ Add / edit</b> by hand when you're not in Outlook (a phoned-in RFI, cleanup, a one-off).</td></tr>
     </table>
     <div class="muted" style="font-size:12px;margin-top:8px">Only jobs marked <b>"In Construction Administration"</b> appear (<span aria-hidden="true">⚡</span> = has Procore/Forma email filed). Put your <b>name</b> in the "You" box (top-right) so the log shows who added or changed each item. Safe by design: it never overwrites someone else's edit — it asks you to refresh instead.</div>
-    <div class="legend">
-      <span><span class="badge new">NEW</span> in Procore/Forma, not yet logged</span>
-      <span><span class="badge matched">matched</span> already logged here</span>
-      <span><span class="badge update">UPDATE</span> a newer revision exists — review by hand</span>
-    </div>
+    <div class="muted" style="font-size:12px;margin-top:6px">In the lists: <span class="due late" style="margin-left:0">Overdue 3d</span> / <span class="due soon" style="margin-left:0">Due in 2d</span> show how close each open item is to its due date; <span class="badge unrev">Unreviewed</span> marks items the automatic import logged that nobody has checked yet — open one and press <b>Confirm</b> once the discipline, assignee and dates look right.</div>
   </div>
 </div>
 
@@ -292,9 +308,10 @@ function srRestore(){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsWork||[
 let PROJECTS=[], CURRENT=null, FILTER={type:"all",disc:"all",status:"__open__",text:""};
 async function init(){
   try{ document.getElementById("who").value = localStorage.getItem("rfiTrackUser")||"";
-       if(localStorage.getItem("rfiTrackGuide")==="0") toggleGuide(); }catch(e){}
+       const g=localStorage.getItem("rfiTrackGuide");
+       if(g==="0") toggleGuide(); else if(g===null) localStorage.setItem("rfiTrackGuide","0"); }catch(e){}
   document.getElementById("fDisc").innerHTML = `<option value="all">All disciplines</option><option value="__unset__">(unset)</option>`+ALL_DISC.map(d=>`<option>${esc(d)}</option>`).join("");
-  document.getElementById("fStatus").innerHTML = `<option value="all">All statuses</option><option value="__open__">Open (active)</option>`+ALL_STATUS.map(s=>`<option>${esc(s)}</option>`).join("");
+  document.getElementById("fStatus").innerHTML = `<option value="all">All statuses</option><option value="__open__">Open (active)</option><option value="__unreviewed__">Unreviewed (auto-imported)</option>`+ALL_STATUS.map(s=>`<option>${esc(s)}</option>`).join("");
   document.getElementById("fStatus").value = FILTER.status;
   try{
     const [projRows, actRows] = await Promise.all([
@@ -436,18 +453,50 @@ function passFilter(r){
   if(FILTER.disc==="__unset__"){ if((r.discipline||"")!=="") return false; }
   else if(FILTER.disc!=="all" && (r.discipline||"")!==FILTER.disc) return false;
   if(FILTER.status==="__open__"){ if(!OPEN_STATUSES.includes(r.status||"")) return false; }
+  else if(FILTER.status==="__unreviewed__"){ if(!isUnreviewed(r)) return false; }
   else if(FILTER.status!=="all" && (r.status||"")!==FILTER.status) return false;
   if(FILTER.text){ const hay=((r.number||"")+" "+(r.title||"")+" "+(r.description||"")+" "+(r.specSection||"")+" "+(r.from||"")+" "+(r.__projNum||"")+" "+(r.__projName||"")).toLowerCase(); if(!hay.includes(FILTER.text)) return false; }
   return true;
 }
 
 /* =========================== RENDER =========================== */
+// Unreviewed = appended by the connector's scheduled intake (intakeReviewed:false)
+// and not yet confirmed by a person. Same rule as the main PMS: badged, and not
+// counted as overdue until confirmed.
+function isUnreviewed(r){ return !!r && r.intakeReviewed===false; }
+function isOpenItem(kind, r){ return (kind==="rfi"?RFI_OPEN:SUB_OPEN).includes((r&&r.status)||""); }
+// Due-date urgency — thresholds mirror the main PMS slaState (SLA_DUE_SOON_DAYS = 2).
+function dueState(kind, r){
+  if(!isOpenItem(kind,r)||isUnreviewed(r)) return null;
+  const n=daysUntil(r.dueDate); if(n===null) return null;
+  if(n<0) return {cls:"late",label:"Overdue "+(-n)+"d"};
+  if(n===0) return {cls:"late",label:"Due today"};
+  if(n<=2) return {cls:"soon",label:"Due in "+n+"d"};
+  return {cls:"ok",label:"Due in "+n+"d"};
+}
+function dueChip(kind, r){ const s=dueState(kind,r); return s?`<span class="due ${s.cls}">${s.label}</span>`:""; }
+function unrevBadge(r){ return isUnreviewed(r)?` <span class="badge unrev" title="Logged automatically from ${esc((r.intake&&r.intake.vendor)||"a portal email")} — open it, check discipline / assignee / dates, then Confirm. Not counted as overdue until confirmed.">Unreviewed</span>`:""; }
+const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+// "Oct 22" (year only when it isn't this year); the ISO date stays in the tooltip and the CSV.
+function fmtDate(iso){ if(!/^\d{4}-\d{2}-\d{2}/.test(iso||"")) return iso||"—"; const y=+iso.slice(0,4), m=+iso.slice(5,7), d=+iso.slice(8,10); return MONTHS[m-1]+" "+d+(y!==new Date().getFullYear()?", "+y:""); }
+function dateCell(iso, extra){ return `<td class="date" title="${esc(iso||"")}">${esc(fmtDate(iso))}${extra||""}</td>`; }
+// Display order: open items first, soonest due first (no due date last); then
+// closed items, most recently received first. All-projects mode keeps rows
+// grouped by project.
+function sortForDisplay(kind, rows){
+  const am=CURRENT&&CURRENT.allMode; const dk=r=>{const n=daysUntil(r.dueDate); return n===null?1e9:n;};
+  return rows.slice().sort((a,b)=>
+    (am?String(a.__projNum||a.__projName||"").localeCompare(String(b.__projNum||b.__projName||"")):0) ||
+    (isOpenItem(kind,b)?1:0)-(isOpenItem(kind,a)?1:0) ||
+    (isOpenItem(kind,a) ? dk(a)-dk(b) : String(b.dateReceived||"").localeCompare(String(a.dateReceived||""))) ||
+    String(a.number||"").localeCompare(String(b.number||"")));
+}
 function statusPill(s){ const c=STATUS_COLOR[s]||{bg:"#1a1a1a",t:"#94a3b8"}; return `<span class="pill" style="background:${c.bg};color:${c.t}">${esc(s||"—")}</span>`; }
 function teamOf(r){ return (CURRENT.teams&&CURRENT.teams[r.__projId||CURRENT.proj.id])||[]; }
 function assigneeNames(r){ const team=teamOf(r); const names=(r.assignedTo||[]).map(id=>{const m=team.find(t=>t.id===id);return m?(m.name||m.role):null;}).filter(Boolean); let s=names.join(", "); if(r.subAssigned) s+=(s?" · ":"")+"sub: "+r.subAssigned; return s; }
 function csvCell(v){ v=String(v==null?"":v); return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
 function exportCSV(kind){
-  const rows=(kind==="rfi"?CURRENT.rfis:CURRENT.submittals).filter(passFilter); const am=CURRENT.allMode;
+  const rows=sortForDisplay(kind,(kind==="rfi"?CURRENT.rfis:CURRENT.submittals).filter(passFilter)); const am=CURRENT.allMode;
   const cols = kind==="rfi"
     ? [["Project",r=>r.__projNum||r.__projName],["RFI #",r=>r.number],["Title",r=>r.title],["Discipline",r=>r.discipline],["From",r=>r.from],["Assigned",r=>assigneeNames(r)],["Received",r=>r.dateReceived],["Due",r=>r.dueDate],["Responded",r=>r.dateResponded],["Status",r=>r.status],["Response",r=>r.response],["Notes",r=>r.notes]]
     : [["Project",r=>r.__projNum||r.__projName],["Submittal #",r=>r.number],["Spec",r=>r.specSection],["Description",r=>r.description],["Discipline",r=>r.discipline],["Assigned",r=>assigneeNames(r)],["Stamp",r=>r.stamp],["Received",r=>r.dateReceived],["Due",r=>r.dueDate],["Returned",r=>r.dateReturned],["Status",r=>r.status],["Comments",r=>r.comments],["Notes",r=>r.notes]];
@@ -471,9 +520,10 @@ function renderProject(){
 function renderSection(kind, title, logged, inbox){
   const sec=document.createElement("section"); sec.className="sec";
   const news=inbox.filter(i=>i.verdict==="new");
-  const shown=logged.filter(passFilter);
+  const shown=sortForDisplay(kind, logged.filter(passFilter));
   const am=CURRENT.allMode;
-  let html=`<div class="head"><h2>${title}</h2><span class="count">${shown.length===logged.length?logged.length:shown.length+" of "+logged.length} logged${news.length?` · ${news.length} to import`:""}</span><span class="spacer"></span>`+
+  const late=logged.filter(r=>{const s=dueState(kind,r);return s&&s.cls==="late"&&daysUntil(r.dueDate)<0;}).length, unrev=logged.filter(isUnreviewed).length;
+  let html=`<div class="head"><h2>${title}</h2><span class="count">${shown.length===logged.length?logged.length:shown.length+" of "+logged.length} logged${late?` · <span class="late">${late} overdue</span>`:""}${unrev?` · <span class="unrev">${unrev} unreviewed</span>`:""}${news.length?` · ${news.length} to import`:""}</span><span class="spacer"></span>`+
     `<button class="ghost" style="font-size:12px" onclick="exportCSV('${kind}')">⬇ CSV</button>`+
     (am?`<span class="muted" style="font-size:12px">pick one project to add / import</span>`:
        `<a href="${esc(caBackloadSeatUrl(kind, CURRENT.proj.name||"", CURRENT.proj.number||""))}" target="_blank" rel="noreferrer" title="For items still in Newforma: open a Claude seat to find the filed PDF / notification email, log it here (backfill), then review it against the current set and specs." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--accent);font-weight:600">🤖 Backload from PDF/email</a>`+
@@ -487,10 +537,11 @@ function renderSection(kind, title, logged, inbox){
       const dcell = it.verdict==="new"
         ? `<td><select class="discSel" data-k="${kind}" data-ext="${esc(it.extNum)}" title="Discipline — inferred from spec section / title; adjust before import"><option value="" ${dv?"":"selected"}>—</option>${vocab.map(d=>`<option ${d===dv?"selected":""}>${esc(d)}</option>`).join("")}</select></td>`
         : `<td class="muted">${esc(dv||"—")}</td>`;
-      const c = kind==="rfi" ? `<td class="num">#${esc(it.extNum)}</td><td class="title">${esc(it.title)}</td><td>${statusPill(it.status)}</td><td>${esc(it.dueDate||"—")}</td><td>${esc(it.from||"")}</td>`
-        : `<td class="num">#${esc(it.extNum)}${it.rev?` <span class=muted>r${it.rev}</span>`:""}</td><td class="title">${esc(it.title)}</td><td>${esc(it.specSection||"")}</td><td>${statusPill(it.status)}</td><td>${esc(it.dueDate||"—")}</td>`;
+      const c = kind==="rfi" ? `<td class="num">#${esc(it.extNum)}</td><td class="title">${esc(it.title)}</td><td>${statusPill(it.status)}</td>${dateCell(it.dueDate)}<td>${esc(it.from||"")}</td>`
+        : `<td class="num">#${esc(it.extNum)}${it.rev?` <span class=muted>r${it.rev}</span>`:""}</td><td class="title">${esc(it.title)}</td><td>${esc(it.specSection||"")}</td><td>${statusPill(it.status)}</td>${dateCell(it.dueDate)}`;
       return `<tr>${c}${dcell}<td class="right">${verdictBadge(it)} ${cb}</td></tr>`; }).join("");
-    html+=`<div class="inbox"><div class="ihead">📥 To import from portal emails (Procore / Forma / Newforma) — ${news.length} new</div>`+
+    html+=`<div class="inbox"><div class="ihead"><span>📥 To import from portal emails (Procore / Forma / Newforma) — ${news.length} new</span>`+
+      `<div class="legend"><span><span class="badge new">NEW</span> not yet logged</span><span><span class="badge matched">matched</span> already logged</span><span><span class="badge update">UPDATE</span> newer revision — review by hand</span></div></div>`+
       `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`+
       `<div class="actions"><button class="go" onclick="importSelected('${kind}')">Import selected → log</button><span class="muted" style="font-size:12px">Tick the new ones, then import. Already-logged items are skipped.</span></div></div>`;
   }
@@ -508,11 +559,12 @@ function renderSection(kind, title, logged, inbox){
       // row's mouse-convenience onclick doesn't fire the editor twice).
       const numBtn=`<button type="button" class="rowbtn" aria-label="Open ${kind==="rfi"?"RFI":"submittal"} ${esc(r.number||"(no number)")}" onclick='event.stopPropagation();${open}'>${esc(r.number||"—")}</button>`;
       const aiMark=r.aiReview?` <span title="Claude review waiting for sign-off — open to review" style="font-size:11px" role="img" aria-label="Claude review pending">🤖</span>`:"";
+      const ds=dueState(kind,r); const lateRow=ds&&ds.cls==="late"?" late":"";
       const c = kind==="rfi"
-        ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}${aiMark}</td><td>${esc(r.discipline||"")}</td><td>${esc(r.from||"")}</td><td class="muted">${asg}</td><td>${esc(r.dateReceived||"—")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td>`
-        : `<td class="num">${numBtn}</td><td class="title">${esc(r.description||r.title||"—")}${aiMark}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${esc(r.discipline||"")}</td><td class="muted">${asg}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td><td>${esc(r.dateReceived||"—")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td>`;
+        ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}${aiMark}</td><td>${esc(r.discipline||"")}</td><td>${esc(r.from||"")}</td><td class="muted">${asg}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}</td>`
+        : `<td class="num">${numBtn}</td><td class="title">${esc(r.description||r.title||"—")}${aiMark}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${esc(r.discipline||"")}</td><td class="muted">${asg}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}</td>`;
       const nw=JUST_IMPORTED.has(r.id)?" justnew":"";
-      return `<tr class="click${nw}" onclick='${open}'>${pc}${c}</tr>`; }).join("");
+      return `<tr class="click${nw}${lateRow}" onclick='${open}'>${pc}${c}</tr>`; }).join("");
     html+=`<table><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan=${am?9:8} class="empty">No ${kind}s match the current filters.</td></tr>`}</tbody></table>`;
   }
   sec.innerHTML=html; return {el:sec, total:logged.length, shown:shown.length};
@@ -628,8 +680,22 @@ function caAcceptNotes(){ if(!EDIT||!EDIT.ai)return; const el=document.getElemen
 function caDismissAi(){ if(!EDIT)return; if(!confirm("Dismiss Claude's review? The suggested response, notes, and red flags on this record will be cleared when you save. Any red flags already tracked in QA stay there."))return; EDIT.dismissAi=true; const p=document.getElementById("aiPanel"); if(p)p.remove(); }
 
 let EDIT=null, EDIT_TEAM=[], EDIT_SUBS=[], LAST_FOCUS=null;
+// Footer drop-up menus (Email / Claude): one open at a time; Escape closes the
+// menu before it closes the editor; a click anywhere else closes them.
+function toggleMenu(btn){
+  const m=btn.closest(".menu"); const open=!m.classList.contains("open");
+  closeMenus(); if(!open) return;
+  m.classList.add("open"); btn.setAttribute("aria-expanded","true");
+  const f=m.querySelector(".items a,.items button"); if(f) f.focus();
+}
+function closeMenus(){ document.querySelectorAll(".menu.open").forEach(m=>{ m.classList.remove("open"); const b=m.querySelector("button[aria-haspopup]"); if(b) b.setAttribute("aria-expanded","false"); }); }
+document.addEventListener("click", e=>{ if(!e.target.closest(".menu")) closeMenus(); });
+function menuHtml(id, label, items){
+  return `<span class="menu"><button type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="${id}" onclick="event.stopPropagation();toggleMenu(this)">${label} ▾</button>`+
+    `<div class="items" id="${id}" role="menu">${items.join("")}</div></span>`;
+}
 document.getElementById("overlay").addEventListener("keydown", e=>{
-  if(e.key==="Escape"){ e.preventDefault(); closeEditor(); return; }
+  if(e.key==="Escape"){ e.preventDefault(); if(document.querySelector(".menu.open")){ const b=document.querySelector(".menu.open > button"); closeMenus(); if(b) b.focus(); } else closeEditor(); return; }
   if(e.key!=="Tab") return;
   const f=[...document.getElementById("modal").querySelectorAll("button,input,select,textarea,a[href]")].filter(el=>!el.disabled&&el.offsetParent!==null);
   if(!f.length) return;
@@ -665,8 +731,12 @@ async function openEditor(kind, id){
   const subHtml = (subs&&subs.length)
     ? `<select id="f_subAssigned"><option value="">— none —</option>${subs.map(s=>{const n=subName(s);return `<option ${n===subVal?"selected":""}>${esc(n)}</option>`;}).join("")}</select>`
     : `<input id="f_subAssigned" value="${esc(subVal)}" placeholder="subconsultant (optional)">`;
+  // Folder creation needs the main PMS's Microsoft sign-in (this app has
+  // none) — the deep link opens the SAME item's modal there, where the
+  // Create Folder button lives. Shown beside the field until a URL exists.
   const spHtml = `<div style="display:flex;gap:6px"><input id="f_spFolderUrl" value="${esc(rec.spFolderUrl||"")}" placeholder="paste SharePoint folder URL" style="flex:1">`+
-    (rec.spFolderUrl?`<a href="${esc(rec.spFolderUrl)}" target="_blank" rel="noreferrer" style="background:#0078d4;color:#fff;border-radius:6px;padding:6px 11px;text-decoration:none;font-size:12px;white-space:nowrap;align-self:center"><span aria-hidden="true">📁</span> Open<span class="sr-only"> (opens in a new tab)</span></a>`:"")+`</div>`+
+    (rec.spFolderUrl?`<a href="${esc(rec.spFolderUrl)}" target="_blank" rel="noreferrer" style="background:#0078d4;color:#fff;border-radius:6px;padding:6px 11px;text-decoration:none;font-size:12px;white-space:nowrap;align-self:center"><span aria-hidden="true">📁</span> Open<span class="sr-only"> (opens in a new tab)</span></a>`
+      :(isNew?"":`<a href="${esc(caItemDeepLink(kind, rec.number)||"#")}" target="_blank" rel="noreferrer" title="Opens this exact item in the main PMS, where the Create Folder button generates the SharePoint folder (needs the PMS's Microsoft sign-in). The folder URL saved there shows here after a refresh." style="border:1px solid var(--line);color:var(--accent);border-radius:6px;padding:6px 11px;text-decoration:none;font-size:12px;white-space:nowrap;align-self:center;font-weight:600"><span aria-hidden="true">📁</span> Create folder in PMS<span class="sr-only"> (opens in a new tab)</span></a>`))+`</div>`+
     `<div class="muted" style="font-size:11px;margin-top:3px">Creating a new folder needs Microsoft sign-in — do that in the main PMS, then paste the link here.</div>`;
   const extra = `<div class="fld full"><label>Assigned to</label><div style="border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:var(--card2)">${asgHtml}</div></div>`+
     `<div class="fld full"><label for="f_subAssigned">Subconsultant (optional)</label>${subHtml}</div>`+
@@ -674,27 +744,31 @@ async function openEditor(kind, id){
     `<div class="fld full"><label for="f_spFolderUrl">SharePoint folder</label>${spHtml}</div>`;
   const by = (rec.syncEditedBy||rec.loggedBy) ? `Last touched by ${esc(rec.syncEditedBy||rec.loggedBy)}${rec.syncEditedAt?" · "+esc((rec.syncEditedAt||"").slice(0,10)):""}` : (rec.source?`Imported from ${esc(rec.source)}`:"");
   const reviewUrl = caReviewSeatUrl(kind, rec, EDIT.projName, EDIT.projNum);
+  const hint=t=>`<span class="hint">${t}</span>`;
+  const emailMenu = menuHtml("emailMenu", "✉ Email", [
+    `<button type="button" role="menuitem" onclick="closeMenus();emailAction('${kind}','assign')">Assign to a team member${hint("Opens a pre-filled Outlook draft to the people ticked under Assigned to.")}</button>`,
+    `<button type="button" role="menuitem" onclick="closeMenus();emailAction('${kind}','sub')">Forward to subconsultant${hint("Draft to the subconsultant picked above — never includes internal notes.")}</button>`,
+    `<button type="button" role="menuitem" onclick="closeMenus();emailAction('${kind}','respond')">Draft ${kind==='rfi'?'response':'return'} email${hint(`Draft the formal ${kind==='rfi'?'RFI response':'submittal return'} from the fields as they are now.`)}</button>` ]);
+  // Review only makes sense once the item is in the log (a new record isn't
+  // saved yet and carries only a placeholder number) — no Claude menu until then.
+  const claudeMenu = isNew ? "" : menuHtml("claudeMenu", "🤖 Claude", [
+    `<a role="menuitem" href="${esc(reviewUrl)}" target="_blank" rel="noreferrer" onclick="closeMenus()">${rec.aiReview?"Re-review":"Send for review"}${hint("Opens your Claude seat. It reviews this item against the current set and specs and saves a suggestion here for your sign-off. Nothing is sent or stamped.")}</a>`,
+    `<a role="menuitem" href="${esc(caPullReplySeatUrl(kind, rec, EDIT.projName, EDIT.projNum))}" target="_blank" rel="noreferrer" onclick="closeMenus()">Pull reply from email${hint("For reviewers who answered by email: finds the emailed reply and files it here as the suggested response, citing the email.")}</a>` ]);
+  const intakeBar = isUnreviewed(rec)
+    ? `<div class="intake" role="status"><span style="flex:1 1 360px">📥 Logged automatically from ${esc((rec.intake&&rec.intake.vendor)||"a portal email")}${rec.intake&&rec.intake.at?" on "+esc(String(rec.intake.at).slice(0,10)):""}. Check the discipline, assignee and dates, then confirm. Until then it is not counted as overdue.</span><span style="flex:1"></span><button type="button" class="go" style="font-size:12px" title="Mark this item as checked. It then counts like any other item — your edits in this form are saved with it." onclick="confirmIntake()">✓ Confirm</button></div>`
+    : "";
   document.getElementById("modal").innerHTML =
     `<div class="mhead"><h3 id="modalTitle">${isNew?"Add":"Edit"} ${kind==="rfi"?"RFI":"Submittal"}</h3>`+
     // Project reference (mirrors the main PMS modal): the tracker lists every
     // CA job, so say which project this item belongs to.
     ((EDIT.projNum||EDIT.projName)?`<span title="Project" style="margin-left:12px;font-size:12px;color:var(--muted)">${EDIT.projNum?`<b>${esc(EDIT.projNum)}</b>`:""}${EDIT.projNum&&EDIT.projName?" · ":""}${esc(EDIT.projName||"")}</span>`:"")+
     `<button type="button" class="x" aria-label="Close editor" onclick="closeEditor()">✕</button></div>`+
+    intakeBar+
     `<div id="aiReadyBar" style="display:none;align-items:center;gap:10px;background:var(--card2);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;margin:0 18px 8px;font-size:12.5px">🤖 A new Claude review was saved for this item. <span style="flex:1"></span><button class="go" onclick="reloadEditorItem()">Reload to view</button></div>`+
     caAiPanelHtml(rec, kind)+
     `<div class="grid">${grid}${extra}</div>`+
     `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
-    // Review only makes sense once the item is in the log (a new record isn't
-    // saved yet and carries only a placeholder number) — hide the link until then.
-    (isNew?"":`<a href="${esc(reviewUrl)}" target="_blank" rel="noreferrer" title="Opens your Claude seat to review this ${kind==='rfi'?'RFI':'submittal'} against the current set and specs and save a suggestion back here for your sign-off." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--accent);border-radius:8px;color:var(--accent);font-weight:600">🤖 ${rec.aiReview?"Re-review":"Send to Claude"}</a>`+
-      `<a href="${esc(caPullReplySeatUrl(kind, rec, EDIT.projName, EDIT.projNum))}" target="_blank" rel="noreferrer" title="For reviewers who answered by email: opens your Claude seat to find the emailed reply and file it here as the suggested response (citing the email) for one-click accept." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--accent);font-weight:600">📥 Pull reply from email</a>`+
-      // Folder creation needs the main PMS's Microsoft sign-in (this app has
-      // none) — the deep link opens the SAME item's modal there, where the
-      // Create Folder button lives. Hidden once a folder URL exists.
-      (rec.spFolderUrl?"":`<a href="${esc(caItemDeepLink(kind, rec.number)||"#")}" target="_blank" rel="noreferrer" title="Opens this exact item in the main PMS, where the Create Folder button generates the SharePoint folder (needs the PMS's Microsoft sign-in). The folder URL saved there shows here after a refresh." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--accent);font-weight:600">📁 Create folder in PMS</a>`))+
-    `<button class="ghost" style="font-size:12px" title="Open a pre-filled draft in Outlook" onclick="emailAction('${kind}','assign')">✉ Assign</button>`+
-    `<button class="ghost" style="font-size:12px" title="Draft an email to the subconsultant" onclick="emailAction('${kind}','sub')">✉ Forward to Sub</button>`+
-    `<button class="ghost" style="font-size:12px" title="Draft the ${kind==='rfi'?'response':'return'} email" onclick="emailAction('${kind}','respond')">✉ ${kind==='rfi'?'Draft Response':'Draft Return'}</button>`+
+    emailMenu+claudeMenu+
     `<span class="by">${by}</span><span class="spacer"></span>`+
     `<button onclick="closeEditor()">Cancel</button><button class="go" onclick="saveEditor()">${isNew?"Add to log":"Save"}</button></div>`;
   document.getElementById("overlay").classList.add("show");
@@ -703,7 +777,10 @@ async function openEditor(kind, id){
   renderSheetRefChips(); // async; degrades to "unavailable" without blocking the editor
   startReviewPoll();
 }
-function closeEditor(){ if(EDIT&&EDIT.reviewPoll) clearInterval(EDIT.reviewPoll); document.getElementById("overlay").classList.remove("show"); EDIT=null;
+// Confirm = "a person has checked this auto-imported item": saves the form as
+// it stands and flips intakeReviewed, the same write the main PMS makes.
+function confirmIntake(){ if(!EDIT||EDIT.isNew) return; EDIT.confirmIntake=true; saveEditor(); }
+function closeEditor(){ if(EDIT&&EDIT.reviewPoll) clearInterval(EDIT.reviewPoll); closeMenus(); document.getElementById("overlay").classList.remove("show"); EDIT=null;
   if(LAST_FOCUS && LAST_FOCUS.isConnected){ try{ LAST_FOCUS.focus(); }catch(e){} } LAST_FOCUS=null; }
 function collectEdits(kind){
   const fields=kind==="rfi"?RFI_FIELDS:SUB_FIELDS; const e={};
@@ -765,6 +842,7 @@ async function saveEditor(){
     await writeArray(arrKey, arr=>{
       if(isNew){ const base=kind==="rfi"?blankRFI():blankSub(); return [...arr, {...base, ...edits, id:uid(), loggedBy:who||"(unknown)", loggedAt:now}]; }
       return arr.map(r=>{ if(r.id!==id) return r; const m={...r, ...edits};
+        if(EDIT.confirmIntake&&isUnreviewed(m)){ m.intakeReviewed=true; m.intake={...(m.intake||{}), reviewedAt:now, reviewedBy:who||null}; }
         // Dismiss removes ONLY the review the user actually saw. writeArray re-reads
         // the project at save time, so a re-review saved after this modal opened is
         // present here with a newer aiReview.at — deleting unconditionally would
@@ -772,8 +850,9 @@ async function saveEditor(){
         if(EDIT.dismissAi && m.aiReview && (!EDIT.ai || m.aiReview.at===EDIT.ai.at)) delete m.aiReview;
         return m; });
     }, false, EDIT.projId);
-    closeEditor(); toast(isNew?"Added to log ✓":"Saved ✓", true); selectProject(CURRENT.proj.id);
-  }catch(err){ toast(err.message, false); }
+    const confirmed=EDIT.confirmIntake;
+    closeEditor(); toast(isNew?"Added to log ✓":confirmed?"Confirmed and saved ✓":"Saved ✓", true); selectProject(CURRENT.proj.id);
+  }catch(err){ if(EDIT) EDIT.confirmIntake=false; toast(err.message, false); }
 }
 async function deleteRecord(){
   if(!EDIT||EDIT.isNew)return; const {kind,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
