@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v175-portal-sharing-robustness";
+    window.__appVersion = "2026-11-03-pms-v176-portal-guest-status";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -30785,6 +30785,81 @@ function portalShareErrorMessage(err) {
 }
 
 
+// ── Guest sign-in status for Manage Sharing ──────────────────────────────
+// Answers the question the CHCR Grove case (11/2026) left us guessing at:
+// after a share, does Microsoft actually have a guest for this address, and
+// have they redeemed the invitation? Read from Graph /users with the signed-in
+// PM's own token. It needs the delegated User.Read.All permission, which an
+// admin grants once for the tenant (externalUserState is not in the basic
+// profile, so User.ReadBasic.All is not enough). Deliberately NOT added to
+// GRAPH_SCOPES: an unconsented admin-consent scope in the login scope set
+// breaks sign-in for everyone (the 90095 loop noted at TEAMS_SCOPES). It is
+// requested only here, silently first, and interactively only from a click.
+const GUEST_LOOKUP_SCOPES = ["User.Read.All"];
+async function getGuestLookupToken(interactive) {
+  const app = await getMsalApp();
+  const account = app.getActiveAccount() || app.getAllAccounts()[0];
+  if (!account) return null;
+  try {
+    const r = await app.acquireTokenSilent({ scopes: GUEST_LOOKUP_SCOPES, account });
+    return r.accessToken;
+  } catch (silentErr) {
+    // Silent can fail for a dozen reasons (blocked iframe, expired session,
+    // missing consent). Without a click we cannot open a popup to find out
+    // which, so report "not loaded" and let the button settle it.
+    if (!interactive) return null;
+    const r = await app.acquireTokenPopup({ scopes: GUEST_LOOKUP_SCOPES, account });
+    return r.accessToken;
+  }
+}
+function guestLookupNeedsConsent(e) {
+  const m = String((e && e.errorCode) || "") + " " + String((e && e.message) || "");
+  return /consent|65001|90095|admin approval|interaction_required/i.test(m) || (e && e.status === 403);
+}
+// One address → { state, since, upn }. state: "accepted" (redeemed, sign-in
+// works), "pending" (guest exists, link never opened), "guest" (guest with no
+// invitation state, e.g. created some other way), "member" (an internal
+// account), "none" (no record at all). Guests are found by mail first, then
+// otherMails, then the #EXT# principal name SharePoint-created guests carry.
+async function lookupPortalGuest(token, email) {
+  const sel = "$select=id,displayName,mail,userPrincipalName,userType,externalUserState,externalUserStateChangeDateTime,createdDateTime";
+  const esc = v => String(v).replace(/'/g, "''");
+  async function q(filter) {
+    const res = await fetch("https://graph.microsoft.com/v1.0/users?$filter=" + encodeURIComponent(filter) + "&" + sel + "&$top=5", {
+      headers: { Authorization: "Bearer " + token },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      const err = new Error("Graph " + res.status + ": " + text.slice(0, 300));
+      err.status = res.status;
+      throw err;
+    }
+    return (await res.json()).value || [];
+  }
+  let hits = await q("mail eq '" + esc(email) + "'");
+  if (hits.length === 0) hits = await q("otherMails/any(m:m eq '" + esc(email) + "')");
+  if (hits.length === 0) hits = await q("startsWith(userPrincipalName,'" + esc(email.replace("@", "_") + "#EXT#") + "')");
+  const u = hits[0];
+  if (!u) return { state: "none", since: "", upn: "" };
+  const st = u.externalUserState;
+  const state = u.userType === "Guest"
+    ? (st === "Accepted" ? "accepted" : st === "PendingAcceptance" ? "pending" : "guest")
+    : "member";
+  return { state, since: u.externalUserStateChangeDateTime || u.createdDateTime || "", upn: u.userPrincipalName || "" };
+}
+const GUEST_CHIP = {
+  accepted: { label: "Signed in", color: "var(--c-34d399)",
+    title: g => "Invitation accepted" + (g.since ? " on " + String(g.since).slice(0, 10) : "") + ". Sign-in works for this address." },
+  pending:  { label: "Invite pending", color: "var(--c-f59e0b)",
+    title: g => "A guest record exists but they have not opened the invitation link yet" + (g.since ? " (invited " + String(g.since).slice(0, 10) + ")" : "") + ". If the email is lost, click 🔁 to resend it." },
+  none:     { label: "No guest record", color: "var(--c-ef4444)",
+    title: () => "Microsoft has no guest for this address. Either the share never went through, it went to a different address, or SharePoint is not creating Entra guests (ask IT to confirm the SharePoint and OneDrive integration with Entra B2B is on). Click 🔁 to resend, wait a minute, then ↻." },
+  guest:    { label: "Guest", color: "var(--c-60a5fa)",
+    title: g => "A guest account exists" + (g.upn ? " (" + g.upn + ")" : "") + "; Microsoft did not report an invitation state." },
+  member:   { label: "Internal", color: "var(--c-94a3b8)",
+    title: () => "This address is a member of the Setty tenant, not a guest." },
+};
+
 // Personal (consumer) mailbox domains. A share to one of these works, but it
 // is where the sign-in failures live: a Gmail or Yahoo address that is also a
 // personal Microsoft account gets a password prompt instead of "Send code",
@@ -30813,6 +30888,10 @@ function PortalSharingModal({ project, clients, driveId, onClose, onUpdateClient
   // could be invited, so a client whose address was not on file meant
   // leaving the modal, finding the directory, and coming back.
   const [showAddContact, setShowAddContact] = React.useState(false);
+  // Entra guest status per external address. status: idle | loading | ready |
+  // needs-check (silent token failed; a click can settle it) | needs-consent
+  // (IT has not granted User.Read.All) | unavailable (some other error).
+  const [guest, setGuest] = React.useState({ status: "idle", byEmail: {}, error: "" });
   const [loading, setLoading]           = React.useState(true);
   const [loadError, setLoadError]       = React.useState("");
   const [query, setQuery]               = React.useState("");
@@ -30955,6 +31034,8 @@ function PortalSharingModal({ project, clients, driveId, onClose, onUpdateClient
         getPerms(uploadsId), getPerms(deliverablesId)
       ]);
       setPerms({ uploads, deliverables, uploadsId, deliverablesId });
+      // Not awaited: the permission list should not wait on a directory lookup.
+      refreshGuestStatus([...uploads, ...deliverables].map(p => p.email), false);
     } catch(e) {
       setLoadError("Could not load permissions: " + e.message);
     }
@@ -31001,6 +31082,33 @@ function PortalSharingModal({ project, clients, driveId, onClose, onUpdateClient
       setActionMsg("✗ " + portalShareErrorMessage(e));
     }
   }
+
+  async function refreshGuestStatus(emails, interactive) {
+    const list = Array.from(new Set((emails || []).map(e => String(e || "").trim().toLowerCase()).filter(Boolean)));
+    if (list.length === 0) { setGuest({ status: "ready", byEmail: {}, error: "" }); return; }
+    setGuest(g => ({ ...g, status: "loading", error: "" }));
+    let token = null;
+    try {
+      token = await getGuestLookupToken(interactive);
+    } catch (e) {
+      const cancelled = /cancel/i.test(String((e && e.message) || ""));
+      setGuest({ status: cancelled ? "needs-check" : guestLookupNeedsConsent(e) ? "needs-consent" : "unavailable",
+        byEmail: {}, error: cancelled || guestLookupNeedsConsent(e) ? "" : String((e && e.message) || e) });
+      return;
+    }
+    if (!token) { setGuest({ status: "needs-check", byEmail: {}, error: "" }); return; }
+    const byEmail = {};
+    try {
+      for (const email of list) byEmail[email] = await lookupPortalGuest(token, email);
+      setGuest({ status: "ready", byEmail, error: "" });
+    } catch (e) {
+      // A token can be issued without the scope when consent is missing; Graph
+      // then answers 403, which is the same "IT has not granted it" case.
+      setGuest({ status: guestLookupNeedsConsent(e) ? "needs-consent" : "unavailable",
+        byEmail, error: guestLookupNeedsConsent(e) ? "" : String((e && e.message) || e) });
+    }
+  }
+  const allSharedEmails = () => [...(perms?.uploads || []), ...(perms?.deliverables || [])].map(p => p.email);
 
   // Re-send Microsoft's invitation email. Granting a permission the person
   // already holds is a no-op server-side, but /invite with sendInvitation
@@ -31180,6 +31288,15 @@ function PortalSharingModal({ project, clients, driveId, onClose, onUpdateClient
         <span style={{ fontSize: 10, fontWeight: 700, color: roleColor,
           background: ca(roleColor, "22"), borderRadius: 3, padding: "1px 6px",
           whiteSpace: "nowrap" }}>{roleLabel}</span>
+        {(() => {
+          const g = guest.status === "ready" ? guest.byEmail[String(perm.email || "").toLowerCase()] : null;
+          const chip = g && GUEST_CHIP[g.state];
+          return chip ? (
+            <span title={chip.title(g)} style={{ fontSize: 10, fontWeight: 700, color: chip.color,
+              background: ca(chip.color, "22"), borderRadius: 3, padding: "1px 6px",
+              whiteSpace: "nowrap", cursor: "help" }}>{chip.label}</span>
+          ) : null;
+        })()}
         <button onClick={() => resendInvitation(perm)} disabled={actionStatus === "working"}
           style={{ background: "none", border: "none", color: P.textDim,
             cursor: actionStatus === "working" ? "not-allowed" : "pointer", fontSize: 13, padding: "0 4px", flexShrink: 0 }}
@@ -31229,6 +31346,29 @@ function PortalSharingModal({ project, clients, driveId, onClose, onUpdateClient
 
           {perms && !loading && (
             <>
+              {(perms.uploads.length > 0 || perms.deliverables.length > 0) && (
+                <div role="status" style={{ fontSize: 10, color: P.textDim, marginBottom: 8, lineHeight: 1.45,
+                  display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  {guest.status === "loading" && <span>⏳ Checking Microsoft sign-in status…</span>}
+                  {guest.status === "ready" && <span>Microsoft sign-in status is shown next to each person (hover a tag for what to do).</span>}
+                  {guest.status === "needs-check" && <span>Microsoft sign-in status not loaded.</span>}
+                  {guest.status === "needs-consent" && (
+                    <span style={{ color: "var(--c-f59e0b)" }}>
+                      Sign-in status needs a one-time IT approval: in Entra, grant the PMS app the delegated
+                      permission <strong>User.Read.All</strong> (admin consent). Until then, use 🔁 to resend an invitation.
+                    </span>
+                  )}
+                  {guest.status === "unavailable" && <span style={{ color: P.red }}>Sign-in status unavailable: {guest.error}</span>}
+                  {guest.status !== "loading" && (
+                    <button onClick={() => refreshGuestStatus(allSharedEmails(), true)}
+                      style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 4,
+                        color: P.textDim, cursor: "pointer", fontSize: 10, padding: "1px 8px" }}
+                      title="Ask Microsoft again whether each person has a guest account and has accepted the invitation">
+                      {guest.status === "ready" ? "↻ Refresh" : "Check sign-in status"}
+                    </button>
+                  )}
+                </div>
+              )}
               {project.clientUploadsFolderUrl && (
                 <div style={{ marginBottom: 14 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: P.textDim,
