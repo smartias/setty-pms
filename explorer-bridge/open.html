@@ -66,6 +66,8 @@
   <div>
     <button id="openBtn">Open again</button>
     <button id="copyBtn" class="ghost">Copy local path</button>
+    <button id="copyCmdBtn" class="ghost" style="display:none"
+      title="No handler needed: copies two lines (cd into the synced folder, then start Claude Code with the project kickoff) to paste into Windows Terminal or PowerShell.">Copy terminal command instead</button>
     <span id="copyMsg"></span>
   </div>
   <div class="trouble" id="trouble">
@@ -83,7 +85,11 @@
           enough: install Claude Code from <a href="https://claude.com/claude-code" target="_blank" rel="noreferrer">claude.com/claude-code</a>
           and sign in once. The handler says so in a dialog when this is the cause.</li>
       <li><b>Company security software blocked it.</b> On managed machines, endpoint protection can silently stop
-          the browser from starting PowerShell. IT can allow the handler (details in the PMS Admin Console guide).</li>
+          the browser from starting PowerShell (and may block the setup file with a "Lockdown … Windows Command Processor"
+          message). IT can allow the handler (details in the PMS Admin Console guide); the no-download install is
+          <a href="settypms-open.ps1" download>settypms-open.ps1</a> placed in <code>%LOCALAPPDATA%\SettyPMS\</code> plus
+          <a href="SettyPMS-Explorer-Setup.reg" download>SettyPMS-Explorer-Setup.reg</a> (registry entry only).
+          Until then, <b>Copy local path</b> (then Win+E, paste) and <b>Copy terminal command</b> above need no handler at all.</li>
     </ol>
     <p style="margin:10px 0 0">
       <a href="#" id="checkLink">🧪 Test the handler</a> — a dialog with the handler version and what it found
@@ -166,21 +172,42 @@
 
   // Same-origin bonus: the PMS stores the per-device Explorer root in
   // localStorage (stage 1's copy-path button). If it's set on this device,
-  // the copy-path fallback works here too.
-  document.getElementById("copyBtn").onclick = function () {
-    var msg = document.getElementById("copyMsg");
+  // the copy-path fallbacks work here too.
+  function explorerRoot() {
     var root = (localStorage.getItem("pmsExplorerRoot") || "").trim();
     if (!root) {
       root = (prompt("Paste the File Explorer path of the folder that CONTAINS your synced project folders:") || "").trim();
-      if (!root) return;
+      if (!root) return "";
       localStorage.setItem("pmsExplorerRoot", root);
     }
-    var path = root.replace(/[\\/]+$/, "") + "\\" + folder;
-    navigator.clipboard.writeText(path).then(function () {
-      msg.textContent = "✓ Copied — Win+E, paste";
-      setTimeout(function () { msg.textContent = ""; }, 3000);
-    }).catch(function () { alert("Could not copy — the path is:\n" + path); });
+    return root;
+  }
+  function localPath(root) { return root.replace(/[\\/]+$/, "") + "\\" + folder; }
+  function copyText(text, okMsg, failLead) {
+    var msg = document.getElementById("copyMsg");
+    navigator.clipboard.writeText(text).then(function () {
+      msg.textContent = okMsg;
+      setTimeout(function () { msg.textContent = ""; }, 4000);
+    }).catch(function () { alert(failLead + "\n" + text); });
+  }
+  document.getElementById("copyBtn").onclick = function () {
+    var root = explorerRoot();
+    if (root) copyText(localPath(root), "✓ Copied — Win+E, paste", "Could not copy — the path is:");
   };
+  // No-handler route for Work in the project folder: two lines for a
+  // terminal (PowerShell 5.1 has no &&, so not one line). Double quotes
+  // only — the kickoff carries none. The kickoff text MUST stay identical to
+  // $kickoff in settypms-open.ps1 and coworkKickoffPrompt in SettyPMS.html.
+  function coworkKickoffPrompt(folderName) {
+    return "Project: " + folderName + ". This session is for that project and should be titled after it. Orient yourself in this Setty project folder: skim the folder structure a couple of levels deep and note the main document types you see. Then give the user a two line snapshot and ask what they would like to tackle, suggesting for example: generate a document from a Setty template, edit or update an existing document, assemble a transmittal or submittal package, organize or rename files, or summarize a document or drawing set. If the Setty PMS connector tools are available, use them for project context. Do not start any work until the user chooses. End your first reply with a short note under a Good to know heading: this session is saved and can be continued later in the Claude app or by running claude --continue in this folder. Keep this window open while Claude is actively working, but closing it when idle loses nothing. Clicking the PMS button again starts a fresh session rather than reopening this one.";
+  }
+  document.getElementById("copyCmdBtn").onclick = function () {
+    var root = explorerRoot();
+    if (!root) return;
+    var cmd = 'cd "' + localPath(root) + '"\r\nclaude "' + coworkKickoffPrompt(folder) + '"';
+    copyText(cmd, "✓ Copied — open Windows Terminal or PowerShell, paste, Enter", "Could not copy — the command is:");
+  };
+  if (verb === "cowork") document.getElementById("copyCmdBtn").style.display = "";
 
   // Auto-fire on load. Browsers that require a user gesture for external
   // protocols simply no-op here, and the detection above then opens the

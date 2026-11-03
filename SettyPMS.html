@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v183-explorer-bridge-check";
+    window.__appVersion = "2026-11-03-pms-v184-cowork-terminal-fallback";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -23833,8 +23833,40 @@ function openActionItemCount(project) {
 // proposal-draft, open-items-log) when installed, and still steers a plain
 // connector conversation well enough when it is not. The menu doubles as
 // discoverability: reading the entries teaches what Claude can be asked.
+// ---- Work-in-the-folder without the settypms: handler -------------------
+// Kickoff prompt for a Claude Code session started in a project folder.
+// MUST stay identical to $kickoff in explorer-bridge/settypms-open.ps1 and
+// coworkKickoffPrompt in explorer-bridge/open.html (the no-handler routes).
+function coworkKickoffPrompt(folderName) {
+  return "Project: " + folderName + ". This session is for that project and should be titled after it. Orient yourself in this Setty project folder: skim the folder structure a couple of levels deep and note the main document types you see. Then give the user a two line snapshot and ask what they would like to tackle, suggesting for example: generate a document from a Setty template, edit or update an existing document, assemble a transmittal or submittal package, organize or rename files, or summarize a document or drawing set. If the Setty PMS connector tools are available, use them for project context. Do not start any work until the user chooses. End your first reply with a short note under a Good to know heading: this session is saved and can be continued later in the Claude app or by running claude --continue in this folder. Keep this window open while Claude is actively working, but closing it when idle loses nothing. Clicking the PMS button again starts a fresh session rather than reopening this one.";
+}
+// Per-device synced root (same localStorage key and prompt as the jobcard's
+// 📂 Explorer Path button). Returns "" if the person cancels.
+function askExplorerRoot(force) {
+  let root = (localStorage.getItem("pmsExplorerRoot") || "").trim();
+  if (!root || force) {
+    root = (prompt(
+      "One-time setup (per computer): paste the File Explorer path of the folder that CONTAINS your synced project folders.\n\n" +
+      "In Explorer, browse to where your OneDrive shortcuts to project folders live, click the address bar, copy, and paste it here.\n\n" +
+      "Example: C:\\Users\\you\\OneDrive - Setty and Associates",
+      root) || "").trim();
+    if (!root) return "";
+    localStorage.setItem("pmsExplorerRoot", root);
+  }
+  return root;
+}
+// Two lines for a terminal: pasted into Windows Terminal, PowerShell (5.1
+// has no &&) or cmd they run one after the other. Double quotes only — the
+// kickoff carries none. Needs no handler, so it works on locked-down
+// company machines where security software blocks the settypms: launch.
+function coworkTerminalCommand(folderName, root) {
+  return 'cd "' + root.replace(/[\\/]+$/, "") + "\\" + folderName + '"\r\n' +
+    'claude "' + coworkKickoffPrompt(folderName) + '"';
+}
+
 function AskClaudeMenu({ project }) {
   const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const label = (project.projectNumber ? project.projectNumber + " " : "") + (project.name || "this project");
   const promptUrl = lines => "https://claude.ai/new?q=" + encodeURIComponent(lines.join("\n"));
 
@@ -23940,12 +23972,29 @@ function AskClaudeMenu({ project }) {
     href: "settypms:cowork?folder=" + encodeURIComponent(coworkFolderName),
     divider: true,
   });
-  else if (coworkFolderName) entries.push({
-    icon: "📁", title: "Work in the project folder",
-    desc: "Opens Claude Code inside the synced folder. Needs the one-time handler setup on this computer (My Projects → My Settings) — this opens the setup page",
-    url: () => coworkBridgeUrl,
-    divider: true,
-  });
+  else if (coworkFolderName) {
+    entries.push({
+      icon: "📁", title: "Work in the project folder",
+      desc: "Opens Claude Code inside the synced folder. Needs the one-time handler setup on this computer (My Projects → My Settings) — this opens the setup page",
+      url: () => coworkBridgeUrl,
+      divider: true,
+    });
+    // No-handler route: for company machines where security software blocks
+    // the settypms: launch (or the setup file), or anyone who just prefers a
+    // terminal. Copies cd + claude <kickoff>; paste into Windows Terminal.
+    entries.push({
+      icon: "📋", title: copied ? "✓ Copied — paste into Windows Terminal or PowerShell, Enter" : "Copy a terminal command instead",
+      desc: "No setup needed: starts Claude Code in the synced folder with the same project kickoff. First use asks where your synced project folders live",
+      onClick: () => {
+        const root = askExplorerRoot(false);
+        if (!root) return;
+        const cmd = coworkTerminalCommand(coworkFolderName, root);
+        navigator.clipboard.writeText(cmd).then(() => {
+          setCopied(true); setTimeout(() => { setCopied(false); setOpen(false); }, 2500);
+        }).catch(() => alert("Could not copy — the command is:\n\n" + cmd));
+      },
+    });
+  }
 
   return (
     <div style={{ position: "relative" }}>
@@ -23967,9 +24016,9 @@ function AskClaudeMenu({ project }) {
             // Protocol entries (settypms:) carry a plain href and must NOT
             // target _blank: a new tab for a protocol launch is a stranded
             // blank page. Chat entries stay claude.ai/new in a new tab.
-            <a key={i} href={entry.href || entry.url()}
-              target={entry.href ? undefined : "_blank"} rel={entry.href ? undefined : "noreferrer"}
-              onClick={() => setOpen(false)}
+            <a key={i} href={entry.href || (entry.onClick ? "#" : entry.url())}
+              target={entry.href || entry.onClick ? undefined : "_blank"} rel={entry.href || entry.onClick ? undefined : "noreferrer"}
+              onClick={e => { if (entry.onClick) { e.preventDefault(); entry.onClick(); } else setOpen(false); }}
               style={{ display: "block", padding: "8px 12px", borderRadius: 4,
                 fontSize: 12, color: P.text, textDecoration: "none",
                 borderTop: entry.divider ? `1px solid ${P.border}` : undefined,
@@ -33818,6 +33867,22 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
                 Something not opening? Click <b>Test the handler</b>: a dialog should appear within a few seconds. No dialog means the handler
                 isn't installed, is an old version (it never updates itself — re-run the setup file), or security software blocked it.
                 Every click also writes <code>%LOCALAPPDATA%\SettyPMS\last-run.log</code> with what happened.
+              </div>
+              {/* Company machines: Sophos "Application Lockdown" stops the
+                  setup file (cmd → PowerShell download) and usually the
+                  handler itself (browser → PowerShell). The .reg + .ps1
+                  pair is the no-script install for people or IT; the
+                  Ask Claude menu's "Copy a terminal command" and the 📂
+                  Explorer Path button need no handler at all. */}
+              <div style={{ color: P.textMuted, fontSize: 11.5, marginTop: 6 }}>
+                🔒 <b>Company computer blocked the setup file</b> ("Lockdown … Windows Command Processor")? That is security software
+                stopping a script from downloading the handler, and it will usually block the handler at click time too, so ask IT for
+                the exception (wording in Admin Console → Explorer bridge). No-download install for you or IT:
+                {" "}<a href="explorer-bridge/settypms-open.ps1" download style={{ color: P.accentLight }}>settypms-open.ps1</a> saved into
+                a new folder <code>%LOCALAPPDATA%\SettyPMS</code>, then double-click
+                {" "}<a href="explorer-bridge/SettyPMS-Explorer-Setup.reg" download style={{ color: P.accentLight }}>SettyPMS-Explorer-Setup.reg</a>
+                {" "}(registry entry only, runs nothing), tick the box above, Test the handler. Meanwhile the Ask Claude menu's
+                {" "}<b>Copy a terminal command</b> and the project page's <b>📂 Explorer Path</b> button work with no handler at all.
               </div>
               {explorerHandler && explorerHandlerSupportsNDrive() && !explorerHandlerIsLatest() && (
                 <div style={{ color: P.amber || "var(--c-fbbf24)", fontSize: 11.5, marginTop: 6 }}>

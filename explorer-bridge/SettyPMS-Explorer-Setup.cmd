@@ -16,6 +16,11 @@ rem Safe to re-run any time: it simply replaces the handler with the current
 rem version (the handler is cached on this computer and never updates
 rem itself, so re-run this whenever the PMS says a newer one is available).
 rem
+rem Blocked by company security software ("Lockdown ... Windows Command
+rem Processor")? Use SettyPMS-Explorer-Setup.reg from this same folder
+rem instead (registry entry only, runs nothing) and place settypms-open.ps1
+rem by hand - the .reg file explains where.
+rem
 rem To undo:  reg delete HKCU\Software\Classes\settypms /f
 rem           and delete the %LOCALAPPDATA%\SettyPMS folder.
 rem ---------------------------------------------------------------------------
@@ -24,10 +29,18 @@ echo Setting up the Setty PMS one-click Explorer handler (this user only)...
 set "DIR=%LOCALAPPDATA%\SettyPMS"
 if not exist "%DIR%" mkdir "%DIR%"
 
-rem Download to a temp name first so a failed download never clobbers a
-rem working handler; the ?v= query defeats any cached old copy on the way.
 if exist "%DIR%\settypms-open.ps1.new" del "%DIR%\settypms-open.ps1.new"
+rem A settypms-open.ps1 sitting NEXT TO this file (IT staged both, or the
+rem download is blocked on this computer) is used as-is: no PowerShell, no
+rem network. Otherwise download to a temp name first so a failed download
+rem never clobbers a working handler; the ?v= query defeats a cached old copy.
+if exist "%~dp0settypms-open.ps1" goto :uselocal
 powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -Uri ('https://smartias.github.io/setty-pms/explorer-bridge/settypms-open.ps1?v=' + [DateTime]::UtcNow.Ticks) -OutFile \"$env:LOCALAPPDATA\SettyPMS\settypms-open.ps1.new\""
+goto :verify
+:uselocal
+echo Using the handler script found next to this file (no download).
+copy /y "%~dp0settypms-open.ps1" "%DIR%\settypms-open.ps1.new" >nul
+:verify
 if not exist "%DIR%\settypms-open.ps1.new" (
   echo.
   echo Could not download the handler script - check your internet connection

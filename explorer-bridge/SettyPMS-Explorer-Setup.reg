@@ -1,0 +1,38 @@
+Windows Registry Editor Version 5.00
+
+; Setty PMS one-click Explorer handler - registry part ONLY (current user).
+;
+; For computers where security software blocks the normal setup file
+; (SettyPMS-Explorer-Setup.cmd), or for IT to deploy. This file registers
+; the settypms: link type for YOUR user account and nothing else. It runs
+; no script and downloads nothing. The handler script itself must be placed
+; by hand (or by IT) at:
+;
+;     %LOCALAPPDATA%\SettyPMS\settypms-open.ps1
+;
+; (download settypms-open.ps1 from this same folder of the repo, create the
+; SettyPMS folder under %LOCALAPPDATA%, and move the file there). Then in the
+; PMS: My Projects -> My Settings -> tick the one-click box -> Test the handler.
+;
+; The command value is REG_EXPAND_SZ (hex(2) below) so %LOCALAPPDATA% expands
+; to each user's own profile. Decoded, it is exactly:
+;   powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\SettyPMS\settypms-open.ps1" "%1"
+;
+; To undo:  reg delete HKCU\Software\Classes\settypms /f
+
+[HKEY_CURRENT_USER\Software\Classes\settypms]
+@="URL:Setty PMS"
+"URL Protocol"=""
+
+[HKEY_CURRENT_USER\Software\Classes\settypms\shell\open\command]
+@=hex(2):70,00,6f,00,77,00,65,00,72,00,73,00,68,00,65,00,6c,00,6c,00,2e,00,\
+  65,00,78,00,65,00,20,00,2d,00,4e,00,6f,00,50,00,72,00,6f,00,66,00,69,00,\
+  6c,00,65,00,20,00,2d,00,57,00,69,00,6e,00,64,00,6f,00,77,00,53,00,74,00,\
+  79,00,6c,00,65,00,20,00,48,00,69,00,64,00,64,00,65,00,6e,00,20,00,2d,00,\
+  45,00,78,00,65,00,63,00,75,00,74,00,69,00,6f,00,6e,00,50,00,6f,00,6c,00,\
+  69,00,63,00,79,00,20,00,42,00,79,00,70,00,61,00,73,00,73,00,20,00,2d,00,\
+  46,00,69,00,6c,00,65,00,20,00,22,00,25,00,4c,00,4f,00,43,00,41,00,4c,00,\
+  41,00,50,00,50,00,44,00,41,00,54,00,41,00,25,00,5c,00,53,00,65,00,74,00,\
+  74,00,79,00,50,00,4d,00,53,00,5c,00,73,00,65,00,74,00,74,00,79,00,70,00,\
+  6d,00,73,00,2d,00,6f,00,70,00,65,00,6e,00,2e,00,70,00,73,00,31,00,22,00,\
+  20,00,22,00,25,00,31,00,22,00,00,00
