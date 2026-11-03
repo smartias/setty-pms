@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v171-portal-signin-guidance";
+    window.__appVersion = "2026-11-03-pms-v172-portal-signin-guidance";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -10850,6 +10850,22 @@ function IntakeBadge({ item }) {
   );
 }
 
+// The scheduled intake moved this logged item's status forward from a portal
+// email (item.intakeStatus = {from, to, prev, vendor, eventDate, reviewed}).
+// Shown until a person Keeps or Undoes it in the item modal.
+function isUnreviewedIntakeStatus(item) { return !!(item && item.intakeStatus && !item.intakeStatus.reviewed); }
+function IntakeStatusBadge({ item }) {
+  if (!isUnreviewedIntakeStatus(item)) return null;
+  const st = item.intakeStatus;
+  return (
+    <span title={"Status changed " + (st.from || "?") + " → " + (st.to || "?") + " by a " + (st.vendor || "portal") + " email" + (st.eventDate ? " on " + st.eventDate : "") + ". Open it to Keep or Undo."}
+      style={{ display: "inline-block", marginLeft: 6, padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+        fontFamily: "inherit", background: "rgba(56,189,248,.15)", color: P.accentLight, verticalAlign: "middle" }}>
+      ↻ {st.to || "updated"} by {st.vendor || "portal"}
+    </span>
+  );
+}
+
 // ── SLA / deadline urgency ────────────────────────────────────────────────────
 // A graduated "how close is this deadline" chip for any dated, status-bearing
 // item (RFIs, submittals, action items). Closed/stopped items get no chip — the
@@ -11141,6 +11157,16 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   // the item starts counting (overdue, dashboards) like any other.
   function confirmIntake() {
     const next = { ...form, intakeReviewed: true, intake: { ...(form.intake || {}), reviewedAt: new Date().toISOString() } };
+    setForm(next);
+    onSave(next);
+  }
+  // Scheduled-intake status change: Keep marks it checked; Undo restores the
+  // values it replaced (intakeStatus.prev) and records the undo so the same
+  // email never re-applies it (caIntake.statusUpdateFor).
+  function reviewIntakeStatus(undo) {
+    const st = form.intakeStatus || {};
+    const restored = undo ? { ...(st.prev || {}) } : {};
+    const next = { ...form, ...restored, intakeStatus: { ...st, reviewed: true, undone: !!undo, reviewedAt: new Date().toISOString() } };
     setForm(next);
     onSave(next);
   }
@@ -11447,6 +11473,18 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
             </span>
             <span style={{ flex: 1 }} />
             <Btn small onClick={confirmIntake} title="Mark this item as checked. It then counts like any other item.">✓ Confirm</Btn>
+          </div>
+        )}
+        {/* Scheduled-intake status change: moved forward by a portal email, not yet checked */}
+        {isUnreviewedIntakeStatus(form) && (
+          <div role="status" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: "rgba(56,189,248,.08)", border: "1px solid " + P.accent, borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>
+            <span style={{ fontSize: 12.5 }}>
+              ↻ Status changed from <b>{form.intakeStatus.from || "?"}</b> to <b>{form.intakeStatus.to || "?"}</b> by a {form.intakeStatus.vendor || "portal"} email{form.intakeStatus.eventDate ? " on " + form.intakeStatus.eventDate : ""}.
+              {form.intakeStatus.prev && form.intakeStatus.prev.stamp !== undefined ? " Stamp set to " + (form.stamp || "—") + "." : ""}
+            </span>
+            <span style={{ flex: 1 }} />
+            <Btn small variant="ghost" onClick={() => reviewIntakeStatus(true)} title="Put back the previous status (and date/stamp). The same email will not change it again.">Undo</Btn>
+            <Btn small onClick={() => reviewIntakeStatus(false)} title="The change is right; stop showing this notice.">✓ Keep</Btn>
           </div>
         )}
         {/* Review-ready banner: a fresh Claude review landed while this modal was open */}
@@ -11933,7 +11971,7 @@ function RFIsView({ project, onChange, staff, clients }) {
               }).filter(Boolean);
               return (
                 <tr key={r.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
-                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}<IntakeBadge item={r} /></td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}<IntakeBadge item={r} /><IntakeStatusBadge item={r} /></td>
                   <td>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{r.title || <span style={{ color: P.textDim }}>No title</span>}</div>
                     {r.description && <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>{r.description.slice(0, 80)}{r.description.length > 80 ? "…" : ""}</div>}
@@ -12154,7 +12192,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
               }).filter(Boolean);
               return (
                 <tr key={s.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
-                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{s.number}<IntakeBadge item={s} /></td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{s.number}<IntakeBadge item={s} /><IntakeStatusBadge item={s} /></td>
                   <td>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{s.description || <span style={{ color: P.textDim }}>No description</span>}</div>
                     {s.registerItemId && <div style={{ fontSize: 10, color: P.green, marginTop: 2 }}>✓ From register</div>}

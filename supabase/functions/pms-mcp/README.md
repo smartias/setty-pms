@@ -994,12 +994,34 @@ Import.
   a race fails that project for this run and the next run retries. A PM with
   the project open merges the additions without a prompt (cloud-added array
   items merge silently in the PMS 3-way merge).
-- **Narrow on purpose.** Procore only (Newforma forwards can carry a second
-  number for an item already logged, so Forma/Newforma stay manual in the
-  tracker); CA projects only, never archived ones; only items whose latest
-  email is within `days` (default 14, max 90), so the first run does not
-  backfill old closed items (those stay importable by hand). An item's full
-  email history still builds it.
+- **One portal per project.** The route may read Procore, Autodesk Forma and
+  Newforma mail, but each project imports from ONE: the CA platform confirmed
+  in the tracker (`project.caPortal.platform`; Autodesk Build → Forma). A
+  project with nothing confirmed stays **Procore only**, and PMWeb / email-only
+  projects import nothing unattended. That is the duplicate guard: the same
+  RFI often arrives twice under two numbers (the contractor's Procore number
+  and the architect's Newforma forward), and only the confirmed platform's
+  copy becomes a log item. Setty's own internal Newforma forwards (tag e.g.
+  `:FCqqN`) carry the same id as the architect's and collapse onto it; they
+  stop once Newforma is retired internally.
+- **Narrow on purpose.** CA projects only, never archived ones; only items
+  whose latest email is within `days` (default 14, max 90), so the first run
+  does not backfill old closed items (those stay importable by hand). An
+  item's full email history still builds it. Newforma `RE:` / `FW:` /
+  automatic replies are never events.
+- **Status updates on logged items** (2026-11-03). A closing or answering
+  event from the project's portal moves a logged item FORWARD: RFI Open →
+  Responded ("Response to RFI") → Closed ("RFI Closed", Newforma "Responded
+  to and Closed"); submittal → Returned (Procore distribution or Setty
+  approver response, Forma status Closed, Newforma closed), with the stamp
+  only when none is recorded and the responded/returned date only when
+  empty. Never backwards, never Void, never response/comment text, never on
+  a title-only match, an ambiguous number, or another revision. The item
+  carries `intakeStatus` (`from`, `to`, `prev`, `vendor`, `eventDate`,
+  `reviewed`); the PMS shows "↻ Closed by Procore" with Keep / Undo, and an
+  undo is never re-applied by the same email. The response reports
+  `updated` and `statusChanges`; `statusUpdates: false` in the deps (or a
+  dry run) writes none.
 - **Marked for review.** Each new record has `intakeReviewed: false` and
   `intake: {at, by: "ca-items-intake", vendor}`. Same ids as the tracker's
   import (`sync-procore-<pid>-<n>`, `sync-nf-<pid>-<base>`), so a manual import
@@ -1017,7 +1039,7 @@ Import.
 Turning it on, in order:
 
 1. Deploy (Actions → "Deploy pms-mcp" → Run workflow on `main`) and confirm
-   `/health` reports build `2026-11-02-ca-items-intake`.
+   `/health` reports build `2026-11-03-ca-intake-status-updates`.
 2. Schedule it, copying the secret from the job that already carries it. It
    is still a dry run:
 
