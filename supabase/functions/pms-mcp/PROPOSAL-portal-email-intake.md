@@ -293,3 +293,15 @@ item's status") is built, forward-only and undoable: `statusUpdateFor` /
 `applyStatusUpdates` in `caIntake.js`, applied by the scheduled route.
 Revision events still do not write (a new revision is a new log row a
 person creates from the tracker's UPDATE badge).
+
+## Kahua (2026-11-03)
+
+NYC SCA jobs run on Kahua ("CAMP"); notifications come from
+`outbox@kahua.com`. `parseKahuaRfi` / `parseKahuaSub` read: new RFIs
+(`CI00034 Q119 (RFI#34) …`; RFI# and the CI number are one key), "response
+received" and "has been returned" (never a status change: a returned RFI is
+coming back to us), returned submittals with the response as the stamp and
+the revision from the title's `R1`, and "Official Reviewer Task" (a submittal
+assigned to us). Weekly summaries and meeting minutes are skipped. None of
+the portals offer Setty an API; everything here is read from the filed
+notification emails.

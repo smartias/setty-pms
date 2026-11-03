@@ -299,7 +299,7 @@ async function init(){
   try{
     const [projRows, actRows] = await Promise.all([
       fetchJson(`pms_projects?select=id,name:project->>name,number:project->>projectNumber,status:project->>status,caPortal:project->caPortal,links:project->externalLinks&order=id.asc`),
-      fetchAll(`pms_project_emails?or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*,subject.ilike.*PMWeb*)&select=project_id,from_address,subject&order=record_id.asc`),
+      fetchAll(`pms_project_emails?or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*,from_address.ilike.*kahua*,subject.ilike.*PMWeb*)&select=project_id,from_address,subject&order=record_id.asc`),
     ]);
     const detected=(window.CaIntake&&window.CaIntake.detectPlatforms)?window.CaIntake.detectPlatforms(actRows||[]):{};
     PROJECTS=(projRows||[]).filter(p=>(p.status||"")===CA_STATUS).map(p=>projEntry(p,detected[p.id]))
@@ -317,7 +317,7 @@ async function init(){
    project's External links (type = platform, caPortal:true), so the main PMS
    lists it and installs it as a folder shortcut. Until someone saves it, the
    platform is a GUESS from the filed notification emails (caIntake.detectPlatforms). */
-const PLATFORM_LINK_HINT = { "Procore":"https://app.procore.com/…/project/home", "Autodesk Build":"https://acc.autodesk.com/…", "Newforma":"https://…newforma… (Info Exchange)", "PMWeb":"https://…pmweb…" };
+const PLATFORM_LINK_HINT = { "Procore":"https://app.procore.com/…/project/home", "Autodesk Build":"https://acc.autodesk.com/…", "Newforma":"https://…newforma… (Info Exchange)", "PMWeb":"https://…pmweb…", "Kahua":"https://…kahua.com/…" };
 function portalLinkOf(links, platform){ const l=(links||[]).filter(x=>x&&x.url); return l.find(x=>x.caPortal)||l.find(x=>x.type===platform)||null; }
 function projEntry(row, det){
   const cp=row.caPortal&&typeof row.caPortal==="object"?row.caPortal:{};
@@ -368,7 +368,7 @@ async function savePortal(){
     await writeProject(p.id, proj=>{
       const links=Array.isArray(proj.externalLinks)?proj.externalLinks.slice():[];
       const i=links.findIndex(l=>l&&l.caPortal);
-      const link=url?{ ...(i>=0?links[i]:{id:"ca-portal-"+uid()}), type:platform==="Autodesk Build"||platform==="Newforma"||platform==="PMWeb"||platform==="Procore"?platform:"Other",
+      const link=url?{ ...(i>=0?links[i]:{id:"ca-portal-"+uid()}), type:["Autodesk Build","Newforma","PMWeb","Procore","Kahua"].includes(platform)?platform:"Other",
         label:platform+" (CA)", url, note:gc?"GC: "+gc:"", caPortal:true }:null;
       if(i>=0){ if(link) links[i]=link; else links.splice(i,1); } else if(link) links.push(link);
       return { ...proj, caPortal:{ platform, gc, by:who||null, at }, externalLinks:links };
@@ -418,7 +418,7 @@ async function selectProject(pid){
   try{
     const [projRows, emails]=await Promise.all([
       fetchJson(`pms_projects?id=eq.${pid}&select=rfis:project->rfis,submittals:project->submittals,team:project->teamMembers`),
-      fetchJson(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
+      fetchJson(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*,from_address.ilike.*kahua*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
     ]);
     const logged=projRows[0]||{}; const loggedRFIs=logged.rfis||[], loggedSubs=logged.submittals||[];
     const CI=window.CaIntake; if(!CI) throw new Error("caIntake.js did not load — reload the page.");
@@ -490,7 +490,7 @@ function renderSection(kind, title, logged, inbox){
       const c = kind==="rfi" ? `<td class="num">#${esc(it.extNum)}</td><td class="title">${esc(it.title)}</td><td>${statusPill(it.status)}</td><td>${esc(it.dueDate||"—")}</td><td>${esc(it.from||"")}</td>`
         : `<td class="num">#${esc(it.extNum)}${it.rev?` <span class=muted>r${it.rev}</span>`:""}</td><td class="title">${esc(it.title)}</td><td>${esc(it.specSection||"")}</td><td>${statusPill(it.status)}</td><td>${esc(it.dueDate||"—")}</td>`;
       return `<tr>${c}${dcell}<td class="right">${verdictBadge(it)} ${cb}</td></tr>`; }).join("");
-    html+=`<div class="inbox"><div class="ihead">📥 To import from portal emails (Procore / Forma / Newforma) — ${news.length} new</div>`+
+    html+=`<div class="inbox"><div class="ihead">📥 To import from portal emails (Procore / Forma / Newforma / Kahua) — ${news.length} new</div>`+
       `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`+
       `<div class="actions"><button class="go" onclick="importSelected('${kind}')">Import selected → log</button><span class="muted" style="font-size:12px">Tick the new ones, then import. Already-logged items are skipped.</span></div></div>`;
   }

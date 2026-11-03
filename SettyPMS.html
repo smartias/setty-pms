@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v171-intake-status-updates";
+    window.__appVersion = "2026-11-03-pms-v172-kahua";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -5299,6 +5299,7 @@ const LINK_TYPE_ICONS = {
   "Procore":       "🔨",
   "Autodesk Build": "🏗",
   "Newforma":      "📨",
+  "Kahua":         "🏫",
   "PMWeb":         "🌐",
   "Client Portal": "🌐",
   "Network Folder": "🗂",  // not installed as .url (UNC paths don't open in browsers)
@@ -29123,7 +29124,7 @@ function OneNoteNotebookField({ project, onSave, onClear }) {
 // Tracker saves a project's portal link here with caPortal:true (alongside
 // project.caPortal = {platform, gc, by, at}), so it shows in this list and
 // installs as a folder shortcut like any other link.
-const EXTERNAL_LINK_TYPES = ["Client FTP", "BIM 360", "Matterport", "Procore", "Autodesk Build", "Newforma", "PMWeb", "Client Portal", "Network Folder", "Dropbox", "Box", "Google Drive", "Other"];
+const EXTERNAL_LINK_TYPES = ["Client FTP", "BIM 360", "Matterport", "Procore", "Autodesk Build", "Newforma", "Kahua", "PMWeb", "Client Portal", "Network Folder", "Dropbox", "Box", "Google Drive", "Other"];
 
 function ExternalLinksField({ project, onChange }) {
   const links = project.externalLinks || [];
@@ -29157,6 +29158,7 @@ function ExternalLinksField({ project, onChange }) {
     "Procore": { bg: "var(--c-2a1a1a)", text: "var(--c-f87171)" },
     "Autodesk Build": { bg: "var(--c-1a2a3a)", text: "var(--c-4da6ff)" },
     "Newforma": { bg: "var(--c-1e1e2a)", text: "var(--c-a78bfa)" },
+    "Kahua": { bg: "var(--c-2a1a1a)", text: "var(--c-fbbf24)" },
     "PMWeb": { bg: "var(--c-1a2220)", text: "var(--c-34d399)" },
     "Client Portal": { bg: "var(--c-1a2220)", text: "var(--c-34d399)" },
     "Network Folder": { bg: "var(--c-1a1e1a)", text: "var(--c-86efac)" },
