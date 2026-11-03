@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v179-guest-status-consent-link";
+    window.__appVersion = "2026-11-03-pms-v180-portal-acknowledge";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -5976,6 +5976,82 @@ async function ensurePortalIntakeFolders(project) {
   return { rfisUrl: urls.rfi, submittalsUrl: urls.submittal };
 }
 
+// ── Portal intake: acknowledge (step 3 of PROPOSAL-portal-ca-exchange.md) ─────
+// "Confirm & acknowledge" on an item the portal sweep logged. Moves the
+// contractor's form, and whatever they saved beside it with the same base
+// name (files or a folder), into "<number> - <subject>" inside the intake
+// folder, so the contractor sees the number acknowledged in the folder they
+// use. Runs with the PM's own token (the NYSharesite access the sharing modal
+// relies on). Get-or-create, re-runnable: a form already inside its numbered
+// folder is left alone. Returns the form's new URL and the folder URL.
+async function movePortalFormToNumberedFolder(item, folderLabel) {
+  const driveId = SP_NYSHARE_DRIVE_ID;
+  const fileId = item && item.intake && item.intake.driveItemId;
+  if (!fileId) throw new Error("This item has no portal form on record.");
+  const itemUrl = id => "/drives/" + driveId + "/items/" + encodeURIComponent(id);
+  const file = await graphFetch("GET", itemUrl(fileId) + "?$select=id,name,webUrl,parentReference");
+  if (!file || !file.id) throw new Error("The submitted form is no longer where the sweep found it (moved or deleted in SharePoint).");
+  const parentId = file.parentReference && file.parentReference.id;
+  if (!parentId) throw new Error("Could not find the form's folder.");
+  const safeName = String(folderLabel || "").replace(/[\\/:*?"<>|#%]/g, "-").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (!safeName) throw new Error("Cannot name the numbered folder.");
+  const parent = await graphFetch("GET", itemUrl(parentId) + "?$select=id,name,webUrl");
+  if (parent && parent.name && parent.name.toLowerCase() === safeName.toLowerCase()) {
+    return { formUrl: file.webUrl, folderUrl: parent.webUrl, moved: 0, already: true };
+  }
+  let folder = await graphFetch("GET", itemUrl(parentId) + ":/" + encodeURIComponent(safeName));
+  if (!folder || !folder.id) {
+    try {
+      folder = await graphFetch("POST", itemUrl(parentId) + "/children",
+        { name: safeName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" });
+    } catch (createErr) {
+      // Lost a race with someone creating it: one more look before giving up.
+      folder = await graphFetch("GET", itemUrl(parentId) + ":/" + encodeURIComponent(safeName));
+      if (!folder || !folder.id) throw createErr;
+    }
+  }
+  if (!folder || !folder.id) throw new Error('Could not create the folder "' + safeName + '".');
+  const base = String(file.name || "").replace(/\.[^.]+$/, "").trim().toLowerCase();
+  const listing = await graphFetch("GET", itemUrl(parentId) + "/children?$select=id,name,file,folder&$top=200");
+  const siblings = ((listing && listing.value) || []).filter(it => it.id !== file.id && it.id !== folder.id &&
+    String(it.name || "").replace(/\.[^.]+$/, "").trim().toLowerCase() === base);
+  let formUrl = file.webUrl, moved = 0;
+  for (const it of [file, ...siblings]) {
+    const r = await graphFetch("PATCH", itemUrl(it.id), { parentReference: { id: folder.id } });
+    if (!r || !r.id) throw new Error('Could not move "' + it.name + '" into "' + safeName + '".');
+    if (it.id === file.id) formUrl = r.webUrl || formUrl;
+    moved++;
+  }
+  return { formUrl, folderUrl: folder.webUrl, moved, already: false };
+}
+
+// The acknowledgement email body: number, due date, the numbered folder.
+// Styled like the response email the modal already drafts; everything from
+// the record is escaped because the subject and reference are contractor text.
+function buildPortalAckEmail(project, item, isRFI) {
+  const E = v => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const typ = isRFI ? "RFI" : "Submittal";
+  const subject = isRFI ? item.title : item.description;
+  const folder = (item.intake && item.intake.numberedFolderUrl) || item.spFolderUrl || "";
+  let shade = true;
+  const row = (k, v) => { const r = "<tr" + (shade ? " style='background:#F1F5F9'" : "") + "><td style='padding:8px 12px;font-weight:700;width:180px'>" + E(k) + "</td><td style='padding:8px 12px'>" + v + "</td></tr>"; shade = !shade; return r; };
+  return "<div style='font-family:Calibri,Arial,sans-serif;color:#1F2937;max-width:680px'>"
+    + "<p>We received your " + typ.toLowerCase() + " through the project portal. It is logged as <b>" + E(item.number) + "</b>"
+    + (item.dueDate ? " and we will " + (isRFI ? "respond" : "return it") + " by <b>" + E(fmtDate(item.dueDate)) + "</b>" : "") + ".</p>"
+    + "<table style='border-collapse:collapse;width:100%;font-size:13px;margin:12px 0'>"
+    + row("Project", E((project.name || "") + (project.projectNumber ? " (" + project.projectNumber + ")" : "")))
+    + row(typ + " #", E(item.number))
+    + row(isRFI ? "Subject" : "Description", E(subject || ""))
+    + (item.extNumber ? row("Your reference", E(item.extNumber)) : "")
+    + row("Received", E(fmtDate(item.dateReceived || "")))
+    + (item.dueDate ? row(isRFI ? "Response due" : "Return due", E(fmtDate(item.dueDate))) : "")
+    + (folder ? row("Your files", "<a href='" + E(folder) + "'>" + E(folder) + "</a>") : "")
+    + "</table>"
+    + "<p style='font-size:12px'>Your files were moved into the numbered folder above inside the portal. "
+    + (isRFI ? "The response" : "The returned submittal") + " will be posted to the Deliverables folder and emailed to you.</p>"
+    + "<p style='font-size:11px;color:#44546A'>Please reply to this email with any questions.</p></div>";
+}
+
 // ── TEAMS NOTIFICATIONS ───────────────────────────────────────────────────────
 // Opt-in per project. Creates a dedicated channel in the NYC Project Team and
 // posts Adaptive Cards whenever milestones, RFIs, submittals, COs, or team
@@ -11196,6 +11272,11 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const formRef = React.useRef(form); formRef.current = form;
   const isRFI = type === "rfi";
   const dueDays = isRFI ? (project.rfiDueDays || 5) : (project.submittalDueDays || 10);
+  // An item the client-portal sweep logged (step 2): confirming it also moves
+  // the contractor's form into a numbered folder and drafts the acknowledgement.
+  const isPortalIntake = !!(form.intake && form.intake.by === "portal-ca-intake" && form.intake.driveItemId);
+  const [ackStatus, setAckStatus] = React.useState("idle"); // idle | working | done | error
+  const [ackMsg, setAckMsg]       = React.useState("");
 
   function setF(k, v) { setForm(f => ({ ...f, [k]: v })); }
 
@@ -11293,6 +11374,53 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
     const next = { ...form, intakeReviewed: true, intake: { ...(form.intake || {}), reviewedAt: new Date().toISOString() } };
     setForm(next);
     onSave(next);
+  }
+  // Portal-submitted item: confirm, settle the due date, move the files into a
+  // numbered folder, draft the acknowledgement. Each outside step is
+  // non-fatal and reported; the confirm itself always lands.
+  async function acknowledgePortalIntake() {
+    setAckStatus("working");
+    setAckMsg("\u23f3 Moving the form into a numbered folder\u2026");
+    const notes = [];
+    let next = { ...formRef.current };
+    // The contractor's "date needed" stands only when it leaves at least the
+    // review period; otherwise the period applies and their date is kept.
+    const received = next.dateReceived || todayISO;
+    const floor = addWD(received, dueDays);
+    if (next.dueDate && next.dueDate < floor) {
+      next.notes = (next.notes ? next.notes + " \u00b7 " : "") + "contractor asked for " + next.dueDate + "; due date set by the " + dueDays + " working-day review period";
+      next.dueDate = floor;
+      notes.push("due date set to " + fmtDate(floor) + " (the contractor asked for an earlier date; kept in notes)");
+    } else if (!next.dueDate) {
+      next.dueDate = floor;
+    }
+    const label = next.number + " - " + ((isRFI ? next.title : next.description) || "");
+    try {
+      const mv = await movePortalFormToNumberedFolder(next, label);
+      next.spFolderUrl = mv.folderUrl || next.spFolderUrl;
+      next.intake = { ...(next.intake || {}), formUrl: mv.formUrl || (next.intake && next.intake.formUrl) || "", numberedFolderUrl: mv.folderUrl || "" };
+      notes.push(mv.already ? "the form was already in its numbered folder" : "moved " + mv.moved + (mv.moved === 1 ? " file" : " files") + ' into "' + label.slice(0, 60) + '"');
+    } catch (e) {
+      notes.push("folder move failed: " + e.message);
+    }
+    setAckMsg("\u23f3 Drafting the acknowledgement\u2026");
+    try {
+      const to = next.contractorEmail && /@/.test(next.contractorEmail) ? [next.contractorEmail] : [];
+      const dist = window.PrimeCa ? window.PrimeCa.distributionFor(project, type, to) : { to, cc: [] };
+      const draft = await createOutlookDraft({
+        subject: next.number + " received \u2014 " + ((isRFI ? next.title : next.description) || "") + " \u00b7 " + (project.name || "Project"),
+        bodyHtml: buildPortalAckEmail(project, next, isRFI), to: dist.to, cc: dist.cc,
+      });
+      next.intake = { ...(next.intake || {}), acknowledgedAt: new Date().toISOString(), ackDraftId: (draft && draft.id) || "" };
+      notes.push("acknowledgement draft is in Outlook Drafts" + (dist.to.length ? " to " + dist.to.join(", ") : " with no recipient (the form had no email): add one in Outlook"));
+    } catch (e) {
+      notes.push("acknowledgement draft failed: " + e.message);
+    }
+    next = { ...next, intakeReviewed: true, intake: { ...(next.intake || {}), reviewedAt: new Date().toISOString() } };
+    setForm(next);
+    onSave(next);
+    setAckStatus(notes.some(n => /failed/.test(n)) ? "error" : "done");
+    setAckMsg("\u2713 Confirmed. " + notes.join("; ") + ".");
   }
   // Scheduled-intake status change: Keep marks it checked; Undo restores the
   // values it replaced (intakeStatus.prev) and records the undo so the same
@@ -11614,12 +11742,36 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         {/* Scheduled-intake banner: logged from a portal email, not yet confirmed */}
         {isUnreviewedIntake(form) && (
           <div role="status" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: "rgba(245,158,11,.10)", border: "1px solid " + P.yellow, borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>
-            <span style={{ fontSize: 12.5 }}>
-              📥 Logged automatically from {(form.intake && form.intake.vendor) || "a portal email"}{form.intake && form.intake.at ? " on " + String(form.intake.at).slice(0, 10) : ""}.
-              {" "}Check the discipline, assignee and dates, then confirm. Until then it is not counted as overdue.
-            </span>
+            {isPortalIntake ? (
+              <span style={{ fontSize: 12.5 }}>
+                📨 Submitted through the client portal{form.intake && form.intake.at ? " on " + String(form.intake.at).slice(0, 10) : ""}{form.from ? " by " + form.from : ""}.
+                {form.intake && form.intake.formUrl && <>{" "}<a href={form.intake.formUrl} target="_blank" rel="noreferrer" style={{ color: P.accentLight }}>Open the submitted form</a>.</>}
+                {" "}Check the discipline, assignee and dates, then confirm: the form and its files move into a folder named{" "}
+                <b>{form.number}</b> in the portal and an acknowledgement email with the due date is drafted to the contractor.
+                Until then it is not counted as overdue.
+              </span>
+            ) : (
+              <span style={{ fontSize: 12.5 }}>
+                📥 Logged automatically from {(form.intake && form.intake.vendor) || "a portal email"}{form.intake && form.intake.at ? " on " + String(form.intake.at).slice(0, 10) : ""}.
+                {" "}Check the discipline, assignee and dates, then confirm. Until then it is not counted as overdue.
+              </span>
+            )}
             <span style={{ flex: 1 }} />
-            <Btn small onClick={confirmIntake} title="Mark this item as checked. It then counts like any other item.">✓ Confirm</Btn>
+            {isPortalIntake
+              ? <Btn small onClick={acknowledgePortalIntake} disabled={ackStatus === "working"}
+                  title="Confirm this item, move the contractor's form into a numbered folder in the portal, and draft the acknowledgement email in Outlook.">
+                  {ackStatus === "working" ? "Working\u2026" : "\u2713 Confirm & acknowledge"}
+                </Btn>
+              : <Btn small onClick={confirmIntake} title="Mark this item as checked. It then counts like any other item.">✓ Confirm</Btn>}
+            {ackMsg && (
+              <div style={{ width: "100%", fontSize: 12, color: ackStatus === "error" ? P.red : ackStatus === "done" ? P.green : P.textDim }}>{ackMsg}</div>
+            )}
+          </div>
+        )}
+        {!isUnreviewedIntake(form) && isPortalIntake && form.intake && form.intake.acknowledgedAt && (
+          <div style={{ fontSize: 11.5, color: P.textMuted, marginBottom: 10 }}>
+            📨 Submitted through the client portal; acknowledged {String(form.intake.acknowledgedAt).slice(0, 10)}.
+            {form.intake.numberedFolderUrl && <>{" "}<a href={form.intake.numberedFolderUrl} target="_blank" rel="noreferrer" style={{ color: P.accentLight }}>Contractor's folder</a></>}
           </div>
         )}
         {/* Scheduled-intake status change: moved forward by a portal email, not yet checked */}
