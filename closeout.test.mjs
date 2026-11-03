@@ -9,8 +9,27 @@ import {
 let n = 0;
 const ctx = { newId: () => "i" + (++n), at: "2026-11-03T10:00:00Z", by: "pm@setty.com" };
 
-test("template rows use known categories", () => {
+test("template rows use known categories and unique titles", () => {
   for (const r of TEMPLATE) assert.ok(CATEGORIES.includes(r.c), r.t);
+  assert.equal(new Set(TEMPLATE.map((r) => r.t.toLowerCase())).size, TEMPLATE.length);
+});
+
+test("General follows Setty's master spec Division 01", () => {
+  const g = TEMPLATE.filter((r) => r.d === "General");
+  for (const sec of ["01 50 00", "01 78 23", "01 78 39"]) assert.ok(g.some((r) => r.s === sec), sec);
+  assert.ok(g.some((r) => r.c === "Lien Releases / Affidavits"));
+  // Both certificates are there; the final one is what readyForFinal leaves for last.
+  assert.ok(g.some((r) => /^Certificate of Substantial Completion$/.test(r.t)));
+  assert.ok(g.some((r) => /final completion/i.test(r.t)));
+  const mech = TEMPLATE.filter((r) => r.d === "Mechanical").map((r) => r.s);
+  assert.ok(mech.includes("23 05 93") && mech.includes("23 08 00"));
+});
+
+test("seeded items carry the spec requirement in their notes", () => {
+  const items = seedItems([], ["Mechanical"], { newId: () => "x", at: "2026-11-03" });
+  const lien = items.find((i) => i.category === "Lien Releases / Affidavits");
+  assert.match(lien.notes, /^Spec 01 50 00: .*notarized/);
+  assert.equal(items.find((i) => i.title === "Spare filters and belts").notes, "");
 });
 
 test("templateFor: General always, plus the named disciplines", () => {
