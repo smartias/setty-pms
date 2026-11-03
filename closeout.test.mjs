@@ -25,6 +25,17 @@ test("General follows Setty's master spec Division 01", () => {
   assert.ok(mech.includes("23 05 93") && mech.includes("23 08 00"));
 });
 
+test("Fire Protection, Plumbing and Electrical follow Setty's issued spec sections", () => {
+  const secs = (d) => TEMPLATE.filter((r) => r.d === d).map((r) => r.s);
+  for (const s of ["21 13 13", "21 31 13"]) assert.ok(secs("Fire Protection").includes(s), s);
+  for (const s of ["22 11 16", "22 11 19", "22 13 16"]) assert.ok(secs("Plumbing").includes(s), s);
+  for (const s of ["26 05 26", "26 24 16", "28 46 21.11"]) assert.ok(secs("Electrical").includes(s), s);
+  // Every row that cites a section explains the requirement.
+  for (const r of TEMPLATE) if (r.s && r.d !== "Mechanical") assert.ok(r.n, r.t);
+  // Fire alarm is Division 28, issued with Electrical.
+  assert.ok(TEMPLATE.some((r) => r.d === "Electrical" && /fire alarm acceptance/i.test(r.t)));
+});
+
 test("seeded items carry the spec requirement in their notes", () => {
   const items = seedItems([], ["Mechanical"], { newId: () => "x", at: "2026-11-03" });
   const lien = items.find((i) => i.category === "Lien Releases / Affidavits");

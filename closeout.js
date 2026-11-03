@@ -28,10 +28,10 @@ export function isDone(item) { return !!item && DONE.includes(item.status); }
 // 01 78 23 Operation and Maintenance Data, 01 78 39 Project Record Documents,
 // 01 91 13 General Commissioning Requirements — and Division 23 — 23 05 93
 // Testing, Adjusting and Balancing, 23 08 00 Commissioning of HVAC. `n` is the
-// spec requirement, copied into the item's notes. Electrical, Plumbing and
-// Fire Protection have no master spec sections in the Knowledgebase yet, so
-// their rows are typical items with no section cited; a project's own specs
-// may number anything differently, so the PM edits as needed.
+// spec requirement, copied into the item's notes. Fire Protection, Plumbing
+// and Electrical come from Setty's issued spec sections (see the note above
+// those rows). A project's own specs may number anything differently, so the
+// PM edits as needed.
 const G = "General";
 export const TEMPLATE = [
   // 01 50 00 Project Closeout
@@ -68,17 +68,48 @@ export const TEMPLATE = [
   { d: "Mechanical", c: "Training", t: "Controls / BAS training", s: "" },
   { d: "Mechanical", c: "Attic Stock / Spare Parts", t: "Spare filters and belts", s: "" },
   { d: "Mechanical", c: "Test Report / Certificate", t: "Duct and piping pressure test reports", s: "" },
-  // No master spec sections in the Knowledgebase yet: typical items.
-  { d: "Electrical", c: "Test Report / Certificate", t: "Electrical testing reports (insulation resistance, grounding)", s: "" },
+  // Divisions 21, 22, 26 and 28 follow Setty's standard spec sections ("FL"
+  // library) as issued in the SAPX196006.00 Tabler Quad final CD set
+  // (Outgoing/2019-11-22_Final CD Submission/SPECS). The Knowledgebase has no
+  // master copies of these divisions; a project's own sections may differ.
+  // "(if the project has ...)" items are equipment-dependent: mark them Not
+  // Required where the equipment is not in the job.
+  { d: "Fire Protection", c: "Test Report / Certificate", t: "Sprinkler acceptance tests and contractor's material and test certificate", s: "21 13 13",
+    n: "Hydrostatic test at 200 psi held 2 hours without loss; flush, test and inspect per NFPA 13 (Systems Acceptance); main drain test with static and residual pressures recorded; every control valve closed and reopened under pressure; backflow assembly forward-flow tested at system demand. Test and inspection reports." },
+  { d: "Fire Protection", c: "Attic Stock / Spare Parts", t: "Spare sprinkler cabinets with spare sprinklers and wrench", s: "21 13 13",
+    n: "A cabinet for each sprinkler type used. At least 6 spares under 300 sprinklers, 12 for 300 to 1,000, 24 over 1,000, covering every type and rating installed." },
+  { d: "Fire Protection", c: "Training", t: "Owner training on the sprinkler system", s: "21 13 13",
+    n: "Train the Owner's maintenance personnel to adjust, operate and maintain the system." },
+  { d: "Fire Protection", c: "Test Report / Certificate", t: "Fire pump acceptance test (if the project has a fire pump)", s: "21 31 13",
+    n: "Pump and controller tested as a unit with the factory-authorized representative: suction flushing, hydrostatic test (200 psi or 50 psi over maximum, whichever is greater), operational test, NFPA 20 acceptance and performance test. NFPA 20 test reports." },
+  { d: "Plumbing", c: "Test Report / Certificate", t: "Domestic water disinfection and bacteriological test", s: "22 11 16",
+    n: "Purge, then disinfect per the authority having jurisdiction, or AWWA C651/C652 (50 ppm for 24 hours or 200 ppm for 3 hours), flush until no chlorine remains, and submit samples to the authority having jurisdiction; repeat if contaminated." },
+  { d: "Plumbing", c: "Test Report / Certificate", t: "Backflow preventer test reports", s: "22 11 19",
+    n: "Each pressure vacuum breaker, reduced-pressure and double-check assembly tested per the authority having jurisdiction and the device standard." },
+  { d: "Plumbing", c: "Inspection / Agency Sign-off", t: "Sanitary waste and vent test reports signed by the authority having jurisdiction", s: "22 13 16",
+    n: "Rough-in water test (10 ft head, 15 minutes) and finished air test (1 in. wg) in the presence of the authority having jurisdiction, a separate report for each segment tested, and the final inspection." },
+  { d: "Plumbing", c: "Test Report / Certificate", t: "Domestic water and gas piping pressure test reports", s: "" },
+  { d: "Plumbing", c: "Commissioning", t: "Plumbing commissioning documentation (if the project is commissioned)", s: "22 08 00",
+    n: "To the Commissioning Authority: certificates of completion of installation, prestart and startup; certificates of readiness; test and inspection reports; corrective action documents." },
+  { d: "Electrical", c: "Test Report / Certificate", t: "Grounding system test report and as-built grounding plan", s: "26 05 26",
+    n: "NETA-certified testing agency. Fall-of-potential test (IEEE 81) at least two dry days after rain, before circuits are energized; dimensioned drawings locating test wells and ground rods keyed to the results; report values over the limits (10, 5 or 3 ohms by system size)." },
+  { d: "Electrical", c: "Test Report / Certificate", t: "Panelboard acceptance tests and infrared scans", s: "26 24 16",
+    n: "NETA ATS tests with the factory-authorized representative (insulation resistance, continuity, breakers, surge arresters). Infrared scan of each panelboard after Substantial Completion and within 60 days after Final Acceptance, with a certified report." },
   { d: "Electrical", c: "Record Drawings", t: "Typed panel directories / panel schedules", s: "" },
-  { d: "Electrical", c: "Test Report / Certificate", t: "Lighting controls functional test", s: "" },
-  { d: "Electrical", c: "Attic Stock / Spare Parts", t: "Spare fuses, lamps and devices", s: "" },
-  { d: "Plumbing", c: "Test Report / Certificate", t: "Domestic water disinfection and bacteriological test", s: "" },
-  { d: "Plumbing", c: "Test Report / Certificate", t: "Backflow preventer test certificates", s: "" },
-  { d: "Plumbing", c: "Test Report / Certificate", t: "Piping pressure test reports (water, waste, gas)", s: "" },
-  { d: "Fire Protection", c: "Test Report / Certificate", t: "Contractor's material and test certificate (sprinkler)", s: "" },
-  { d: "Fire Protection", c: "Attic Stock / Spare Parts", t: "Spare sprinkler heads and wrench cabinet", s: "" },
-  { d: "Fire Protection", c: "Inspection / Agency Sign-off", t: "Fire alarm acceptance test and sign-off", s: "" },
+  { d: "Electrical", c: "Record Drawings", t: "Arc-flash study labels and record drawing notes", s: "26 05 73.19",
+    n: "Machine-printed 3.5 x 5 in. warning labels on each section of every piece of equipment in the study, applied under the power system analysis specialist; record drawings note where personnel can be exposed, with the energy and protection level." },
+  { d: "Electrical", c: "Commissioning", t: "Lighting control configuration report and post-occupancy tuning", s: "26 09 43",
+    n: "Room-by-room configuration (sensor time delays, sensitivities, daylight set points, sequences, load parameters). Tune 30 days after beneficial occupancy and send a report to the Architect and Owner." },
+  { d: "Electrical", c: "Test Report / Certificate", t: "Emergency generator tests (if the project has a generator)", s: "26 32 13.13",
+    n: "Qualified testing agency: NETA ATS inspections and tests, and NFPA 110 acceptance tests including the single-step full-load pickup test. Certified compliance." },
+  { d: "Electrical", c: "Test Report / Certificate", t: "Transfer switch tests (if the project has a transfer switch)", s: "26 36 00",
+    n: "Qualified testing agency, per NETA ATS: inspection, connection checks, manual transfer and interlock verification." },
+  { d: "Electrical", c: "Attic Stock / Spare Parts", t: "Spare fuses and spare-fuse cabinet", s: "26 28 13",
+    n: "Spare-fuse cabinet per 26 28 13; quantities as the project specs require." },
+  { d: "Electrical", c: "Inspection / Agency Sign-off", t: "Fire alarm acceptance test, NFPA 72 record of completion and sign-off", s: "28 46 21.11",
+    n: "Tests witnessed by the authority having jurisdiction; the factory-authorized representative prepares the NFPA 72 Record of Completion and the inspection and testing forms. (The one-year test after Substantial Completion is a warranty-period item.)" },
+  { d: "Electrical", c: "Training", t: "Owner training on the fire alarm system", s: "28 46 21.11",
+    n: "Train the Owner's maintenance personnel to adjust, operate and maintain the system." },
 ];
 
 // Which template disciplines a project gets: General always, plus each
