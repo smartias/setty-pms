@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v175-portal-sharing-robustness";
+    window.__appVersion = "2026-11-03-pms-v176-closeout";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -91,6 +91,11 @@
 <script type="module">
   import * as ConstructionChanges from "./constructionChanges.js";
   window.ConstructionChanges = ConstructionChanges;
+</script>
+<!-- Closeout tab (closeout checklist). Own block, same reason. -->
+<script type="module">
+  import * as Closeout from "./closeout.js";
+  window.Closeout = Closeout;
 </script>
   <script>
     // Theme preference: "system" (default, follows the OS), "light" or "dark".
@@ -12163,7 +12168,7 @@ function CaDistributionEditor({ project, type, onChange }) {
     try { return buildMergedDirectory(project).filter(c => c.email); } catch (e) { return []; }
   }, [project]);
   const addTo = (setter, val, email) => setter((val.trim() ? val.trim().replace(/[;,]$/, "") + "; " : "") + email);
-  const noun = type === "rfi" ? "RFI response" : type === "change" ? "change document (ASI, proposal request, CCD, change order)" : "submittal return";
+  const noun = type === "rfi" ? "RFI response" : type === "change" ? "change document (ASI, proposal request, CCD, change order)" : type === "closeout" ? "closeout request" : "submittal return";
   if (!open) {
     return (
       <div style={{ marginTop: 8, fontSize: 12 }}>
@@ -12728,6 +12733,330 @@ function ConstructionChangeModal({ item, project, onSaveAll, onCreate, onClose }
           <Btn onClick={save}>Save</Btn>
         </div>
         {msg.text && <div role="status" style={{ fontSize: 11.5, marginTop: 8, color: msg.ok ? P.green : P.red }}>{msg.text}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ─── CLOSEOUT CHECKLIST (Setty is prime) ─────────────────────────────────────
+// What the contractor owes at the end of the job (O&M manuals, warranties,
+// record drawings, attic stock, training, test reports, agency sign-offs, the
+// completion certificates), each tracked Not Received → Accepted with a dated
+// history. Rules in closeout.js → window.Closeout (closeout.test.mjs).
+// Punch lists stay in the field report app.
+function coStatusColor(s) {
+  if (s === "Accepted") return { bg: P.greenDim, text: P.green };
+  if (s === "Not Required") return { bg: P.border, text: P.textDim };
+  if (s === "Revise and Resubmit") return { bg: P.redDim, text: P.red };
+  if (s === "Received" || s === "Under Review") return { bg: P.accentDim, text: P.accentLight };
+  return { bg: P.yellowDim || P.border, text: P.yellow };
+}
+function coActiveDisciplines(project) {
+  try { const a = scopeDisciplinesOf(project); return SCOPE_DISCIPLINES.filter(d => d.core && a[d.key]).map(d => d.label); }
+  catch (e) { return []; }
+}
+
+function CloseoutView({ project, onChange }) {
+  const L = window.Closeout;
+  const [catFilter, setCatFilter] = React.useState("All");
+  const [showDone, setShowDone] = React.useState(true);
+  const [editingId, setEditingId] = React.useState(null);
+  const [msg, setMsg] = React.useState({ text: "", ok: true });
+  const [bulkDue, setBulkDue] = React.useState("");
+  if (!L) return <div style={{ color: P.red, fontSize: 13 }}>The closeout module (closeout.js) did not load. Reload the page.</div>;
+  const co = project.closeout || {};
+  const items = co.items || [];
+  const today = new Date().toISOString().slice(0, 10);
+  const prog = L.progress(items, today);
+  const subs = project.subconsultants || [];
+  const disc = coActiveDisciplines(project);
+
+  function setItems(next, extra) { onChange({ ...project, closeout: { ...co, ...(extra || {}), items: next } }); }
+  function addStandard() {
+    const add = L.seedItems(items, disc, { newId: uid, at: new Date().toISOString(), by: ccWho() });
+    if (!add.length) { setMsg({ text: "Every standard item for " + (disc.join(", ") || "this project") + " is already on the checklist.", ok: true }); return; }
+    setItems([...items, ...add], co.startedAt ? null : { startedAt: today });
+    setMsg({ text: "✓ Added " + add.length + " standard item" + (add.length === 1 ? "" : "s") + " for General" + (disc.length ? " + " + disc.join(", ") : "") + ". Edit or mark Not Required anything that does not apply.", ok: true });
+  }
+  function addOne() {
+    const it = L.newItem({ title: "" }, { id: uid(), at: new Date().toISOString(), by: ccWho() });
+    setItems([...items, it], co.startedAt ? null : { startedAt: today });
+    setEditingId(it.id);
+  }
+  function quickStatus(it, s) {
+    setItems(items.map(x => (x.id === it.id ? L.setStatus(x, s, { at: new Date().toISOString(), by: ccWho() }) : x)));
+  }
+  function del(it) {
+    if ((it.history || []).length > 1 || it.status !== "Not Received") {
+      window.alert("\"" + (it.title || "This item") + "\" has a history on the record, so it can't be deleted. Mark it Not Required instead.");
+      return;
+    }
+    if (!window.confirm("Remove \"" + (it.title || "this item") + "\" from the checklist?")) return;
+    setItems(items.filter(x => x.id !== it.id));
+  }
+  function applyBulkDue() {
+    if (!bulkDue) return;
+    const n = items.filter(i => !L.isDone(i) && !i.dueDate).length;
+    if (!n) { setMsg({ text: "Every open item already has a due date.", ok: true }); return; }
+    setItems(items.map(i => (!L.isDone(i) && !i.dueDate ? { ...i, dueDate: bulkDue } : i)));
+    setMsg({ text: "✓ Due date set on " + n + " open item" + (n === 1 ? "" : "s") + " that had none.", ok: true });
+  }
+  async function requestOutstanding() {
+    const owed = L.outstandingForContractor(items);
+    if (!owed.length) { setMsg({ text: "The contractor owes nothing right now: every required item is received or accepted.", ok: true }); return; }
+    setMsg({ text: "Creating the Outlook draft…", ok: true });
+    const e = s => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+    const k = project.constructionContract || {};
+    const rows = owed.map((i, n) => "<tr" + (n % 2 ? "" : " style='background:#F1F5F9'") + ">"
+      + "<td style='padding:6px 10px'>" + e(i.category) + "</td>"
+      + "<td style='padding:6px 10px'><b>" + e(i.title) + "</b>" + (i.specSection ? " <span style='color:#666'>(" + e(i.specSection) + ")</span>" : "")
+      + (i.status === "Revise and Resubmit" ? "<div style='color:#C00000;font-size:12px'>Returned for revision" + (i.comments ? ": " + e(i.comments) : "") + "</div>" : "") + "</td>"
+      + "<td style='padding:6px 10px'>" + e(i.responsible || "") + "</td>"
+      + "<td style='padding:6px 10px;white-space:nowrap'>" + (i.dueDate ? fmtDate(i.dueDate) : "") + "</td></tr>").join("");
+    const bodyHtml = "<div style='font-family:Segoe UI,sans-serif;font-size:13px;color:#1a1a1a'>"
+      + "<div style='border-bottom:3px solid #1F3864;padding-bottom:10px;margin-bottom:16px'>"
+      + "<div style='font-size:22px;font-weight:900;color:#C00000;letter-spacing:2px'>SETTY</div>"
+      + "<div style='font-size:8px;color:#44546A;letter-spacing:1px'>&amp; ASSOCIATES, LTD, PC</div></div>"
+      + "<p>" + (k.contractor ? e(k.contractor) + ", the" : "The") + " following closeout items for <b>" + e(project.name || "the project") + "</b>"
+      + (project.projectNumber ? " (" + e(project.projectNumber) + ")" : "") + " are still outstanding. Please submit them" + (owed.some(i => i.dueDate) ? " by the dates shown" : " at your earliest opportunity") + ".</p>"
+      + "<p style='color:#44546A'>Closeout status: " + prog.accepted + " of " + prog.required + " required items accepted.</p>"
+      + "<table style='border-collapse:collapse;width:100%;font-size:13px;margin-bottom:16px'><tr style='background:#1F3864;color:#fff'>"
+      + "<th style='padding:6px 10px;text-align:left'>Category</th><th style='padding:6px 10px;text-align:left'>Item</th><th style='padding:6px 10px;text-align:left'>Responsible</th><th style='padding:6px 10px;text-align:left'>Due</th></tr>"
+      + rows + "</table><p style='font-size:11px;color:#44546A'>Please contact us with any questions.</p></div>";
+    try {
+      const dist = window.PrimeCa ? window.PrimeCa.distributionFor(project, "closeout", []) : { to: [], cc: [] };
+      await createOutlookDraft({ subject: "Outstanding closeout items (" + owed.length + ") · " + (project.name || "Project"), bodyHtml, to: dist.to, cc: dist.cc });
+      setMsg({ text: "✓ Draft listing " + owed.length + " outstanding item" + (owed.length === 1 ? "" : "s") + " created in Outlook" + (dist.to.length || dist.cc.length ? " (To " + dist.to.length + ", Cc " + dist.cc.length + ")" : ". No distribution list set: add recipients in Outlook") + ".", ok: true });
+    } catch (err) { setMsg({ text: "✗ " + err.message, ok: false }); }
+  }
+  function exportLog(fmtKind) {
+    const { headers, rows } = L.closeoutLogRows(project);
+    pmsExportTable({ project, title: "Closeout Checklist", fileTag: "Closeout", headers, rows, fmtKind,
+      summary: prog.accepted + " of " + prog.required + " required items accepted (" + prog.pct + "%) · " + prog.withContractor + " with the contractor · " + prog.inReview + " in review" + (prog.overdue ? " · " + prog.overdue + " overdue" : "") });
+  }
+
+  const visible = items
+    .filter(i => catFilter === "All" || i.category === catFilter)
+    .filter(i => showDone || !L.isDone(i));
+  const groups = L.CATEGORIES.map(c => ({ c, rows: visible.filter(i => (L.CATEGORIES.includes(i.category) ? i.category : "Other") === c) })).filter(g => g.rows.length);
+  const editing = editingId ? items.find(i => i.id === editingId) : null;
+
+  return (
+    <div>
+      {/* Progress */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 5 }}>
+          <span><b>{prog.accepted} of {prog.required}</b> required closeout items accepted</span>
+          <span style={{ fontFamily: "JetBrains Mono", fontWeight: 700 }}>{prog.pct}%</span>
+        </div>
+        <div style={{ height: 10, borderRadius: 6, background: P.border, overflow: "hidden" }} role="progressbar" aria-valuenow={prog.pct} aria-valuemin={0} aria-valuemax={100} aria-label="Closeout progress">
+          <div style={{ width: prog.pct + "%", height: "100%", background: P.green }} />
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+        <KpiBox label="With the contractor" val={String(prog.withContractor)} color={prog.withContractor ? P.yellow : P.textDim} />
+        <KpiBox label="With Setty / sub" val={String(prog.inReview)} color={prog.inReview ? P.accentLight : P.textDim} />
+        <KpiBox label="Overdue" val={String(prog.overdue)} color={prog.overdue ? P.red : P.green} />
+        <KpiBox label="Accepted" val={String(prog.accepted)} color={P.green} />
+      </div>
+      {prog.readyForFinal && (
+        <div role="status" style={{ border: "1px solid " + P.green, background: P.greenDim, borderRadius: 8, padding: "8px 12px", marginBottom: 14, fontSize: 12.5 }}>
+          ✓ Every required item except the final completion certificate is accepted. The project is ready for final completion.
+        </div>
+      )}
+
+      <div style={{ border: "1px solid " + P.border, borderRadius: 10, padding: "8px 12px", marginBottom: 14, fontSize: 12, color: P.textMuted }}>
+        Track each deliverable the contractor owes at closeout: Not Received → Received → Under Review → Accepted
+        (or Revise and Resubmit with comments). The ✉ request lists everything still owed. Punch lists stay in the field report app.
+        <CaDistributionEditor project={project} type="closeout" onChange={onChange} />
+      </div>
+
+      {/* Controls */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <select value={catFilter} onChange={e => setCatFilter(e.target.value)} aria-label="Filter by category" style={{ fontSize: 13 }}>
+          <option value="All">All categories</option>
+          {L.CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5 }}>
+          <input type="checkbox" checked={showDone} onChange={e => setShowDone(e.target.checked)} /> Show accepted
+        </label>
+        <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5 }}>
+          Due date for open items without one
+          <input type="date" value={bulkDue} onChange={e => setBulkDue(e.target.value)} aria-label="Due date for open items without one" />
+          <Btn small variant="ghost" onClick={applyBulkDue} disabled={!bulkDue}>Apply</Btn>
+        </label>
+        <span style={{ flex: 1 }} />
+        <Btn small variant="ghost" onClick={() => exportLog("csv")} title="Download the checklist with every date and its history, as a spreadsheet that opens in Excel">⬇ Excel</Btn>
+        <Btn small variant="ghost" onClick={() => exportLog("pdf")} title="Open a dated, print-ready copy of the checklist (choose Save as PDF)">🖨 PDF</Btn>
+        <Btn small variant="ghost" onClick={requestOutstanding} title="Draft an email to the contractor listing every required item still owed (not received, or returned for revision)">✉ Request outstanding items</Btn>
+        <Btn small variant="ghost" onClick={addStandard} title={"Add the usual closeout deliverables for General" + (disc.length ? " + " + disc.join(", ") : "") + " (skips any already on the list)"}>+ Standard items</Btn>
+        <Btn small onClick={addOne}>+ Add item</Btn>
+      </div>
+      {msg.text && <div role="status" style={{ fontSize: 12, marginBottom: 10, color: msg.ok ? P.green : P.red }}>{msg.text}</div>}
+
+      {items.length === 0 ? (
+        <div style={{ border: "1px dashed " + P.border, borderRadius: 10, padding: 20, fontSize: 13, color: P.textMuted }}>
+          No closeout items yet. <Btn small onClick={addStandard}>Start from the standard list</Btn>{" "}
+          adds the usual items for General{disc.length ? " + " + disc.join(", ") : ""} (from the project's scope disciplines). You can edit, add or mark any of them Not Required.
+        </div>
+      ) : groups.length === 0 ? (
+        <div style={{ color: P.textDim, fontSize: 13 }}>Nothing matches the current filter.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Item</th>
+              <th scope="col">Responsible</th>
+              <th scope="col">Due</th>
+              <th scope="col">Received</th>
+              <th scope="col">Status</th>
+              <th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
+            </tr>
+          </thead>
+          {groups.map(g => (
+            <tbody key={g.c}>
+              <tr><td colSpan={6} style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: P.textMuted, paddingTop: 12 }}>{g.c} · {g.rows.filter(i => i.status === "Accepted").length}/{g.rows.filter(i => i.required !== false && i.status !== "Not Required").length}</td></tr>
+              {g.rows.map(i => {
+                const ball = L.ballInCourt(i, subs);
+                const over = L.isOverdue(i, today);
+                return (
+                  <tr key={i.id} style={{ background: over ? "rgba(239,68,68,.06)" : "transparent", opacity: i.status === "Not Required" ? 0.6 : 1 }}>
+                    <td>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{i.title || <span style={{ color: P.textDim }}>Untitled</span>}{i.required === false && <span style={{ fontSize: 10.5, color: P.textDim, fontWeight: 500 }}> · optional</span>}</div>
+                      <div style={{ fontSize: 11, color: P.textDim }}>{[i.specSection, i.discipline].filter(Boolean).join(" · ")}</div>
+                      {i.status === "Revise and Resubmit" && i.comments && <div style={{ fontSize: 11, color: P.red, marginTop: 2 }}>↩ {i.comments.slice(0, 120)}</div>}
+                    </td>
+                    <td style={{ fontSize: 12, color: P.textMuted }}>{i.responsible || "—"}</td>
+                    <td style={{ fontSize: 12, whiteSpace: "nowrap", color: over ? P.red : P.textMuted }}>{i.dueDate || "—"}{over && <div style={{ fontSize: 10.5, fontWeight: 700 }}>Overdue</div>}</td>
+                    <td style={{ fontSize: 12, whiteSpace: "nowrap", color: P.textMuted }}>{i.dateReceived || "—"}{i.dateAccepted && <div style={{ fontSize: 10.5, color: P.green }}>✓ {i.dateAccepted}</div>}</td>
+                    <td>
+                      <select value={i.status} onChange={e => quickStatus(i, e.target.value)} aria-label={"Status of " + (i.title || "item")}
+                        style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 6, padding: "2px 6px", background: coStatusColor(i.status).bg, color: coStatusColor(i.status).text, border: "none" }}>
+                        {L.STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                      {ball.who !== "none" && <div style={{ fontSize: 10.5, fontWeight: 700, color: P.textMuted, marginTop: 3 }}>⚑ {ball.label}</div>}
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <Btn small variant="ghost" onClick={() => setEditingId(i.id)}>Open</Btn>
+                        <Btn small variant="danger" aria-label={"Delete " + (i.title || "item")} onClick={() => del(i)}>✕</Btn>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          ))}
+        </table>
+      )}
+
+      {editing && (
+        <CloseoutItemModal key={editing.id} item={editing} project={project}
+          onSave={it => setItems(items.map(x => (x.id === it.id ? it : x)))}
+          onClose={() => setEditingId(null)} />
+      )}
+    </div>
+  );
+}
+
+function CloseoutItemModal({ item, project, onSave, onClose }) {
+  const L = window.Closeout;
+  const [form, setForm] = React.useState({ ...item });
+  const [spStatus, setSpStatus] = React.useState("idle");
+  const formRef = React.useRef(form); formRef.current = form;
+  const subs = project.subconsultants || [];
+  const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const setStatus = s => setForm(f => L.setStatus(f, s, { at: new Date().toISOString(), by: ccWho() }));
+  const sel = { width: "100%" };
+  async function createSpFolder() {
+    if (!project.projectFolderUrl) { setSpStatus("error: no project folder (create it on the Overview tab first)"); return; }
+    setSpStatus("creating");
+    try {
+      const { driveId } = await resolveSpIds();
+      const parts = String(project.projectFolderUrl).trim().replace(/\/+$/, "").split("/");
+      const projFolderName = safeDecodeFolderUrl(parts[parts.length - 1]).trim();
+      if (!projFolderName) throw new Error("Could not read the project folder name.");
+      const safeName = ((form.category ? form.category + " - " : "") + (form.title || "Item")).replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
+      const typeFolder = await ensureSpSubfolder(driveId, projFolderName, "Closeout");
+      const itemFolder = await ensureSpSubfolder(driveId, typeFolder, safeName);
+      const it = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodeSpPath(itemFolder));
+      if (!it || !it.webUrl) throw new Error("The folder was created but SharePoint did not return its link. Try again.");
+      const next = { ...formRef.current, spFolderUrl: it.webUrl };
+      setForm(next); onSave(next); setSpStatus("done");
+    } catch (e) { setSpStatus("error: " + e.message); }
+  }
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 3000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "24px 16px", overflowY: "auto" }}>
+      <div role="dialog" aria-label={"Closeout item " + (form.title || "")} style={{ background: P.card, border: `1px solid ${P.accent}`, borderRadius: 14, padding: 28, width: 720, maxWidth: "98vw" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 11, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>Closeout item</div>
+            <div style={{ fontWeight: 800, fontSize: 17 }}>{form.title || "New item"}</div>
+            <div style={{ fontSize: 12, color: P.textMuted, marginTop: 4 }}>{project.projectNumber && <b style={{ color: P.text }}>{project.projectNumber} · </b>}{project.name}</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select value={form.status} onChange={e => setStatus(e.target.value)} aria-label="Status" style={{ fontWeight: 700, fontSize: 12, padding: "4px 10px", borderRadius: 6 }}>
+              {L.STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none", color: P.textDim, fontSize: 20, cursor: "pointer" }}>✕</button>
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Item" style={{ gridColumn: "1 / -1" }}><input value={form.title || ""} onChange={e => setF("title", e.target.value)} style={{ ...sel, fontWeight: 600 }} /></Field>
+          <Field label="Category">
+            <select value={form.category || "Other"} onChange={e => setF("category", e.target.value)} style={sel}>
+              {L.CATEGORIES.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </Field>
+          <Field label="Spec section"><input value={form.specSection || ""} onChange={e => setF("specSection", e.target.value)} placeholder="e.g. 23 05 93" style={sel} /></Field>
+          <Field label="Discipline">
+            <select value={form.discipline || ""} onChange={e => setF("discipline", e.target.value)} style={sel}>
+              <option value="">General</option>
+              {RFI_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
+            </select>
+          </Field>
+          <Field label="Responsible (trade / subcontractor)"><input value={form.responsible || ""} onChange={e => setF("responsible", e.target.value)} placeholder="e.g. Acme Mechanical" style={sel} /></Field>
+          <Field label="Due"><input type="date" value={form.dueDate || ""} onChange={e => setF("dueDate", e.target.value)} style={sel} /></Field>
+          <Field label="Reviewed by a subconsultant (optional)">
+            <select value={form.reviewerSubId || ""} onChange={e => setF("reviewerSubId", e.target.value)} style={sel}>
+              <option value="">— Setty —</option>
+              {subs.map(s => <option key={s.id} value={s.id}>{s.firm || s.name || "(unnamed sub)"}</option>)}
+            </select>
+          </Field>
+          <Field label="Received"><input type="date" value={form.dateReceived || ""} onChange={e => setF("dateReceived", e.target.value)} style={sel} /></Field>
+          <Field label="Accepted"><input type="date" value={form.dateAccepted || ""} onChange={e => setF("dateAccepted", e.target.value)} style={sel} /></Field>
+          <label style={{ gridColumn: "1 / -1", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="checkbox" checked={form.required !== false} onChange={e => setF("required", e.target.checked)} />
+            Required for closeout (untick for nice-to-have items; they don't count toward progress)
+          </label>
+          <Field label="Review comments (go to the contractor when it is returned for revision)" style={{ gridColumn: "1 / -1" }}>
+            <textarea value={form.comments || ""} onChange={e => setF("comments", e.target.value)} style={{ ...sel, height: 60, resize: "vertical", fontSize: 13 }} />
+          </Field>
+          <Field label="Internal notes (not sent)" style={{ gridColumn: "1 / -1" }}>
+            <textarea value={form.notes || ""} onChange={e => setF("notes", e.target.value)} style={{ ...sel, height: 50, resize: "vertical", fontSize: 13 }} />
+          </Field>
+          <Field label="Documents (SharePoint)" style={{ gridColumn: "1 / -1" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}>
+              {form.spFolderUrl
+                ? <a href={form.spFolderUrl} target="_blank" rel="noreferrer" style={{ color: P.accentLight }}>📁 Open folder</a>
+                : <Btn small variant="ghost" onClick={createSpFolder} disabled={spStatus === "creating"}>📁 Create folder</Btn>}
+              <span style={{ color: String(spStatus).startsWith("error") ? P.red : P.textDim }}>
+                {spStatus === "creating" ? "⏳ Creating…" : spStatus === "done" ? "✓ Created and saved" : String(spStatus).startsWith("error") ? "✗ " + String(spStatus).slice(7) : form.spFolderUrl ? "" : "Closeout/… in the project folder"}
+              </span>
+            </div>
+          </Field>
+          <Field label="Status history (the record)" style={{ gridColumn: "1 / -1" }}>
+            <div style={{ fontSize: 11.5, color: P.textMuted, maxHeight: 100, overflowY: "auto" }}>
+              {(form.history || []).slice().reverse().map((h, k) => (
+                <div key={k}>{String(h.at || "").slice(0, 16).replace("T", " ")} · <b>{h.status}</b>{h.from ? " (was " + h.from + ")" : ""}{h.by ? " · " + h.by : ""}{h.note ? " · " + h.note : ""}</div>
+              ))}
+            </div>
+          </Field>
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+          <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn onClick={() => { onSave(formRef.current); onClose(); }}>Save</Btn>
+        </div>
       </div>
     </div>
   );
@@ -19776,7 +20105,7 @@ function ProjectIntelligencePanel({ projectNumber }) {
   );
 }
 
-const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Construction Changes", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos", "QA Reviews"];
+const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Construction Changes", "Closeout", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos", "QA Reviews"];
 
 // Tab groupings — top-level "sections" the user navigates by, with the existing
 // tabs as their sub-pages. Order reflects the natural project workflow.
@@ -19790,12 +20119,12 @@ const TAB_GROUPS = [
   { name: "Team",                        tabs: ["Team"] },
   { name: "Schedule",                    tabs: ["Schedule", "Gantt"] },
   { name: "QA",                          tabs: ["QA Reviews"] },
-  { name: "Construction Administration", tabs: ["RFIs", "Submittals", "Construction Changes"] },
+  { name: "Construction Administration", tabs: ["RFIs", "Submittals", "Construction Changes", "Closeout"] },
   { name: "Subconsultants",              tabs: ["Subconsultants"] },
   { name: "Financials",                  tabs: ["Financials", "Reimbursables", "Projections"] },
   { name: "Photos",                      tabs: ["Photos"] },
 ];
-const PIPELINE_HIDDEN_TABS = ["Change Orders", "RFIs", "Submittals", "Construction Changes", "Gantt"];
+const PIPELINE_HIDDEN_TABS = ["Change Orders", "RFIs", "Submittals", "Construction Changes", "Closeout", "Gantt"];
 
 // ── Project Timeline ─────────────────────────────────────────────────────────
 // A two-sided "now" line for ONE project: upcoming due-dates above the NOW
@@ -20747,13 +21076,16 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
 	        //  · Fee / Financials — behind the fees.view capability
 	        const projInCA = project.status === "In Construction Administration" ||
 	                         (project.rfis || []).length > 0 || (project.submittals || []).length > 0 ||
-	                         (project.constructionChanges || []).length > 0;
+	                         (project.constructionChanges || []).length > 0 ||
+	                         ((project.closeout || {}).items || []).length > 0;
 	        // Construction Changes: jobs where Setty is prime (the PMS is the
 	        // record), or any project that already has change documents.
 	        const changesOn = caSettyIsPrime(project) || (project.constructionChanges || []).length > 0;
+	        // Closeout checklist: same rule (prime jobs, or one already started).
+	        const closeoutOn = caSettyIsPrime(project) || ((project.closeout || {}).items || []).length > 0;
 	        const subsOn = (project.subconsultants || []).length > 0 || !!project.subsEnabled;
 	        const visibleGroups = TAB_GROUPS
-	          .map(g => ({ ...g, visibleTabs: g.tabs.filter(t => (!projIsPipeline || !PIPELINE_HIDDEN_TABS.includes(t)) && (t !== "Construction Changes" || changesOn)) }))
+	          .map(g => ({ ...g, visibleTabs: g.tabs.filter(t => (!projIsPipeline || !PIPELINE_HIDDEN_TABS.includes(t)) && (t !== "Construction Changes" || changesOn) && (t !== "Closeout" || closeoutOn)) }))
 	          .filter(g => g.visibleTabs.length > 0)
 	          .filter(g => {
 	            if (g.name === "Construction Administration") return projInCA;
@@ -20993,6 +21325,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         {tab === "RFIs" && <RFIsView project={project} onChange={onUpdate} staff={staff} clients={clients} />}
         {tab === "Submittals" && <SubmittalsView project={project} onChange={onUpdate} staff={staff} clients={clients} />}
         {tab === "Construction Changes" && <ConstructionChangesView project={project} onChange={onUpdate} />}
+        {tab === "Closeout" && <CloseoutView project={project} onChange={onUpdate} />}
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} onEagerSave={onEagerSave} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
         {tab === "Directory" && <ProjectDirectoryView project={project} onChange={onUpdate} clients={clients} />}
