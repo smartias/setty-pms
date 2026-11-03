@@ -137,7 +137,8 @@
   .intake { display:flex; align-items:center; gap:10px; flex-wrap:wrap; background:var(--intake-bg); border:1px solid var(--new); border-radius:8px; padding:8px 12px; margin:12px 18px 0; font-size:12.5px; }
   .mfoot .spacer { flex:1; } .mfoot .by { font-size:11px; color:var(--muted); }
   .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--bg2); border:1px solid var(--line); border-radius:10px; padding:10px 16px; font-size:13px; font-weight:600; display:none; z-index:60; }
-  .toast.show { display:block; } .toast.ok { color:var(--ok); border-color:var(--ok-line); } .toast.bad { color:var(--danger-txt); border-color:var(--danger-line); }
+  .toast.show { display:flex; align-items:center; gap:12px; max-width:min(720px, calc(100vw - 32px)); }
+  .toast button { font-size:12px; padding:4px 9px; white-space:nowrap; } .toast.ok { color:var(--ok); border-color:var(--ok-line); } .toast.bad { color:var(--danger-txt); border-color:var(--danger-line); }
   .undobar { position:fixed; bottom:64px; left:50%; transform:translateX(-50%); background:var(--bg2); border:1px solid var(--ok-line); border-radius:10px; padding:8px 14px; font-size:13px; display:none; align-items:center; gap:10px; z-index:60; }
   .undobar.show { display:flex; }
   .inbox select.discSel { background:var(--card2); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:3px 6px; font-size:12px; }
@@ -275,7 +276,20 @@ const today = () => new Date().toISOString().slice(0,10);
 function addWD(dateStr, days){ const d=new Date((dateStr||today())+"T00:00:00"); let c=0; while(c<days){ d.setDate(d.getDate()+1); const w=d.getDay(); if(w!==0&&w!==6)c++; } return d.toISOString().slice(0,10); }
 function getWho(){ return (document.getElementById("who").value||"").trim(); }
 function saveWho(){ try{ localStorage.setItem("rfiTrackUser", getWho()); }catch(e){} }
-function toast(msg, ok){ const t=document.getElementById("toast"); t.setAttribute("role", ok?"status":"alert"); t.textContent=ok?msg:"Error: "+msg; t.className="toast show "+(ok?"ok":"bad"); setTimeout(()=>t.className="toast", ok?3500:8000); }
+let _toastTimer=null;
+function toast(msg, ok, action){
+  const t=document.getElementById("toast"); clearTimeout(_toastTimer);
+  t.setAttribute("role", ok?"status":"alert"); t.className="toast show "+(ok?"ok":"bad");
+  t.innerHTML=`<span>${esc(ok?msg:"Error: "+msg)}</span>`+
+    (action?`<button type="button" class="primary" onclick="hideToast();(${action.fn})()">${esc(action.label)}</button>`:"")+
+    (ok?"":`<button type="button" class="ghost" aria-label="Dismiss" onclick="hideToast()">✕</button>`);
+  // Success fades on its own; an error stays until dismissed so a long
+  // message (the save-conflict one, for instance) can actually be read.
+  if(ok) _toastTimer=setTimeout(hideToast, 3500);
+}
+function hideToast(){ const t=document.getElementById("toast"); t.className="toast"; t.innerHTML=""; }
+// Every failed write lands here: a save conflict gets a one-click reload of the project.
+function toastErr(err){ const msg=(err&&err.message)||String(err); toast(msg, false, err&&err.conflict?{label:"Reload project",fn:"function(){selectProject(CURRENT.proj.id)}"}:null); }
 // Light / dark: default dark; the choice is per browser (localStorage) and applied in <head> before paint.
 function applyTheme(t){ if(t==="light") document.documentElement.setAttribute("data-theme","light"); else document.documentElement.removeAttribute("data-theme");
   const b=document.getElementById("themeBtn"); if(b){ b.textContent=t==="light"?"🌙 Dark theme":"☀ Light theme"; b.title=t==="light"?"Switch back to the dark theme":"Switch to a light theme — easier to read next to printed drawings"; } }
@@ -378,7 +392,9 @@ async function init(){
        const g=localStorage.getItem("rfiTrackGuide");
        if(g==="0") toggleGuide(); else if(g===null) localStorage.setItem("rfiTrackGuide","0"); }catch(e){}
   document.getElementById("fDisc").innerHTML = `<option value="all">All disciplines</option><option value="__unset__">(unset)</option>`+ALL_DISC.map(d=>`<option>${esc(d)}</option>`).join("");
-  document.getElementById("fStatus").innerHTML = `<option value="all">All statuses</option><option value="__open__">Open (active)</option><option value="__unreviewed__">Unreviewed (auto-imported)</option>`+ALL_STATUS.map(s=>`<option>${esc(s)}</option>`).join("");
+  const opt=s=>`<option>${esc(s)}</option>`;
+  document.getElementById("fStatus").innerHTML = `<option value="all">All statuses</option><option value="__open__">Open (active)</option><option value="__unreviewed__">Unreviewed (auto-imported)</option>`+
+    `<optgroup label="RFI statuses">${RFI_STATUSES.map(opt).join("")}</optgroup><optgroup label="Submittal statuses">${SUB_STATUSES.map(opt).join("")}</optgroup>`;
   document.getElementById("fStatus").value = FILTER.status;
   try{
     const [projRows, actRows] = await Promise.all([
@@ -459,7 +475,7 @@ async function savePortal(){
     });
     Object.assign(p,{platform,gc,setBy:who,setAt:at,url});
     PORTAL_EDIT=false; renderPortal(); rebuildPicker(); toast("CA platform saved ✓",true);
-  }catch(e){ toast(e.message,false); }
+  }catch(e){ toastErr(e); }
 }
 // Version-guarded read-modify-write of the whole project blob (writeArray's
 // sibling for top-level fields): aborts cleanly if someone saved meanwhile.
@@ -471,7 +487,7 @@ async function writeProject(pid, mutate){
     method:"PATCH", headers:{...H,"Content-Type":"application/json","Prefer":"return=representation"},
     body:JSON.stringify({project:updated, version:ver+1, updated_at:new Date().toISOString()}) });
   const back=await r.json();
-  if(!r.ok||!back.length) throw new Error("Project changed since you opened it (someone else saved). Re-pick the project and retry — nothing was written.");
+  if(!r.ok||!back.length){ const e=new Error("Project changed since you opened it (someone else saved). Reload the project and retry — nothing was written."); e.conflict=true; throw e; }
   return true;
 }
 
@@ -642,7 +658,7 @@ function renderSection(kind, title, logged, inbox){
     html+=`<div class="inbox"><div class="ihead"><span>📥 To import from portal emails (Procore / Forma / Newforma) — ${news.length} new</span>`+
       `<div class="legend"><span><span class="badge new">NEW</span> not yet logged</span><span><span class="badge matched">matched</span> already logged</span><span><span class="badge update">UPDATE</span> newer revision — review by hand</span></div></div>`+
       `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`+
-      `<div class="actions"><button class="go" onclick="importSelected('${kind}')">Import selected → log</button><span class="muted" style="font-size:12px">Tick the new ones, then import. Already-logged items are skipped.</span></div></div>`;
+      `<div class="actions"><button class="primary" onclick="importSelected('${kind}')">Import selected → log</button><span class="muted" style="font-size:12px">Tick the new ones, then import. Already-logged items are skipped.</span></div></div>`;
   }
   if(!logged.length){ html+=`<div class="empty">No ${kind}s logged yet. Click “+ Add ${kind==='rfi'?'RFI':'Submittal'}” to log one, or import from the portal emails above.</div>`; }
   else {
@@ -665,8 +681,8 @@ function renderSection(kind, title, logged, inbox){
       const aiMark=r.aiReview?` <span title="Claude review waiting for sign-off — open to review" style="font-size:11px" role="img" aria-label="Claude review pending">🤖</span>`:"";
       const ds=dueState(kind,r); const lateRow=ds&&ds.cls==="late"?" late":"";
       const c = kind==="rfi"
-        ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}${aiMark}</td><td>${esc(r.discipline||"")}</td><td>${esc(r.from||"")}</td><td class="muted">${asg}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}</td>`
-        : `<td class="num">${numBtn}</td><td class="title">${esc(r.description||r.title||"—")}${aiMark}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${esc(r.discipline||"")}</td><td class="muted">${asg}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}</td>`;
+        ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}${aiMark}</td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${esc(r.from||"")}</td><td>${asg||'<span class="muted">—</span>'}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}</td>`
+        : `<td class="num">${numBtn}</td><td class="title">${esc(r.description||r.title||"—")}${aiMark}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${asg||'<span class="muted">—</span>'}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}</td>`;
       const nw=JUST_IMPORTED.has(r.id)?" justnew":"";
       return pc+`<tr class="click${nw}${lateRow}" onclick='${open}'>${c}</tr>`; }).join("");
     if(news.length) html+=`<div class="lhead">Logged — ${shown.length===logged.length?logged.length:shown.length+" of "+logged.length}</div>`;
@@ -997,7 +1013,7 @@ async function saveEditor(){
     }, false, EDIT.projId);
     const confirmed=EDIT.confirmIntake;
     closeEditor(); toast(isNew?"Added to log ✓":confirmed?"Confirmed and saved ✓":"Saved ✓", true); selectProject(CURRENT.proj.id);
-  }catch(err){ if(EDIT) EDIT.confirmIntake=false; toast(err.message, false); }
+  }catch(err){ if(EDIT) EDIT.confirmIntake=false; toastErr(err); }
 }
 async function deleteRecord(){
   if(!EDIT||EDIT.isNew)return; const {kind,id,projId}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
@@ -1011,7 +1027,7 @@ async function deleteRecord(){
     closeEditor(); toast("Deleted ✓", true);
     if(kept) showUndoBar(arrKey, [id], projId, {record:kept, label:`Deleted ${kept.number||""}.`, undoLabel:"Undo delete"});
     selectProject(CURRENT.proj.id);
-  }catch(err){ toast(err.message, false); }
+  }catch(err){ toastErr(err); }
 }
 
 /* =========================== IMPORT (sync) =========================== */
@@ -1039,7 +1055,7 @@ async function importSelected(kind){
     JUST_IMPORTED=new Set(addedIds);
     showUndoBar(arrKey, addedIds, CURRENT.proj.id);
     toast(`Imported ${added} ${kind}(s) ✓`, true); selectProject(CURRENT.proj.id);
-  }catch(err){ toast(err.message, false); }
+  }catch(err){ toastErr(err); }
 }
 
 function showUndoBar(arrKey, ids, projId, opts){
@@ -1071,7 +1087,7 @@ async function undoLast(){
       JUST_IMPORTED.clear(); clearUndoBar(); toast(`Import undone — ${ids.length} removed ✓`, true);
     }
     selectProject(CURRENT.proj.id);
-  }catch(err){ toast(err.message, false); }
+  }catch(err){ toastErr(err); }
 }
 
 /* =========================== WRITE (version-guarded, mirrors saveProjectV2) =========================== */
@@ -1087,7 +1103,7 @@ async function writeArray(arrKey, mutate, returnAdded, projId){
     method:"PATCH", headers:{...H,"Content-Type":"application/json","Prefer":"return=representation"},
     body:JSON.stringify({project:updated, version:ver+1, updated_at:new Date().toISOString()}) });
   const back=await r.json();
-  if(!r.ok||!back.length) throw new Error("Project changed since you opened it (someone else saved). Re-pick the project and retry — nothing was written.");
+  if(!r.ok||!back.length){ const e=new Error("Project changed since you opened it (someone else saved). Reload the project and retry — nothing was written."); e.conflict=true; throw e; }
   return returnAdded?added:true;
 }
 
