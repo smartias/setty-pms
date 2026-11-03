@@ -994,8 +994,8 @@ Import.
   a race fails that project for this run and the next run retries. A PM with
   the project open merges the additions without a prompt (cloud-added array
   items merge silently in the PMS 3-way merge).
-- **One portal per project.** The route may read Procore, Autodesk Forma and
-  Newforma mail, but each project imports from ONE: the CA platform confirmed
+- **One portal per project.** The route may read Procore, Autodesk Forma,
+  Newforma and Kahua mail, but each project imports from ONE: the CA platform confirmed
   in the tracker (`project.caPortal.platform`; Autodesk Build → Forma). A
   project with nothing confirmed stays **Procore only**, and PMWeb / email-only
   projects import nothing unattended. That is the duplicate guard: the same
@@ -1039,7 +1039,7 @@ Import.
 Turning it on, in order:
 
 1. Deploy (Actions → "Deploy pms-mcp" → Run workflow on `main`) and confirm
-   `/health` reports build `2026-11-03-ca-intake-status-updates`.
+   `/health` reports build `2026-11-03-ca-intake-kahua`.
 2. Schedule it, copying the secret from the job that already carries it. It
    is still a dry run:
 

@@ -131,6 +131,7 @@ test("findIntakeCandidates filters ours, portals, replies, logged and dismissed"
     { record_id: "b", subject: "Submittal 23 31 13 Ductwork", from_name: "Bob GC", from_address: "bob@gc.com", email_date: "2026-11-02T10:00:00Z" },
     { record_id: "c", subject: "RFI #2 - Pipe", from_name: "Sara", from_address: "sara@setty.com", email_date: "2026-11-02" },
     { record_id: "d", subject: "New RFI #3", from_name: "Procore", from_address: "no-reply@procoretech.com", email_date: "2026-11-02" },
+    { record_id: "k", subject: "RFI 0042 - Pipe sleeve", from_name: "Ann (via Kahua)", from_address: "outbox@kahua.com", email_date: "2026-11-02" },
     { record_id: "e", subject: "RE: RFI #1 - Duct clash", from_name: "Bob GC", from_address: "bob@gc.com", email_date: "2026-11-03" },
     { record_id: "f", subject: "RFI #4 - Logged already", from_address: "bob@gc.com", email_date: "2026-11-03" },
     { record_id: "g", subject: "RFI #5 - Dismissed", from_address: "bob@gc.com", email_date: "2026-11-03" },

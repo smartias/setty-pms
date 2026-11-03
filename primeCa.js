@@ -198,7 +198,7 @@ export function classifyContractorEmail(subject) {
 // replies ("RE:") — a reply is part of an existing thread, not a new item —,
 // emails already logged (item.sourceEmail.recordId) and ones a person
 // dismissed. Newest first. emails: pms_project_emails rows.
-export const PORTAL_SENDERS = /procore|autodesk|newforma|pmweb|e-builder|ebuilder/i;
+export const PORTAL_SENDERS = /procore|autodesk|newforma|pmweb|e-builder|ebuilder|kahua/i;
 export function findIntakeCandidates(emails, project, opts) {
   const o = opts || {};
   const settyDomains = (o.settyDomains || ["setty.com", "setty.onmicrosoft.com"]).map((d) => d.toLowerCase());
