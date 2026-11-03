@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v184-cowork-terminal-fallback";
+    window.__appVersion = "2026-11-03-pms-v185-nyc-cal-ambiguous";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2167,6 +2167,7 @@ const NYC_CAL_NO_EDIT = "You're not on the NYC Shared Calendar's permission list
 let _nycCal = null;          // { base, id, via: "owner"|"local", canEdit, name }
 let _nycCalPromise = null;   // de-dupes concurrent resolves (dashboard sweep fires many at once)
 let _nycCalAttempts = [];    // what was tried on the last failed resolve — surfaced by the debug button
+let _nycCalError = null;     // set when resolve fails for a reason worth telling the user (ambiguous match)
 // When the shared calendar can't be reached, remember that for a while instead
 // of re-listing calendars on every lookup. Offices outside NY never have it,
 // and before this every chunk of the dashboard sweep re-asked Graph twice.
@@ -2178,14 +2179,26 @@ function nycEventSubject(projectName, projectNumber, milestoneName) {
   return (projectNumber ? projectNumber + " " : "") + (projectName || "Project") + " - " + milestoneName;
 }
 
+// Returns { cal, ambiguous }. `cal` is the single matching calendar or null;
+// `ambiguous` lists the names when MORE THAN ONE calendar qualifies. Picking
+// the first of several is how two milestones for St. Nicholas of Tolentine
+// (11/3) were filed in a different calendar of Sara's mailbox than every
+// earlier event, while the PMS reported "synced". With several candidates we
+// refuse and name them instead of guessing.
 function nycCalendarMatch(cals) {
   const want = NYC_CAL_NAME.toLowerCase();
-  const exact = cals.find(c => (c.name || "").trim().toLowerCase() === want);
-  if (exact) return exact;
+  const exact = cals.filter(c => (c.name || "").trim().toLowerCase() === want);
+  if (exact.length === 1) return { cal: exact[0], ambiguous: [] };
+  if (exact.length > 1) return { cal: null, ambiguous: exact.map(c => c.name) };
   // Sharees can rename their local copy (docs: name is the one property a
   // sharee may change). Fall back to "owned by Sara, says NYC" — never the
   // old any-calendar-containing-"shared" match, which pinned wrong calendars.
-  return cals.find(c => (c.owner?.address || "").toLowerCase() === NYC_CAL_OWNER && /nyc/i.test(c.name || "")) || null;
+  const loose = cals.filter(c => (c.owner?.address || "").toLowerCase() === NYC_CAL_OWNER && /nyc/i.test(c.name || ""));
+  if (loose.length === 1) return { cal: loose[0], ambiguous: [] };
+  return { cal: null, ambiguous: loose.map(c => c.name) };
+}
+function nycCalendarAmbiguousMessage(names) {
+  return "More than one calendar could be the NYC Shared Calendar (" + names.map(n => '"' + n + '"').join(", ") + "), so nothing was synced. Ask Sara to rename or remove the extra one so only \"" + NYC_CAL_NAME + "\" remains, then try again.";
 }
 
 function nycCalendarErrorMessage(e) {
@@ -2203,11 +2216,23 @@ async function resolveNycCalendar(force = false) {
   try { localStorage.removeItem("setty_pms_cal_id"); } catch (_) {}
   _nycCalPromise = (async () => {
     const attempts = [];
+    _nycCalError = null;
+    const failAmbiguous = (where, names) => {
+      attempts.push(where + ": several calendars match (" + names.join(", ") + ")");
+      _nycCalError = nycCalendarAmbiguousMessage(names);
+      _nycCal = null;
+      _nycCalAttempts = attempts;
+      _nycCalFailedAt = Date.now();
+      return null;
+    };
     // 1. Owner path — one set of IDs for the whole team.
     try {
       const data = await graphFetch("GET", "/users/" + NYC_CAL_OWNER + "/calendars?$top=50");
       const cals = data?.value || [];
-      const cal = nycCalendarMatch(cals);
+      const { cal, ambiguous } = nycCalendarMatch(cals);
+      // Ambiguous here must NOT fall through to the local copy: that would
+      // quietly pick a calendar after all.
+      if (ambiguous.length) return failAmbiguous("owner path", ambiguous);
       if (cal) {
         const base = "/users/" + NYC_CAL_OWNER + "/calendars/" + cal.id;
         // Listing can succeed where event access doesn't (custom shared
@@ -2222,7 +2247,8 @@ async function resolveNycCalendar(force = false) {
     try {
       const data = await graphFetch("GET", "/me/calendars?$top=50");
       const cals = data?.value || [];
-      const cal = nycCalendarMatch(cals);
+      const { cal, ambiguous } = nycCalendarMatch(cals);
+      if (ambiguous.length) return failAmbiguous("my calendars", ambiguous);
       if (cal) {
         _nycCal = { base: "/me/calendars/" + cal.id, id: cal.id, via: "local", canEdit: cal.canEdit !== false, name: cal.name };
         return _nycCal;
@@ -2251,6 +2277,7 @@ async function debugMyCalendars() {
     resolved: !!cal,
     via: cal?.via || null,
     name: cal?.name || null,
+    problem: cal ? null : _nycCalError,
     canEdit: cal ? cal.canEdit : null,
     attempts: cal ? [] : _nycCalAttempts,
     myCalendars: mine,
@@ -2314,7 +2341,7 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
   };
 
   const cal = await resolveNycCalendar();
-  if (!cal) return { success: false, error: NYC_CAL_NOT_FOUND };
+  if (!cal) return { success: false, error: _nycCalError || NYC_CAL_NOT_FOUND };
 
   try {
     let targetId = null;
@@ -2328,7 +2355,7 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
     let result = null;
     if (targetId) result = await graphFetch("PATCH", cal.base + "/events/" + targetId, eventBody);
     if (!result) result = await graphFetch("POST", cal.base + "/events", eventBody);
-    return { success: true, eventId: result?.id, eventUid: result?.iCalUId || null, via: cal.via };
+    return { success: true, eventId: result?.id, eventUid: result?.iCalUId || null, via: cal.via, calName: cal.name };
   } catch(e) {
     return { success: false, error: nycCalendarErrorMessage(e) };
   }
@@ -2390,7 +2417,7 @@ async function createNoteCalendarEvent(note, project) {
   };
 
   const cal = await resolveNycCalendar();
-  if (!cal) return { success: false, error: NYC_CAL_NOT_FOUND };
+  if (!cal) return { success: false, error: _nycCalError || NYC_CAL_NOT_FOUND };
   try {
     const result = await graphFetch("POST", cal.base + "/events", eventBody);
     return { success: true, eventId: result?.id };
@@ -8315,7 +8342,7 @@ function ScheduleView({ project, onChange, onEagerSave }) {
       setCalState(s => ({ ...s, [m.id]: "synced" }));
       setSyncMsg(result.warning
         ? `⚠ "${m.name}" — ${result.warning}`
-        : `✓ "${m.name}" synced to NYC Shared Calendar`);
+        : `✓ "${m.name}" synced to "${result.calName || NYC_CAL_NAME}" (${result.via === "local" ? "your copy" : "owner"} calendar)`);
     } else {
       setCalState(s => ({ ...s, [m.id]: "error", [`${m.id}_err`]: result.error }));
       setSyncMsg(`✗ "${m.name}" — ${result.error}`);
@@ -24493,7 +24520,7 @@ function Dashboard({ projects, regionFilter, onNavigateToProject, onUpdateProjec
         onUpdateProject({ ...proj, milestones: newMilestones });
       }
       setDashCalState(s => ({ ...s, [m.id]: "synced" }));
-      setDashSyncMsg(result.warning ? "⚠ " + result.warning : "✓ \"" + m.name + "\" synced to NYC Shared Calendar");
+      setDashSyncMsg(result.warning ? "⚠ " + result.warning : "✓ \"" + m.name + "\" synced to \"" + (result.calName || NYC_CAL_NAME) + "\"");
     } else {
       setDashCalState(s => ({ ...s, [m.id]: "error" }));
       setDashSyncMsg("✗ \"" + m.name + "\" — " + result.error);
@@ -24739,6 +24766,7 @@ function Dashboard({ projects, regionFilter, onNavigateToProject, onUpdateProjec
                 ) : (
                   <>
                     <div>NYC Shared Calendar: <b style={{ color: P.red }}>NOT REACHABLE</b> from this account</div>
+                    {dashCalDebug.problem && <div style={{ color: P.red }}>{dashCalDebug.problem}</div>}
                     {(dashCalDebug.attempts || []).map((a, i) => <div key={i}>· {a}</div>)}
                   </>
                 )}
