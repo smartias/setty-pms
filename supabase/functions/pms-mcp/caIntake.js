@@ -243,7 +243,7 @@ export function collapse(events, kind) {
     if (kind === "rfi") return {
       extNum: num, title: last.title || first.title, status: RFI_EVENT_STATUS[last.event] || "Open", dueDate: last.dueDate || first.dueDate,
       from: first.askedBy, question: first.question || last.question, dateReceived: first.dateInit, lastDate: dayOf(last.date),
-      recordId: first.recordId, spFolder: first.spFolder,
+      recordId: first.recordId, spFolder: first.spFolder, lastEvent: last.event, lastRecordId: last.recordId,
     };
     const rev = Math.max(...evs.map((e) => e.rev));
     // Procore events carry their own status; Forma's comes from its Status field.
@@ -252,7 +252,7 @@ export function collapse(events, kind) {
     return {
       extNum: num, title: last.title || first.title, specSection: last.specSection || first.specSection, rev, status, stamp,
       dueDate: last.dueDate || first.dueDate, ballInCourt: last.ballInCourt, dateReceived: first.dateReceived || "", lastDate: dayOf(last.date),
-      recordId: last.recordId, spFolder: last.spFolder,
+      recordId: last.recordId, spFolder: last.spFolder, lastRecordId: last.recordId,
     };
   }).sort((a, b) => { const x = +a.extNum, y = +b.extNum; return (isNaN(x) || isNaN(y)) ? String(a.extNum).localeCompare(String(b.extNum)) : x - y; });
 }
@@ -347,6 +347,64 @@ export function buildInbox(emails, loggedRFIs, loggedSubs, pid, vendors = VENDOR
   return inbox;
 }
 
+/* ---------- status updates on items already in the log ---------- */
+// A portal's closing or answering event moves a logged item FORWARD, never
+// back: RFI Open → Responded → Closed; submittal (any open state) → Returned.
+// Only explicit events count: Procore "Response to RFI" / "RFI Closed",
+// Newforma "Responded to and Closed", a Procore distribution or Setty approver
+// response, a Forma item whose status is Closed. "Status Update", reminders
+// and forwards never change a status. Void items are never touched.
+const RFI_RANK = { "Open": 0, "Pending Sub Response": 0, "Responded": 1, "Closed": 2 };
+const SUB_RANK = { "Received": 0, "Under Review": 0, "Pending Sub Review": 0, "Resubmittal Required": 0, "Returned": 1 };
+const RFI_UPDATE_EVENTS = { "Response to RFI": "Responded", "RFI Closed": "Closed" };
+// The ONE logged RFI this portal item is, by number only (a title match is
+// good enough to avoid creating a twin, not to change someone's record).
+function strictRfiRow(it, logged) {
+  const k = rfiKey(it.extNum);
+  const hits = logged.filter((r) => rfiKey(r.number) === k || (r.extNumber != null && rfiKey(r.extNumber) === k));
+  return hits.length === 1 ? hits[0] : null;
+}
+// The ONE logged submittal row that is this item AND revision. Spec-based
+// numbers carry the revision ("237313.13-202-2", "262416-001-0"); a bare
+// "SUB-202" row counts only when its resubNumber is that revision.
+function strictSubRow(it, logged) {
+  const ext = String(it.extNum), rev = +it.rev || 0;
+  const hits = logged.filter((s) => {
+    const n = String(s.number || "");
+    if (/[-.]/.test(ext)) return n === ext + "-" + rev || (rev === 0 && n === ext);
+    const m = n.match(/-(\d+)-(\d+)$/);
+    if (m) return String(+m[1]) === ext && +m[2] === rev;
+    return new RegExp("^SUB-?0*" + ext + "$", "i").test(n) && (+s.resubNumber || 0) === rev;
+  });
+  return hits.length === 1 ? hits[0] : null;
+}
+// What one collapsed portal item would change on its logged row, or null.
+// The patch only ever sets status, the responded/returned date when empty,
+// and (submittals) the stamp when none is recorded; text fields are never
+// written. `prev` holds the old values so a person can Undo it.
+// A change a person undid is not re-applied from the same (or an older)
+// event; only a newer portal event can move the item again.
+const undoneFor = (row, it) => !!(row && row.intakeStatus && row.intakeStatus.undone && (row.intakeStatus.eventDate || "") >= (it.lastDate || ""));
+export function statusUpdateFor(it, kind, logged, opts = {}) {
+  if (kind === "rfi") {
+    const to = RFI_UPDATE_EVENTS[it.lastEvent]; if (!to) return null;
+    const row = strictRfiRow(it, logged); if (!row || !row.id || undoneFor(row, it)) return null;
+    const from = row.status || "";
+    if (!(from in RFI_RANK) || RFI_RANK[to] <= RFI_RANK[from]) return null;
+    const patch = { status: to }, prev = { status: from };
+    if (!row.dateResponded && it.lastDate) { patch.dateResponded = it.lastDate; prev.dateResponded = row.dateResponded || ""; }
+    return { row, from, to, patch, prev };
+  }
+  if (it.status !== "Returned") return null;
+  const row = strictSubRow(it, logged); if (!row || !row.id || undoneFor(row, it)) return null;
+  const from = row.status || "";
+  if (!(from in SUB_RANK) || SUB_RANK.Returned <= SUB_RANK[from]) return null;
+  const patch = { status: "Returned" }, prev = { status: from };
+  if (!row.dateReturned && it.lastDate) { patch.dateReturned = it.lastDate; prev.dateReturned = row.dateReturned || ""; }
+  if (it.stamp && (!row.stamp || row.stamp === "—")) { patch.stamp = it.stamp; prev.stamp = row.stamp || "—"; }
+  return { row, from, to: "Returned", patch, prev };
+}
+
 /* ---------- scheduled intake: what to append, unattended ---------- */
 // The connector's admin/ca-items-intake route calls this per project. It is
 // deliberately narrower than the tracker's manual import:
@@ -381,11 +439,21 @@ export function planIntake(emails, project, pid, opts = {}) {
   const rfis = Array.isArray(project && project.rfis) ? project.rfis : [];
   const subs = Array.isArray(project && project.submittals) ? project.submittals : [];
   const inbox = buildInbox(emails, rfis, subs, pid, VENDORS.filter((v) => vendorNames.includes(v.vendor)));
-  const out = { rfis: [], submittals: [], skipped: { matched: 0, update: 0, old: 0 } };
+  const out = { rfis: [], submittals: [], updates: [], skipped: { matched: 0, update: 0, old: 0 } };
   const have = new Set([...rfis, ...subs].map((r) => r && r.id));
   for (const kind of ["rfi", "submittal"]) {
     for (const it of inbox[kind]) {
-      if (it.verdict !== "new") { out.skipped[it.verdict === "update" ? "update" : "matched"]++; continue; }
+      if (it.verdict !== "new") {
+        // A logged item: maybe its status moved forward in the portal (recent events only).
+        const u = opts.updates !== false && it.verdict === "matched" && !(since && (it.lastDate || "") < since)
+          ? statusUpdateFor(it, kind, kind === "rfi" ? rfis : subs) : null;
+        if (u) {
+          out.updates.push({ kind, id: u.row.id, number: u.row.number, from: u.from, to: u.to, patch: u.patch,
+            intakeStatus: { from: u.from, to: u.to, prev: u.prev, at, by: "ca-items-intake", vendor: it.vendor,
+              emailId: it.lastRecordId || it.recordId || "", eventDate: it.lastDate || "", reviewed: false } });
+        } else out.skipped[it.verdict === "update" ? "update" : "matched"]++;
+        continue;
+      }
       if (since && (it.lastDate || "") < since) { out.skipped.old++; continue; }
       if (have.has(it.record.id)) { out.skipped.matched++; continue; }
       have.add(it.record.id);
@@ -394,6 +462,21 @@ export function planIntake(emails, project, pid, opts = {}) {
     }
   }
   return out;
+}
+
+// Apply planIntake's updates to a project's arrays (pure; returns new arrays).
+// The row is found again by id, and its status must still be the one the plan
+// saw, so a person's edit between plan and write always wins.
+export function applyStatusUpdates(project, updates) {
+  const by = { rfi: (project.rfis || []).slice(), submittal: (project.submittals || []).slice() };
+  let applied = 0;
+  for (const u of updates || []) {
+    const arr = by[u.kind], i = arr.findIndex((r) => r && r.id === u.id);
+    if (i < 0 || (arr[i].status || "") !== u.from) continue;
+    arr[i] = { ...arr[i], ...u.patch, intakeStatus: u.intakeStatus };
+    applied++;
+  }
+  return { rfis: by.rfi, submittals: by.submittal, applied };
 }
 
 /* ---------- which CA platform a project runs on ---------- */

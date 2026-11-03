@@ -294,3 +294,83 @@ test("unattended intake follows the project's confirmed platform", async () => {
   assert.equal(plan("Newforma").rfis[0].intake.vendor, "Newforma");
   assert.deepEqual(nums(planIntake(emails, { caPortal: { platform: "Newforma" } }, "p1", { vendors: ["Procore"], since: "2026-10-20" })), [], "the caller's allow-list still bounds it");
 });
+
+/* ---------- status updates on logged items ---------- */
+test("status updates: closing/answering events move logged items forward only", async () => {
+  const { planIntake, applyStatusUpdates } = await import("./caIntake.js");
+  const NEW = mail("A: J1, P: New RFI #RFI-91, Condensate lines in cellar", RFI_BODY_PREFIXED, { email_date: "2026-06-30T13:54:00Z" });
+  const CLOSED = mail("J1, P: RFI Closed, #RFI-91, Condensate lines in cellar", "", { record_id: "eC", email_date: "2026-10-30T10:00:00Z" });
+  const RESP = mail("J1, P: Response to RFI #RFI-91, Condensate lines in cellar", "", { record_id: "eR", email_date: "2026-10-29T10:00:00Z" });
+  const STAT = mail("J1, P: Status Update on RFI #RFI-91, Condensate lines in cellar", "", { email_date: "2026-10-31T10:00:00Z" });
+  const proj = (status, extra = {}) => ({ rfis: [{ id: "r91", number: "RFI-091", title: "Condensate lines in cellar", status, response: "<p>our text</p>", dateResponded: "", ...extra }], submittals: [] });
+  const plan = (emails, p) => planIntake(emails, p, "p1", { since: "2026-10-20", at: "T" });
+
+  const p1 = plan([NEW, CLOSED], proj("Open"));
+  assert.equal(p1.rfis.length, 0, "a logged item is never re-created");
+  assert.equal(p1.updates.length, 1);
+  const u = p1.updates[0];
+  assert.deepEqual([u.id, u.from, u.to, u.patch], ["r91", "Open", "Closed", { status: "Closed", dateResponded: "2026-10-30" }]);
+  assert.deepEqual([u.intakeStatus.prev, u.intakeStatus.emailId, u.intakeStatus.reviewed, u.intakeStatus.vendor], [{ status: "Open", dateResponded: "" }, "eC", false, "Procore"]);
+  const applied = applyStatusUpdates(proj("Open"), p1.updates);
+  assert.equal(applied.applied, 1);
+  assert.equal(applied.rfis[0].status, "Closed");
+  assert.equal(applied.rfis[0].response, "<p>our text</p>", "text fields are never written");
+
+  assert.deepEqual(plan([NEW, RESP], proj("Open")).updates.map((x) => x.to), ["Responded"]);
+  assert.deepEqual(plan([NEW, RESP], proj("Pending Sub Response")).updates.map((x) => x.to), ["Responded"]);
+  assert.equal(plan([NEW, RESP], proj("Closed")).updates.length, 0, "never backwards");
+  assert.equal(plan([NEW, CLOSED], proj("Closed")).updates.length, 0, "already there");
+  assert.equal(plan([NEW, CLOSED], proj("Void")).updates.length, 0, "Void is never touched");
+  assert.equal(plan([NEW, RESP, STAT], proj("Open")).updates.length, 0, "a Status Update is not a status change");
+  assert.equal(plan([NEW, CLOSED], proj("Open", { dateResponded: "2026-10-01" })).updates[0].patch.dateResponded, undefined, "an existing date is kept");
+  const old = mail("J1, P: RFI Closed, #RFI-91, Condensate", "", { email_date: "2026-07-01T10:00:00Z" });
+  assert.equal(plan([NEW, old], proj("Open")).updates.length, 0, "only recent events");
+  assert.equal(planIntake([NEW, CLOSED], proj("Open"), "p1", { since: "2026-10-20", updates: false }).updates.length, 0, "can be switched off");
+});
+
+test("status updates: never on a title-only match or an ambiguous number", async () => {
+  const { planIntake } = await import("./caIntake.js");
+  const CLOSED = mail("J1, P: RFI Closed, #RFI-77, Condensate lines in cellar", "", { email_date: "2026-10-30T10:00:00Z" });
+  const titleOnly = { rfis: [{ id: "a", number: "RFI-091", title: "Condensate lines in cellar", status: "Open" }], submittals: [] };
+  assert.equal(planIntake([CLOSED], titleOnly, "p1", { since: "2026-10-20" }).updates.length, 0);
+  const twice = { rfis: [{ id: "a", number: "RFI-077", status: "Open" }, { id: "b", number: "77", status: "Open" }], submittals: [] };
+  assert.equal(planIntake([CLOSED], twice, "p1", { since: "2026-10-20" }).updates.length, 0, "two rows claim RFI 77: leave both");
+});
+
+test("status updates: submittals by exact revision, stamp only when none recorded", async () => {
+  const { planIntake } = await import("./caIntake.js");
+  const DIST = mail("P: Submittal Distributed 262416-1.0, Panelboard and Accessories - Product Data", SUB_DISTRIBUTED, { email_date: "2026-10-30T13:41:00Z" });
+  const sub = (number, status, stamp = "—", extra = {}) => ({ rfis: [], submittals: [{ id: "s1", number, status, stamp, dateReturned: "", ...extra }] });
+  const plan = (p, emails = [DIST]) => planIntake(emails, p, "p1", { since: "2026-10-20", at: "T" });
+  const u = plan(sub("262416-001-0", "Under Review")).updates[0];
+  assert.deepEqual([u.to, u.patch], ["Returned", { status: "Returned", dateReturned: "2026-10-30", stamp: "Approved as Noted" }]);
+  assert.equal(plan(sub("262416-001-0", "Under Review", "Revise and Resubmit")).updates[0].patch.stamp, undefined, "a recorded stamp wins");
+  assert.equal(plan(sub("262416-001-1", "Under Review")).updates.length, 0, "rev 1 in the log, rev 0 in the email: not the same row");
+  assert.equal(plan(sub("262416-001-0", "Returned")).updates.length, 0);
+  const FORMA = mail("224300 - Homeport II - Submittal #202 was provided for your information", FORMA_BODY, { from_address: "no-reply@mail.forma.autodesk.com", email_date: "2026-11-02T14:41:00Z" });
+  const forma = (number, extra) => planIntake([FORMA], { caPortal: { platform: "Autodesk Build" }, ...sub(number, "Received", "—", extra) }, "p1", { vendors: ["Procore", "Autodesk Forma", "Newforma"], since: "2026-10-20" });
+  assert.equal(forma("237313.13-202-2").updates[0].to, "Returned", "spec-based log number, same revision");
+  assert.equal(forma("237313.13-202-1").updates.length, 0, "other revision");
+  assert.equal(forma("SUB-202", { resubNumber: 2 }).updates[0].to, "Returned");
+  assert.equal(forma("SUB-202", { resubNumber: 0 }).updates.length, 0, "SUB-202 holds rev 0, the email is rev 2");
+  const NFC = mail("Submittal Responded to and Closed: SAPX196006.00_SUNY StonyBrook TblrQud - Dampers - Submittal:233300-004-0:FCqqN", "", { from_address: "x@pagethink.com", email_date: "2026-10-30T10:00:00Z" });
+  const nf = planIntake([NFC], { caPortal: { platform: "Newforma" }, ...sub("233300-004-0", "Under Review") }, "p1", { vendors: ["Procore", "Autodesk Forma", "Newforma"], since: "2026-10-20" });
+  assert.equal(nf.updates[0].to, "Returned");
+  assert.equal(planIntake([NFC], sub("233300-004-0", "Under Review"), "p1", { vendors: ["Procore", "Autodesk Forma", "Newforma"], since: "2026-10-20" }).updates.length, 0, "an unconfirmed project reads Procore only");
+});
+
+test("applyStatusUpdates: a person's edit since the plan wins", async () => {
+  const { applyStatusUpdates } = await import("./caIntake.js");
+  const upd = [{ kind: "rfi", id: "r1", from: "Open", to: "Closed", patch: { status: "Closed" }, intakeStatus: { from: "Open", to: "Closed" } }];
+  const r = applyStatusUpdates({ rfis: [{ id: "r1", status: "Responded" }], submittals: [] }, upd);
+  assert.deepEqual([r.applied, r.rfis[0].status, r.rfis[0].intakeStatus], [0, "Responded", undefined]);
+});
+
+test("status updates: an undone change is not re-applied from the same event, a newer one may", async () => {
+  const { planIntake } = await import("./caIntake.js");
+  const CLOSED = mail("J1, P: RFI Closed, #RFI-91, Condensate", "", { email_date: "2026-10-30T10:00:00Z" });
+  const undone = { rfis: [{ id: "r", number: "RFI-091", status: "Open", intakeStatus: { undone: true, eventDate: "2026-10-30" } }], submittals: [] };
+  assert.equal(planIntake([CLOSED], undone, "p1", { since: "2026-10-20" }).updates.length, 0);
+  const LATER = mail("J1, P: RFI Closed, #RFI-91, Condensate", "", { email_date: "2026-11-05T10:00:00Z" });
+  assert.equal(planIntake([CLOSED, LATER], undone, "p1", { since: "2026-10-20" }).updates.length, 1);
+});

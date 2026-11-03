@@ -1375,7 +1375,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-03-ca-intake-forma-newforma";
+const BUILD = "2026-11-03-ca-intake-status-updates";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.23.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -12326,7 +12326,7 @@ app.post("/pms-mcp/admin/ca-items-intake", async (c) => {
       log: (msg) => console.warn("[ca-items-intake]", msg),
     });
     // Logged whenever it found something, so a dry run can be read in the logs.
-    if (summary.created.rfi || summary.created.submittal || summary.failed.length) {
+    if (summary.created.rfi || summary.created.submittal || summary.updated.rfi || summary.updated.submittal || summary.failed.length) {
       console.warn(`[ca-items-intake]${summary.dryRun ? " DRY RUN (would add)" : ""}`, JSON.stringify(summary));
     }
     return c.json({ ...summary, live }, 200, DOCS_SYNC_CORS);
