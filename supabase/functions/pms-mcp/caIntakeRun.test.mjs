@@ -144,3 +144,28 @@ test("stops at the time budget and at maxProjects, and says so", async () => {
 test("intakeSince", () => {
   assert.equal(intakeSince(Date.parse("2026-11-02T20:00:00Z"), 14), "2026-10-19");
 });
+
+test("a confirmed Newforma project imports its Newforma forwards and never the Procore copy", async () => {
+  const proj = { ...P1(), caPortal: { platform: "Newforma", gc: "Hunter Roberts" } };
+  const emails = [
+    ...EM, // Procore RFI #17 + submittal 262416-1.0
+    mail("RFI Forwarded: Follow up to RFI 005 - Stony Brook University, Tabler Quad - RFI:RFI-005R:SM1mU", "2026-10-28T10:00:00Z",
+      "Project: 1018037.01 Stony Brook University, Tabler Quad \n\nRemarks \n\nSee RFI \n\nDownload all files \n\nFrom: Eileen Duggan (Page) \nDue back: 11/4/2026 \n", "eduggan@pagethink.com"),
+    mail("RE: RFI Forwarded: Follow up to RFI 005 - Stony Brook University, Tabler Quad - RFI:RFI-005R:SM1mU", "2026-10-29T10:00:00Z", "", "p@setty.com"),
+  ];
+  const h = harness({ projects: { p1: proj }, emails: { p1: emails } });
+  h.deps.vendors = ["Procore", "Autodesk Forma", "Newforma"];
+  const s = await runIntakePass(h.deps);
+  assert.deepEqual(s.created, { rfi: 1, submittal: 0 });
+  const [r] = h.projects.p1.rfis;
+  assert.deepEqual([r.number, r.title, r.dueDate, r.from, r.intake.vendor], ["RFI-005R", "Follow up to RFI 005", "2026-11-04", "Eileen Duggan", "Newforma"]);
+});
+
+test("an unconfirmed project stays Procore-only even when the route allows all portals", async () => {
+  const h = harness({ projects: { p1: P1() }, emails: { p1: [...EM,
+    mail("RFI Forwarded: Something - RFI:RFI-077:SM1mU", "2026-10-28T10:00:00Z", "", "x@page.com")] } });
+  h.deps.vendors = ["Procore", "Autodesk Forma", "Newforma"];
+  const s = await runIntakePass(h.deps);
+  assert.deepEqual(s.created, { rfi: 1, submittal: 1 });
+  assert.deepEqual(h.projects.p1.rfis.map((x) => x.number), ["RFI-017"]);
+});

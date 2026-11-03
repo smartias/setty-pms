@@ -490,11 +490,11 @@ function renderSection(kind, title, logged, inbox){
       const c = kind==="rfi" ? `<td class="num">#${esc(it.extNum)}</td><td class="title">${esc(it.title)}</td><td>${statusPill(it.status)}</td><td>${esc(it.dueDate||"—")}</td><td>${esc(it.from||"")}</td>`
         : `<td class="num">#${esc(it.extNum)}${it.rev?` <span class=muted>r${it.rev}</span>`:""}</td><td class="title">${esc(it.title)}</td><td>${esc(it.specSection||"")}</td><td>${statusPill(it.status)}</td><td>${esc(it.dueDate||"—")}</td>`;
       return `<tr>${c}${dcell}<td class="right">${verdictBadge(it)} ${cb}</td></tr>`; }).join("");
-    html+=`<div class="inbox"><div class="ihead">📥 To import from Procore/Forma — ${news.length} new</div>`+
+    html+=`<div class="inbox"><div class="ihead">📥 To import from portal emails (Procore / Forma / Newforma) — ${news.length} new</div>`+
       `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`+
       `<div class="actions"><button class="go" onclick="importSelected('${kind}')">Import selected → log</button><span class="muted" style="font-size:12px">Tick the new ones, then import. Already-logged items are skipped.</span></div></div>`;
   }
-  if(!logged.length){ html+=`<div class="empty">No ${kind}s logged yet. Click “+ Add ${kind==='rfi'?'RFI':'Submittal'}” to log one, or import from Procore/Forma above.</div>`; }
+  if(!logged.length){ html+=`<div class="empty">No ${kind}s logged yet. Click “+ Add ${kind==='rfi'?'RFI':'Submittal'}” to log one, or import from the portal emails above.</div>`; }
   else {
     const pcol=am?"<th scope='col'>Project</th>":"";
     const head = pcol + (kind==="rfi" ? "<th scope='col'>RFI</th><th scope='col'>Title</th><th scope='col'>Discipline</th><th scope='col'>From</th><th scope='col'>Assigned</th><th scope='col'>Received</th><th scope='col'>Due</th><th scope='col'>Status</th>"
