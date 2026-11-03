@@ -247,6 +247,9 @@ test("Newforma submittal forward and Responded-to-and-Closed", () => {
   assert.deepEqual([lt.extNum, lt.rev, lt.title], ["232113-016C", 1, "R1 SD - NSB - Level 00 Machine Room"], "letter suffix in the item segment");
   const c = parseNewformaFwdSub(mail("Submittal Responded to and Closed: SAPX196006.00_SUNY StonyBrook TblrQud - 1st Floor Sheetmetal SM-1.1 thru 1.6 - Shp dwgs - Submittal:233113-002-0:FCqqN", ""));
   assert.deepEqual([c.extNum, c.status], ["233113-002", "Returned"]);
+  const sc = parseNewformaFwdSub(mail("Submittal Sent and Closed: SAPX186034.03_SUNY Old Westbury NSB Add3 - Site Planning for AVANCE Systems - Submittal:220000-001-0:NKi0a", ""));
+  assert.deepEqual([sc.extNum, sc.status, sc.title], ["220000-001", "Returned", "Site Planning for AVANCE Systems"], "Sent and Closed closes too");
+  assert.equal(parseNewformaFwdSub(mail("RE: Submittal Sent and Closed: SAPX186034.03_SUNY Old Westbury NSB Add3 - Site Planning - Submittal:220000-001-0:NKi0a", "")), null, "a reply is not an event");
 });
 
 test("Autodesk Forma: final response becomes the stamp; summaries are skipped", () => {

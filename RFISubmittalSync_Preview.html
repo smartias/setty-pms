@@ -81,6 +81,7 @@
   .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; white-space:nowrap; }
   .badge.new { background:var(--new-badge); color:#1c1917; } .badge.matched { background:var(--matched); color:var(--matched-txt); }
   .badge.update { background:var(--update); color:#082f49; }
+  .badge.old { background:var(--unrev-bg); color:var(--warn); }
   .pill { display:inline-block; padding:2px 8px; border-radius:6px; font-size:11px; font-weight:600; }
   .badge.unrev { background:var(--unrev-bg); color:var(--warn); }
   /* Due-date chip — same thresholds as the main PMS SlaChip (overdue / today / ≤2 days / later). */
@@ -399,7 +400,7 @@ async function init(){
   try{
     const [projRows, actRows] = await Promise.all([
       fetchJson(`pms_projects?select=id,name:project->>name,number:project->>projectNumber,status:project->>status,caPortal:project->caPortal,links:project->externalLinks&order=id.asc`),
-      fetchAll(`pms_project_emails?or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*,from_address.ilike.*kahua*,subject.ilike.*PMWeb*)&select=project_id,from_address,subject&order=record_id.asc`),
+      fetchAll(`pms_project_emails?or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*,subject.ilike.*Responded%20to%20and%20Closed*,subject.ilike.*Sent%20and%20Closed*,from_address.ilike.*kahua*,subject.ilike.*PMWeb*)&select=project_id,from_address,subject&order=record_id.asc`),
     ]);
     const detected=(window.CaIntake&&window.CaIntake.detectPlatforms)?window.CaIntake.detectPlatforms(actRows||[]):{};
     PROJECTS=(projRows||[]).filter(p=>(p.status||"")===CA_STATUS).map(p=>projEntry(p,detected[p.id]))
@@ -518,7 +519,10 @@ async function selectProject(pid){
   try{
     const [projRows, emails]=await Promise.all([
       fetchJson(`pms_projects?id=eq.${pid}&select=rfis:project->rfis,submittals:project->submittals,team:project->teamMembers,rfiDueDays:project->>rfiDueDays,submittalDueDays:project->>submittalDueDays`),
-      fetchJson(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*,from_address.ilike.*kahua*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
+      // Newforma closing notices ("Responded to and Closed", "Sent and Closed")
+      // must come along with the forwards: without them every Newforma item
+      // imports as open even when the filed log holds Setty's own response.
+      fetchJson(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*,subject.ilike.*Responded%20to%20and%20Closed*,subject.ilike.*Sent%20and%20Closed*,from_address.ilike.*kahua*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
     ]);
     const logged=projRows[0]||{}; const loggedRFIs=logged.rfis||[], loggedSubs=logged.submittals||[];
     const CI=window.CaIntake; if(!CI) throw new Error("caIntake.js did not load — reload the page.");
@@ -647,18 +651,20 @@ function renderSection(kind, title, logged, inbox){
     const head = kind==="rfi" ? "<th scope='col'>RFI</th><th scope='col'>Title</th><th scope='col'>Status</th><th scope='col'>Due</th><th scope='col'>Asked by</th><th scope='col'>Discipline</th><th scope='col' class='right'>Import</th>"
                               : "<th scope='col'>Item</th><th scope='col'>Title</th><th scope='col'>Spec</th><th scope='col'>Status</th><th scope='col'>Due</th><th scope='col'>Discipline</th><th scope='col' class='right'>Import</th>";
     const vocab = kind==="rfi"?RFI_DISC:SUB_DISC;
-    const rows=inbox.map(it=>{ const cb=it.verdict==="new"?`<input type="checkbox" class="pick" aria-label="Import ${kind==="rfi"?"RFI":"submittal"} #${esc(it.extNum)}" data-k="${kind}" data-ext="${esc(it.extNum)}" checked>`:"";
+    const rows=inbox.map(it=>{ const stale=isStaleImport(it);
+      const cb=it.verdict==="new"?`<input type="checkbox" class="pick" aria-label="Import ${kind==="rfi"?"RFI":"submittal"} #${esc(it.extNum)}" data-k="${kind}" data-ext="${esc(it.extNum)}" ${stale?"":"checked"}>`:"";
       const dv=(it.record&&it.record.discipline)||"";
       const dcell = it.verdict==="new"
         ? `<td><select class="discSel" data-k="${kind}" data-ext="${esc(it.extNum)}" aria-label="Discipline for #${esc(it.extNum)}" title="Discipline — inferred from spec section / title; pick one before import" onchange="this.removeAttribute('aria-invalid')"><option value="" ${dv?"":"selected"}>—</option>${vocab.map(d=>`<option ${d===dv?"selected":""}>${esc(d)}</option>`).join("")}</select></td>`
         : `<td class="muted">${esc(dv||"—")}</td>`;
       const c = kind==="rfi" ? `<td class="num">#${esc(it.extNum)}</td><td class="title">${esc(it.title)}</td><td>${statusPill(it.status)}</td>${dateCell(it.dueDate)}<td>${esc(it.from||"")}</td>`
         : `<td class="num">#${esc(it.extNum)}${it.rev?` <span class=muted>r${it.rev}</span>`:""}</td><td class="title">${esc(it.title)}</td><td>${esc(it.specSection||"")}</td><td>${statusPill(it.status)}</td>${dateCell(it.dueDate)}`;
-      return `<tr>${c}${dcell}<td class="right">${verdictBadge(it)} ${cb}</td></tr>`; }).join("");
+      return `<tr>${c}${dcell}<td class="right">${verdictBadge(it)}${stale?` <span class="badge old" title="Latest portal email is ${-daysUntil(it.lastDate)} days old. Only the assignment email is on file, so the log cannot tell whether it was ever answered — it would import as ${esc(it.status)} with no way to know. Tick it only if it really is still open.">old · status unknown</span>`:""} ${cb}</td></tr>`; }).join("");
+    const staleCount=news.filter(isStaleImport).length;
     html+=`<div class="inbox"><div class="ihead"><span>📥 To import from portal emails (Procore / Forma / Newforma / Kahua) — ${news.length} new</span>`+
       `<div class="legend"><span><span class="badge new">NEW</span> not yet logged</span><span><span class="badge matched">matched</span> already logged</span><span><span class="badge update">UPDATE</span> newer revision — review by hand</span></div></div>`+
       `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`+
-      `<div class="actions"><button class="primary" onclick="importSelected('${kind}')">Import selected → log</button><span class="muted" style="font-size:12px">Tick the new ones, then import. Already-logged items are skipped.</span></div></div>`;
+      `<div class="actions"><button class="primary" onclick="importSelected('${kind}')">Import selected → log</button><span class="muted" style="font-size:12px">Tick the new ones, then import. Already-logged items are skipped.${staleCount?` <b>${staleCount} unticked</b>: their latest portal email is over ${STALE_IMPORT_DAYS} days old and no closing notice is on file, so they would import as open with no way to know. Tick those only if they really are still open.`:""}</span></div></div>`;
   }
   if(!logged.length){ html+=`<div class="empty">No ${kind}s logged yet. Click “+ Add ${kind==='rfi'?'RFI':'Submittal'}” to log one, or import from the portal emails above.</div>`; }
   else {
@@ -691,6 +697,13 @@ function renderSection(kind, title, logged, inbox){
   sec.innerHTML=html; return {el:sec, total:logged.length, shown:shown.length};
 }
 function pickProject(id){ const f=document.getElementById("filter"); if(f.value){ f.value=""; rebuildPicker(); } document.getElementById("picker").value=id; window.scrollTo(0,0); selectProject(id); }
+// A NEW item whose latest portal email is older than this is unticked by
+// default. Nearly every Newforma item has only its "Forwarded" (assignment)
+// email on file, so an old one imports as Open / Received with nothing to
+// say it was ever answered — one click on a freshly filed mailbox once put
+// two years of long-closed items into a log as open (SUNY OW Phase 1).
+const STALE_IMPORT_DAYS=90;
+function isStaleImport(it){ const n=daysUntil(it.lastDate); return it.verdict==="new"&&n!==null&&n< -STALE_IMPORT_DAYS; }
 function verdictBadge(it){ if(it.verdict==="new")return`<span class="badge new">NEW</span>`;
   if(it.verdict==="update")return`<span class="badge update">UPDATE</span>`; return`<span class="badge matched">matched</span>`; }
 
