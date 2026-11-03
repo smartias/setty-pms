@@ -265,3 +265,23 @@ against the plan above:
 Still to do for step 2: the PMS Unreviewed badge and Confirm button, and
 leaving unreviewed items out of overdue counts, follow-up reminders and the
 weekly digest.
+
+## Forma and Newforma (2026-11-03)
+
+- **Parsers rebuilt against the filed mail.** Newforma: every id shape seen
+  (`RFI:RFI-029`, `RFI:188.1`, `RFI:RFI-005R`, `RFI:BID-RFI-306`, submittal
+  `232113-016C-1`, a space before the tag); the body's `Due back`, `From`,
+  `Purpose` and Remarks; `Responded to and Closed` as a closing event; `RE:`,
+  `FW:` and automatic replies ignored (they were being read as forwards).
+  Forma: the Final Response becomes the stamp; hourly summaries and welcome
+  mail are skipped.
+- **RFI matching by full key** (`rfiKey`): `121.1` is a follow-up, not RFI
+  121; `5R` is not 5. Forma `#233` now also finds a log row `SUB-233`.
+- **Unattended scope = the project's confirmed platform** (`intakeVendorsFor`).
+  This is the cross-portal duplicate guard the plan called for, without
+  `externalNumbers[]`: one portal per project. Unconfirmed projects stay
+  Procore only.
+- Still open: Forma RFIs (no sample filed yet), PMWeb, and two different
+  architects' Info Exchanges numbering one item differently (Tabler: Stantec
+  `RFI:00001` vs Page `RFI:188.1`). The title match catches the common case;
+  the Unreviewed check catches the rest.

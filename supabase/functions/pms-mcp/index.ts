@@ -1375,7 +1375,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-02-ca-items-intake";
+const BUILD = "2026-11-03-ca-intake-forma-newforma";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.23.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -12285,8 +12285,17 @@ app.post("/pms-mcp/admin/unrostered-alert", async (c) => {
 // (reports, writes nothing) unless the function secret CA_INTAKE_LIVE=1 is
 // set, so it can be scheduled and watched in the logs before it writes;
 // removing the secret is the off switch, no redeploy.
-const CA_INTAKE_VENDORS = ["Procore"];
-const CA_INTAKE_EMAIL_FILTER = "from_address=ilike.*procoretech*";
+// What the route may import; each project's confirmed CA platform narrows it
+// to ONE portal (caIntake.intakeVendorsFor), and an unconfirmed project stays
+// Procore-only, so turning Forma/Newforma on changes nothing for a job until
+// someone confirms its platform in the tracker.
+const CA_INTAKE_VENDORS = ["Procore", "Autodesk Forma", "Newforma"];
+// Same portal filter as the tracker (sender for Procore/Forma; subject for
+// Newforma, whose notifications arrive from whoever forwarded them).
+const CA_INTAKE_EMAIL_FILTER = "or=(" + [
+  "from_address.ilike.*procoretech*", "from_address.ilike.*forma.autodesk*",
+  "subject.ilike.*RFI Forwarded*", "subject.ilike.*Submittal Forwarded*", "subject.ilike.*Responded to and Closed*",
+].map(encodeURIComponent).join(",") + ")";
 const CA_INTAKE_BUDGET_MS = 40_000;
 app.options("/pms-mcp/admin/ca-items-intake", (c) => c.body(null, 204, DOCS_SYNC_CORS));
 app.post("/pms-mcp/admin/ca-items-intake", async (c) => {
