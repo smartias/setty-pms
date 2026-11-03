@@ -1084,6 +1084,24 @@ changes: the "Construction Changes" tab writes `project.constructionChanges`
   The connector's view is `constructionChangesView.ts`
   (`constructionChangesView.test.mjs`).
 
+## Closeout checklist (`list_closeout_items`, 2026-11-03)
+
+The PMS "Closeout" tab (prime jobs) writes `project.closeout.items`: each
+deliverable the contractor owes at closeout (O&Ms, warranties, record
+drawings, attic stock, training, TAB, test reports, agency sign-offs) plus
+the completion certificates Setty issues, with status, dates, the
+responsible trade, review comments and a dated history.
+
+- `list_closeout_items` returns progress over required items (accepted,
+  outstanding, with the contractor, with Setty or a sub, overdue, ready for
+  final completion) and one row per item. Filters: `category`, `status`,
+  `openOnly`, `query`; `includeHistory` adds each item's history.
+- `get_project` and `project_briefing` add a `closeout` summary (progress,
+  what the contractor owes, what Setty must review or issue, overdue).
+- Read-only. Rules come from `closeout.js`, a byte-identical copy of the
+  repo-root module (`closeoutDrift.test.mjs`); the view is `closeoutView.ts`
+  (`closeoutView.test.mjs`). Punch lists are not here (field report app).
+
 ## Deploying
 
 One-command version: `deploy.ps1` in this folder pulls main, reads the BUILD

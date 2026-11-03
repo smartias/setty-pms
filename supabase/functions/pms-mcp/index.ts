@@ -35,6 +35,7 @@ import {
 import { KB_TEAM, isKbTeam, parseKbExclude, kbExcluded, walkKb, kbSearch } from "./knowledgebase.ts";
 import { runIntakePass, intakeSince } from "./caIntakeRun.ts";
 import { changeSummary, listChanges, readChange, isSettyPrime } from "./constructionChangesView.ts";
+import { closeoutSummary, listCloseout } from "./closeoutView.ts";
 // Raw-bytes path (1.19.0): signed single-file links behind download_document /
 // upload_document and the /file/<token> routes. Pure; see fileLinks.ts.
 import {
@@ -1376,7 +1377,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-03-construction-changes";
+const BUILD = "2026-11-03-closeout";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.23.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -2242,6 +2243,9 @@ function slimProjectForDetail(p: any) {
   {
     const cc = changeSummary(p, new Date().toISOString().slice(0, 10));
     if (cc) out.constructionChanges = cc; else delete out.constructionChanges;
+    // Closeout checklist (prime jobs): summarized the same way.
+    const co = closeoutSummary(p, new Date().toISOString().slice(0, 10));
+    if (co) out.closeout = co; else delete out.closeout;
   }
   if (Array.isArray(p.notes) && p.notes.length) {
     out.notes = { count: p.notes.length, actionItems: p.notes.filter((n: any) => n.actionItem || n.category === "Action Item").length,
@@ -2256,8 +2260,8 @@ function slimProjectForDetail(p: any) {
 mcp.tool("get_project", {
   description:
     "Structured PMS record for one project, looked up by exact project number, id, or name. " +
-    "Milestones, phases, team, and contacts come in full; RFIs, submittals, construction changes, notes, and " +
-    "emails are summarized (counts + status) — use search_rfis_submittals, list_construction_changes, list_milestones, " +
+    "Milestones, phases, team, and contacts come in full; RFIs, submittals, construction changes, closeout, notes, and " +
+    "emails are summarized (counts + status) — use search_rfis_submittals, list_construction_changes, list_closeout_items, list_milestones, " +
     "search_notes, or search_emails to read those in detail. " +
     "NOT A STATUS ANSWER ON ITS OWN. These are the same fields anyone can read off the PMS web app " +
     "in seconds, so reciting them back is not useful. If the question is 'what is going on with " +
@@ -3129,6 +3133,7 @@ mcp.tool("project_briefing", {
     // Construction changes exist only where someone logged them (jobs where
     // Setty is prime). Absent → omitted, never reported as "none".
     const constructionChanges = changeSummary(p, new Date().toISOString().slice(0, 10));
+    const closeout = closeoutSummary(p, new Date().toISOString().slice(0, 10));
 
     const readNext = docs.items.filter((d: any) => d.readable).slice(0, 3)
       .map((d: any) => ({ itemId: d.itemId, name: d.name, why: "Meeting record — read_document this before answering." }));
@@ -3160,6 +3165,13 @@ mcp.tool("project_briefing", {
         "Setty is prime on this project but no construction changes are logged in the PMS. Do not report " +
         "that as a finding; it may simply mean none have been issued.");
     }
+    if (closeout) {
+      guidance.push(
+        "`closeout` is the closeout checklist on this prime job: what the contractor still owes " +
+        "(`owedByContractor`), what Setty must review or issue (`withSetty`, including the completion " +
+        "certificates), what is overdue, and whether the job is ready for final completion. " +
+        "list_closeout_items has every item with its dates and review comments.");
+    }
     if (teamActivity.length) {
       guidance.push(
         "`teamActivity` shows teammates whose Claude sessions touched this project recently. Tell the " +
@@ -3184,6 +3196,7 @@ mcp.tool("project_briefing", {
       ...(related ? { relatedProjects: related } : {}),
       construction,
       ...(constructionChanges ? { constructionChanges } : {}),
+      ...(closeout ? { closeout } : {}),
       meetingRecords: { count: docs.items.length, truncated: docs.truncated, note: docs.note, documents: docs.items },
       // A briefing with no minutes or no emails to draw on is the moment the
       // gap is felt: say where the record should live.
@@ -3275,6 +3288,7 @@ const HOW_TO_USE_TOPICS: Record<string, { title: string; summary: string; prompt
     { ask: "Review submittal 23-05-00-004 on the Vanderbilt project against the drawings and draft a response", note: "Checks the marked selection against the spec and suggests a stamp. The engineer decides." },
     { ask: "Which sheets does RFI 017 refer to, and are they still current?", note: "References are checked against the register." },
     { ask: "On our prime job SAPX256011.00, which change order requests are waiting on us and what's our pending exposure?", note: "Reads the PMS change log (ASIs, PRs, CCDs, CORs, change orders) and the running contract sum." },
+    { ask: "What does the GC still owe us for closeout on SAPX256011.00, and are we ready for final completion?", note: "Reads the PMS closeout checklist (O&Ms, warranties, record drawings, test reports, certificates)." },
   ]},
   qa: { title: "QA reviews", summary: "Internal coordination reviews and external comment logs live in the QA ledger.", prompts: [
     { ask: "Run a QA coordination review on the 100% CD set for SIPX261005.00", note: "Works the firm checklist against the set; findings go to the ledger for sign-off." },
@@ -4033,6 +4047,40 @@ mcp.tool("read_construction_change", {
       return asText({ error: `No construction change "${number}" on ${p.projectNumber || p.name}.`, logged: have });
     }
     return asText({ project: p.projectNumber || p.name || projectNumber, ...c });
+  },
+});
+
+mcp.tool("list_closeout_items", {
+  description:
+    "The CLOSEOUT CHECKLIST for a project where Setty is prime (the PMS is the record): every deliverable the " +
+    "contractor owes at the end of the job (O&M manuals, warranties, record drawings, attic stock / spare parts, " +
+    "training, test & balance, test reports and certificates, inspections / agency sign-offs) plus the completion " +
+    "certificates Setty issues. Returns progress over required items (accepted, outstanding, with the contractor, " +
+    "with Setty or a sub, overdue, ready for final completion) and one row per item with its status, who holds it, " +
+    "due / received / accepted dates, the responsible trade and Setty's review comments. Use for 'what's left to " +
+    "close out', 'what does the GC still owe us', 'are we ready for final completion'. Punch lists are NOT here " +
+    "(they live in the field report app).",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    category: z.string().optional().describe("Only this category (or its start), e.g. 'Warranty', 'O&M Manual', 'Test'."),
+    status: z.string().optional().describe("Only this status (exact, case-insensitive): Not Received, Received, Under Review, Revise and Resubmit, Accepted, Not Required."),
+    openOnly: z.boolean().optional().describe("Only items not yet Accepted / Not Required (default false)."),
+    query: z.string().optional().describe("Keyword over item, category, spec section, discipline, responsible trade, comments and notes."),
+    includeHistory: z.boolean().optional().describe("Include each item's dated status history (default false)."),
+  }),
+  handler: async ({ projectNumber, category, status, openOnly, query, includeHistory }) => {
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching \"${projectNumber}\"` });
+    const p = await getProjectById(pid);
+    if (!p) return asText({ error: `No project matching \"${projectNumber}\"` });
+    const r = listCloseout(p, { category, status, openOnly, query, includeHistory }, new Date().toISOString().slice(0, 10));
+    const none = !((p.closeout?.items ?? []).length);
+    return asText({
+      project: p.projectNumber || p.name || projectNumber, settyIsPrime: isSettyPrime(p), ...r,
+      ...(none ? { note: isSettyPrime(p)
+        ? "The closeout checklist has not been started in the PMS for this project. That is not a finding by itself: the job may not be at closeout yet."
+        : "No closeout checklist. It is kept in the PMS only where Setty is prime." } : {}),
+    });
   },
 });
 
