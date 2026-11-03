@@ -932,7 +932,10 @@ async function openEditor(kind, id){
     const t2=(pr[0].team||team).filter(t=>t&&(t.name||t.role)), s2=pr[0].subs||[];
     EDIT_TEAM=t2; EDIT_SUBS=s2;
     const box=document.getElementById("asgBox");
-    if(box){ const checked=new Set([...box.querySelectorAll(".asg:checked")].map(c=>c.value)); box.innerHTML=asgHtmlFor(t2, checked.size||!team.length?checked:cur); }
+    // If checkboxes were already on screen, what is ticked NOW is the truth,
+    // even when that is nothing (the user may have cleared them); only when no
+    // team list could be drawn yet do we fall back to the record's assignees.
+    if(box){ const checked=new Set([...box.querySelectorAll(".asg:checked")].map(c=>c.value)); box.innerHTML=asgHtmlFor(t2, team.length?checked:cur); }
     const wrap=document.getElementById("subWrap"), curSub=document.getElementById("f_subAssigned");
     if(wrap&&s2.length&&curSub&&curSub.tagName==="INPUT") wrap.innerHTML=subHtmlFor(s2, curSub.value);
   }).catch(()=>{});
