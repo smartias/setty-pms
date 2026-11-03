@@ -133,3 +133,9 @@ test("readme names the form, the folder, the return folder and the sign-in guide
   assert.ok(sub.includes("Submittal Returns") && sub.includes('"Submittal transmittal form.xlsx"'));
   assert.throws(() => buildIntakeReadme("other", names));
 });
+
+test("portalFormSpec.js has no imports, so the connector can run a copy on its own", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("./portalFormSpec.js", import.meta.url), "utf8");
+  assert.ok(!/^\s*import\s/m.test(src));
+});
