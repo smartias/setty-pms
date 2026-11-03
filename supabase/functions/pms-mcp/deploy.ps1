@@ -46,7 +46,7 @@ $build = $Matches[1]
 Write-Host "Deploying BUILD $build"
 
 # 4. deploy - repo root, no --import-map, --no-verify-jwt (the function does its own auth)
-npx supabase functions deploy pms-mcp --project-ref $ProjectRef --no-verify-jwt
+npx supabase functions deploy pms-mcp --project-ref $ProjectRef --no-verify-jwt --yes
 if ($LASTEXITCODE -ne 0) { throw "supabase functions deploy failed (exit $LASTEXITCODE)" }
 
 # 5. prove it is live

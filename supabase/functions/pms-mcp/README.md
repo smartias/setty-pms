@@ -1077,8 +1077,11 @@ git checkout main; git pull origin main
 $env:SUPABASE_ACCESS_TOKEN = "sbp_..."
 npx supabase functions deploy pms-mcp `
   --project-ref khxmgjilwhdguuepbhne `
-  --no-verify-jwt
+  --no-verify-jwt --yes
 ```
+
+`--yes`: newer Supabase CLIs ask to confirm the deploy, and a non-interactive
+run (the GitHub Action) exits 1 having deployed nothing without it.
 
 Notes, each learned the hard way (14 Sep 2026):
 
