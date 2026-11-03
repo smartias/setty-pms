@@ -994,8 +994,8 @@ Import.
   a race fails that project for this run and the next run retries. A PM with
   the project open merges the additions without a prompt (cloud-added array
   items merge silently in the PMS 3-way merge).
-- **One portal per project.** The route may read Procore, Autodesk Forma and
-  Newforma mail, but each project imports from ONE: the CA platform confirmed
+- **One portal per project.** The route may read Procore, Autodesk Forma,
+  Newforma and Kahua mail, but each project imports from ONE: the CA platform confirmed
   in the tracker (`project.caPortal.platform`; Autodesk Build → Forma). A
   project with nothing confirmed stays **Procore only**, and PMWeb / email-only
   projects import nothing unattended. That is the duplicate guard: the same
@@ -1039,7 +1039,7 @@ Import.
 Turning it on, in order:
 
 1. Deploy (Actions → "Deploy pms-mcp" → Run workflow on `main`) and confirm
-   `/health` reports build `2026-11-03-ca-intake-status-updates`.
+   `/health` reports build `2026-11-03-ca-intake-kahua`.
 2. Schedule it, copying the secret from the job that already carries it. It
    is still a dry run:
 
@@ -1057,6 +1057,32 @@ Turning it on, in order:
    `intakeReviewed: false` items (the companion PMS change): Edge Functions →
    Secrets → add `CA_INTAKE_LIVE` = `1`. The next
    run writes; its log line no longer says DRY RUN.
+
+## Construction changes (`list_construction_changes` / `read_construction_change`, 2026-11-03)
+
+On jobs where Setty is prime the PMS is the record for construction-phase
+changes: the "Construction Changes" tab writes `project.constructionChanges`
+(ASIs, proposal requests, CCDs, the contractor's CORs, change orders) and
+`project.constructionContract` (contractor, original sum, contract time).
+
+- `list_construction_changes` returns the running totals (original, approved,
+  revised sum and time, pending, projected) and one row per document with its
+  status, who holds the ball, due date / overdue, amounts and links. Filters:
+  `type`, `status`, `openOnly`, `query`.
+- `read_construction_change` returns one document in full: description,
+  amounts, links both ways (what it answers, what references it, what a CO
+  includes), related RFIs, notes, the SharePoint folder and the dated status
+  history. Loose numbers work ("COR 4", "co-1").
+- `get_project` summarizes `constructionChanges` (counts, totals, what Setty
+  owes, what is overdue) instead of returning the array; `project_briefing`
+  adds the same block and a guidance line when the project has changes.
+- Read-only: the connector never writes changes; a person issues and signs
+  them in the PMS.
+- Rules and totals come from `constructionChanges.js`, a byte-identical copy
+  of the repo-root module the PMS loads (`constructionChangesDrift.test.mjs`
+  fails if they drift: `cp constructionChanges.js supabase/functions/pms-mcp/`).
+  The connector's view is `constructionChangesView.ts`
+  (`constructionChangesView.test.mjs`).
 
 ## Deploying
 
@@ -1077,8 +1103,11 @@ git checkout main; git pull origin main
 $env:SUPABASE_ACCESS_TOKEN = "sbp_..."
 npx supabase functions deploy pms-mcp `
   --project-ref khxmgjilwhdguuepbhne `
-  --no-verify-jwt
+  --no-verify-jwt --yes
 ```
+
+`--yes`: newer Supabase CLIs ask to confirm the deploy, and a non-interactive
+run (the GitHub Action) exits 1 having deployed nothing without it.
 
 Notes, each learned the hard way (14 Sep 2026):
 

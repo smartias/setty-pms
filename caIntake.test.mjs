@@ -120,8 +120,8 @@ test("collapse: Procore RFI new then closed → Closed, received date from Date 
 test("vendor table: both Procore parsers see Procore mail, Forma's does not", () => {
   const emails = [mail("P: Submittal Distributed 262416-1.0, Panelboard", SUB_DISTRIBUTED, { from_address: "GCS-SIGAL@procoretech.com" })];
   const hits = VENDORS.map((v) => vendorPool(v, emails).map(v.parse).filter(Boolean).length);
-  // [Procore RFI, Procore submittal, Forma, Newforma RFI, Newforma submittal]
-  assert.deepEqual(hits, [0, 1, 0, 0, 0]);
+  // [Procore RFI, Procore submittal, Forma, Newforma RFI, Newforma submittal, Kahua RFI, Kahua submittal]
+  assert.deepEqual(hits, [0, 1, 0, 0, 0, 0, 0]);
 });
 
 test("unchanged parsers still work (Forma, Newforma forwards)", () => {
@@ -373,4 +373,54 @@ test("status updates: an undone change is not re-applied from the same event, a 
   assert.equal(planIntake([CLOSED], undone, "p1", { since: "2026-10-20" }).updates.length, 0);
   const LATER = mail("J1, P: RFI Closed, #RFI-91, Condensate", "", { email_date: "2026-11-05T10:00:00Z" });
   assert.equal(planIntake([CLOSED, LATER], undone, "p1", { since: "2026-10-20" }).updates.length, 1);
+});
+
+/* ---------- Kahua (NYC SCA), from real filed mail on Q119 (2025-01..2026-10) ---------- */
+const kmail = (subject, body = "", extra = {}) => mail(subject, body, { from_address: "outbox@kahua.com", from_name: "Sahdia Khwaja (via Kahua)", ...extra });
+const K_RESP_BODY = "Sara,\n\n\nAction required for RFI CI00033 on C000016114-MC0034 - Q119 (IS119Q) - Reso A Computer Lab Upgrade.\n\nSubject:\n\"Q119 (RFI#33) Data Points\"\n\nQuestion:\n\"As per contract drawing E201.00, there is (1) data point shown at each floor box.\nPlease review and advise.\n\n\"\n\nAdditional Information:\n\"\"\n\nReturn for clarification Reason:\n\"\"\n\nPlease see full information in the CAMP.\n";
+const K_SUB_BODY = "Melissa,\n\n\nSubmittal 16730-003 was returned with response Revise Resubmit.\nPlease review and add a new review cycle to for this submittal.\n\nProject Number: C000016114-MC0034\nProject: Q119 (IS119Q) - Reso A Computer Lab Upgrade\nSubmittal Number: 16730-003\nSubmittal: Q119-16730-003-001-Data Cabling Product Data R1\n\nSubmittal Link: Open In Kahua \n";
+
+test("Kahua RFIs: RFI# and CI number are one key; events never close an RFI", async () => {
+  const { parseKahuaRfi } = await import("./caIntake.js");
+  const n = parseKahuaRfi(kmail("CI00034 Q119 (RFI#34) Exposed Rough Carpentry", "This Message was sent to multiple recipients", { from_name: "Richard Chen (via Kahua)" }));
+  assert.deepEqual([n.extNum, n.kahuaId, n.event, n.title, n.askedBy], ["34", "CI00034", "New RFI", "Exposed Rough Carpentry", "Richard Chen"]);
+  const early = parseKahuaRfi(kmail("RFI  - Q119 (RFI#3) Casement Millwork - Additional Clarification on C000016114-MC0034 - Q119 (IS119Q) - Reso A Computer Lab Upgrade"));
+  assert.deepEqual([early.extNum, early.kahuaId, early.title], ["3", "", "Casement Millwork - Additional Clarification"]);
+  const r = parseKahuaRfi(kmail("RFI CI00033 - Q119 (RFI#33) Data Points response received on C000016114-MC0034 - Q119 (IS119Q) - Reso A Computer Lab Upgrade", K_RESP_BODY));
+  assert.deepEqual([r.extNum, r.event, r.title], ["33", "Response Received", "Data Points"]);
+  assert.match(r.question, /^As per contract drawing E201\.00/);
+  const back = parseKahuaRfi(kmail("RFI CI00020 for  Q119 C000016114-MC0034 D021838 has been returned", "Return Reason: please attached latest response"));
+  assert.deepEqual([back.extNum, back.event], ["20", "Returned to Us"]);
+  for (const s of ["Kahua Weekly Summary", "Meeting Minutes for C000016114-MC0034 - Q119 (IS119Q) - Reso A Computer Lab Upgrade, Job Progress : 00002",
+    "CAMP Submittal: 16730-003 Returned in Project C000016114-MC0034", "RE: CI00034 Q119 (RFI#34) Exposed Rough Carpentry"])
+    assert.equal(parseKahuaRfi(kmail(s)), null, s);
+});
+
+test("Kahua submittals: returned with stamp and revision; reviewer task = received", async () => {
+  const { parseKahuaSub } = await import("./caIntake.js");
+  const s = parseKahuaSub(kmail("CAMP Submittal: 16730-003 Returned in Project C000016114-MC0034", K_SUB_BODY, { from_name: "Enoch Bethi (via Kahua)" }));
+  assert.deepEqual([s.extNum, s.rev, s.status, s.stamp, s.title, s.specSection], ["16730-003", 1, "Returned", "Revise and Resubmit", "Data Cabling Product Data R1", "16730"]);
+  const t = parseKahuaSub(kmail("03542-001 Official Reviewer Task on Q119 (IS119Q) - Reso A Computer Lab Upgrade", "You have a Task: 03542-001 Official Reviewer Task"));
+  assert.deepEqual([t.extNum, t.rev, t.status, t.stamp], ["03542-001", 0, "Received", ""]);
+  assert.equal(parseKahuaSub(kmail("Kahua Weekly Summary")), null);
+  assert.equal(parseKahuaSub(kmail("CI00034 Q119 (RFI#34) Exposed Rough Carpentry")), null);
+});
+
+test("Kahua against the Q119 log: matched by number, returned submittal moves forward, RFI follow-ups never close", async () => {
+  const { planIntake, platformOfEmail, intakeVendorsFor } = await import("./caIntake.js");
+  assert.equal(platformOfEmail({ from_address: "outbox@kahua.com" }), "Kahua");
+  assert.deepEqual(intakeVendorsFor({ caPortal: { platform: "Kahua" } }), ["Kahua"]);
+  const proj = { caPortal: { platform: "Kahua" },
+    rfis: [{ id: "a", number: "RFI-034", title: "CI00034 Q119 (RFI#34) Exposed Rough Carpentry", status: "Open" }, { id: "b", number: "020", title: "Carpentry Millwork", status: "Closed" }],
+    submittals: [{ id: "s", number: "16730-003-1", status: "Under Review", stamp: "—" }] };
+  const emails = [
+    kmail("CI00034 Q119 (RFI#34) Exposed Rough Carpentry", "", { email_date: "2026-10-28T10:00:00Z" }),
+    kmail("RFI CI00020 for  Q119 C000016114-MC0034 D021838 has been returned", "", { email_date: "2026-10-29T10:00:00Z" }),
+    kmail("RFI CI00035 - Q119 (RFI#35) Ceiling Grid response received on C000016114-MC0034 - Q119", K_RESP_BODY, { email_date: "2026-10-30T10:00:00Z" }),
+    kmail("CAMP Submittal: 16730-003 Returned in Project C000016114-MC0034", K_SUB_BODY, { email_date: "2026-10-30T10:00:00Z" }),
+  ];
+  const plan = planIntake(emails, proj, "p1", { vendors: ["Procore", "Autodesk Forma", "Newforma", "Kahua"], since: "2026-10-20", at: "T" });
+  assert.deepEqual(plan.rfis.map((r) => [r.number, r.title, r.intake.vendor]), [["RFI-035", "Ceiling Grid", "Kahua"]], "only the new RFI is created");
+  assert.deepEqual(plan.updates.map((u) => [u.number, u.from, u.to, u.patch.stamp]), [["16730-003-1", "Under Review", "Returned", "Revise and Resubmit"]]);
+  assert.equal(planIntake(emails, { ...proj, caPortal: null }, "p1", { vendors: ["Procore", "Autodesk Forma", "Newforma", "Kahua"], since: "2026-10-20" }).rfis.length, 0, "unconfirmed: Procore only");
 });

@@ -34,6 +34,7 @@ import {
 // The firm Knowledgebase share (team KB): firm-wide read-only, no project gate. Pure; see knowledgebase.ts.
 import { KB_TEAM, isKbTeam, parseKbExclude, kbExcluded, walkKb, kbSearch } from "./knowledgebase.ts";
 import { runIntakePass, intakeSince } from "./caIntakeRun.ts";
+import { changeSummary, listChanges, readChange, isSettyPrime } from "./constructionChangesView.ts";
 // Raw-bytes path (1.19.0): signed single-file links behind download_document /
 // upload_document and the /file/<token> routes. Pure; see fileLinks.ts.
 import {
@@ -1375,7 +1376,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-03-ca-intake-status-updates";
+const BUILD = "2026-11-03-construction-changes";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.23.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -2236,6 +2237,12 @@ function slimProjectForDetail(p: any) {
     out.submittals = { count: p.submittals.length, open: p.submittals.filter((s: any) => SUBMITTAL_OPEN.has(s.status)).length,
       byStatus: rfiSubStatusCounts(p.submittals), note: "Summarized — use search_rfis_submittals / read_rfi_submittal for detail." };
   }
+  // Construction changes (ASI / PR / CCD / COR / CO, prime jobs): summarized
+  // like RFIs; list_construction_changes / read_construction_change for detail.
+  {
+    const cc = changeSummary(p, new Date().toISOString().slice(0, 10));
+    if (cc) out.constructionChanges = cc; else delete out.constructionChanges;
+  }
   if (Array.isArray(p.notes) && p.notes.length) {
     out.notes = { count: p.notes.length, actionItems: p.notes.filter((n: any) => n.actionItem || n.category === "Action Item").length,
       note: "Summarized — use search_notes / read_note for content, list_action_items for action items." };
@@ -2249,8 +2256,8 @@ function slimProjectForDetail(p: any) {
 mcp.tool("get_project", {
   description:
     "Structured PMS record for one project, looked up by exact project number, id, or name. " +
-    "Milestones, phases, team, and contacts come in full; RFIs, submittals, notes, and " +
-    "emails are summarized (counts + status) — use search_rfis_submittals, list_milestones, " +
+    "Milestones, phases, team, and contacts come in full; RFIs, submittals, construction changes, notes, and " +
+    "emails are summarized (counts + status) — use search_rfis_submittals, list_construction_changes, list_milestones, " +
     "search_notes, or search_emails to read those in detail. " +
     "NOT A STATUS ANSWER ON ITS OWN. These are the same fields anyone can read off the PMS web app " +
     "in seconds, so reciting them back is not useful. If the question is 'what is going on with " +
@@ -3119,6 +3126,9 @@ mcp.tool("project_briefing", {
         note: "Use search_rfis_submittals / read_rfi_submittal for detail.",
       }
       : null;
+    // Construction changes exist only where someone logged them (jobs where
+    // Setty is prime). Absent → omitted, never reported as "none".
+    const constructionChanges = changeSummary(p, new Date().toISOString().slice(0, 10));
 
     const readNext = docs.items.filter((d: any) => d.readable).slice(0, 3)
       .map((d: any) => ({ itemId: d.itemId, name: d.name, why: "Meeting record — read_document this before answering." }));
@@ -3139,6 +3149,17 @@ mcp.tool("project_briefing", {
         : `This project is not in Construction Administration (status: ${p.status || "unknown"}). RFIs and ` +
           "submittals do not exist yet, so they are omitted here. Do not report their absence as a finding.",
     ];
+    if (constructionChanges) {
+      guidance.push(
+        "`constructionChanges` is Setty's own change log on this prime job (ASIs, proposal requests, CCDs, " +
+        "the contractor's CORs, change orders) with the running contract sum. Report what Setty owes " +
+        "(`withSetty`), what is overdue and with whom, and the pending exposure; list_construction_changes " +
+        "and read_construction_change have the detail.");
+    } else if (isSettyPrime(p) && construction) {
+      guidance.push(
+        "Setty is prime on this project but no construction changes are logged in the PMS. Do not report " +
+        "that as a finding; it may simply mean none have been issued.");
+    }
     if (teamActivity.length) {
       guidance.push(
         "`teamActivity` shows teammates whose Claude sessions touched this project recently. Tell the " +
@@ -3162,6 +3183,7 @@ mcp.tool("project_briefing", {
       clientContact: p.clientContact ?? null,
       ...(related ? { relatedProjects: related } : {}),
       construction,
+      ...(constructionChanges ? { constructionChanges } : {}),
       meetingRecords: { count: docs.items.length, truncated: docs.truncated, note: docs.note, documents: docs.items },
       // A briefing with no minutes or no emails to draw on is the moment the
       // gap is felt: say where the record should live.
@@ -3252,6 +3274,7 @@ const HOW_TO_USE_TOPICS: Record<string, { title: string; summary: string; prompt
     { ask: "List the open RFIs on SAPX256011.00 and who is waiting on us", note: "Filter by status, discipline or keyword." },
     { ask: "Review submittal 23-05-00-004 on the Vanderbilt project against the drawings and draft a response", note: "Checks the marked selection against the spec and suggests a stamp. The engineer decides." },
     { ask: "Which sheets does RFI 017 refer to, and are they still current?", note: "References are checked against the register." },
+    { ask: "On our prime job SAPX256011.00, which change order requests are waiting on us and what's our pending exposure?", note: "Reads the PMS change log (ASIs, PRs, CCDs, CORs, change orders) and the running contract sum." },
   ]},
   qa: { title: "QA reviews", summary: "Internal coordination reviews and external comment logs live in the QA ledger.", prompts: [
     { ask: "Run a QA coordination review on the 100% CD set for SIPX261005.00", note: "Works the firm checklist against the set; findings go to the ledger for sign-off." },
@@ -3943,6 +3966,73 @@ mcp.tool("read_rfi_submittal", {
         } catch (e) { return { driveNote: `Drive CA folders not read: ${String((e as any)?.message ?? e)}` }; }
       })()),
     });
+  },
+});
+
+// ─── CONSTRUCTION CHANGES (prime jobs) ───────────────────────────────────────
+// project.constructionChanges, written by the PMS "Construction Changes" tab on
+// jobs where Setty is prime: ASIs, proposal requests (PR), construction change
+// directives (CCD), the contractor's change order requests (COR) and change
+// orders (CO). Read-only here: a person issues and signs these in the PMS.
+// Rules and totals: constructionChanges.js (copy of the repo-root module).
+const CHANGE_TYPES = ["ASI", "PR", "CCD", "COR", "CO"] as const;
+mcp.tool("list_construction_changes", {
+  description:
+    "Construction-phase CHANGE log for a project where Setty is prime (the PMS is the record): " +
+    "ASIs (supplemental instructions, no cost), PRs (proposal requests asking the contractor to price a change), " +
+    "CCDs (construction change directives), CORs (the CONTRACTOR's change order requests, with their requested " +
+    "price/days and Setty's recommendation) and COs (owner-signed change orders that bundle CORs/CCDs). " +
+    "Returns the running contract totals (original, approved changes, revised sum and time, pending exposure, " +
+    "projected) and one row per document with status, who holds the ball, due date/overdue, amounts and links. " +
+    "Use for 'what changes are open', 'what's our exposure', 'which CORs are waiting on us', 'what's in CO-002'. " +
+    "This is NOT Setty's own fee: the PMS 'Change Orders' tab (additional services with the client) is a " +
+    "different thing. Read one document in full with read_construction_change.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    type: z.enum(CHANGE_TYPES).optional().describe("Only this document type."),
+    status: z.string().optional().describe("Only this status (exact, case-insensitive), e.g. 'Recommended', 'Executed', 'Under Review'."),
+    openOnly: z.boolean().optional().describe("Only documents still in play (default false)."),
+    query: z.string().optional().describe("Keyword over number, title, contractor ref, discipline, sheets, description and notes."),
+  }),
+  handler: async ({ projectNumber, type, status, openOnly, query }) => {
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching \"${projectNumber}\"` });
+    const p = await getProjectById(pid);
+    if (!p) return asText({ error: `No project matching \"${projectNumber}\"` });
+    const today = new Date().toISOString().slice(0, 10);
+    const r = listChanges(p, { type, status, openOnly, query }, today);
+    const none = !(p.constructionChanges ?? []).length;
+    return asText({
+      project: p.projectNumber || p.name || projectNumber, settyIsPrime: isSettyPrime(p), ...r,
+      ...(none ? { note: isSettyPrime(p)
+        ? "No construction changes are logged in the PMS for this project. That is not a finding by itself: none may have been issued."
+        : "No construction changes are logged. The change log is kept in the PMS only where Setty is prime; on a sub job the GC's or prime's portal holds them." } : {}),
+    });
+  },
+});
+
+mcp.tool("read_construction_change", {
+  description:
+    "One construction change document in full (ASI, PR, CCD, COR or CO) on a project where Setty is prime: " +
+    "description, affected sheets/specs, amounts and days (COR: contractor's request and Setty's recommendation; " +
+    "CO: the change in contract sum and time and the CORs/CCDs it includes), the documents it answers and the " +
+    "ones that reference it, related RFIs, internal notes, the SharePoint documents folder, and the dated status " +
+    "history (who moved it, from what, when). Accepts loose numbers: 'COR 4', 'cor-004', 'CO-1'.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    number: z.string().describe("The document number, e.g. 'COR-004', 'PR-002', 'CO-001'."),
+  }),
+  handler: async ({ projectNumber, number }) => {
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching \"${projectNumber}\"` });
+    const p = await getProjectById(pid);
+    if (!p) return asText({ error: `No project matching \"${projectNumber}\"` });
+    const c = readChange(p, number, new Date().toISOString().slice(0, 10));
+    if (!c) {
+      const have = (p.constructionChanges ?? []).map((x: any) => x?.number).filter(Boolean).slice(0, 40);
+      return asText({ error: `No construction change "${number}" on ${p.projectNumber || p.name}.`, logged: have });
+    }
+    return asText({ project: p.projectNumber || p.name || projectNumber, ...c });
   },
 });
 
@@ -12289,11 +12379,11 @@ app.post("/pms-mcp/admin/unrostered-alert", async (c) => {
 // to ONE portal (caIntake.intakeVendorsFor), and an unconfirmed project stays
 // Procore-only, so turning Forma/Newforma on changes nothing for a job until
 // someone confirms its platform in the tracker.
-const CA_INTAKE_VENDORS = ["Procore", "Autodesk Forma", "Newforma"];
+const CA_INTAKE_VENDORS = ["Procore", "Autodesk Forma", "Newforma", "Kahua"];
 // Same portal filter as the tracker (sender for Procore/Forma; subject for
 // Newforma, whose notifications arrive from whoever forwarded them).
 const CA_INTAKE_EMAIL_FILTER = "or=(" + [
-  "from_address.ilike.*procoretech*", "from_address.ilike.*forma.autodesk*",
+  "from_address.ilike.*procoretech*", "from_address.ilike.*forma.autodesk*", "from_address.ilike.*kahua*",
   "subject.ilike.*RFI Forwarded*", "subject.ilike.*Submittal Forwarded*", "subject.ilike.*Responded to and Closed*",
 ].map(encodeURIComponent).join(",") + ")";
 const CA_INTAKE_BUDGET_MS = 40_000;

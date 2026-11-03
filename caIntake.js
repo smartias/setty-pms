@@ -218,6 +218,60 @@ export function parseNewformaFwdSub(email) {
   };
 }
 
+/* ---------- Kahua (NYC SCA's CAMP) ---------- */
+// All from outbox@kahua.com, the person in the display name ("X (via Kahua)").
+// Subjects seen in the filed log (Q119, 2025-01..2026-10):
+//   "CI00034 Q119 (RFI#34) Exposed Rough Carpentry"                        a new RFI
+//   "RFI  - Q119 (RFI#3) Casement Millwork - Additional Clarification on C000016114-MC0034 - …"   new, no CI number yet
+//   "RFI CI00033 - Q119 (RFI#33) Data Points response received on C000016114-MC0034 - …"   body has the question
+//   "RFI CI00020 for Q119 C000016114-MC0034 D021838 has been returned"      sent back to us: never a close
+//   "CAMP Submittal: 16730-003 Returned in Project C000016114-MC0034"       body: "returned with response Revise Resubmit"
+//   "03542-001 Official Reviewer Task on Q119 (IS119Q) - …"                 a submittal assigned to us
+// "RFI#34" and "CI00034" are the same item; the log numbers it RFI-034.
+const KAHUA_SKIP = /Weekly Summary|Meeting Minutes|^\s*(RE|FW|Fwd)\s*:/i;
+const viaKahua = (email) => (email.from_name || "").replace(/\s*\(via Kahua\)\s*$/i, "").trim();
+// "Revise Resubmit" / "Approved As Noted" → the log's stamp vocabulary.
+function normalizeStamp(s) {
+  const k = (x) => String(x || "").toLowerCase().replace(/[^a-z ]/g, " ").replace(/\band\b/g, " ").replace(/\s+/g, " ").trim();
+  const t = k(s); return t ? (SUB_STAMPS.find((x) => k(x) === t) || "") : "";
+}
+export function parseKahuaRfi(email) {
+  const subj = (email.subject || "").replace(/\s+/g, " ").trim(), body = bodyOf(email);
+  if (KAHUA_SKIP.test(subj) || /Submittal|Reviewer Task/i.test(subj)) return null;
+  const rn = subj.match(/\(RFI\s*#\s*([\w.-]+)\)/i), cn = subj.match(/\bCI0*(\d+)\b/i);
+  if (!rn && !cn) return null;
+  if (!rn && !/^RFI\b/i.test(subj)) return null;
+  const key = rn ? rfiKey(rn[1]) : String(+cn[1]);
+  const event = /has been returned/i.test(subj) ? "Returned to Us" : /response received/i.test(subj) ? "Response Received" : "New RFI";
+  const tm = subj.match(/\(RFI\s*#\s*[\w.-]+\)\s*(.*?)(?:\s+response received on\b.*|\s+on\s+C\d{6,}.*|\s+has been returned.*)?$/i);
+  const unq = (x) => String(x || "").trim().replace(/^"+|"+$/g, "").trim();
+  return {
+    ...base(email), extNum: key, kahuaId: cn ? "CI" + cn[1].padStart(5, "0") : "", event,
+    title: tm ? tm[1].trim() : "", dueDate: "", askedBy: viaKahua(email),
+    question: unq(between(body, "Question:", ["Additional Information", "Return for clarification", "Please see full information"])),
+    dateInit: dayOf(email.email_date),
+  };
+}
+export function parseKahuaSub(email) {
+  const subj = (email.subject || "").replace(/\s+/g, " ").trim(), body = bodyOf(email);
+  if (KAHUA_SKIP.test(subj)) return null;
+  let m = subj.match(/^CAMP Submittal:\s*(\d{5,6})-(\d{3})\s+(\w+)/i), event = "";
+  if (m) event = m[3].toLowerCase();
+  else { m = subj.match(/^(\d{5,6})-(\d{3})\s+Official Reviewer Task\b/i); if (m) event = "assigned"; }
+  if (!m) return null;
+  const extNum = `${m[1]}-${m[2]}`;
+  const full = lineLabel(body, "Submittal");                       // "Q119-16730-003-001-Data Cabling Product Data R1"
+  const title = full.replace(/^[A-Z]\d{3}-\d{5,6}-\d{3}-\d{3}-/i, "").trim();
+  const rv = title.match(/\bR(\d+)\s*$/i);
+  const resp = (body.match(/returned with response\s+(.+?)\s*\.\s*(?:\n|$)/i) || [])[1] || "";
+  const returned = event === "returned";
+  return {
+    ...base(email), extNum, rev: rv ? +rv[1] : 0, isRev: false, title, event,
+    status: returned ? "Returned" : "Received", stamp: returned ? normalizeStamp(resp) : "", response: resp,
+    specSection: m[1], dueDate: "", ballInCourt: viaKahua(email), dateReceived: returned ? "" : dayOf(email.email_date),
+  };
+}
+
 /* ---------- vendors ---------- */
 // The parser is the real gate (each returns null unless the subject has its
 // vendor's shape); `match` is the sender/subject fast path. Newforma
@@ -229,6 +283,8 @@ export const VENDORS = [
   { match: /forma/i,       vendor: "Autodesk Forma", kind: "submittal", arrKey: "submittals", parse: parseForma },
   { match: /./,            vendor: "Newforma",       kind: "rfi",       arrKey: "rfis",       parse: parseNewformaFwdRfi },
   { match: /./,            vendor: "Newforma",       kind: "submittal", arrKey: "submittals", parse: parseNewformaFwdSub },
+  { match: /kahua/i,       vendor: "Kahua",          kind: "rfi",       arrKey: "rfis",       parse: parseKahuaRfi },
+  { match: /kahua/i,       vendor: "Kahua",          kind: "submittal", arrKey: "submittals", parse: parseKahuaSub },
 ];
 export const vendorPool = (v, emails) =>
   v.match.source === "." ? emails : emails.filter((e) => v.match.test(e.from_address || "") || v.match.test(e.subject || ""));
@@ -425,7 +481,7 @@ export function statusUpdateFor(it, kind, logged, opts = {}) {
 // nothing confirmed, Procore only (its numbering is the contractor's own and
 // it was the first portal proven against the log). PMWeb and email-only jobs
 // import nothing unattended.
-export const PLATFORM_VENDORS = { "Procore": ["Procore"], "Autodesk Build": ["Autodesk Forma"], "Newforma": ["Newforma"], "PMWeb": [], "Email only": [] };
+export const PLATFORM_VENDORS = { "Procore": ["Procore"], "Autodesk Build": ["Autodesk Forma"], "Newforma": ["Newforma"], "Kahua": ["Kahua"], "PMWeb": [], "Email only": [] };
 export function intakeVendorsFor(project) {
   const p = project && project.caPortal && project.caPortal.platform;
   return p && PLATFORM_VENDORS[p] ? PLATFORM_VENDORS[p] : ["Procore"];
@@ -482,12 +538,13 @@ export function applyStatusUpdates(project, updates) {
 /* ---------- which CA platform a project runs on ---------- */
 // Read from the filed notification emails, for the tracker's platform badge.
 // A guess until someone confirms it on the project (project.caPortal).
-export const CA_PLATFORMS = ["Procore", "Autodesk Build", "Newforma", "PMWeb", "Email only"];
+export const CA_PLATFORMS = ["Procore", "Autodesk Build", "Newforma", "Kahua", "PMWeb", "Email only"];
 export function platformOfEmail(e) {
   const from = (e && e.from_address) || "", subj = (e && e.subject) || "";
   if (/procoretech/i.test(from)) return "Procore";
   if (/forma\.autodesk|autodesk\.com|acc\.autodesk|bim360/i.test(from)) return "Autodesk Build";
   if (/newforma/i.test(from) || /\b(RFI|Submittal)\s*Forwarded\s*:/i.test(subj) || /Responded to and Closed:/i.test(subj)) return "Newforma";
+  if (/kahua\.com/i.test(from)) return "Kahua";
   if (/pmweb/i.test(from) || /\bPMWeb\b/i.test(subj)) return "PMWeb";
   return "";
 }
