@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v172-kahua";
+    window.__appVersion = "2026-11-03-pms-v173-kahua";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -5757,12 +5757,27 @@ names.deliverables + ' — project deliverables (drawings, reports,\r\n' +
 '   spam if you do not see it. Enter the code on the sign-in page.\r\n' +
 '   No password is needed and no new account is created — the code\r\n' +
 '   only confirms you own the email address.\r\n' +
+'   If Microsoft asks for a password instead of offering a code, that\r\n' +
+'   address is already registered as a personal Microsoft account -\r\n' +
+'   sign in with that Microsoft password.\r\n' +
 '\r\n' +
 '2. Microsoft work account (your company uses Microsoft 365):\r\n' +
 '   Sign in with your normal work email and password.\r\n' +
 '\r\n' +
 '3. Personal Microsoft account (Outlook.com, Hotmail, Live, MSN):\r\n' +
 '   Sign in with your personal Microsoft password.\r\n' +
+'\r\n' +
+'IF MICROSOFT SAYS YOUR ACCOUNT "DOES NOT EXIST IN TENANT"\r\n' +
+'\r\n' +
+'Two things fix this almost every time:\r\n' +
+'1. Sign in with the EXACT email address the invitation was sent to.\r\n' +
+'   Access is tied to that address; a different one (for example a\r\n' +
+'   personal Gmail when the invite went to your work email) is refused.\r\n' +
+'2. The first time, get here through the link in Microsoft\'s\r\n' +
+'   invitation email, not a bookmark or a pasted folder address. That\r\n' +
+'   first click is what registers you. Use a private browser window if\r\n' +
+'   you are already signed in to another Microsoft account.\r\n' +
+'After that first successful sign-in, bookmarks and shared links work.\r\n' +
 '\r\n' +
 'NEED A COLLEAGUE ADDED?\r\n' +
 '\r\n' +
@@ -29809,11 +29824,19 @@ function buildSharePointInvitationMessage({ folderLabel, role, projLabel }) {
   const purpose = role === "write"
     ? "Use it to upload files for the SETTY team."
     : "Deliverables are posted here for download.";
+  // Two rules the client must follow on the first visit, learned the hard way
+  // (CHCR Grove, 11/2026): sign in as the EXACT address the invite went to,
+  // and get there through the link in this email, not a bookmarked folder URL.
+  // Either slip produces Microsoft's "account does not exist in tenant" page
+  // (AADSTS90072 / 50020), because the guest record is only created when the
+  // invitation link is redeemed by the invited address. "Send code" is also
+  // not universal: a Gmail address already registered as a personal Microsoft
+  // account gets a password prompt instead, so both paths are named.
   return (
-    'You have been granted ' + access + ' to the ' + folderLabel +
+    'You now have ' + access + ' to the ' + folderLabel +
     ' folder for SETTY project ' + projLabel + '. ' + purpose + '\n\n' +
-    'No Microsoft account? On the sign-in page choose Send code and enter the passcode Microsoft emails you - no password or new account needed.\n\n' +
-    'Questions? Just reply to this email.'
+    'Sign in through the link in THIS email, as this same address. Offered Send code? Use the emailed passcode. Asked for a password? Use your Microsoft password.\n\n' +
+    'Reply with any questions.'
   );
 }
 
@@ -30048,7 +30071,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
           setActionMsg("⏳ Microsoft is still setting up " + contact.email + ". Retrying (" + n + " of " + of + ")…"));
       }
       setActionStatus("done");
-      setActionMsg("✓ Added " + contact.email);
+      setActionMsg("✓ Added " + contact.email + ". They must open the link in Microsoft's invitation email and sign in as that exact address; a bookmarked folder link will not work until that first sign-in.");
       setQuery("");
       setSelected(null);
       await loadPerms();
@@ -30115,7 +30138,8 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
         `<p>You have access to the SharePoint ${folderWord} for SETTY project <strong>${projLabel}</strong>:</p>` +
         `<ul>${folderList}</ul>` +
         `<p><strong>How to access the ${folderWord} (first time only):</strong></p>` +
-        `<p>Click a folder link above. Microsoft will then ask you to verify your identity. The steps depend on what kind of email address ${allTheirPerms.length > 1 ? "these folders were shared to" : "this folder was shared to"} — find your situation below:</p>` +
+        `<p><strong>Two rules for the first visit.</strong> Sign in as <strong>${perm.email}</strong> exactly - access is tied to that address, so a different one (for example a personal Gmail) will be refused. And the very first time, open the link in Microsoft's own "shared with you" invitation email rather than the links above; that first click is what registers you. After one successful sign-in, the links above and bookmarks work normally.</p>` +
+        `<p>Microsoft will ask you to verify your identity. The steps depend on what kind of email address ${allTheirPerms.length > 1 ? "these folders were shared to" : "this folder was shared to"} — find your situation below:</p>` +
 
         `<p style="margin-top:14px;"><strong>1. If your email is Gmail, Yahoo, AOL, or any non-Microsoft address</strong></p>` +
         `<ul style="margin-top:4px;">` +
@@ -30124,6 +30148,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
           `<li>Microsoft will email a 6-digit code to your inbox within ~30 seconds. Check spam if you don't see it.</li>` +
           `<li>Paste the code back into the sign-in page. You're in.</li>` +
           `<li><em>No password is needed and no new account is being created.</em> The code just confirms you own the email address.</li>` +
+          `<li>If Microsoft asks for a <strong>password</strong> instead of offering a code, that address is already registered as a personal Microsoft account - sign in with that Microsoft password.</li>` +
         `</ul>` +
 
         `<p style="margin-top:14px;"><strong>2. If your email is a Microsoft <em>work</em> account</strong> (your company uses Microsoft 365 / Outlook for work)</p>` +
@@ -30136,6 +30161,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
           `<li>Sign in with your personal Microsoft password.</li>` +
         `</ul>` +
 
+        `<p style="margin-top:14px;"><strong>If Microsoft says your account "does not exist in tenant":</strong> you signed in with a different address than the one invited, or skipped the invitation link. Open a private browser window, find Microsoft's invitation email, click its link, and sign in as ${perm.email}.</p>` +
         `<p style="margin-top:14px;"><strong>After you're in:</strong> bookmark the folder URL above. You won't need this email or the original SharePoint invitation again.</p>` +
         `<p>Let me know if you have any trouble accessing the ${folderWord}.</p>`;
 
@@ -30298,6 +30324,10 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
               border: `1px solid ${P.border}`, borderRadius: 5, lineHeight: 1.45 }}>
               Everyone added gets: <strong>{portalFolderNames(project).uploads}</strong> — can upload files ·{" "}
               <strong>{portalFolderNames(project).deliverables}</strong> — view &amp; download only
+              <div style={{ marginTop: 4 }}>
+                Client sees "account does not exist in tenant"? They signed in with a different address than
+                the one listed here, or skipped Microsoft's invitation link. The 📧 button emails them the steps.
+              </div>
             </div>
 
             {/* Contact search */}
@@ -30376,7 +30406,9 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
                   <div style={{ fontSize: 12, fontWeight: 600, color: P.text }}>{selected.name}</div>
                   <div style={{ fontSize: 11, color: P.textDim }}>{selected.email}</div>
                   <div style={{ fontSize: 10, color: P.textDim, marginTop: 3 }}>
-                    Gets upload access plus view access to deliverables. Microsoft emails them an invitation.
+                    Gets upload access plus view access to deliverables. Microsoft emails an invitation to{" "}
+                    <strong>{selected.email}</strong>, and they must sign in as exactly that address. A different
+                    one (for example a personal Gmail) is refused with "account does not exist in tenant".
                   </div>
                 </div>
                 <button onClick={() => setSelected(null)} disabled={actionStatus === "working"}
