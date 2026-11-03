@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v175-closeout";
+    window.__appVersion = "2026-11-03-pms-v176-closeout";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -21193,7 +21193,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               </Field>
             ) : (
               <Field label="Project Folder (SharePoint)" style={{ gridColumn: "1 / -1" }}>
-                <SharePointFolderField project={project} onUpdate={updateField} onEagerSave={onEagerSave} clients={clients} projects={projects} />
+                <SharePointFolderField project={project} onUpdate={updateField} onEagerSave={onEagerSave} clients={clients} projects={projects} onUpdateClient={onUpdateClient} />
               </Field>
             )}
 
@@ -30736,7 +30736,7 @@ function TermContractFolderField({ termContract, onUpdate }) {
   );
 }
 
-function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projects }) {
+function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projects, onUpdateClient }) {
   const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
   const [msg, setMsg] = React.useState("");
   const [scStatus, setScStatus] = React.useState("idle"); // shortcut install state
@@ -31015,6 +31015,7 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projec
         <PortalSharingModal
           project={project}
           clients={clients}
+          onUpdateClient={onUpdateClient}
           driveId={SP_NYSHARE_DRIVE_ID}
           onClose={() => setShowSharingModal(false)}
         />
@@ -31117,13 +31118,34 @@ function portalShareErrorMessage(err) {
 }
 
 
+// Personal (consumer) mailbox domains. A share to one of these works, but it
+// is where the sign-in failures live: a Gmail or Yahoo address that is also a
+// personal Microsoft account gets a password prompt instead of "Send code",
+// and people mix a personal address with the work one they were invited as.
+// The modal only warns and suggests the work address; it never blocks.
+const CONSUMER_EMAIL_DOMAINS = new Set([
+  "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "aol.com",
+  "hotmail.com", "outlook.com", "live.com", "msn.com",
+  "icloud.com", "me.com", "mac.com", "proton.me", "protonmail.com",
+  "comcast.net", "verizon.net", "att.net", "optonline.net",
+]);
+function isConsumerEmailDomain(email) {
+  const at = String(email || "").lastIndexOf("@");
+  if (at < 0) return false;
+  return CONSUMER_EMAIL_DOMAINS.has(String(email).slice(at + 1).trim().toLowerCase());
+}
+
 // Portal Sharing Modal
 // Shows current external (non-@setty.com) permissions on Client Uploads +
 // Setty Deliverables, and lets the user add/remove contacts from the clients
 // directory. Sharing uses POST /drives/{id}/items/{id}/invite — see
 // shareDriveItemWithUser above for why /invite over /createLink.
-function PortalSharingModal({ project, clients, driveId, onClose }) {
+function PortalSharingModal({ project, clients, driveId, onClose, onUpdateClient }) {
   const [perms, setPerms]               = React.useState(null);
+  // "+ Add contact" inside the modal. Until 11/2026 only directory contacts
+  // could be invited, so a client whose address was not on file meant
+  // leaving the modal, finding the directory, and coming back.
+  const [showAddContact, setShowAddContact] = React.useState(false);
   const [loading, setLoading]           = React.useState(true);
   const [loadError, setLoadError]       = React.useState("");
   const [query, setQuery]               = React.useState("");
@@ -31142,6 +31164,13 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       confirmRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   }, [selected]);
+
+  // The directory company a new contact would be saved under (AddContactModal
+  // only persists when it can find the company by name).
+  const clientCompany = React.useMemo(() => {
+    const cn = (project.clientName || "").trim().toLowerCase();
+    return cn ? (clients || []).find(c => (c.name || "").trim().toLowerCase() === cn) || null : null;
+  }, [clients, project.clientName]);
 
   // Flatten all contacts with emails from the clients directory.
   // Contacts from the project's own client company come first.
@@ -31306,6 +31335,38 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
     }
   }
 
+  // Re-send Microsoft's invitation email. Granting a permission the person
+  // already holds is a no-op server-side, but /invite with sendInvitation
+  // still sends the "shared with you" email, which is the one with the link
+  // that redeems the guest account. Covers the lost or spam-filtered
+  // invitation without the PM having to remove and re-add anyone.
+  async function resendInvitation(perm) {
+    const theirs = [
+      ...(perms?.uploads      || []).filter(p => p.email === perm.email).map(p => ({ ...p, itemId: perms.uploadsId,      role: "write" })),
+      ...(perms?.deliverables || []).filter(p => p.email === perm.email).map(p => ({ ...p, itemId: perms.deliverablesId, role: "read"  })),
+    ].filter(p => p.itemId);
+    if (theirs.length === 0) return;
+    const n = theirs.length;
+    if (!window.confirm("Resend Microsoft's invitation email to " + perm.email + " for " + n + (n === 1 ? " folder" : " folders") + "?")) return;
+    setActionStatus("working");
+    setActionMsg("⏳ Resending invitation to " + perm.email + "…");
+    try {
+      const names = portalFolderNames(project);
+      const projLabel = [(project.projectNumber || "").trim(), (project.name || "").trim().slice(0, 40).trim()].filter(Boolean).join(" - ");
+      for (const t of theirs) {
+        const folderLabel = t.itemId === perms.uploadsId ? names.uploads : names.deliverables;
+        const message = buildSharePointInvitationMessage({ folderLabel, role: t.role, projLabel });
+        await shareDriveItemWithUser(driveId, t.itemId, perm.email, t.role, message, (k, of) =>
+          setActionMsg("⏳ Microsoft is still setting up " + perm.email + ". Retrying (" + k + " of " + of + ")…"));
+      }
+      setActionStatus("done");
+      setActionMsg("✓ Invitation resent to " + perm.email + ". Ask them to open the link in that new email and sign in as this exact address.");
+    } catch(e) {
+      setActionStatus("error");
+      setActionMsg("✗ " + portalShareErrorMessage(e));
+    }
+  }
+
   async function removePerson(perm) {
     if (!window.confirm("Remove " + perm.email + " from this folder?")) return;
     setActionStatus("working");
@@ -31452,6 +31513,11 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
         <span style={{ fontSize: 10, fontWeight: 700, color: roleColor,
           background: ca(roleColor, "22"), borderRadius: 3, padding: "1px 6px",
           whiteSpace: "nowrap" }}>{roleLabel}</span>
+        <button onClick={() => resendInvitation(perm)} disabled={actionStatus === "working"}
+          style={{ background: "none", border: "none", color: P.textDim,
+            cursor: actionStatus === "working" ? "not-allowed" : "pointer", fontSize: 13, padding: "0 4px", flexShrink: 0 }}
+          title={"Resend Microsoft's invitation email to " + perm.email + " (the email with the sign-in link)"}
+          aria-label={"Resend invitation to " + perm.email}>🔁</button>
         <button onClick={() => emailLinkToPerson(perm)}
           style={{ background: "none", border: "none", color: P.textDim,
             cursor: "pointer", fontSize: 13, padding: "0 4px", flexShrink: 0 }}
@@ -31619,6 +31685,20 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
                   })()
               }
             </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+              <button onClick={() => setShowAddContact(true)} disabled={actionStatus === "working"}
+                style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+                  color: P.textDim, cursor: actionStatus === "working" ? "not-allowed" : "pointer",
+                  fontSize: 11, padding: "4px 10px" }}
+                title={clientCompany
+                  ? "Add a contact to " + clientCompany.name + " in the Clients directory and select them here"
+                  : "Add a contact and select them here (the client firm is not in the Clients directory, so it will not be saved there)"}>
+                + Add contact
+              </button>
+              <span style={{ fontSize: 10, color: P.textDim }}>
+                Use their work email where they have one.
+              </span>
+            </div>
 
             {/* Commit step. Selecting a name does nothing on its own; this is
                 the only thing that grants access and emails the client, and it
@@ -31635,6 +31715,13 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
                     <strong>{selected.email}</strong>, and they must sign in as exactly that address. A different
                     one (for example a personal Gmail) is refused with "account does not exist in tenant".
                   </div>
+                  {isConsumerEmailDomain(selected.email) && (
+                    <div role="note" style={{ fontSize: 10, color: P.amber || "var(--c-f59e0b)", marginTop: 4, lineHeight: 1.4 }}>
+                      ⚠ This is a personal email address. If they have a work Microsoft 365 account, invite that
+                      instead; personal addresses are where sign-in trouble happens. If this is their only address,
+                      it still works: Microsoft will ask for their Microsoft password, or email them a code.
+                    </div>
+                  )}
                 </div>
                 <button onClick={() => setSelected(null)} disabled={actionStatus === "working"}
                   style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
@@ -31672,12 +31759,34 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
           </button>
         </div>
       </div>
+      {showAddContact && (
+        <AddContactModal
+          companyName={project.clientName || ""}
+          clients={clients}
+          onUpdateClient={onUpdateClient}
+          zIndex={9500}
+          onSelect={ct => {
+            const email = (ct.email || "").trim();
+            if (!email.includes("@")) {
+              setActionStatus("error");
+              setActionMsg("✗ " + (ct.name || "That contact") + " was added without an email address, so there is nothing to invite. Edit them in the Clients directory and add one.");
+              return;
+            }
+            setSelected({ name: ct.name || email, email, company: project.clientName || "", title: ct.title || "" });
+            setActionStatus(clientCompany ? "idle" : "error");
+            setActionMsg(clientCompany
+              ? ""
+              : "Note: " + (project.clientName ? '"' + project.clientName + '"' : "the client firm") + " is not in the Clients directory, so this contact was not saved there. They can still be invited now.");
+          }}
+          onClose={() => setShowAddContact(false)}
+        />
+      )}
     </div>
   );
 }
 
 
-function AddContactModal({ companyName, clients, onUpdateClient, onSelect, onClose }) {
+function AddContactModal({ companyName, clients, onUpdateClient, onSelect, onClose, zIndex }) {
   const [name, setName] = React.useState("");
   const [title, setTitle] = React.useState("");
   const [email, setEmail] = React.useState("");
@@ -31695,7 +31804,7 @@ function AddContactModal({ companyName, clients, onUpdateClient, onSelect, onClo
   }
   return (
     <div role="dialog" aria-modal="true" aria-label={"Add Contact" + (companyName ? " — " + companyName : "")}
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 3000, display: "flex", alignItems: "center", justifyContent: "center" }}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: zIndex || 3000, display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
       onKeyDown={e => { if (e.key === "Escape") onClose(); }}>
       <div style={{ background: P.card, border: "1px solid " + P.accent, borderRadius: 12, padding: 24, width: 400, maxWidth: "90vw" }}>
