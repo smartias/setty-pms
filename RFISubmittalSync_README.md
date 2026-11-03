@@ -10,12 +10,13 @@ only the RFI/submittal arrays, not the whole project.
 
 ## How staff use it
 
-The app has a built-in **"How this works"** guide at the top — that's the primary reference.
 In short:
 
-1. Put **your name** in the "You" box (top-right) so the log shows who added/changed each item.
-2. **Pick a project.** The dropdown shows only jobs marked **"In Construction Administration"**;
-   a ⚡ marks the ones with Procore/Forma emails filed.
+1. **Sign in** (the suite's shared sign-in, top-right). The log records who added or
+   changed each item from the sign-in name; a save while signed out is logged as "(unknown)".
+2. **Pick a project.** One searchable box: type a project number, name, GC or platform and
+   pick from the list (arrow keys and Enter work too). Only jobs marked **"In Construction
+   Administration"** are listed; "All projects" shows every CA job at once.
 3. **See everything logged.** Click any RFI/submittal row to open and **edit** it. Use
    **+ Add** to log a new one by hand (for emailed / PDF transmittals that don't come through
    Procore/Forma). The search box filters long lists.
