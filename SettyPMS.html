@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v185-nyc-cal-ambiguous";
+    window.__appVersion = "2026-11-03-pms-v186-calendar-categories";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2175,6 +2175,23 @@ let _nycCalError = null;     // set when resolve fails for a reason worth tellin
 let _nycCalFailedAt = 0;
 const NYC_CAL_RETRY_MS = 10 * 60 * 1000;
 
+// Outlook categories for a PMS-created event. "PMS Milestone" goes on every
+// one (same tag the Outlook add-in stamps, so one category filter shows all
+// PMS events); the second says what kind it is, so a billable deliverable
+// reads differently from a note or a proposal due date at a glance. A
+// category not yet in the mailbox's master list still shows by name on the
+// event, just without a colour until someone assigns one.
+function pmsCalendarCategories(milestone) {
+  const kind = {
+    "billable":     "Billable Milestone",
+    "change-order": "Change Order",
+    "proposal":     "Proposal Due",
+    "contract":     "Contract Expiration",
+    "site-visit":   "Site Visit",
+  }[milestone.type || ""];
+  return kind ? ["PMS Milestone", kind] : ["PMS Milestone"];
+}
+
 function nycEventSubject(projectName, projectNumber, milestoneName) {
   return (projectNumber ? projectNumber + " " : "") + (projectName || "Project") + " - " + milestoneName;
 }
@@ -2338,6 +2355,11 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
     // Surface the PM on the calendar's Location line so the day view shows who
     // owns the milestone. Graph's `location` is an object, not a bare string.
     ...(pm ? { location: { displayName: "PM: " + pm } } : {}),
+    // Reference markers, not things to be alerted about. Must be explicit:
+    // omitting it lets Graph apply the mailbox's default reminder (the add-in
+    // learned this the loud way).
+    isReminderOn: false,
+    categories: pmsCalendarCategories(milestone),
   };
 
   const cal = await resolveNycCalendar();
@@ -23370,6 +23392,7 @@ function NotesView({ project, onChange }) {
     if (!note.visitDate) return;
     setCalStatus(s => ({ ...s, [note.id]: "syncing" }));
     const milestoneProxy = {
+      type: "site-visit",
       dueDate: note.visitDate,
       name: "Site Visit" + (note.body ? " — " + note.body.slice(0, 60) + (note.body.length > 60 ? "…" : "") : ""),
       calendarEventId: note.calendarEventId || null,
