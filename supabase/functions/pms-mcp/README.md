@@ -1105,9 +1105,24 @@ complete form as an RFI or submittal.
 - **Dry run until switched on.** Without the function secret
   `PORTAL_INTAKE_LIVE=1` every call is a dry run (`"live": false`).
 
+- **The contractor's log view (step 5).** The same route then refreshes
+  `RFI Log.xlsx` and `Submittal Log.xlsx` in each portal project's
+  Deliverables folder (`portalLogsRun.ts`, workbook from `portalLogSpec.js`,
+  a copy of the repo-root module pinned by `portalLogSpecDrift.test.mjs`).
+  A log is rewritten when the project was saved after the file was last
+  written (`pms_projects.updated_at` against the file's
+  `lastModifiedDateTime`), so nothing is stored and no project version is
+  bumped. Contractor-facing columns only: number, their reference, subject,
+  spec section, received, due, a status in their words (Open / Responded /
+  Closed; Under review / Returned / Resubmittal required), stamp and
+  revision, responded or returned date, and an Open link to the returned
+  document. Generated files only, so it writes even while the intake is a
+  dry run; `{"logs": false}` skips it; `{"dryRun": true}` reports what it
+  would rewrite. The response carries `logs` (written, current, failed).
+
 Turning it on, in order:
 
-1. Deploy and confirm `/health` reports build `2026-11-03-portal-intake`.
+1. Deploy and confirm `/health` reports build `2026-11-03-portal-logs`.
 2. Schedule it as a dry run, copying the secret from the documents sync job:
 
    ```sql

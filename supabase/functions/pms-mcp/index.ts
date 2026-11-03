@@ -35,6 +35,7 @@ import {
 import { KB_TEAM, isKbTeam, parseKbExclude, kbExcluded, walkKb, kbSearch } from "./knowledgebase.ts";
 import { runIntakePass, intakeSince } from "./caIntakeRun.ts";
 import { runPortalIntakePass, type PortalFile } from "./portalIntakeRun.ts";
+import { runPortalLogsPass } from "./portalLogsRun.ts";
 import { changeSummary, listChanges, readChange, isSettyPrime } from "./constructionChangesView.ts";
 import { closeoutSummary, listCloseout } from "./closeoutView.ts";
 // Raw-bytes path (1.19.0): signed single-file links behind download_document /
@@ -1378,7 +1379,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-03-portal-intake";
+const BUILD = "2026-11-03-portal-logs";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.23.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -12543,7 +12544,65 @@ app.post("/pms-mcp/admin/portal-ca-intake", async (c) => {
     if (summary.created.rfi || summary.created.submittal || summary.incomplete.length || summary.failed.length) {
       console.warn(`[portal-ca-intake]${summary.dryRun ? " DRY RUN (would add)" : ""}`, JSON.stringify(summary));
     }
-    return c.json({ ...summary, live }, 200, DOCS_SYNC_CORS);
+    // Step 5: the contractor's log view. "RFI Log.xlsx" / "Submittal Log.xlsx"
+    // in each portal project's Deliverables folder, rewritten when the project
+    // was saved after the file was last written (portalLogsRun.ts). Generated
+    // files only, so it writes even while the intake is a dry run; {"logs":
+    // false} skips it. Folder lookups are cached for the run.
+    let logs: unknown = null;
+    if (body?.logs !== false) {
+      const folderCache = new Map<string, { driveId: string; id: string }>();
+      const resolveFolder = async (folderUrl: string) => {
+        const hit = folderCache.get(folderUrl);
+        if (hit) return hit;
+        const folder = await graphGet(`/shares/${encodeURIComponent(shareToken(folderUrl))}/driveItem?$select=id,parentReference`);
+        const driveId = folder?.parentReference?.driveId;
+        if (!folder?.id || !driveId) throw new Error("Could not resolve the portal Deliverables folder " + folderUrl);
+        const r = { driveId: String(driveId), id: String(folder.id) };
+        folderCache.set(folderUrl, r);
+        return r;
+      };
+      try {
+        logs = await runPortalLogsPass({
+          at: new Date().toISOString(), dryRun: body?.dryRun === true,
+          budgetMs: Math.max(5_000, PORTAL_INTAKE_BUDGET_MS - summary.ms), now: () => Date.now(),
+          projects: async () => {
+            const rows = await sbGetAll("pms_projects?select=pid:project->>id,updated_at,deliv:project->>settyDeliverablesFolderUrl&project->portalIntake->>rfisUrl=not.is.null&order=id.asc");
+            return rows.filter((r: any) => r.pid).map((r: any) => ({ pid: String(r.pid), deliverablesUrl: String(r.deliv || ""), updatedAt: String(r.updated_at || "") }));
+          },
+          readProject: async (pid: string) => {
+            const rows = await sbGet("pms_projects?select=project&project->>id=eq." + encodeURIComponent(pid) + "&limit=1");
+            return rows?.[0]?.project ?? null;
+          },
+          logMeta: async (folderUrl: string, fileName: string) => {
+            const f = await resolveFolder(folderUrl);
+            try {
+              const it = await graphGet(`/drives/${f.driveId}/items/${f.id}:/${encodeURIComponent(fileName)}?$select=id,lastModifiedDateTime`);
+              return it?.id ? { lastModified: String(it.lastModifiedDateTime || "") } : null;
+            } catch (e) {
+              if (/Graph 404/.test(String((e as any)?.message ?? e))) return null;
+              throw e;
+            }
+          },
+          writeLog: async (folderUrl: string, fileName: string, parts: [string, Uint8Array][]) => {
+            const f = await resolveFolder(folderUrl);
+            const { zipSync } = await import("npm:fflate@0.8.2");
+            const bytes = zipSync(Object.fromEntries(parts));
+            const res = await fetch(`https://graph.microsoft.com/v1.0/drives/${f.driveId}/items/${f.id}:/${encodeURIComponent(fileName)}:/content`, {
+              method: "PUT", headers: { Authorization: "Bearer " + (await graphToken()), "Content-Type": "application/octet-stream" }, body: bytes,
+            });
+            if (!res.ok) throw new Error(`Could not write ${fileName} (Graph ${res.status}): ${(await res.text()).slice(0, 200)}`);
+          },
+          log: (msg) => console.warn("[portal-ca-intake] logs:", msg),
+        });
+        const L = logs as any;
+        if (L.written.length || L.failed.length) console.warn("[portal-ca-intake] logs", JSON.stringify(L));
+      } catch (e) {
+        logs = { error: String((e as any)?.message ?? e) };
+        console.warn("[portal-ca-intake] logs failed:", String((e as any)?.message ?? e));
+      }
+    }
+    return c.json({ ...summary, live, logs }, 200, DOCS_SYNC_CORS);
   } catch (e) {
     const error = String((e as any)?.message ?? e);
     console.warn("[portal-ca-intake] failed:", error);
