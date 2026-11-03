@@ -1058,6 +1058,71 @@ Turning it on, in order:
    Secrets → add `CA_INTAKE_LIVE` = `1`. The next
    run writes; its log line no longer says DRY RUN.
 
+## Client portal intake (`POST /pms-mcp/admin/portal-ca-intake`, 2026-11-03)
+
+Step 2 of `PROPOSAL-portal-ca-exchange.md` (repo root). On a job where Setty
+is prime there is no Procore: the contractor fills the form workbook in the
+portal's `RFIs/` or `Submittals/` folder (planted by the PMS, step 1, with
+`project.portalIntake` recording the two folder URLs) and saves it beside
+its attachments. This route reads those two folders and logs each new
+complete form as an RFI or submittal.
+
+- **Same form as the page.** The reader is `portalFormSpec.js`, a
+  byte-identical copy of the repo-root module the PMS builds the forms with
+  (`portalFormSpecDrift.test.mjs`; fix with
+  `cp portalFormSpec.js supabase/functions/pms-mcp/portalFormSpec.js`). It
+  reads the workbook's defined names (`Subject`, `Question`, `SpecSection`,
+  ...), never fixed rows, so a contractor who inserts rows above the table
+  does not break it. Numbering is `primeCa.js`, likewise a copy
+  (`primeCaDrift.test.mjs`). The loop is `portalIntakeRun.ts`
+  (`portalIntakeRun.test.mjs`).
+- **What becomes an item.** An `.xlsx` in either folder that is not the blank
+  template, not an Excel lock file (`~$...`), modified within `days`, not
+  already logged (by the file's drive item id, kept in `intake.driveItemId`)
+  and whose required cells (`*` on the form) are filled. It gets the
+  project's next `RFI-nnn` / `SUB-nnn` (the prime's own numbering; the
+  high-water mark is bumped so a number is never reused), `intakeReviewed:
+  false`, `intake: {by: "portal-ca-intake", vendor: "Client portal",
+  driveItemId, formName, formUrl, formModified}`, `source: "portal"`, the
+  contractor's own number in `extNumber`, their email in
+  `contractorEmail`, the folder in `spFolderUrl`, and a due date from the
+  form's "date needed" or the project's default review period. The PMS shows
+  it as **Unreviewed** until a person confirms discipline and assignee.
+- **Incomplete or foreign files** are recorded under
+  `project.portalIntake.skipped[fileId]` with the reason and the file's
+  modification time, so they are not downloaded again until the contractor
+  saves the file. The response lists them under `incomplete`; emailing the
+  contractor about a blank cell is step 3.
+- **Append-only, version-guarded.** Writes go through `updateProjectRecord`;
+  a race fails that project for this run and the next run retries. Archived
+  projects are skipped.
+- **Folder access.** Folder URLs are resolved through the Graph shares API
+  (like the drawing index's NYSharesite crawl), so a 403 in `failed` means
+  the Graph app has no access to the NYSharesite site: an IT grant.
+- **Body:** `{"dryRun":true}`, `{"days":N}` (default 30, max 180),
+  `{"maxProjects":N}` (default 40, max 200). 40 s budget; `stoppedEarly`.
+- **Auth:** the `x-pms-cron` secret, or a PMS admin Supabase JWT.
+- **Dry run until switched on.** Without the function secret
+  `PORTAL_INTAKE_LIVE=1` every call is a dry run (`"live": false`).
+
+Turning it on, in order:
+
+1. Deploy and confirm `/health` reports build `2026-11-03-portal-intake`.
+2. Schedule it as a dry run, copying the secret from the documents sync job:
+
+   ```sql
+   select cron.schedule('pms-portal-ca-intake', '9,24,39,54 * * * *',
+     replace((select command from cron.job where jobname = 'pms-documents-sync'),
+             'admin/documents-sync', 'admin/portal-ca-intake'));
+   ```
+
+3. Put a filled form in a pilot project's RFIs folder and read the log:
+   Edge Functions → pms-mcp → Logs, search `portal-ca-intake`. A run that
+   finds something logs `[portal-ca-intake] DRY RUN (would add) {...}`.
+4. Go live: Edge Functions → Secrets → add `PORTAL_INTAKE_LIVE` = `1`.
+   Removing it (or `select cron.unschedule('pms-portal-ca-intake');`) is the
+   off switch; no redeploy.
+
 ## Construction changes (`list_construction_changes` / `read_construction_change`, 2026-11-03)
 
 On jobs where Setty is prime the PMS is the record for construction-phase

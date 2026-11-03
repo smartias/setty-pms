@@ -34,6 +34,7 @@ import {
 // The firm Knowledgebase share (team KB): firm-wide read-only, no project gate. Pure; see knowledgebase.ts.
 import { KB_TEAM, isKbTeam, parseKbExclude, kbExcluded, walkKb, kbSearch } from "./knowledgebase.ts";
 import { runIntakePass, intakeSince } from "./caIntakeRun.ts";
+import { runPortalIntakePass, type PortalFile } from "./portalIntakeRun.ts";
 import { changeSummary, listChanges, readChange, isSettyPrime } from "./constructionChangesView.ts";
 import { closeoutSummary, listCloseout } from "./closeoutView.ts";
 // Raw-bytes path (1.19.0): signed single-file links behind download_document /
@@ -1377,7 +1378,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-03-closeout";
+const BUILD = "2026-11-03-portal-intake";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.23.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -12471,6 +12472,81 @@ app.post("/pms-mcp/admin/ca-items-intake", async (c) => {
   } catch (e) {
     const error = String((e as any)?.message ?? e);
     console.warn("[ca-items-intake] failed:", error);
+    return c.json({ error }, 500, DOCS_SYNC_CORS);
+  }
+});
+
+// ── client portal intake (prime jobs) ────────────────────────────────────────
+// Step 2 of PROPOSAL-portal-ca-exchange.md. On a job where Setty is prime the
+// contractor drops a filled form workbook into the portal's RFIs/ or
+// Submittals/ folder (planted by the PMS, step 1); this reads those folders
+// every 15 minutes and logs each new complete form as an RFI or submittal
+// marked Unreviewed. Loop and record shape: portalIntakeRun.ts (tests in
+// portalIntakeRun.test.mjs); the form reader is portalFormSpec.js, a copy of
+// the repo-root module (portalFormSpecDrift.test.mjs). Same auth and run
+// shape as ca-items-intake; dry run until PORTAL_INTAKE_LIVE=1. README →
+// Client portal intake.
+// Projects opt in by carrying project.portalIntake (the PMS writes it when the
+// folders are planted). The folder URLs are resolved through the Graph shares
+// API like crossSiteDeliverables does, so a 403 here means the Graph app has
+// no access to the NYSharesite site (an IT grant), reported per project.
+const PORTAL_INTAKE_BUDGET_MS = 40_000;
+const PORTAL_INTAKE_DEFAULT_DAYS = 30;
+const shareToken = (url: string) => "u!" + btoa(url).replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+app.options("/pms-mcp/admin/portal-ca-intake", (c) => c.body(null, 204, DOCS_SYNC_CORS));
+app.post("/pms-mcp/admin/portal-ca-intake", async (c) => {
+  const cronGiven = c.req.header("x-pms-cron") || "";
+  const isCron = !!DOCS_SYNC_SECRET && cronGiven === DOCS_SYNC_SECRET;
+  if (!isCron) {
+    const auth = c.req.header("Authorization") || "";
+    const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!(await isAdminSupabaseJwt(jwt))) {
+      return c.json({ error: "Admins only (Supabase session required), or a valid x-pms-cron secret." }, 403, DOCS_SYNC_CORS);
+    }
+  }
+  const live = Deno.env.get("PORTAL_INTAKE_LIVE") === "1";
+  let body: any = {};
+  try { body = await c.req.json(); } catch { /* cron sends an empty body */ }
+  const days = Math.max(1, Math.min(Number(body?.days) || PORTAL_INTAKE_DEFAULT_DAYS, 180));
+  const maxProjects = Math.max(1, Math.min(Number(body?.maxProjects) || 40, 200));
+  try {
+    const summary = await runPortalIntakePass({
+      at: new Date().toISOString(), dryRun: !live || body?.dryRun === true, budgetMs: PORTAL_INTAKE_BUDGET_MS,
+      maxProjects, recentDays: days, now: () => Date.now(),
+      projects: async () => {
+        const rows = await sbGetAll("pms_projects?select=pid:project->>id,intake:project->portalIntake&project->portalIntake->>rfisUrl=not.is.null&order=id.asc");
+        return rows.filter((r: any) => r.pid).map((r: any) => ({
+          pid: String(r.pid), rfisUrl: String(r.intake?.rfisUrl || ""), submittalsUrl: String(r.intake?.submittalsUrl || ""),
+        }));
+      },
+      listForms: async (folderUrl: string) => {
+        const folder = await graphGet(`/shares/${encodeURIComponent(shareToken(folderUrl))}/driveItem?$select=id,name,webUrl,parentReference`);
+        const driveId = folder?.parentReference?.driveId;
+        if (!folder?.id || !driveId) throw new Error("Could not resolve the portal folder " + folderUrl);
+        const { value } = await listChildren(`/drives/${driveId}/items/${folder.id}/children?$select=id,name,webUrl,size,lastModifiedDateTime,file&$top=200`);
+        const files: PortalFile[] = value.filter((it: any) => it.file).map((it: any) => ({
+          id: String(it.id), name: String(it.name || ""), webUrl: String(it.webUrl || ""), size: it.size,
+          lastModified: String(it.lastModifiedDateTime || ""), driveId,
+        }));
+        return { folderWebUrl: String(folder.webUrl || folderUrl), files };
+      },
+      readForm: async (file: PortalFile) => {
+        const res = await fetch(`https://graph.microsoft.com/v1.0/drives/${file.driveId}/items/${encodeURIComponent(file.id)}/content`,
+          { headers: { Authorization: "Bearer " + (await graphToken()) } });
+        if (!res.ok) throw new Error(`Could not download "${file.name}" (Graph ${res.status})`);
+        const { unzipSync } = await import("npm:fflate@0.8.2");
+        return unzipSync(new Uint8Array(await res.arrayBuffer()));
+      },
+      writeProject: (pid, mutate) => updateProjectRecord(pid, mutate),
+      log: (msg) => console.warn("[portal-ca-intake]", msg),
+    });
+    if (summary.created.rfi || summary.created.submittal || summary.incomplete.length || summary.failed.length) {
+      console.warn(`[portal-ca-intake]${summary.dryRun ? " DRY RUN (would add)" : ""}`, JSON.stringify(summary));
+    }
+    return c.json({ ...summary, live }, 200, DOCS_SYNC_CORS);
+  } catch (e) {
+    const error = String((e as any)?.message ?? e);
+    console.warn("[portal-ca-intake] failed:", error);
     return c.json({ error }, 500, DOCS_SYNC_CORS);
   }
 });

@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v178-portal-intake-folders";
+    window.__appVersion = "2026-11-03-pms-v179-guest-status-consent-link";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -31263,6 +31263,19 @@ function portalShareErrorMessage(err) {
 // breaks sign-in for everyone (the 90095 loop noted at TEAMS_SCOPES). It is
 // requested only here, silently first, and interactively only from a click.
 const GUEST_LOOKUP_SCOPES = ["User.Read.All"];
+// The page an Entra admin opens to grant that permission for the whole
+// tenant in one click (Microsoft's v2.0 admin consent endpoint). Lists every
+// scope the app already uses as well, so the grant can only widen what IT
+// has approved, never replace it with a shorter list. The redirect is the
+// app's registered sign-in URI; after Accept the admin just lands on the PMS.
+function guestLookupAdminConsentUrl() {
+  const scopes = [...new Set([...TEAMS_SCOPES, ...GUEST_LOOKUP_SCOPES])].map(sc => "https://graph.microsoft.com/" + sc).join(" ");
+  return "https://login.microsoftonline.com/" + TENANT_ID + "/v2.0/adminconsent" +
+    "?client_id=" + encodeURIComponent(MSAL_CLIENT_ID) +
+    "&scope=" + encodeURIComponent(scopes) +
+    "&redirect_uri=" + encodeURIComponent("https://smartias.github.io/setty-pms/SettyPMS.html") +
+    "&state=pms-guest-status";
+}
 async function getGuestLookupToken(interactive) {
   const app = await getMsalApp();
   const account = app.getActiveAccount() || app.getAllAccounts()[0];
@@ -31821,8 +31834,23 @@ function PortalSharingModal({ project, clients, driveId, onClose, onUpdateClient
                   {guest.status === "needs-check" && <span>Microsoft sign-in status not loaded.</span>}
                   {guest.status === "needs-consent" && (
                     <span style={{ color: "var(--c-f59e0b)" }}>
-                      Sign-in status needs a one-time IT approval: in Entra, grant the PMS app the delegated
-                      permission <strong>User.Read.All</strong> (admin consent). Until then, use 🔁 to resend an invitation.
+                      Sign-in status needs a one-time IT approval of the permission <strong>User.Read.All</strong> for
+                      the PMS app. Send IT the approval link: an Entra admin opens it, signs in and clicks Accept, and
+                      the tags appear here for everyone.{" "}
+                      <button onClick={async () => {
+                          const link = guestLookupAdminConsentUrl();
+                          try { await navigator.clipboard.writeText(link); setActionStatus("done"); setActionMsg("✓ Approval link copied. Paste it into an email to IT."); }
+                          catch (e) { setActionStatus("error"); setActionMsg("Could not copy automatically. The link is: " + link); }
+                        }}
+                        style={{ background: "none", border: `1px solid var(--c-f59e0b)`, borderRadius: 4,
+                          color: "var(--c-f59e0b)", cursor: "pointer", fontSize: 10, padding: "1px 8px" }}
+                        title="Copy the Microsoft admin consent link for IT">
+                        Copy approval link for IT
+                      </button>{" "}
+                      <a href={guestLookupAdminConsentUrl()} target="_blank" rel="noreferrer"
+                        style={{ color: "var(--c-f59e0b)" }}
+                        title="Opens Microsoft's approval page. Only an Entra admin can accept it.">open it</a>.
+                      Until then, use 🔁 to resend an invitation.
                     </span>
                   )}
                   {guest.status === "unavailable" && <span style={{ color: P.red }}>Sign-in status unavailable: {guest.error}</span>}
