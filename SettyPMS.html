@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v181-portal-return";
+    window.__appVersion = "2026-11-03-pms-v182-portal-ux";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2792,6 +2792,56 @@ function Btn({ onClick, children, variant = "primary", small, disabled, title, s
       style={{ ...styles[variant], padding: small ? "4px 10px" : "7px 16px", borderRadius: 6, fontSize: small ? 11 : 13, fontWeight: 500, opacity: disabled ? 0.4 : 1, ...s }}>
       {children}
     </button>
+  );
+}
+
+// A small menu of related actions behind one button (the item modal's Email
+// and Claude groups): items are { label, hint?, onClick? | href?, title?,
+// disabled? }; null items are skipped. Opens upward (the footers it lives in
+// sit at the bottom of a scrolling modal); Escape or a click elsewhere closes it.
+function DropMenu({ label, items, title }) {
+  const [open, setOpen] = React.useState(false);
+  const ref = React.useRef(null);
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = e => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey, true);
+    return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey, true); };
+  }, [open]);
+  const list = (items || []).filter(Boolean);
+  if (list.length === 0) return null;
+  const itemStyle = dis => ({ display: "block", width: "100%", textAlign: "left", background: "none", border: 0, borderRadius: 6,
+    padding: "7px 10px", color: P.text, fontFamily: "inherit", fontSize: 12, fontWeight: 600, textDecoration: "none",
+    cursor: dis ? "not-allowed" : "pointer", opacity: dis ? 0.5 : 1, whiteSpace: "normal" });
+  const hover = e => { e.currentTarget.style.background = P.bg; };
+  const unhover = e => { e.currentTarget.style.background = "none"; };
+  return (
+    <span ref={ref} style={{ position: "relative", display: "inline-block" }}>
+      <button type="button" aria-haspopup="menu" aria-expanded={open} title={title} onClick={() => setOpen(o => !o)}
+        style={{ background: "transparent", color: P.textMuted, border: `1px solid ${P.border}`, padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500, cursor: "pointer" }}>
+        {label} ▾
+      </button>
+      {open && (
+        <div role="menu" style={{ position: "absolute", bottom: "calc(100% + 6px)", left: 0, minWidth: 290, zIndex: 20,
+          background: P.card, border: `1px solid ${P.border}`, borderRadius: 10, padding: 6, boxShadow: "0 10px 30px rgba(0,0,0,.45)" }}>
+          {list.map((it, i) => {
+            const body = (
+              <span>
+                {it.label}
+                {it.hint && <span style={{ display: "block", fontSize: 11, color: P.textDim, fontWeight: 400, marginTop: 1 }}>{it.hint}</span>}
+              </span>
+            );
+            return it.href
+              ? <a key={i} role="menuitem" href={it.href} target="_blank" rel="noreferrer" title={it.title} style={itemStyle(false)}
+                  onMouseEnter={hover} onMouseLeave={unhover} onClick={() => setOpen(false)}>{body}</a>
+              : <button key={i} type="button" role="menuitem" title={it.title} disabled={!!it.disabled} style={itemStyle(!!it.disabled)}
+                  onMouseEnter={hover} onMouseLeave={unhover} onClick={() => { setOpen(false); if (it.onClick) it.onClick(); }}>{body}</button>;
+          })}
+        </div>
+      )}
+    </span>
   );
 }
 
@@ -12240,25 +12290,22 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
 
         {/* Action buttons */}
         <div style={{ marginTop: 20, borderTop: `1px solid ${P.border}`, paddingTop: 16, display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <a href={reviewSeatUrl} target="_blank" rel="noreferrer"
-              title={"Opens your Claude seat with the review prefilled — reviews this " + (isRFI ? "RFI" : "submittal") + " against the current set and specs and saves a suggested " + (isRFI ? "response" : "response + stamp") + ", internal notes, and cost/scope red flags back here for your sign-off. Save the item first so Claude can find it."}
-              style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px",
-                border: "1px solid " + P.accent, borderRadius: 6, fontSize: 12, fontWeight: 600,
-                color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}>
-              🤖 {ai ? "Re-review with Claude" : "Send to Claude for review"}
-            </a>
-            <a href={pullReplySeatUrl} target="_blank" rel="noreferrer"
-              title={"For reviewers who answered by email: opens your Claude seat to find the emailed reply to this " + (isRFI ? "RFI" : "submittal") + " and file it here as the suggested response (citing the email) for one-click accept. Never writes the response field directly."}
-              style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px",
-                border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, fontWeight: 600,
-                color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}>
-              📥 Pull reply from email
-            </a>
-            <Btn small variant="ghost" onClick={draftAssignEmail}>✉ Assign Email</Btn>
-            {(subList.length > 0 || form.subAssigned) && (
-              <Btn small variant="ghost" onClick={draftSubEmail}>✉ Forward to Sub</Btn>
-            )}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {/* Related actions grouped behind two menus (the Tracker's pattern), so the
+                issue actions — Reply in Procore, Return via Portal, Draft Response — stand out. */}
+            <DropMenu label="🤖 Claude" title="Review help from your Claude seat" items={[
+              { href: reviewSeatUrl, label: ai ? "Re-review with Claude" : "Send to Claude for review",
+                hint: "Opens your Claude seat with the review prefilled. It checks this " + (isRFI ? "RFI" : "submittal") + " against the current set and specs and saves a suggested " + (isRFI ? "response" : "response and stamp") + " here for your sign-off. Nothing is sent or stamped." },
+              { href: pullReplySeatUrl, label: "Pull reply from email",
+                hint: "For reviewers who answered by email: finds the emailed reply to this " + (isRFI ? "RFI" : "submittal") + " and files it here as the suggested response, citing the email." },
+            ]} />
+            <DropMenu label="✉ Email" title="Outlook drafts for this item" items={[
+              { onClick: draftAssignEmail, label: "Assign to the team", hint: "A draft to the people ticked under Assigned To, with the question and the folder link." },
+              (subList.length > 0 || form.subAssigned)
+                ? { onClick: draftSubEmail, label: "Forward to sub",
+                    hint: isPrimeJob ? "A draft to the sub picked above; records the date sent, and their deadline defaults to 2 working days before the contractor's." : "A draft to the subconsultant picked above. Internal notes are never included." }
+                : null,
+            ]} />
             {isRFI && isProcoreRfi(project, form) && (
               <Btn small variant="primary" onClick={draftProcoreReply}
                 title="Drafts a reply to this RFI's Procore notification email in your Outlook, with the response above. Procore logs a reply to its email as the RFI response. You check it and press Send.">
@@ -12322,6 +12369,7 @@ function CaPrimePanel({ project, type, onChange, onOpen }) {
   const [err, setErr] = React.useState("");
   const [busy, setBusy] = React.useState("");
   const [showAll, setShowAll] = React.useState(false);
+  const [showRules, setShowRules] = React.useState(false);
   const prime = caSettyIsPrime(project);
   const dismissedSig = (project.caIntakeDismissed || []).length + ":" + (project.rfis || []).length + ":" + (project.submittals || []).length;
   React.useEffect(() => {
@@ -12363,11 +12411,20 @@ function CaPrimePanel({ project, type, onChange, onOpen }) {
   const shown = showAll ? list : list.slice(0, 8);
   return (
     <div style={{ border: "1px solid " + P.accent, background: P.accentDim, borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
-      <div style={{ fontSize: 12.5 }}>
-        <b>Setty is prime on this project.</b> This log is the official record: numbers are never reused, and an item that
-        has gone to the contractor is set to Void, not deleted. Route items to a subconsultant from the item (✉ Forward to Sub);
-        the ⚑ line under each status shows who owes the next move.
+      {/* One line, every visit; the rules behind a toggle for whoever needs them. */}
+      <div style={{ fontSize: 12.5, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <b>Setty is prime on this project — this log is the official record.</b>
+        <button type="button" onClick={() => setShowRules(r => !r)} aria-expanded={showRules}
+          style={{ background: "none", border: "1px solid " + P.border, borderRadius: 10, color: P.textDim, cursor: "pointer", fontSize: 11, padding: "1px 8px" }}>
+          {showRules ? "Hide the rules" : "? The rules"}
+        </button>
       </div>
+      {showRules && (
+        <div style={{ fontSize: 12, color: P.textMuted, marginTop: 6 }}>
+          Numbers are never reused, and an item that has gone to the contractor is set to Void, not deleted. Route an item to a
+          subconsultant from inside it (✉ Email ▾ → Forward to sub); the ⚑ line under each status shows who owes the next move.
+        </div>
+      )}
       <CaDistributionEditor project={project} type={type} onChange={onChange} />
       <div style={{ marginTop: 8, fontSize: 12 }}>
         {cands === null && <span style={{ color: P.textDim }}>Checking filed emails for new {noun}s…</span>}
@@ -12387,7 +12444,7 @@ function CaPrimePanel({ project, type, onChange, onOpen }) {
                     <td style={{ fontSize: 12 }}>{c.subject}{c.ref ? <span style={{ color: P.textDim }}> · contractor's #{c.ref}</span> : null}</td>
                     <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                       <Btn small onClick={() => logIt(c)} disabled={!!busy} title={"Add it to the log as the next " + noun + " number and open it to check"}>{busy === c.recordId ? "⏳" : "+ Log " + noun}</Btn>{" "}
-                      <Btn small variant="ghost" onClick={() => dismiss([c.recordId])} disabled={!!busy} title={"Not a new " + noun + " (hide it from this list)"}>Not one</Btn>
+                      <Btn small variant="ghost" onClick={() => dismiss([c.recordId])} disabled={!!busy} title={"Not a new " + noun + " (hide it from this list)"}>Not {isRFI ? "an RFI" : "a submittal"}</Btn>
                     </td>
                   </tr>
                 ))}
@@ -12479,8 +12536,10 @@ function CaDistributionEditor({ project, type, onChange }) {
       <div style={{ marginTop: 8, fontSize: 12 }}>
         ✉ Every {noun} goes to: {count(cur.to) || count(cur.cc)
           ? <b>{count(cur.to)} To, {count(cur.cc)} Cc</b>
-          : <span style={{ color: P.yellow }}>no distribution list yet</span>}
-        {" "}<Btn small variant="ghost" onClick={() => setOpen(true)}>Edit list</Btn>
+          : <span style={{ color: P.yellow }}>nobody yet</span>}
+        {" "}{count(cur.to) || count(cur.cc)
+          ? <Btn small variant="ghost" onClick={() => setOpen(true)}>Edit list</Btn>
+          : <Btn small variant="warning" onClick={() => setOpen(true)} title="Pick the owner, GC and anyone copied from this project's directory — done once per project">Set up the list</Btn>}
       </div>
     );
   }
@@ -31289,6 +31348,8 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projec
           <div style={{ fontSize: 11, fontWeight: 700, color: P.textDim, marginBottom: 6, letterSpacing: "0.05em", textTransform: "uppercase" }}>
             Client Portal — NYSharesite
           </div>
+          {/* Three groups: the two shared folders; the contractor's intake folders
+              (prime jobs); the people who can see them. */}
           {project.clientUploadsFolderUrl && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
               <span style={{ fontSize: 12, color: P.textDim, minWidth: 128, flexShrink: 0 }}>📤 Client Uploads</span>
@@ -31309,13 +31370,18 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projec
               </a>
             </div>
           )}
-          {/* RFIs / Submittals intake folders (the contractor's submit convention
-              on prime jobs). Shown as links once planted; otherwise a button,
-              offered on any project with an Uploads folder but explained as a
-              prime-job tool. */}
+          {/* Contractor intake: the RFIs / Submittals folders under Uploads where the
+              contractor drops a filled form (prime jobs). Links once planted; the
+              set-up button only when Setty is prime, since that is the only job
+              where the contractor submits to us. */}
+          {(caSettyIsPrime(project) || (project.portalIntake && project.portalIntake.rfisUrl)) && project.clientUploadsFolderUrl && (
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: P.textDim, margin: "8px 0 4px", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+              Contractor intake — RFIs &amp; submittals
+            </div>
+          )}
           {project.portalIntake && project.portalIntake.rfisUrl && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-              <span style={{ fontSize: 12, color: P.textDim, minWidth: 128, flexShrink: 0 }}>📨 RFIs (intake)</span>
+              <span style={{ fontSize: 12, color: P.textDim, minWidth: 128, flexShrink: 0 }}>📨 RFIs</span>
               <a href={project.portalIntake.rfisUrl} target="_blank" rel="noreferrer"
                 style={{ fontSize: 11, background: "#0078d4", color: "#fff", borderRadius: 4,
                   padding: "2px 10px", textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 }}>
@@ -31325,7 +31391,7 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projec
           )}
           {project.portalIntake && project.portalIntake.submittalsUrl && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-              <span style={{ fontSize: 12, color: P.textDim, minWidth: 128, flexShrink: 0 }}>📨 Submittals (intake)</span>
+              <span style={{ fontSize: 12, color: P.textDim, minWidth: 128, flexShrink: 0 }}>📨 Submittals</span>
               <a href={project.portalIntake.submittalsUrl} target="_blank" rel="noreferrer"
                 style={{ fontSize: 11, background: "#0078d4", color: "#fff", borderRadius: 4,
                   padding: "2px 10px", textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 }}>
@@ -31339,13 +31405,19 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projec
               </button>
             </div>
           )}
-          {project.clientUploadsFolderUrl && !(project.portalIntake && project.portalIntake.rfisUrl) && intakeStatus !== "working" && (
+          {project.portalIntake && project.portalIntake.rfisUrl && (
+            <div style={{ fontSize: 11, color: P.textDim, marginBottom: 4, lineHeight: 1.4 }}>
+              The contractor saves a filled form here. The connector's portal sweep logs it in the RFI / Submittal tab as
+              <b> Unreviewed</b>; open it there, check it, and press Confirm &amp; acknowledge.
+            </div>
+          )}
+          {caSettyIsPrime(project) && project.clientUploadsFolderUrl && !(project.portalIntake && project.portalIntake.rfisUrl) && intakeStatus !== "working" && (
             <div style={{ marginTop: 6 }}>
               <button onClick={setupIntakeFolders}
                 style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 5,
                   color: P.textDim, cursor: "pointer", fontSize: 11, padding: "3px 10px" }}
                 title={"Creates RFIs and Submittals folders under the Uploads folder, each with a blank form workbook and a readme, so the contractor submits through the portal instead of email. Meant for jobs where Setty is prime" + (settyIsPrimeHere ? "." : " (this project's Prime is not Setty).")}>
-                📨 Set Up RFI / Submittal Intake
+                📨 Set up contractor intake
               </button>
             </div>
           )}
@@ -31362,7 +31434,12 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projec
             </div>
           )}
           {(project.clientUploadsFolderUrl || project.settyDeliverablesFolderUrl) && (
-            <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center" }}>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: P.textDim, margin: "8px 0 4px", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+              People
+            </div>
+          )}
+          {(project.clientUploadsFolderUrl || project.settyDeliverablesFolderUrl) && (
+            <div style={{ marginTop: 2, display: "flex", gap: 8, alignItems: "center" }}>
               <button onClick={() => setShowSharingModal(true)}
                 style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 5,
                   color: P.textDim, cursor: "pointer", fontSize: 11, padding: "3px 10px" }}>
