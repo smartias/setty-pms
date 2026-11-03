@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v180-portal-acknowledge";
+    window.__appVersion = "2026-11-03-pms-v181-portal-return";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -103,6 +103,12 @@
 <script type="module">
   import * as PortalForms from "./portalForms.js";
   window.PortalForms = PortalForms;
+</script>
+<!-- The RFI response / submittal return document posted to the client
+     portal's Deliverables folder on prime jobs. Own block, same reason. -->
+<script type="module">
+  import * as PortalReturnDoc from "./portalReturnDoc.js";
+  window.PortalReturnDoc = PortalReturnDoc;
 </script>
   <script>
     // Theme preference: "system" (default, follows the OS), "light" or "dark".
@@ -6052,6 +6058,42 @@ function buildPortalAckEmail(project, item, isRFI) {
     + "<p style='font-size:11px;color:#44546A'>Please reply to this email with any questions.</p></div>";
 }
 
+// ── Portal return: post the response document to Deliverables (step 4) ───────
+// "<name> Deliverables/RFI Responses/<number> - <subject>/<number> - RFI
+// Response.docx" (Submittal Returns for submittals). The contractor already
+// reads Deliverables, so nothing is shared per item. Never overwrites: a
+// second return of the same item gets "-r2", "-r3", ... Uses the PM's own
+// token. Folder and file URLs come back from Graph, never assembled by hand.
+async function uploadPortalReturnDoc(project, item, type, bytes) {
+  const D = window.PortalReturnDoc;
+  if (!D) throw new Error("portalReturnDoc.js did not load. Reload the page and try again.");
+  const delivUrl = (project.settyDeliverablesFolderUrl || "").trim();
+  if (!delivUrl) throw new Error("This project has no portal Deliverables folder. Set up the client portal folders first.");
+  const driveId = SP_NYSHARE_DRIVE_ID;
+  const segs = safeDecodeFolderUrl(delivUrl).replace(/\/$/, "").split("/");
+  if (segs.length < 2) throw new Error("Cannot read the Deliverables folder path from its URL.");
+  const delivPath = segs.slice(-2).join("/");
+  const typePath = await ensureSpSubfolder(driveId, delivPath, D.RETURN_FOLDER[type]);
+  const itemName = D.returnItemFolderName(item, type);
+  if (!itemName) throw new Error("Cannot name the item's folder (no number or subject).");
+  const itemPath = await ensureSpSubfolder(driveId, typePath, itemName);
+  let saved = null, fileName = "";
+  for (let rev = 1; rev <= 9 && !saved; rev++) {
+    fileName = D.returnFileName(item, type, rev);
+    try {
+      const r = await graphFetch("PUT",
+        "/drives/" + driveId + "/root:/" + encodeSpPath(itemPath) + "/" + encodeURIComponent(fileName) + ":/content?@microsoft.graph.conflictBehavior=fail", bytes);
+      if (r && r.id) saved = r;
+    } catch (e) {
+      // A name clash means an earlier return exists: keep it and take the next suffix.
+      if (!/409|conflict|nameAlreadyExists/i.test(String((e && e.message) || ""))) throw e;
+    }
+  }
+  if (!saved) throw new Error("Could not save the document: nine earlier returns already exist in that folder.");
+  const folder = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodeSpPath(itemPath) + "?$select=id,webUrl");
+  return { folderUrl: (folder && folder.webUrl) || "", fileUrl: saved.webUrl || "", fileName };
+}
+
 // ── TEAMS NOTIFICATIONS ───────────────────────────────────────────────────────
 // Opt-in per project. Creates a dedicated channel in the NYC Project Team and
 // posts Adaptive Cards whenever milestones, RFIs, submittals, COs, or team
@@ -11277,6 +11319,9 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const isPortalIntake = !!(form.intake && form.intake.by === "portal-ca-intake" && form.intake.driveItemId);
   const [ackStatus, setAckStatus] = React.useState("idle"); // idle | working | done | error
   const [ackMsg, setAckMsg]       = React.useState("");
+  // Return via portal (step 4): the response document posted to Deliverables.
+  const [portalReturnStatus, setPortalReturnStatus] = React.useState("idle"); // idle | working | done | error
+  const [portalReturnMsg, setPortalReturnMsg]       = React.useState("");
 
   function setF(k, v) { setForm(f => ({ ...f, [k]: v })); }
 
@@ -11646,7 +11691,9 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
     } catch (e) { setEmailStatus("error"); setEmailMsg("✗ " + e.message + " (the response is copied to your clipboard)"); }
   }
 
-  async function draftResponseEmail() {
+  // `portal` (from returnViaPortal): the Deliverables folder the document was
+  // posted to; the email then says so and links it.
+  async function draftResponseEmail(portal) {
     setEmailStatus("sending");
     const typLabel = isRFI ? "RFI" : "Submittal";
     const responseText = isRFI ? form.response : form.comments;
@@ -11670,12 +11717,20 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           + "<div style='font-size:11px;font-weight:700;color:#2E7D32;letter-spacing:1px;margin-bottom:4px'>SETTY " + (isRFI ? "RESPONSE" : "REVIEW COMMENTS") + "</div>"
           + "<div style='font-size:13px'>" + caNl(responseText) + "</div></div>"
         : "")
+      + (portal && portal.folderUrl
+        ? "<p style='font-size:12px'>This " + (isRFI ? "response" : "returned submittal") + " has been posted to the project portal: "
+          + "<a href='" + String(portal.fileUrl || portal.folderUrl).replace(/'/g, "%27") + "'>" + String(portal.folderUrl).replace(/</g, "&lt;") + "</a></p>"
+        : "")
       + "<p style='font-size:11px;color:#44546A'>Please contact us if you have any questions regarding the above.</p></div>";
     try {
       const prefix = isRFI ? "RFI Response" : ("Submittal Return — " + (form.stamp || ""));
       // Distribution list (project.caDistribution) plus, for an item logged
       // from a contractor's email, that sender.
-      const srcFrom = form.sourceEmail && /@/.test(form.sourceEmail.from || "") ? [form.sourceEmail.from] : [];
+      // ... or, for a portal-submitted item, the email on the contractor's form.
+      const srcFrom = [
+        form.sourceEmail && /@/.test(form.sourceEmail.from || "") ? form.sourceEmail.from : "",
+        form.contractorEmail && /@/.test(form.contractorEmail) ? form.contractorEmail : "",
+      ].filter(Boolean);
       const dist = window.PrimeCa ? window.PrimeCa.distributionFor(project, type, srcFrom) : { to: srcFrom, cc: [] };
       await createOutlookDraft({ subject: prefix + ": " + form.number + " — " + (isRFI ? form.title : form.description) + " · " + (project.name || "Project"), bodyHtml, to: dist.to, cc: dist.cc });
       // Prime jobs: record when it was issued (the day the response draft was
@@ -11689,6 +11744,42 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         ? " (To " + dist.to.length + ", Cc " + dist.cc.length + ")"
         : isPrimeJob ? ". No distribution list set: add recipients in Outlook, or set the list above the log" : ""));
     } catch(e) { setEmailStatus("error"); setEmailMsg("✗ " + e.message); }
+  }
+
+  // Step 4 of PROPOSAL-portal-ca-exchange.md: build the Word document, save
+  // it under the portal's Deliverables folder, record it on the item (saved at
+  // once, like createSpFolder, so closing without Save cannot lose the link),
+  // then draft the response email with the link.
+  async function returnViaPortal() {
+    const responseText = String((isRFI ? form.response : form.comments) || "").replace(/<[^>]+>|&nbsp;/g, "").trim();
+    if (!responseText) {
+      setPortalReturnStatus("error"); setPortalReturnMsg(isRFI ? "\u2717 Enter the response first." : "\u2717 Enter the review comments first."); return;
+    }
+    if (!isRFI && (!form.stamp || form.stamp === "\u2014")) {
+      setPortalReturnStatus("error"); setPortalReturnMsg("\u2717 Pick a review stamp first."); return;
+    }
+    setPortalReturnStatus("working");
+    setPortalReturnMsg("\u23f3 Building the document\u2026");
+    try {
+      const D = window.PortalReturnDoc;
+      if (!D) throw new Error("portalReturnDoc.js did not load. Reload the page and try again.");
+      const date = new Date().toISOString().slice(0, 10);
+      const reviewer = getCurrentUser();
+      const bytes = await D.buildReturnDocx({ entity: proposalEntity(project), project, item: formRef.current, type, date, reviewer });
+      setPortalReturnMsg("\u23f3 Saving it to the portal Deliverables folder\u2026");
+      const up = await uploadPortalReturnDoc(project, formRef.current, type, bytes);
+      const portalReturn = { at: new Date().toISOString(), by: reviewer, folderUrl: up.folderUrl, fileUrl: up.fileUrl, fileName: up.fileName, deliveryMode: "portal" };
+      const next = { ...formRef.current, portalReturn, issuedAt: formRef.current.issuedAt || portalReturn.at };
+      setForm(next);
+      if (onSave) onSave(next);
+      setPortalReturnMsg("\u23f3 Drafting the email\u2026");
+      await draftResponseEmail({ folderUrl: up.folderUrl, fileUrl: up.fileUrl });
+      setPortalReturnStatus("done");
+      setPortalReturnMsg("\u2713 Posted " + up.fileName + " to the portal; the email draft links it.");
+    } catch (e) {
+      setPortalReturnStatus("error");
+      setPortalReturnMsg("\u2717 " + e.message);
+    }
   }
 
   async function createSpFolder() {
@@ -11784,6 +11875,12 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
             <span style={{ flex: 1 }} />
             <Btn small variant="ghost" onClick={() => reviewIntakeStatus(true)} title="Put back the previous status (and date/stamp). The same email will not change it again.">Undo</Btn>
             <Btn small onClick={() => reviewIntakeStatus(false)} title="The change is right; stop showing this notice.">✓ Keep</Btn>
+          </div>
+        )}
+        {form.portalReturn && form.portalReturn.fileUrl && (
+          <div style={{ fontSize: 11.5, color: P.textMuted, marginBottom: 10 }}>
+            🌐 {isRFI ? "Response" : "Return"} posted to the client portal {String(form.portalReturn.at || "").slice(0, 10)}{form.portalReturn.by ? " by " + form.portalReturn.by : ""}.
+            {" "}<a href={form.portalReturn.fileUrl} target="_blank" rel="noreferrer" style={{ color: P.accentLight }}>{form.portalReturn.fileName || "Open document"}</a>
           </div>
         )}
         {/* Review-ready banner: a fresh Claude review landed while this modal was open */}
@@ -12168,12 +12265,21 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
                 ↩ Reply in Procore
               </Btn>
             )}
-            <Btn small variant="primary" onClick={draftResponseEmail}>
+            {project.settyDeliverablesFolderUrl && (
+              <Btn small variant="primary" onClick={returnViaPortal} disabled={portalReturnStatus === "working"}
+                title={"Writes a Word document with the " + (isRFI ? "response" : "review comments and stamp") + " into the client portal's Deliverables folder (" + (isRFI ? "RFI Responses" : "Submittal Returns") + "), records it on this item, and drafts the email with the link. The contractor already has read access there; you check the draft and press Send."}>
+                {portalReturnStatus === "working" ? "\u23f3 Returning\u2026" : "\ud83c\udf10 Return via Portal"}
+              </Btn>
+            )}
+            <Btn small variant="primary" onClick={() => draftResponseEmail()}>
               ✉ {isRFI ? "Draft Response" : "Draft Return"}
             </Btn>
           </div>
           {emailMsg && (
             <span role="status" style={{ fontSize: 11, color: emailStatus === "done" ? P.green : P.red, fontWeight: 500 }}>{emailMsg}</span>
+          )}
+          {portalReturnMsg && (
+            <span role="status" style={{ fontSize: 11, color: portalReturnStatus === "done" ? P.green : portalReturnStatus === "error" ? P.red : P.textDim, fontWeight: 500 }}>{portalReturnMsg}</span>
           )}
           <div style={{ display: "flex", gap: 8 }}>
             <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
