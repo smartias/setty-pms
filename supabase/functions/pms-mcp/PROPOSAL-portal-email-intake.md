@@ -285,3 +285,11 @@ weekly digest.
   architects' Info Exchanges numbering one item differently (Tabler: Stantec
   `RFI:00001` vs Page `RFI:188.1`). The title match catches the common case;
   the Unreviewed check catches the rest.
+
+## Status updates (2026-11-03)
+
+The plan's step 2.3 ("a match with a status or revision event updates the
+item's status") is built, forward-only and undoable: `statusUpdateFor` /
+`applyStatusUpdates` in `caIntake.js`, applied by the scheduled route.
+Revision events still do not write (a new revision is a new log row a
+person creates from the tracker's UPDATE badge).

@@ -1009,6 +1009,19 @@ Import.
   does not backfill old closed items (those stay importable by hand). An
   item's full email history still builds it. Newforma `RE:` / `FW:` /
   automatic replies are never events.
+- **Status updates on logged items** (2026-11-03). A closing or answering
+  event from the project's portal moves a logged item FORWARD: RFI Open →
+  Responded ("Response to RFI") → Closed ("RFI Closed", Newforma "Responded
+  to and Closed"); submittal → Returned (Procore distribution or Setty
+  approver response, Forma status Closed, Newforma closed), with the stamp
+  only when none is recorded and the responded/returned date only when
+  empty. Never backwards, never Void, never response/comment text, never on
+  a title-only match, an ambiguous number, or another revision. The item
+  carries `intakeStatus` (`from`, `to`, `prev`, `vendor`, `eventDate`,
+  `reviewed`); the PMS shows "↻ Closed by Procore" with Keep / Undo, and an
+  undo is never re-applied by the same email. The response reports
+  `updated` and `statusChanges`; `statusUpdates: false` in the deps (or a
+  dry run) writes none.
 - **Marked for review.** Each new record has `intakeReviewed: false` and
   `intake: {at, by: "ca-items-intake", vendor}`. Same ids as the tracker's
   import (`sync-procore-<pid>-<n>`, `sync-nf-<pid>-<base>`), so a manual import
@@ -1026,7 +1039,7 @@ Import.
 Turning it on, in order:
 
 1. Deploy (Actions → "Deploy pms-mcp" → Run workflow on `main`) and confirm
-   `/health` reports build `2026-11-03-ca-intake-forma-newforma`.
+   `/health` reports build `2026-11-03-ca-intake-status-updates`.
 2. Schedule it, copying the secret from the job that already carries it. It
    is still a dry run:
 

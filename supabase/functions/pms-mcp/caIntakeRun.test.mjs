@@ -169,3 +169,31 @@ test("an unconfirmed project stays Procore-only even when the route allows all p
   assert.deepEqual(s.created, { rfi: 1, submittal: 1 });
   assert.deepEqual(h.projects.p1.rfis.map((x) => x.number), ["RFI-017"]);
 });
+
+test("status updates through the loop: written once, reported, idempotent; dry run writes nothing", async () => {
+  const logged = () => ({ ...P1(), rfis: [{ id: "r17", number: "RFI-017", title: "New Riser Installation Requirements", status: "Open", response: "x" }] });
+  const emails = [
+    mail("21417-215, NVCC: New RFI #17, New Riser Installation Requirements", "2026-10-25T10:00:00Z"),
+    mail("21417-215, NVCC: RFI Closed, #17, New Riser Installation Requirements", "2026-10-30T13:00:00Z"),
+  ];
+  const h = harness({ projects: { p1: logged() }, emails: { p1: emails } });
+  const s = await runIntakePass(h.deps);
+  assert.deepEqual([s.created, s.updated], [{ rfi: 0, submittal: 0 }, { rfi: 1, submittal: 0 }]);
+  assert.deepEqual(s.statusChanges, [{ project: "21417-215", kind: "rfi", number: "RFI-017", from: "Open", to: "Closed" }]);
+  const r = h.projects.p1.rfis[0];
+  assert.deepEqual([r.status, r.dateResponded, r.response, r.intakeStatus.from, r.intakeStatus.reviewed], ["Closed", "2026-10-30", "x", "Open", false]);
+  const s2 = await runIntakePass(h.deps);
+  assert.deepEqual(s2.updated, { rfi: 0, submittal: 0 });
+  assert.deepEqual(h.writes, ["p1"], "the second run wrote nothing");
+
+  const d = harness({ projects: { p1: logged() }, emails: { p1: emails } });
+  d.deps.dryRun = true;
+  const sd = await runIntakePass(d.deps);
+  assert.deepEqual(sd.updated, { rfi: 1, submittal: 0 });
+  assert.deepEqual(d.writes, []);
+  assert.equal(d.projects.p1.rfis[0].status, "Open");
+
+  const off = harness({ projects: { p1: logged() }, emails: { p1: emails } });
+  off.deps.statusUpdates = false;
+  assert.deepEqual((await runIntakePass(off.deps)).updated, { rfi: 0, submittal: 0 });
+});
