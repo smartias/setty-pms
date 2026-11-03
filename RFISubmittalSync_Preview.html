@@ -15,7 +15,7 @@
           --accent:#38bdf8; --primary-bg:#38bdf8; --on-primary:#04240f; --go-bg:#10b981; --on-go:#04240f; --btn-bg:#334155; --btn-txt:#e2e8f0;
           --ok:#10b981; --ok-line:#14532d; --new:#f59e0b; --new-badge:#f59e0b; --matched:#475569; --matched-txt:#cbd5e1; --update:#0ea5e9;
           --danger:#ef4444; --danger-line:#7f1d1d; --danger-txt:#fca5a5; --late:#f87171; --warn:#fbbf24;
-          --guide-bg:#0e1b2e; --guide-line:#1e3a5f; --inbox-bg:#1a2436; --plat-bg:#1e3a5f; --plat-txt:#93c5fd;
+          --inbox-bg:#1a2436; --plat-bg:#1e3a5f; --plat-txt:#93c5fd;
           --overlay:rgba(0,0,0,.55); --shadow:rgba(0,0,0,.5); --justnew:rgba(16,185,129,.07);
           --due-late-bg:rgba(248,113,113,.13); --due-late-line:rgba(248,113,113,.35); --due-soon-bg:rgba(245,158,11,.13); --due-soon-line:rgba(245,158,11,.35);
           --due-ok:#34d399; --due-ok-bg:rgba(16,185,129,.12); --due-ok-line:rgba(16,185,129,.3); --late-row:rgba(248,113,113,.06); --unrev-bg:rgba(245,158,11,.15); --intake-bg:rgba(245,158,11,.10);
@@ -26,7 +26,7 @@
           --accent:#0369a1; --primary-bg:#0284c7; --on-primary:#ffffff; --go-bg:#059669; --on-go:#ffffff; --btn-bg:#e2e8f0; --btn-txt:#0f172a;
           --ok:#047857; --ok-line:#86efac; --new:#b45309; --new-badge:#f59e0b; --matched:#e2e8f0; --matched-txt:#334155; --update:#0ea5e9;
           --danger:#b91c1c; --danger-line:#fca5a5; --danger-txt:#b91c1c; --late:#b91c1c; --warn:#b45309;
-          --guide-bg:#eff6ff; --guide-line:#bfdbfe; --inbox-bg:#fffbeb; --plat-bg:#dbeafe; --plat-txt:#1d4ed8;
+          --inbox-bg:#fffbeb; --plat-bg:#dbeafe; --plat-txt:#1d4ed8;
           --overlay:rgba(15,23,42,.45); --shadow:rgba(15,23,42,.18); --justnew:rgba(5,150,105,.10);
           --due-late-bg:#fee2e2; --due-late-line:#fca5a5; --due-soon-bg:#fef3c7; --due-soon-line:#fcd34d;
           --due-ok:#047857; --due-ok-bg:#d1fae5; --due-ok-line:#6ee7b7; --late-row:rgba(185,28,28,.05); --unrev-bg:#fef3c7; --intake-bg:#fffbeb;
@@ -51,18 +51,20 @@
   .sub { color:var(--muted); font-size:13px; }
   .pickbar { padding:12px 24px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; background:var(--bg2); }
   .pickbar select, .pickbar input { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:7px; padding:7px 10px; font-size:13px; }
-  .pickbar select#picker { min-width:320px; }
+  /* Project picker: one searchable box. Type a number, name, GC or platform;
+     pick with the mouse or arrow keys + Enter. */
+  .combo { position:relative; flex:1 1 320px; max-width:600px; }
+  .combo input { width:100%; padding-right:34px; }
+  .combo .combo-toggle { position:absolute; right:4px; top:50%; transform:translateY(-50%); background:none; border:0; color:var(--muted); padding:4px 8px; font-size:12px; cursor:pointer; }
+  #projList { position:absolute; top:calc(100% + 4px); left:0; right:0; max-height:340px; overflow:auto; margin:0; padding:4px; list-style:none; background:var(--bg2); border:1px solid var(--line); border-radius:10px; z-index:40; box-shadow:0 10px 30px var(--shadow); }
+  #projList li { padding:7px 10px; border-radius:6px; cursor:pointer; font-size:13px; }
+  #projList li.hi { background:var(--hover); }
+  #projList li[aria-selected="true"] { color:var(--accent); font-weight:600; }
   .pickbar .right { margin-left:auto; display:flex; gap:8px; align-items:center; }
   .picknote { color:var(--muted); font-size:12px; }
   .filterbar { padding:9px 24px; border-bottom:1px solid var(--line); display:none; gap:9px; align-items:center; flex-wrap:wrap; background:var(--bg3); }
   .filterbar select, .filterbar input { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:7px; padding:6px 9px; font-size:13px; }
   .filterbar .spacer { flex:1; }
-  .guide { margin:14px 24px 0; border:1px solid var(--guide-line); background:var(--guide-bg); border-radius:10px; }
-  .guide h2 { margin:0; font-size:13px; font-weight:600; }
-  .guide h2 button { all:unset; box-sizing:border-box; display:flex; align-items:center; gap:8px; width:100%; padding:10px 14px; cursor:pointer; font:inherit; }
-  .guide h2 button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
-  .guide .body { padding:0 16px 14px; font-size:13px; color:var(--txt2); }
-  .wf { border-collapse:collapse; margin:4px 0; } .wf td { border:none; padding:5px 10px 5px 0; vertical-align:top; } .wf td:first-child { font-size:15px; white-space:nowrap; } .wf td:nth-child(2){ white-space:nowrap; color:var(--strong); font-weight:600; }
   .legend { display:flex; gap:14px; flex-wrap:wrap; margin-top:10px; font-size:12px; color:var(--muted); align-items:center; }
   #out { padding:8px 24px 90px; }
   .sec { margin-top:18px; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
@@ -162,16 +164,17 @@
 
 <main>
 <div class="pickbar">
-  <label class="muted" for="filter">Filter projects</label>
-  <input id="filter" placeholder="filter projects / platform…" oninput="rebuildPicker()" style="width:140px" />
-  <label class="sr-only" for="picker">Project</label>
-  <select id="picker" onchange="selectProject(this.value)"></select>
+  <label class="muted" for="projInput">Project</label>
+  <div class="combo">
+    <input id="projInput" type="text" role="combobox" aria-expanded="false" aria-controls="projList" aria-autocomplete="list" autocomplete="off"
+      placeholder="Type a project number, name, GC or platform…" onfocus="comboFocus(event)" oninput="comboInput(event)" onkeydown="comboKey(event)" onblur="comboBlur()" />
+    <button type="button" class="combo-toggle" aria-label="Show the project list" tabindex="-1" onmousedown="event.preventDefault()" onclick="comboToggle()">▾</button>
+    <ul id="projList" role="listbox" aria-label="Projects" hidden></ul>
+  </div>
   <span id="picknote" class="picknote"></span>
   <span class="right">
     <button type="button" class="ghost" id="themeBtn" style="font-size:12px" onclick="toggleTheme()">☀ Light theme</button>
     <button type="button" class="ghost" style="font-size:12px" onclick="openReport()" title="Open RFIs &amp; submittals across all CA projects, filtered by PM — printable (save as PDF) or CSV for Excel">📊 Open-items report</button>
-    <label class="muted" for="who">You</label>
-    <input id="who" placeholder="your name (for the log)" style="width:170px" oninput="saveWho()" />
   </span>
 </div>
 
@@ -181,26 +184,13 @@
   <select id="fDisc" aria-label="Filter by discipline" onchange="setF('disc',this.value)"></select>
   <select id="fStatus" aria-label="Filter by status" onchange="setF('status',this.value)"></select>
   <input id="fText" aria-label="Search by number, title, spec, or sender" placeholder="search # · title · spec · from…" oninput="setF('text',this.value)" style="width:220px" />
-  <button type="button" class="chip" id="fMine" aria-pressed="false" onclick="toggleMine()" title="Only items assigned to you — matched by your sign-in or the name in the You box">👤 Mine</button>
+  <button type="button" class="chip" id="fMine" aria-pressed="false" onclick="toggleMine()" title="Only items assigned to you (matched by your sign-in)">👤 Mine</button>
   <button type="button" class="chip" id="fUnrev" aria-pressed="false" onclick="toggleUnrev()" title="Only auto-imported items nobody has confirmed yet">📥 Unreviewed</button>
   <button class="ghost" onclick="clearFilters()" title="Back to the default view: all types, all disciplines, open items">Reset</button>
   <span id="filterCount" role="status" class="muted" style="font-size:13px"></span>
 </div>
 
 <div id="portal" class="portal" style="display:none" aria-live="polite"></div>
-<div class="guide" id="guide">
-  <h2><button type="button" id="gtoggle" aria-expanded="true" aria-controls="gbody" onclick="toggleGuide()"><span id="gchev" aria-hidden="true">▾</span> <span aria-hidden="true">ℹ️</span> How RFIs &amp; Submittals work here — what to log, where, and when</button></h2>
-  <div class="body" id="gbody">
-    <table class="wf">
-      <tr><td><span aria-hidden="true">1️⃣</span></td><td>An RFI/submittal email lands</td><td>Log or respond right from the <b>Outlook add-in</b> on that email — that's the day-to-day home for entering them, since you're already in the message.</td></tr>
-      <tr><td><span aria-hidden="true">2️⃣</span></td><td>It came through a portal (Procore / Forma / Newforma / Kahua)</td><td>Those arrive as notification emails. Come here, pick the job, and <b><span aria-hidden="true">📥</span> Import</b> the new ones in bulk — no re-typing. <span class="muted">(Procore items also sync in on their own every 15 minutes, marked <b>Unreviewed</b>, once the automatic import is switched on.)</span></td></tr>
-      <tr><td><span aria-hidden="true">3️⃣</span></td><td>You need the whole picture</td><td>This Tracker is the <b>project-wide view</b> — every RFI/submittal on a job, filter &amp; search by type/discipline/status, and <b>+ Add / edit</b> by hand when you're not in Outlook (a phoned-in RFI, cleanup, a one-off).</td></tr>
-    </table>
-    <div class="muted" style="font-size:12px;margin-top:8px">Only jobs marked <b>"In Construction Administration"</b> appear (<span aria-hidden="true">⚡</span> = has portal email filed: Procore, Forma, Newforma or Kahua). Put your <b>name</b> in the "You" box (top-right) so the log shows who added or changed each item. Safe by design: it never overwrites someone else's edit — it asks you to refresh instead.</div>
-    <div class="muted" style="font-size:12px;margin-top:6px">In the lists: <span class="due late" style="margin-left:0">Overdue 3d</span> / <span class="due soon" style="margin-left:0">Due in 2d</span> show how close each open item is to its due date; <span class="badge unrev">Unreviewed</span> marks items the automatic import logged that nobody has checked yet — open one and press <b>Confirm</b> once the discipline, assignee and dates look right.</div>
-  </div>
-</div>
-
 <div id="out"><p class="empty">Loading projects…</p></div>
 </main>
 
@@ -233,18 +223,11 @@ const H = { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + SUPABASE_A
 const settyAuthReady = (window.settyAuth ? settyAuth.init() : Promise.resolve(null)).catch(() => null)
   .then(() => { if (window.settyAuth) H.Authorization = "Bearer " + settyAuth.token(); });
 if (window.settyAuth) {
-  settyAuth.onChange(() => { H.Authorization = "Bearer " + settyAuth.token(); syncWho(); placePill(); });
+  settyAuth.onChange(() => { H.Authorization = "Bearer " + settyAuth.token(); placePill(); });
   settyAuth.mountPill();
 }
 // "You" comes from the sign-in when there is one (read-only then); the free-text
 // box stays as the fallback while signed out, so the log always names someone.
-function syncWho(){
-  const el=document.getElementById("who"); if(!el) return;
-  const signedIn=!!(window.settyAuth&&settyAuth.isSignedIn&&settyAuth.isSignedIn());
-  const name=signedIn?String(settyAuth.displayName&&settyAuth.displayName()||"").trim():"";
-  if(name){ el.value=name; el.readOnly=true; el.title="From your sign-in"; saveWho(); }
-  else { el.readOnly=false; el.title=""; }
-}
 // The suite's floating sign-in pill sits bottom-right by default, over the
 // table and the toast — park it in the project bar instead.
 function placePill(){
@@ -275,8 +258,12 @@ const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&l
 const uid = () => Math.random().toString(36).slice(2,10);
 const today = () => new Date().toISOString().slice(0,10);
 function addWD(dateStr, days){ const d=new Date((dateStr||today())+"T00:00:00"); let c=0; while(c<days){ d.setDate(d.getDate()+1); const w=d.getDay(); if(w!==0&&w!==6)c++; } return d.toISOString().slice(0,10); }
-function getWho(){ return (document.getElementById("who").value||"").trim(); }
-function saveWho(){ try{ localStorage.setItem("rfiTrackUser", getWho()); }catch(e){} }
+// Who is making the change: the sign-in name (the suite's shared session).
+// Signed out, there is no name, and a save is logged as "(unknown)".
+function getWho(){
+  try{ if(window.settyAuth&&settyAuth.isSignedIn&&settyAuth.isSignedIn()) return String((settyAuth.displayName&&settyAuth.displayName())||(settyAuth.email&&settyAuth.email())||"").trim(); }catch(e){}
+  return "";
+}
 let _toastTimer=null;
 function toast(msg, ok, action){
   const t=document.getElementById("toast"); clearTimeout(_toastTimer);
@@ -295,7 +282,6 @@ function toastErr(err){ const msg=(err&&err.message)||String(err); toast(msg, fa
 function applyTheme(t){ if(t==="light") document.documentElement.setAttribute("data-theme","light"); else document.documentElement.removeAttribute("data-theme");
   const b=document.getElementById("themeBtn"); if(b){ b.textContent=t==="light"?"🌙 Dark theme":"☀ Light theme"; b.title=t==="light"?"Switch back to the dark theme":"Switch to a light theme — easier to read next to printed drawings"; } }
 function toggleTheme(){ const t=document.documentElement.getAttribute("data-theme")==="light"?"dark":"light"; try{ localStorage.setItem("rfiTrackTheme",t); }catch(e){} applyTheme(t); }
-function toggleGuide(){ const b=document.getElementById("gbody"), c=document.getElementById("gchev"); const open=b.style.display!=="none"; b.style.display=open?"none":"block"; c.textContent=open?"▸":"▾"; const g=document.getElementById("gtoggle"); if(g)g.setAttribute("aria-expanded",String(!open)); try{localStorage.setItem("rfiTrackGuide",open?"0":"1");}catch(e){} }
 
 // Matching (NEW / matched / UPDATE), discipline inference and the record
 // builders live in caIntake.js (buildInbox), shared with the connector's intake.
@@ -389,9 +375,7 @@ const FILTER_DEFAULT=()=>({type:"all",disc:"all",status:"__open__",text:"",mine:
 let PROJECTS=[], CURRENT=null, FILTER=FILTER_DEFAULT();
 async function init(){
   try{ applyTheme(localStorage.getItem("rfiTrackTheme")==="light"?"light":"dark"); }catch(e){}
-  try{ document.getElementById("who").value = localStorage.getItem("rfiTrackUser")||""; syncWho(); placePill();
-       const g=localStorage.getItem("rfiTrackGuide");
-       if(g==="0") toggleGuide(); else if(g===null) localStorage.setItem("rfiTrackGuide","0"); }catch(e){}
+  try{ placePill(); }catch(e){}
   document.getElementById("fDisc").innerHTML = `<option value="all">All disciplines</option><option value="__unset__">(unset)</option>`+ALL_DISC.map(d=>`<option>${esc(d)}</option>`).join("");
   const opt=s=>`<option>${esc(s)}</option>`;
   document.getElementById("fStatus").innerHTML = `<option value="all">All statuses</option><option value="__open__">Open (active)</option><option value="__unreviewed__">Unreviewed (auto-imported)</option>`+
@@ -407,8 +391,7 @@ async function init(){
       .sort((a,b)=>(b.activity-a.activity)||(a.number||a.name).localeCompare(b.number||b.name));
     const caActive=PROJECTS.filter(p=>p.activity).length, unset=PROJECTS.filter(p=>!p.platform).length;
     document.getElementById("picknote").textContent=`${PROJECTS.length} In Construction Administration · ${caActive} with portal email${unset?` · ${unset} platform not set`:""}`;
-    rebuildPicker();
-    if(PROJECTS.length){ document.getElementById("picker").value="__ALL__"; selectAll(); }
+    if(PROJECTS.length){ comboSelect("__ALL__"); }
     else document.getElementById("out").innerHTML=`<p class="empty">No projects are marked "In Construction Administration".</p>`;
   }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
 }
@@ -492,10 +475,58 @@ async function writeProject(pid, mutate){
   return true;
 }
 
-function rebuildPicker(){ const f=(document.getElementById("filter").value||"").toLowerCase(); const sel=document.getElementById("picker"); const keep=sel.value;
-  const list=PROJECTS.filter(p=>!f||(p.number+" "+p.name+" "+platLabel(p)+" "+p.gc).toLowerCase().includes(f));
-  sel.innerHTML=`<option value="__ALL__">★ All projects (${PROJECTS.length})</option>`+list.map(p=>`<option value="${p.id}">${esc(p.number?p.number+" — ":"")}${esc(p.name)}${platLabel(p)?" · "+esc(platLabel(p)):""}</option>`).join("");
-  if(keep==="__ALL__"||list.some(p=>p.id===keep)) sel.value=keep; }
+/* ---- project picker: a searchable combobox ----
+   One box: the selected project's label sits in it; focusing it opens the
+   whole list, typing narrows the list by number, name, GC or platform, and
+   Enter / click picks. Escape or clicking away puts the selected label back. */
+const COMBO={ open:false, hi:-1, items:[], selectedId:"__ALL__" };
+function comboLabel(p){ return p.id==="__ALL__" ? `★ All projects (${PROJECTS.length})` : `${p.number?p.number+" — ":""}${p.name}${platLabel(p)?" · "+platLabel(p):""}`; }
+function comboItems(q){
+  q=(q||"").toLowerCase().trim();
+  const list=PROJECTS.filter(p=>!q||(p.number+" "+p.name+" "+platLabel(p)+" "+p.gc).toLowerCase().includes(q));
+  return ((!q||"all projects".includes(q))?[{id:"__ALL__"}]:[]).concat(list);
+}
+function comboSelectedLabel(){ if(COMBO.selectedId==="__ALL__") return comboLabel({id:"__ALL__"}); const p=PROJECTS.find(x=>x.id===COMBO.selectedId); return p?comboLabel(p):""; }
+function comboRender(q){
+  const ul=document.getElementById("projList"), inp=document.getElementById("projInput");
+  COMBO.items=comboItems(q); COMBO.hi=COMBO.items.length?0:-1;
+  ul.innerHTML=COMBO.items.length
+    ? COMBO.items.map((p,i)=>`<li role="option" id="projOpt${i}" aria-selected="${p.id===COMBO.selectedId}" onmousedown="event.preventDefault();comboPick(${i})">${esc(comboLabel(p))}</li>`).join("")
+    : `<li class="muted" style="font-size:12px;cursor:default">No project matches "${esc(q)}"</li>`;
+  ul.hidden=false; COMBO.open=true; inp.setAttribute("aria-expanded","true"); comboHiSync();
+}
+function comboHiSync(){
+  const ul=document.getElementById("projList"), inp=document.getElementById("projInput");
+  [...ul.children].forEach((li,i)=>li.classList.toggle("hi",i===COMBO.hi));
+  if(COMBO.hi>=0) inp.setAttribute("aria-activedescendant","projOpt"+COMBO.hi); else inp.removeAttribute("aria-activedescendant");
+  const li=ul.children[COMBO.hi]; if(li&&li.scrollIntoView) li.scrollIntoView({block:"nearest"});
+}
+function comboClose(restore){
+  const ul=document.getElementById("projList"), inp=document.getElementById("projInput");
+  ul.hidden=true; COMBO.open=false; inp.setAttribute("aria-expanded","false"); inp.removeAttribute("aria-activedescendant");
+  if(restore) inp.value=comboSelectedLabel();
+}
+function comboPick(i){ const p=COMBO.items[i]; if(p) comboSelect(p.id); }
+function comboSelect(id){
+  COMBO.selectedId=id; const inp=document.getElementById("projInput");
+  inp.value=comboSelectedLabel(); comboClose(false); inp.blur();
+  selectProject(id);
+}
+function comboFocus(e){ e.target.select(); comboRender(""); }          // whole list; typing replaces the label
+function comboInput(e){ comboRender(e.target.value); }
+function comboBlur(){ setTimeout(()=>{ if(COMBO.open) comboClose(true); },120); }
+// The arrow must render the list itself: after Escape the input keeps focus,
+// so focus() alone would not fire onfocus and the list could not reopen.
+function comboToggle(){ const inp=document.getElementById("projInput"); if(COMBO.open) comboClose(true); else { inp.focus(); inp.select(); comboRender(""); } }
+function comboKey(e){
+  const inp=e.target;
+  if(e.key==="ArrowDown"){ e.preventDefault(); if(!COMBO.open) comboRender(""); else if(COMBO.hi<COMBO.items.length-1){ COMBO.hi++; comboHiSync(); } }
+  else if(e.key==="ArrowUp"){ e.preventDefault(); if(COMBO.open&&COMBO.hi>0){ COMBO.hi--; comboHiSync(); } }
+  else if(e.key==="Enter"){ if(COMBO.open){ e.preventDefault(); if(COMBO.hi>=0) comboPick(COMBO.hi); } }
+  else if(e.key==="Escape"){ if(COMBO.open){ e.preventDefault(); comboClose(true); } }
+}
+// Labels can change (a platform was confirmed): refresh what the box shows.
+function rebuildPicker(){ const inp=document.getElementById("projInput"); if(inp&&!COMBO.open) inp.value=comboSelectedLabel(); }
 
 async function selectAll(){
   document.getElementById("out").innerHTML=`<p class="empty">Loading all Construction-Admin projects…</p>`;
@@ -547,10 +578,10 @@ function syncFilterUi(){
 }
 // Reset = back to the view the page opens on (open items), not "everything".
 function clearFilters(){ FILTER=FILTER_DEFAULT(); syncFilterUi(); renderProject(); }
-function toggleMine(){ if(!FILTER.mine&&!myIdentity()){ toast("Put your name in the You box (or sign in) so the Mine filter knows who you are.", false); return; } FILTER.mine=!FILTER.mine; syncFilterUi(); renderProject(); }
+function toggleMine(){ if(!FILTER.mine&&!myIdentity()){ toast("Sign in so the Mine filter knows who you are.", false); return; } FILTER.mine=!FILTER.mine; syncFilterUi(); renderProject(); }
 function toggleUnrev(){ FILTER.status=FILTER.status==="__unreviewed__"?"__open__":"__unreviewed__"; syncFilterUi(); renderProject(); }
-// Who "me" is: the sign-in email when signed in, else the name typed in the You
-// box. Matched against the project's team members by email, then by name.
+// Who "me" is: the sign-in email and display name, matched against the
+// project's team members by email, then by name.
 function myIdentity(){ const email=String(window.settyAuth&&settyAuth.email&&settyAuth.email()||"").trim().toLowerCase(); const name=getWho().toLowerCase(); return (email||name)?{email,name}:null; }
 function isMine(r){ const me=myIdentity(); if(!me) return false; const team=teamOf(r);
   return (r.assignedTo||[]).some(id=>{ const m=team.find(t=>t.id===id); if(!m) return false;
@@ -696,7 +727,7 @@ function renderSection(kind, title, logged, inbox){
   }
   sec.innerHTML=html; return {el:sec, total:logged.length, shown:shown.length};
 }
-function pickProject(id){ const f=document.getElementById("filter"); if(f.value){ f.value=""; rebuildPicker(); } document.getElementById("picker").value=id; window.scrollTo(0,0); selectProject(id); }
+function pickProject(id){ window.scrollTo(0,0); comboSelect(id); }
 // A NEW item whose latest portal email is older than this is unticked by
 // default. Nearly every Newforma item has only its "Forwarded" (assignment)
 // email on file, so an old one imports as Open / Received with nothing to
