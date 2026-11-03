@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v173-kahua";
+    window.__appVersion = "2026-11-03-pms-v174-construction-changes";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -79,6 +79,18 @@
 <script type="module">
   import * as OneNoteImport from "./onenote-import.js";
   window.OneNoteImport = OneNoteImport;
+</script>
+<!-- Construction administration when Setty is PRIME (RFI / submittal numbering,
+     routing to subs, intake from contractor emails). Own block so a missing
+     file cannot take down the imports above; callers fall back without it. -->
+<script type="module">
+  import * as PrimeCa from "./primeCa.js";
+  window.PrimeCa = PrimeCa;
+</script>
+<!-- Construction Changes tab (ASI / PR / CCD / COR / CO). Own block, same reason. -->
+<script type="module">
+  import * as ConstructionChanges from "./constructionChanges.js";
+  window.ConstructionChanges = ConstructionChanges;
 </script>
   <script>
     // Theme preference: "system" (default, follows the OS), "light" or "dark".
@@ -6232,15 +6244,19 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml, metadata = nu
 }
 
 
-async function createOutlookDraft({ subject, bodyHtml, bodyText, metadata = null }) {
+async function createOutlookDraft({ subject, bodyHtml, bodyText, metadata = null, to = [], cc = [] }) {
   const token = await getToken();
   const footer = metadata ? buildEmailMetadataFooter(metadata) : "";
   const content = (bodyHtml || bodyText || "") + footer;
+  // Optional recipients (RFI/submittal distribution lists, the sub's email);
+  // the person still reviews the draft and presses Send in Outlook.
+  const recips = list => (list || []).filter(Boolean).map(address => ({ emailAddress: { address } }));
   const body = {
     subject,
     body: { contentType: "HTML", content },
-    toRecipients: [],
+    toRecipients: recips(to),
   };
+  if (cc && cc.length) body.ccRecipients = recips(cc);
   const res = await fetch("https://graph.microsoft.com/v1.0/me/messages", {
     method: "POST",
     headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
@@ -10789,7 +10805,9 @@ function caBackloadSeatUrl(project, type) {
     "Use the Setty PMS connector and the submittal-rfi-review skill: find the filed " + (isRFI ? "RFI" : "submittal") + " PDF or the transmittal / Procore / Forma notification email in the project, extract the item's number and fields, log it with backload_ca_item, then review it against the current issued set and the governing spec section" + (isRFI ? "" : " — including reading the submitted cut sheet to confirm the MARKED selection (what's circled/highlighted/checked) against the spec and schedule basis of design") + " and save the suggestion with save_ca_review so it appears in the PMS for my sign-off. If you can't find the source, ask me for the item number or the file.",
   ].join("\n"));
 }
-const RFI_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Multi-Discipline", "Other"];
+// Architectural / Structural / Civil: RFIs answered by our subconsultants on
+// jobs where Setty is prime.
+const RFI_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Architectural", "Structural", "Civil", "Multi-Discipline", "Other"];
 const SUBMITTAL_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Architectural", "Structural", "Civil", "Other"];
 
 const RFI_STATUS_COLORS = {
@@ -10902,11 +10920,45 @@ function SlaChip({ dueDate, isClosed }) {
   );
 }
 
-function newRFI(cos, dueDays) {
+// ─── PRIME CA HELPERS (primeCa.js → window.PrimeCa) ──────────────────────────
+// When Setty is prime there is no Procore/Newforma: the PMS log is the official
+// record. The rules live in primeCa.js (tested by primeCa.test.mjs); these
+// wrappers keep the page working if that module failed to load.
+function caSettyIsPrime(project) {
+  const L = window.PrimeCa;
+  return L ? L.settyIsPrime(project) : isSettyFirm(project && project.prime);
+}
+function caNumberValue(num) {
+  const m = String(num == null ? "" : num).match(/(\d+)(?:\.\d+)?\s*$/);
+  return m ? parseInt(m[1], 10) : null;
+}
+// Next log number: one past the highest ever used (items in the log plus the
+// project's high-water mark, which remembers deleted ones). The old rule,
+// count + 1, reissued numbers after a delete and could duplicate one.
+function caNextNumber(items, type, highWater) {
+  const L = window.PrimeCa;
+  if (L) return L.nextCaNumber(items, type, highWater);
+  let max = +highWater || 0;
+  (items || []).forEach(it => { const n = caNumberValue(it && it.number); if (n != null && n > max) max = n; });
+  return { number: (type === "rfi" ? "RFI-" : "SUB-") + String(max + 1).padStart(3, "0"), value: max + 1 };
+}
+// The project with a new RFI/submittal appended and the high-water mark bumped.
+function caWithNewItem(project, type, item) {
+  const key = type === "rfi" ? "rfis" : "submittals";
+  const hw = { ...(project.caNumberHighWater || {}) };
+  hw[type] = Math.max(+hw[type] || 0, caNumberValue(item.number) || 0);
+  return { ...project, [key]: [...(project[key] || []), item], caNumberHighWater: hw };
+}
+// { ok, reason }: on prime jobs an issued (or emailed-in) item is voided, not deleted.
+function caDeleteGuard(project, item, type) {
+  const L = window.PrimeCa;
+  return L ? L.canDeleteCaItem(project, item, type) : { ok: true, reason: "" };
+}
+
+function newRFI(cos, dueDays, highWater) {
   const today = new Date().toISOString().slice(0, 10);
-  const num = cos.length + 1;
   return {
-    id: uid(), number: "RFI-" + String(num).padStart(3, "0"),
+    id: uid(), number: caNextNumber(cos, "rfi", highWater).number,
     title: "", description: "", from: "", discipline: "Mechanical",
     assignedTo: [], subAssigned: "",
     dateReceived: today, dueDate: addWD(today, dueDays || 5),
@@ -10916,11 +10968,10 @@ function newRFI(cos, dueDays) {
   };
 }
 
-function newSubmittal(subs, dueDays) {
+function newSubmittal(subs, dueDays, highWater) {
   const today = new Date().toISOString().slice(0, 10);
-  const num = subs.length + 1;
   return {
-    id: uid(), number: "SUB-" + String(num).padStart(3, "0"),
+    id: uid(), number: caNextNumber(subs, "submittal", highWater).number,
     specSection: "", description: "", from: "", discipline: "Mechanical",
     assignedTo: [], subAssigned: "",
     dateReceived: today, dueDate: addWD(today, dueDays || 10),
@@ -11095,6 +11146,36 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const dueDays = isRFI ? (project.rfiDueDays || 5) : (project.submittalDueDays || 10);
 
   function setF(k, v) { setForm(f => ({ ...f, [k]: v })); }
+
+  // ── Sub routing when Setty is prime (primeCa.js) ──────────────────────────
+  // form.subRouting = { subId, firm, sentAt, dueDate, respondedAt }. The sub's
+  // deadline defaults to 2 working days before the contractor's, so there is
+  // time to check their answer and issue it under Setty's name.
+  const isPrimeJob = caSettyIsPrime(project);
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const routing = form.subRouting || {};
+  const subDueValue = routing.dueDate || (window.PrimeCa ? window.PrimeCa.subDueDefault(form.dueDate, todayISO) : form.dueDate);
+  const routingState = window.PrimeCa ? window.PrimeCa.subRoutingState(form, todayISO) : { state: "none", daysLate: 0 };
+  function setRouting(patch) { setForm(f => ({ ...f, subRouting: { ...(f.subRouting || {}), ...patch } })); }
+  // Changing the sub after it was sent keeps the old routing in
+  // subRoutingHistory, so the record still shows who had it and when.
+  function changeSub(id) {
+    setForm(f => {
+      const r = f.subRouting || {};
+      const next = { ...f, subAssigned: id };
+      if (r.sentAt && r.subId && r.subId !== id) {
+        next.subRoutingHistory = [...(f.subRoutingHistory || []), { ...r, replacedAt: new Date().toISOString() }];
+        next.subRouting = {};
+      } else if (!id) next.subRouting = {};
+      return next;
+    });
+  }
+  // The sub answered: the ball comes back to Setty.
+  function markSubAnswered() {
+    const pending = isRFI ? "Pending Sub Response" : "Pending Sub Review";
+    setForm(f => ({ ...f, subRouting: { ...(f.subRouting || {}), respondedAt: todayISO },
+      status: f.status === pending ? (isRFI ? "Open" : "Under Review") : f.status }));
+  }
 
   // ── Claude review (submittal-rfi-review skill) ──────────────────────────
   // The connector's save_ca_review writes an `aiReview` block onto the record;
@@ -11320,7 +11401,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700;width:160px'>Project</td><td style='padding:8px 12px'>" + (project.name || "—") + "</td></tr>"
         + "<tr><td style='padding:8px 12px;font-weight:700'>" + typLabel + " #</td><td style='padding:8px 12px'>" + form.number + "</td></tr>"
         + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Description</td><td style='padding:8px 12px'>" + (isRFI ? form.title : form.description) + "</td></tr>"
-        + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Response Needed By</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(form.dueDate) + "</td></tr>"
+        + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Response Needed By</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(isPrimeJob ? subDueValue : form.dueDate) + "</td></tr>"
       + "</table>"
       + questionEmailBlock()
       + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
@@ -11328,9 +11409,12 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       + aiEmailSection(false)
       + "<p style='font-size:11px;color:#44546A'>Please send your response to this email. Thank you.</p></div>";
     try {
-      await createOutlookDraft({ subject: typLabel + " — " + form.number + " — " + (isRFI ? form.title : form.description) + " · Sub Response Requested", bodyHtml });
+      const sub = subList.find(x => x.id === form.subAssigned) || null;
+      await createOutlookDraft({ subject: typLabel + " — " + form.number + " — " + (isRFI ? form.title : form.description) + " · Sub Response Requested", bodyHtml, to: sub && sub.email ? [sub.email] : [] });
       setF("status", isRFI ? "Pending Sub Response" : "Pending Sub Review");
-      setEmailStatus("done"); setEmailMsg("✓ Sub forwarding draft created");
+      if (isPrimeJob) setRouting({ subId: form.subAssigned, firm: (sub && (sub.firm || sub.name)) || "", sentAt: todayISO, dueDate: subDueValue, respondedAt: "" });
+      setEmailStatus("done");
+      setEmailMsg("✓ Sub forwarding draft created" + (sub && sub.email ? " (to " + sub.email + ")" : ". No email on file for this sub (Subconsultants tab), so add the recipient in Outlook") + ". Save to keep the routing.");
     } catch(e) { setEmailStatus("error"); setEmailMsg("✗ " + e.message); }
   }
 
@@ -11409,11 +11493,21 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       + "<p style='font-size:11px;color:#44546A'>Please contact us if you have any questions regarding the above.</p></div>";
     try {
       const prefix = isRFI ? "RFI Response" : ("Submittal Return — " + (form.stamp || ""));
-      await createOutlookDraft({ subject: prefix + ": " + form.number + " — " + (isRFI ? form.title : form.description) + " · " + (project.name || "Project"), bodyHtml });
+      // Distribution list (project.caDistribution) plus, for an item logged
+      // from a contractor's email, that sender.
+      const srcFrom = form.sourceEmail && /@/.test(form.sourceEmail.from || "") ? [form.sourceEmail.from] : [];
+      const dist = window.PrimeCa ? window.PrimeCa.distributionFor(project, type, srcFrom) : { to: srcFrom, cc: [] };
+      await createOutlookDraft({ subject: prefix + ": " + form.number + " — " + (isRFI ? form.title : form.description) + " · " + (project.name || "Project"), bodyHtml, to: dist.to, cc: dist.cc });
+      // Prime jobs: record when it was issued (the day the response draft was
+      // made, matching the status/date the lines below set).
+      if (isPrimeJob && !form.issuedAt) setF("issuedAt", new Date().toISOString());
       const today = new Date().toISOString().slice(0, 10);
       if (isRFI) { setF("status", "Responded"); setF("dateResponded", today); }
       else { setF("status", "Returned"); setF("dateReturned", today); }
-      setEmailStatus("done"); setEmailMsg("✓ Response draft created in Outlook Drafts");
+      setEmailStatus("done");
+      setEmailMsg("✓ Response draft created in Outlook Drafts" + (dist.to.length || dist.cc.length
+        ? " (To " + dist.to.length + ", Cc " + dist.cc.length + ")"
+        : isPrimeJob ? ". No distribution list set: add recipients in Outlook, or set the list above the log" : ""));
     } catch(e) { setEmailStatus("error"); setEmailMsg("✗ " + e.message); }
   }
 
@@ -11510,6 +11604,13 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
                 {project.name && <span>{project.name}</span>}
               </div>
             )}
+            {(form.sourceEmail || form.contractorRef) && (
+              <div style={{ fontSize: 11.5, color: P.textMuted, marginTop: 4 }}>
+                {form.contractorRef && <span>Contractor's #{form.contractorRef}</span>}
+                {form.contractorRef && form.sourceEmail && <span> · </span>}
+                {form.sourceEmail && <span title={form.sourceEmail.subject || ""}>📧 Logged from {form.sourceEmail.from || "an email"}{form.sourceEmail.date ? " of " + form.sourceEmail.date : ""}</span>}
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <select value={form.status} onChange={e => setF("status", e.target.value)}
@@ -11534,7 +11635,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           {/* From */}
           <Field label="From (GC / Prime)">
             <input value={form.from || ""} onChange={e => setF("from", e.target.value)}
-              placeholder={companyName || "Company name…"} style={{ width: "100%" }} />
+              placeholder={isPrimeJob ? "Contractor (GC)…" : (companyName || "Company name…")} style={{ width: "100%" }} />
           </Field>
 
           {/* Discipline */}
@@ -11599,11 +11700,31 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
 
           {/* Sub assignment */}
           <Field label="Sub-Consultant (if applicable)">
-            <select value={form.subAssigned || ""} onChange={e => setF("subAssigned", e.target.value)} style={{ width: "100%" }}>
+            <select value={form.subAssigned || ""} onChange={e => changeSub(e.target.value)} style={{ width: "100%" }}>
               <option value="">— None —</option>
-              {subList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              {/* Subconsultant records carry `firm` (SubsView); `name` was never set, so the list showed blanks. */}
+              {subList.map(s => <option key={s.id} value={s.id}>{s.firm || s.name || "(unnamed sub)"}{s.discipline ? " · " + s.discipline : ""}</option>)}
             </select>
           </Field>
+
+          {/* Sub routing (Setty is prime): the sub's own deadline and answer */}
+          {isPrimeJob && form.subAssigned && (
+            <Field label="Sub routing (Setty is prime)" style={{ gridColumn: "1 / -1" }}>
+              <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center", fontSize: 12 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>Sub due
+                  <input type="date" value={subDueValue || ""} onChange={e => setRouting({ dueDate: e.target.value })} />
+                </label>
+                <span>Sent: <b>{routing.sentAt || "not yet"}</b></span>
+                <span>Answered: <b>{routing.respondedAt || "—"}</b></span>
+                {routingState.state === "late" && <span style={{ color: P.red, fontWeight: 700 }}>Sub is {routingState.daysLate} day{routingState.daysLate === 1 ? "" : "s"} late</span>}
+                {routing.sentAt && !routing.respondedAt && <Btn small onClick={markSubAnswered} title="The sub has answered: the item comes back to Setty to check and issue">✓ Sub answered</Btn>}
+                {routing.respondedAt && <Btn small variant="ghost" onClick={() => setRouting({ respondedAt: "" })}>Undo answered</Btn>}
+              </div>
+              <div style={{ fontSize: 11, color: P.textDim, marginTop: 4 }}>
+                "✉ Forward to Sub" (below) records the date sent. The sub's deadline defaults to 2 working days before the contractor's, so there is time to check their answer and issue it under Setty's name.
+              </div>
+            </Field>
+          )}
 
           {/* ── QUESTION vs RESPONSE: two different documents, bannered apart so
               nobody has to guess where the contractor stops and Setty starts.
@@ -11860,6 +11981,758 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   );
 }
 
+// ─── PRIME CA: BALL-IN-COURT CHIP + CONTRACTOR-EMAIL INTAKE ───────────────────
+// Shown only when Setty is prime (project.prime is a Setty name): the log is
+// then the official record, so it has to say who owes the next move and has
+// to pick up RFIs/submittals the contractor emailed straight to us.
+const CA_BALL_COLORS = { setty: "accentLight", sub: "yellow", contractor: "textMuted" };
+function CaBallChip({ item, type, project }) {
+  const L = window.PrimeCa;
+  if (!L || !caSettyIsPrime(project)) return null;
+  const b = L.ballInCourt(item, type, project.subconsultants || []);
+  if (b.who === "none") return null;
+  const late = L.subRoutingState(item, new Date().toISOString().slice(0, 10));
+  const color = late.state === "late" ? P.red : (P[CA_BALL_COLORS[b.who]] || P.textMuted);
+  return (
+    <div title="Ball in court: who owes the next move on this item" style={{ fontSize: 10.5, fontWeight: 700, color, marginTop: 3, whiteSpace: "nowrap" }}>
+      ⚑ {b.label}{late.state === "late" ? " · " + late.daysLate + "d late" : ""}
+    </div>
+  );
+}
+
+// Banner + list of filed emails that look like a contractor's RFI/submittal
+// and are not logged yet. Emails reach pms_project_emails when someone files
+// them to the project with the Outlook add-in. "Log" creates the item (next
+// number, received date and question from the email, sourceEmail recorded)
+// and opens it; "Not one" remembers the dismissal on the project.
+function CaPrimePanel({ project, type, onChange, onOpen }) {
+  const isRFI = type === "rfi";
+  const noun = isRFI ? "RFI" : "submittal";
+  const [cands, setCands] = React.useState(null); // null = loading
+  const [err, setErr] = React.useState("");
+  const [busy, setBusy] = React.useState("");
+  const [showAll, setShowAll] = React.useState(false);
+  const prime = caSettyIsPrime(project);
+  const dismissedSig = (project.caIntakeDismissed || []).length + ":" + (project.rfis || []).length + ":" + (project.submittals || []).length;
+  React.useEffect(() => {
+    if (!prime) return undefined;
+    let alive = true;
+    (async () => {
+      try {
+        const L = window.PrimeCa;
+        if (!L) throw new Error("the prime-CA module (primeCa.js) did not load; reload the page");
+        const rows = await sbFetchV2("GET", "/rest/v1/pms_project_emails?project_id=eq." + encodeURIComponent(project.id)
+          + "&select=record_id,subject,from_name,from_address,email_date&order=email_date.desc&limit=500");
+        if (alive) { setCands(L.findIntakeCandidates(rows || [], project).filter(c => c.type === type)); setErr(""); }
+      } catch (e) { if (alive) { setCands([]); setErr(e.message || String(e)); } }
+    })();
+    return () => { alive = false; };
+  }, [project.id, dismissedSig, prime]);
+  if (!prime) return null;
+
+  async function logIt(c) {
+    setBusy(c.recordId);
+    try {
+      let body = "";
+      try {
+        const rows = await sbFetchV2("GET", "/rest/v1/pms_project_emails?record_id=eq." + encodeURIComponent(c.recordId) + "&select=body_text&limit=1");
+        body = (rows && rows[0] && rows[0].body_text) || "";
+      } catch (e) { body = ""; } // the item still logs; the question can be pasted in
+      const hw = (project.caNumberHighWater || {})[type];
+      const base = isRFI ? newRFI(project.rfis || [], project.rfiDueDays || 5, hw) : newSubmittal(project.submittals || [], project.submittalDueDays || 10, hw);
+      const item = window.PrimeCa.itemFromCandidate(base, c, body, isRFI ? (project.rfiDueDays || 5) : (project.submittalDueDays || 10));
+      onChange(caWithNewItem(project, type, item));
+      onOpen(item);
+    } finally { setBusy(""); }
+  }
+  function dismiss(ids) {
+    onChange({ ...project, caIntakeDismissed: [...new Set([...(project.caIntakeDismissed || []), ...ids])] });
+  }
+
+  const list = cands || [];
+  const shown = showAll ? list : list.slice(0, 8);
+  return (
+    <div style={{ border: "1px solid " + P.accent, background: P.accentDim, borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
+      <div style={{ fontSize: 12.5 }}>
+        <b>Setty is prime on this project.</b> This log is the official record: numbers are never reused, and an item that
+        has gone to the contractor is set to Void, not deleted. Route items to a subconsultant from the item (✉ Forward to Sub);
+        the ⚑ line under each status shows who owes the next move.
+      </div>
+      <CaDistributionEditor project={project} type={type} onChange={onChange} />
+      <div style={{ marginTop: 8, fontSize: 12 }}>
+        {cands === null && <span style={{ color: P.textDim }}>Checking filed emails for new {noun}s…</span>}
+        {err && <span style={{ color: P.red }}>Couldn't check filed emails: {err}</span>}
+        {cands !== null && !err && list.length === 0 && (
+          <span style={{ color: P.textDim }}>No unlogged {noun} emails from the contractor. (Emails show up here once they are filed to this project with the Outlook add-in.)</span>
+        )}
+        {list.length > 0 && (
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>📥 {list.length} filed email{list.length === 1 ? " looks" : "s look"} like a new {noun} and {list.length === 1 ? "isn't" : "aren't"} in the log:</div>
+            <table style={{ width: "100%" }}>
+              <tbody>
+                {shown.map(c => (
+                  <tr key={c.recordId}>
+                    <td style={{ fontSize: 12, whiteSpace: "nowrap", color: P.textMuted }}>{c.date || "—"}</td>
+                    <td style={{ fontSize: 12, color: P.textMuted }}>{c.fromName || c.fromAddress}</td>
+                    <td style={{ fontSize: 12 }}>{c.subject}{c.ref ? <span style={{ color: P.textDim }}> · contractor's #{c.ref}</span> : null}</td>
+                    <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
+                      <Btn small onClick={() => logIt(c)} disabled={!!busy} title={"Add it to the log as the next " + noun + " number and open it to check"}>{busy === c.recordId ? "⏳" : "+ Log " + noun}</Btn>{" "}
+                      <Btn small variant="ghost" onClick={() => dismiss([c.recordId])} disabled={!!busy} title={"Not a new " + noun + " (hide it from this list)"}>Not one</Btn>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+              {list.length > shown.length && <Btn small variant="ghost" onClick={() => setShowAll(true)}>Show all {list.length}</Btn>}
+              {list.length > 1 && <Btn small variant="ghost" onClick={() => { if (window.confirm("Hide all " + list.length + " emails from this list? Use this when they are old or not " + noun + "s. They stay filed; they just stop showing here.")) dismiss(list.map(c => c.recordId)); }}>Hide all</Btn>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── CA LOG EXPORT (the official record) ─────────────────────────────────────
+// A clean, dated export of the RFI or submittal log for an owner, an audit or
+// a dispute: every item with its dates (received, due, sent to sub, sub due,
+// sub answered, issued) and where it came from. Excel = CSV with a UTF-8 BOM
+// so Excel keeps dashes and accents; PDF = a print-ready page (Save as PDF).
+function caExportLog(project, type, fmtKind) {
+  const L = window.PrimeCa;
+  if (!L) { window.alert("The export module (primeCa.js) did not load. Reload the page and try again."); return; }
+  const { headers, rows } = L.caLogRows(project, type);
+  const label = type === "rfi" ? "RFI" : "Submittal";
+  pmsExportTable({ project, title: label + " Log", fileTag: label + "_Log", headers, rows, fmtKind });
+}
+// Shared by the RFI, submittal and construction-change logs: a dated Excel
+// (CSV with a UTF-8 BOM, so Excel keeps dashes and accents) or a print-ready
+// page (Save as PDF). `summary` is an optional line under the title.
+function pmsExportTable({ project, title, fileTag, headers, rows, fmtKind, summary }) {
+  const now = new Date();
+  const who = (typeof settyAuth !== "undefined" && settyAuth && settyAuth.email && settyAuth.email()) || "";
+  const projLabel = (project.projectNumber ? project.projectNumber + " · " : "") + (project.name || "Project");
+  const fileBase = (project.projectNumber || project.name || "project").replace(/[^a-zA-Z0-9]/g, "_") + "_" + fileTag + "_" + now.toISOString().slice(0, 10);
+  const stampLine = "Exported " + now.toLocaleString("en-US") + (who ? " by " + who : "") + " from the Setty PMS · " + rows.length + " item" + (rows.length === 1 ? "" : "s");
+  if (fmtKind === "csv") {
+    const esc = v => { const t = v == null ? "" : String(v); return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+    const lines = [[projLabel + " — " + title], [stampLine], ...(summary ? [[summary]] : []), [], headers, ...rows].map(r => r.map(esc).join(","));
+    const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = fileBase + ".csv"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return;
+  }
+  const h = v => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const html = "<!doctype html><html><head><meta charset='utf-8'><title>" + h(fileBase) + "</title><style>"
+    + "@page{size:landscape;margin:12mm}body{font-family:Segoe UI,Arial,sans-serif;font-size:9pt;color:#111}"
+    + "h1{font-size:15pt;margin:0 0 2px}.m{color:#555;margin-bottom:6px}table{border-collapse:collapse;width:100%;margin-top:6px}"
+    + "th,td{border:1px solid #bbb;padding:3px 5px;vertical-align:top;text-align:left}th{background:#1F3864;color:#fff;font-size:8pt}"
+    + "tr:nth-child(even) td{background:#f4f6f9}thead{display:table-header-group}tr{page-break-inside:avoid}</style></head><body>"
+    + "<h1>" + h(projLabel) + " — " + h(title) + "</h1><div class='m'>" + h(stampLine) + "</div>" + (summary ? "<div class='m'><b>" + h(summary) + "</b></div>" : "")
+    + "<table><thead><tr>" + headers.map(x => "<th>" + h(x) + "</th>").join("") + "</tr></thead><tbody>"
+    + rows.map(r => "<tr>" + r.map(x => "<td>" + h(x) + "</td>").join("") + "</tr>").join("")
+    + "</tbody></table></body></html>";
+  const w = window.open("", "_blank");
+  if (!w) { window.alert("Your browser blocked the print window. Allow pop-ups for this site, then try again."); return; }
+  w.document.write(html); w.document.close(); w.focus();
+  setTimeout(() => { try { w.print(); } catch (e) { /* the page stays open to print by hand */ } }, 400);
+}
+function CaExportButtons({ project, type }) {
+  return (
+    <span style={{ display: "inline-flex", gap: 6 }}>
+      <Btn small variant="ghost" onClick={() => caExportLog(project, type, "csv")} title="Download the whole log, with every date, as a spreadsheet that opens in Excel">⬇ Excel</Btn>
+      <Btn small variant="ghost" onClick={() => caExportLog(project, type, "pdf")} title="Open a dated, print-ready copy of the whole log (choose Save as PDF)">🖨 PDF</Btn>
+    </span>
+  );
+}
+
+// Who gets every outgoing response / return on this project (project.caDistribution[type]).
+// Used by "Draft Response" / "Draft Return" in the item; the person still checks the draft and presses Send.
+function CaDistributionEditor({ project, type, onChange }) {
+  const cur = ((project.caDistribution || {})[type]) || {};
+  const [open, setOpen] = React.useState(false);
+  const [to, setTo] = React.useState(cur.to || "");
+  const [cc, setCc] = React.useState(cur.cc || "");
+  React.useEffect(() => { if (!open) { setTo(cur.to || ""); setCc(cur.cc || ""); } }, [open, cur.to, cur.cc]);
+  const L = window.PrimeCa;
+  const count = t => (L ? L.parseEmails(t).length : 0);
+  const contacts = React.useMemo(() => {
+    try { return buildMergedDirectory(project).filter(c => c.email); } catch (e) { return []; }
+  }, [project]);
+  const addTo = (setter, val, email) => setter((val.trim() ? val.trim().replace(/[;,]$/, "") + "; " : "") + email);
+  const noun = type === "rfi" ? "RFI response" : type === "change" ? "change document (ASI, proposal request, CCD, change order)" : "submittal return";
+  if (!open) {
+    return (
+      <div style={{ marginTop: 8, fontSize: 12 }}>
+        ✉ Every {noun} goes to: {count(cur.to) || count(cur.cc)
+          ? <b>{count(cur.to)} To, {count(cur.cc)} Cc</b>
+          : <span style={{ color: P.yellow }}>no distribution list yet</span>}
+        {" "}<Btn small variant="ghost" onClick={() => setOpen(true)}>Edit list</Btn>
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 8, fontSize: 12, background: P.card, border: "1px solid " + P.border, borderRadius: 8, padding: "10px 12px" }}>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>Distribution list for every {noun}</div>
+      <label style={{ display: "block", marginBottom: 6 }}>To (owner, GC…)
+        <input value={to} onChange={e => setTo(e.target.value)} placeholder="name@company.com; …" style={{ width: "100%" }} />
+      </label>
+      <label style={{ display: "block", marginBottom: 6 }}>Cc (subs, Setty team…)
+        <input value={cc} onChange={e => setCc(e.target.value)} placeholder="name@company.com; …" style={{ width: "100%" }} />
+      </label>
+      {contacts.length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ color: P.textDim, marginBottom: 4 }}>From this project's directory:</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {contacts.slice(0, 40).map(c => (
+              <span key={c.email} style={{ border: "1px solid " + P.border, borderRadius: 12, padding: "2px 8px" }}>
+                {c.name || c.email}{c.company ? " · " + c.company : ""}
+                {" "}<a href="#" onClick={e => { e.preventDefault(); addTo(setTo, to, c.email); }} style={{ color: P.accentLight }}>+To</a>
+                {" "}<a href="#" onClick={e => { e.preventDefault(); addTo(setCc, cc, c.email); }} style={{ color: P.accentLight }}>+Cc</a>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8 }}>
+        <Btn small onClick={() => { onChange({ ...project, caDistribution: { ...(project.caDistribution || {}), [type]: { to, cc } } }); setOpen(false); }}>Save list</Btn>
+        <Btn small variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
+        <span style={{ color: P.textDim, alignSelf: "center" }}>{count(to)} To · {count(cc)} Cc. An item logged from a contractor's email also goes back to that sender.</span>
+      </div>
+    </div>
+  );
+}
+
+// Items whose subconsultant is past their internal deadline (prime jobs only).
+function caSubLateCount(project, items) {
+  const L = window.PrimeCa;
+  if (!L || !caSettyIsPrime(project)) return 0;
+  const today = new Date().toISOString().slice(0, 10);
+  return (items || []).filter(it => !["Closed", "Void"].includes(it.status) && L.subRoutingState(it, today).state === "late").length;
+}
+
+// ─── CONSTRUCTION CHANGES (Setty is prime) ───────────────────────────────────
+// ASIs, proposal requests, CCDs, the contractor's change order requests and
+// the change orders that settle them, with the running contract sum and time.
+// The rules (numbering, statuses, who holds the ball, CO bundling, totals,
+// export rows) live in constructionChanges.js → window.ConstructionChanges and
+// are tested by constructionChanges.test.mjs. Distinct from the "Change
+// Orders" tab, which is SETTY'S OWN fee (additional services with the client).
+const CC_KIND_SHORT = { ASI: "ASI", PR: "Proposal Request", CCD: "CCD", COR: "Contractor COR", CO: "Change Order" };
+function ccMoney(v) {
+  if (v === "" || v == null || !Number.isFinite(+v)) return "—";
+  const n = +v;
+  return (n < 0 ? "−" : "") + "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+function ccWho() { return (typeof settyAuth !== "undefined" && settyAuth && settyAuth.email && settyAuth.email()) || ""; }
+function ccCtx(note) { const now = new Date(); return { id: uid(), today: now.toISOString().slice(0, 10), at: now.toISOString(), by: ccWho(), note: note || "" }; }
+function ccKindColor(kind) {
+  return { ASI: P.textMuted, PR: P.accentLight, CCD: P.yellow, COR: P.purple || P.accentLight, CO: P.green }[kind] || P.textMuted;
+}
+function ccStatusColor(item) {
+  const s = item.status;
+  if (s === "Void" || s === "Withdrawn" || s === "Closed") return { bg: P.border, text: P.textDim };
+  if (["Executed", "Approved in CO", "Finalized in CO", "Issued", "Signed by Owner"].includes(s)) return { bg: P.greenDim, text: P.green };
+  if (["Revise and Resubmit", "Not Recommended"].includes(s)) return { bg: P.redDim, text: P.red };
+  if (["Recommended", "Sent for Signature", "Pricing Received"].includes(s)) return { bg: P.accentDim, text: P.accentLight };
+  return { bg: P.yellowDim || P.border, text: P.yellow };
+}
+
+function ConstructionChangesView({ project, onChange }) {
+  const L = window.ConstructionChanges;
+  const [kindFilter, setKindFilter] = React.useState("All");
+  const [editingId, setEditingId] = React.useState(null);
+  const [showDone, setShowDone] = React.useState(true);
+  if (!L) return <div style={{ color: P.red, fontSize: 13 }}>The construction-change module (constructionChanges.js) did not load. Reload the page.</div>;
+  const changes = project.constructionChanges || [];
+  const t = L.changeTotals(project);
+  const byId = new Map(changes.map(c => [c.id, c]));
+  const rfiById = new Map((project.rfis || []).map(r => [r.id, r]));
+
+  function addNew(kind, fields) {
+    const it = L.newChange(project, kind, fields || {}, ccCtx());
+    onChange(L.withChange(project, it));
+    setEditingId(it.id);
+  }
+  function del(c) {
+    const g = L.canDelete(c);
+    if (!g.ok) { window.alert(c.number + " can't be deleted.\n\n" + g.reason); return; }
+    if (!window.confirm("Delete draft " + c.number + (c.title ? " — \"" + c.title + "\"" : "") + "? This cannot be undone.")) return;
+    onChange({ ...project, constructionChanges: changes.filter(x => x.id !== c.id) });
+  }
+  function exportLog(fmtKind) {
+    const { headers, rows } = L.changeLogRows(project);
+    const k = t;
+    const summary = "Original contract " + ccMoney(k.original) + " · approved changes " + ccMoney(k.approved) + " · revised " + ccMoney(k.revised)
+      + " · pending " + ccMoney(k.pending) + " · projected " + ccMoney(k.projected)
+      + (k.originalDays ? " · contract time " + k.originalDays + " + " + k.approvedDays + " = " + k.revisedDays + " days" : "");
+    pmsExportTable({ project, title: "Construction Change Log", fileTag: "Change_Log", headers, rows, fmtKind, summary });
+  }
+
+  const list = changes
+    .filter(c => kindFilter === "All" || c.kind === kindFilter)
+    .filter(c => showDone || !L.isDone(c))
+    .sort((a, b) => L.KINDS.indexOf(a.kind) - L.KINDS.indexOf(b.kind) || String(a.number).localeCompare(String(b.number)));
+  const editing = editingId ? byId.get(editingId) : null;
+  const pct = v => (v == null ? "" : (v > 0 ? "+" : "") + v + "%");
+
+  return (
+    <div>
+      <ConstructionContractPanel project={project} onChange={onChange} />
+
+      {/* Running totals */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        <KpiBox label="Original contract" val={ccMoney(t.original)} color={P.text} />
+        <KpiBox label={"Approved changes (" + t.approvedCount + " CO" + (t.approvedCount === 1 ? "" : "s") + ")"} val={ccMoney(t.approved)} color={t.approved ? P.yellow : P.textDim} sub={pct(t.pctApproved)} />
+        <KpiBox label="Revised contract" val={ccMoney(t.revised)} color={P.accentLight} />
+        <KpiBox label="Pending" val={ccMoney(t.pending)} color={t.pending ? P.yellow : P.textDim}
+          sub={"COs out " + ccMoney(t.pendingCo) + " · CCDs " + ccMoney(t.ccdOpen) + " · " + t.corOpenCount + " open COR" + (t.corOpenCount === 1 ? "" : "s") + " " + ccMoney(t.corOpen)} />
+        <KpiBox label="Projected contract" val={ccMoney(t.projected)} color={P.text} sub={pct(t.pctProjected)} />
+        {(t.originalDays > 0 || t.approvedDays !== 0) && <KpiBox label="Contract time (days)" val={t.originalDays + (t.approvedDays ? " + " + t.approvedDays : "")} color={P.text} sub={"= " + t.revisedDays + " days"} />}
+      </div>
+
+      <div style={{ border: "1px solid " + P.border, borderRadius: 10, padding: "8px 12px", marginBottom: 14, fontSize: 12, color: P.textMuted }}>
+        <b style={{ color: P.text }}>How it fits together:</b> issue an <b>ASI</b> for a no-cost clarification or a <b>Proposal Request</b> to get a price.
+        The contractor's price comes back as a <b>COR</b>: review it (route it to a sub if needed) and mark it Recommended.
+        A <b>CCD</b> lets the owner direct work before the price is agreed. A <b>Change Order</b> bundles recommended CORs and signed CCDs;
+        when the owner signs it, mark it executed and the contract sum and time update.
+        <CaDistributionEditor project={project} type="change" onChange={onChange} />
+      </div>
+
+      {/* Controls */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+        <select value={kindFilter} onChange={e => setKindFilter(e.target.value)} aria-label="Filter by type" style={{ fontSize: 13 }}>
+          <option value="All">All types</option>
+          {L.KINDS.map(k => <option key={k} value={k}>{L.KIND_LABEL[k]}</option>)}
+        </select>
+        <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5 }}>
+          <input type="checkbox" checked={showDone} onChange={e => setShowDone(e.target.checked)} /> Show closed
+        </label>
+        <span style={{ flex: 1 }} />
+        <Btn small variant="ghost" onClick={() => exportLog("csv")} title="Download the whole change log, with amounts and status history, as a spreadsheet that opens in Excel">⬇ Excel</Btn>
+        <Btn small variant="ghost" onClick={() => exportLog("pdf")} title="Open a dated, print-ready copy of the change log (choose Save as PDF)">🖨 PDF</Btn>
+        <Btn small variant="ghost" onClick={() => addNew("ASI")} title="Supplemental instruction: a clarification or minor change with no change in cost or time">+ ASI</Btn>
+        <Btn small variant="ghost" onClick={() => addNew("PR")} title="Proposal request: ask the contractor to price a change">+ Proposal Request</Btn>
+        <Btn small variant="ghost" onClick={() => addNew("CCD")} title="Construction change directive: the owner directs the work before a price is agreed">+ CCD</Btn>
+        <Btn small variant="ghost" onClick={() => addNew("COR")} title="Log the contractor's change order request (their price and days)">+ Contractor COR</Btn>
+        <Btn small onClick={() => addNew("CO")} title="Bundle recommended CORs and signed CCDs into a change order for the owner to sign">+ Change Order</Btn>
+      </div>
+
+      {list.length === 0 ? (
+        <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
+          {changes.length === 0 ? "No construction changes yet. Start with an ASI or a Proposal Request, or log a contractor's COR." : "Nothing matches the current filter."}
+        </div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th scope="col" style={{ width: 90 }}>#</th>
+              <th scope="col">Title</th>
+              <th scope="col">Date</th>
+              <th scope="col" style={{ textAlign: "right" }}>Requested</th>
+              <th scope="col" style={{ textAlign: "right" }}>Recommended / est.</th>
+              <th scope="col" style={{ textAlign: "right" }}>Approved</th>
+              <th scope="col">Status</th>
+              <th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map(c => {
+              const ball = L.ballInCourt(c);
+              const links = [
+                ...(c.sourceIds || []).map(id => byId.get(id)).filter(Boolean).map(x => x.number),
+                ...(c.relatedRfiIds || []).map(id => rfiById.get(id)).filter(Boolean).map(x => x.number),
+              ];
+              const inCo = c.coId && byId.get(c.coId);
+              const est = c.kind === "COR" ? c.amountRecommended : c.amountEstimate;
+              return (
+                <tr key={c.id}>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: ccKindColor(c.kind) }}>
+                    {c.number}
+                    <div style={{ fontFamily: "inherit", fontSize: 10, fontWeight: 600, color: P.textDim }}>{CC_KIND_SHORT[c.kind]}</div>
+                  </td>
+                  <td>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{c.title || <span style={{ color: P.textDim }}>No title</span>}</div>
+                    {(links.length > 0 || inCo || c.contractorRef) && (
+                      <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>
+                        {c.contractorRef && <span>Contractor's #{c.contractorRef}</span>}
+                        {links.length > 0 && <span>{c.contractorRef ? " · " : ""}↳ {links.join(", ")}</span>}
+                        {inCo && <span>{(c.contractorRef || links.length) ? " · " : ""}in {inCo.number}</span>}
+                      </div>
+                    )}
+                  </td>
+                  <td style={{ fontSize: 12, color: P.textMuted, whiteSpace: "nowrap" }}>{c.date || "—"}</td>
+                  <td style={{ fontSize: 12, textAlign: "right", fontFamily: "JetBrains Mono" }}>{c.kind === "COR" ? ccMoney(c.amountRequested) : "—"}{c.kind === "COR" && c.daysRequested ? <div style={{ fontSize: 10, color: P.textDim }}>{c.daysRequested} d</div> : null}</td>
+                  <td style={{ fontSize: 12, textAlign: "right", fontFamily: "JetBrains Mono" }}>{["COR", "PR", "CCD"].includes(c.kind) ? ccMoney(est) : "—"}</td>
+                  <td style={{ fontSize: 12, textAlign: "right", fontFamily: "JetBrains Mono" }}>{["CO", "CCD"].includes(c.kind) ? ccMoney(c.amountApproved) : "—"}{c.kind === "CO" && c.daysApproved ? <div style={{ fontSize: 10, color: P.textDim }}>{c.daysApproved} d</div> : null}</td>
+                  <td>
+                    <Badge color={ccStatusColor(c)} text={c.status} />
+                    {ball.who !== "none" && <div style={{ fontSize: 10.5, fontWeight: 700, color: P.textMuted, marginTop: 3 }}>⚑ {ball.label}</div>}
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <Btn small variant="ghost" onClick={() => setEditingId(c.id)}>Open</Btn>
+                      <Btn small variant="danger" aria-label={"Delete " + c.number} onClick={() => del(c)}>✕</Btn>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {editing && (
+        <ConstructionChangeModal key={editing.id} item={editing} project={project}
+          onSaveAll={list2 => onChange({ ...project, constructionChanges: list2 })}
+          onCreate={(kind, fields) => addNew(kind, fields)}
+          onClose={() => setEditingId(null)} />
+      )}
+    </div>
+  );
+}
+
+// Contract base the totals start from: contractor, original sum and time.
+function ConstructionContractPanel({ project, onChange }) {
+  const k = project.constructionContract || {};
+  const [open, setOpen] = React.useState(!k.originalSum);
+  const [f, setFf] = React.useState({ contractor: k.contractor || "", originalSum: k.originalSum == null ? "" : String(k.originalSum), originalDays: k.originalDays == null ? "" : String(k.originalDays) });
+  const L = window.ConstructionChanges;
+  if (!open) {
+    return (
+      <div style={{ fontSize: 12.5, color: P.textMuted, marginBottom: 12 }}>
+        Construction contract: <b style={{ color: P.text }}>{k.contractor || "contractor not set"}</b> · original sum <b style={{ color: P.text }}>{ccMoney(k.originalSum)}</b>
+        {k.originalDays ? <span> · {k.originalDays} days</span> : null}{" "}
+        <Btn small variant="ghost" onClick={() => setOpen(true)}>Edit</Btn>
+      </div>
+    );
+  }
+  function save() {
+    onChange({ ...project, constructionContract: { ...k, contractor: f.contractor.trim(), originalSum: L.money(f.originalSum), originalDays: L.days(f.originalDays) } });
+    setOpen(false);
+  }
+  return (
+    <div style={{ border: "1px solid " + P.border, borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>Construction contract (the base for the running totals)</div>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 10 }}>
+        <Field label="Contractor (GC)"><input value={f.contractor} onChange={e => setFf({ ...f, contractor: e.target.value })} style={{ width: "100%" }} /></Field>
+        <Field label="Original contract sum ($)"><input value={f.originalSum} onChange={e => setFf({ ...f, originalSum: e.target.value })} placeholder="e.g. 1,250,000" style={{ width: "100%" }} /></Field>
+        <Field label="Contract time (days)"><input value={f.originalDays} onChange={e => setFf({ ...f, originalDays: e.target.value })} placeholder="e.g. 240" style={{ width: "100%" }} /></Field>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <Btn small onClick={save}>Save contract</Btn>
+        {k.originalSum != null && <Btn small variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>}
+      </div>
+    </div>
+  );
+}
+
+function ConstructionChangeModal({ item, project, onSaveAll, onCreate, onClose }) {
+  const L = window.ConstructionChanges;
+  const [form, setForm] = React.useState({ ...item });
+  const [msg, setMsg] = React.useState({ text: "", ok: true });
+  const [spStatus, setSpStatus] = React.useState("idle");
+  const formRef = React.useRef(form); formRef.current = form;
+  const changes = project.constructionChanges || [];
+  const byId = new Map(changes.map(c => [c.id, c]));
+  const kind = form.kind;
+  const isCO = kind === "CO", isCOR = kind === "COR";
+  const subList = project.subconsultants || [];
+  function setF(k, v) { setForm(f => ({ ...f, [k]: v })); }
+  function setStatus(s, note) { setForm(f => L.setStatus(f, s, ccCtx(note))); }
+
+  // CO members: recommended CORs and signed CCDs not already in another CO.
+  const eligible = isCO ? L.eligibleForCo(changes, form.id) : [];
+  const members = new Set(form.sourceIds || []);
+  function toggleMember(id, on) {
+    const ids = on ? [...members, id] : [...members].filter(x => x !== id);
+    const tmp = L.setCoMembers(changes.map(c => (c.id === form.id ? form : c)), form.id, ids);
+    const co = tmp.find(c => c.id === form.id);
+    setForm(f => ({ ...f, sourceIds: ids, amountApproved: co.amountApproved, daysApproved: co.daysApproved }));
+  }
+
+  // The whole list with this form saved (and, for a CO, its members marked).
+  function listWithForm(f) {
+    let list = changes.map(c => (c.id === f.id ? f : c));
+    if (f.kind === "CO") {
+      list = L.setCoMembers(list, f.id, f.sourceIds || []);
+      list = list.map(c => (c.id === f.id ? { ...c, amountApproved: L.money(f.amountApproved), daysApproved: L.days(f.daysApproved) } : c));
+    }
+    return list;
+  }
+  function norm(f) {
+    return { ...f,
+      amountRequested: L.money(f.amountRequested), daysRequested: L.days(f.daysRequested),
+      amountRecommended: L.money(f.amountRecommended), daysRecommended: L.days(f.daysRecommended),
+      amountEstimate: L.money(f.amountEstimate), amountApproved: L.money(f.amountApproved), daysApproved: L.days(f.daysApproved) };
+  }
+  function save() { onSaveAll(listWithForm(norm(formRef.current))); onClose(); }
+
+  function executeNow() {
+    if (!window.confirm("Mark " + form.number + " as signed by the owner (Executed)?\n\nIts CORs become \"Approved in CO\", its CCDs \"Finalized in CO\", and the revised contract sum and time update.")) return;
+    onSaveAll(L.executeCo(listWithForm(norm(formRef.current)), form.id, ccCtx("Owner signed")));
+    onClose();
+  }
+  function voidNow() {
+    if (!window.confirm("Void " + form.number + "? Its CORs and CCDs are released so they can go into another change order. The record keeps it as Void.")) return;
+    onSaveAll(L.voidCo(listWithForm(norm(formRef.current)), form.id, ccCtx("Voided")));
+    onClose();
+  }
+  function corForThis() {
+    onSaveAll(listWithForm(norm(formRef.current)));
+    onCreate("COR", { title: form.title, discipline: form.discipline, sourceIds: [form.id], relatedRfiIds: form.relatedRfiIds || [] });
+  }
+
+  // ── Email drafts (Outlook; the person checks and presses Send) ──
+  const kindLabel = L.KIND_LABEL[kind];
+  function emailHtml(intro) {
+    const e = s => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+    const row = (k, v, shade) => v === "" || v == null ? "" : "<tr" + (shade ? " style='background:#F1F5F9'" : "") + "><td style='padding:8px 12px;font-weight:700;width:180px'>" + e(k) + "</td><td style='padding:8px 12px'>" + e(v) + "</td></tr>";
+    const linked = (form.sourceIds || []).map(id => byId.get(id)).filter(Boolean).map(x => x.number + (x.title ? " — " + x.title : "")).join("\n");
+    const rfis = (form.relatedRfiIds || []).map(id => (project.rfis || []).find(r => r.id === id)).filter(Boolean).map(r => r.number).join(", ");
+    const rows = [
+      ["Project", (project.name || "—") + (project.projectNumber ? " (" + project.projectNumber + ")" : "")],
+      [kindLabel + " #", form.number], ["Title", form.title], ["Date", fmtDate(form.date)],
+      ["Contractor", (project.constructionContract || {}).contractor || ""],
+      ["Respond by", form.dueDate ? fmtDate(form.dueDate) : ""],
+      ["Contractor's ref", form.contractorRef || ""],
+      ["Affected drawings / specs", form.sheets || ""],
+      ["Related RFIs", rfis],
+      ["Linked documents", linked],
+      ...(isCOR ? [["Requested", form.amountRequested !== "" && form.amountRequested != null ? ccMoney(L.money(form.amountRequested)) + (form.daysRequested ? ", " + form.daysRequested + " days" : "") : ""],
+                   ["Setty recommendation", form.amountRecommended !== "" && form.amountRecommended != null ? ccMoney(L.money(form.amountRecommended)) + (form.daysRecommended ? ", " + form.daysRecommended + " days" : "") : form.status]] : []),
+      ...(isCO ? [["Change in contract sum", ccMoney(L.money(form.amountApproved))], ["Change in contract time", (L.days(form.daysApproved) || 0) + " days"]] : []),
+    ].filter(r => r[1] !== "" && r[1] != null);
+    return "<div style='font-family:Segoe UI,sans-serif;font-size:13px;color:#1a1a1a'>"
+      + "<div style='border-bottom:3px solid #1F3864;padding-bottom:10px;margin-bottom:16px'>"
+      + "<div style='font-size:22px;font-weight:900;color:#C00000;letter-spacing:2px'>SETTY</div>"
+      + "<div style='font-size:8px;color:#44546A;letter-spacing:1px'>&amp; ASSOCIATES, LTD, PC</div></div>"
+      + "<p>" + e(intro) + "</p>"
+      + "<table style='border-collapse:collapse;width:100%;font-size:13px;margin-bottom:16px'>" + rows.map((r, i) => row(r[0], r[1], i % 2 === 0)).join("") + "</table>"
+      + (form.description ? "<div style='margin:14px 0;border-left:4px solid #1F3864;background:#F5F8FC;padding:10px 14px'><div style='font-size:11px;font-weight:700;color:#1F3864;letter-spacing:1px;margin-bottom:4px'>" + (isCOR ? "SCOPE OF THE REQUEST" : "DESCRIPTION") + "</div><div>" + e(form.description) + "</div></div>" : "")
+      + (form.spFolderUrl ? "<p><a href='" + String(form.spFolderUrl).replace(/'/g, "%27") + "'>📁 Documents (SharePoint)</a></p>" : "")
+      + "<p style='font-size:11px;color:#44546A'>Please contact us with any questions.</p></div>";
+  }
+  const EMAIL = {
+    ASI: { btn: "✉ Draft issue email", intro: "Setty issues the following supplemental instruction. Proceed with the work as described; it does not change the contract sum or time. If you believe it does, submit a change order request before proceeding.", to: "Issued", from: "Draft" },
+    PR: { btn: "✉ Draft issue email", intro: "Please submit an itemized price and any change in contract time for the change described below. This is not an authorization to proceed.", to: "Issued", from: "Draft" },
+    CCD: { btn: "✉ Draft issue email", intro: "The following construction change directive is issued for the owner's signature. Once signed, proceed with the work; the final cost and time will be settled by change order.", to: "Issued", from: "Draft" },
+    COR: { btn: "✉ Draft review email", intro: "Setty has reviewed the contractor's change order request below. Our recommendation is shown.", to: null },
+    CO: { btn: "✉ Draft for signature", intro: "The following change order is submitted for signature. It adjusts the contract sum and time as shown.", to: "Sent for Signature", from: "Draft" },
+  };
+  async function draftEmail() {
+    const cfg = EMAIL[kind];
+    setMsg({ text: "Creating the Outlook draft…", ok: true });
+    try {
+      const dist = window.PrimeCa ? window.PrimeCa.distributionFor(project, "change", []) : { to: [], cc: [] };
+      await createOutlookDraft({ subject: kindLabel + " " + form.number + (form.title ? " — " + form.title : "") + " · " + (project.name || "Project"), bodyHtml: emailHtml(cfg.intro), to: dist.to, cc: dist.cc });
+      if (cfg.to && form.status === cfg.from) setStatus(cfg.to, "Email drafted");
+      setMsg({ text: "✓ Draft created in Outlook" + (dist.to.length || dist.cc.length ? " (To " + dist.to.length + ", Cc " + dist.cc.length + ")" : ". No distribution list set: add recipients in Outlook") + ". Save to keep the status.", ok: true });
+    } catch (e) { setMsg({ text: "✗ " + e.message, ok: false }); }
+  }
+  async function draftSubEmail() {
+    const sub = subList.find(s => s.id === form.subAssigned);
+    if (!sub) { setMsg({ text: "Pick the sub first.", ok: false }); return; }
+    setMsg({ text: "Creating the Outlook draft…", ok: true });
+    try {
+      await createOutlookDraft({ subject: "Pricing review requested: " + form.number + (form.title ? " — " + form.title : "") + " · " + (project.name || "Project"),
+        bodyHtml: emailHtml("Please review the contractor's pricing below for your discipline and send us your recommended amount and any comments" + (form.dueDate ? " by " + fmtDate(form.dueDate) : "") + "."),
+        to: sub.email ? [sub.email] : [] });
+      if (form.status !== "Pending Sub Review") setStatus("Pending Sub Review", "Sent to " + (sub.firm || sub.name || "sub"));
+      setMsg({ text: "✓ Draft to " + (sub.firm || "the sub") + " created" + (sub.email ? "" : " (no email on file: add the recipient in Outlook)") + ". Save to keep the status.", ok: true });
+    } catch (e) { setMsg({ text: "✗ " + e.message, ok: false }); }
+  }
+
+  async function createSpFolder() {
+    if (!project.projectFolderUrl) { setSpStatus("error: no project folder (create it on the Overview tab first)"); return; }
+    setSpStatus("creating");
+    try {
+      const { driveId } = await resolveSpIds();
+      const parts = String(project.projectFolderUrl).trim().replace(/\/+$/, "").split("/");
+      const projFolderName = safeDecodeFolderUrl(parts[parts.length - 1]).trim();
+      if (!projFolderName) throw new Error("Could not read the project folder name.");
+      const safeName = (form.number + " " + (form.title || "")).replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
+      const typeFolder = await ensureSpSubfolder(driveId, projFolderName, "Construction Changes");
+      const itemFolder = await ensureSpSubfolder(driveId, typeFolder, safeName);
+      const it = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodeSpPath(itemFolder));
+      if (!it || !it.webUrl) throw new Error("The folder was created but SharePoint did not return its link. Try again.");
+      // Persist now: the folder exists whether or not Save is pressed.
+      const next = { ...formRef.current, spFolderUrl: it.webUrl };
+      setForm(next);
+      onSaveAll(listWithForm(norm(next)));
+      setSpStatus("done");
+    } catch (e) { setSpStatus("error: " + e.message); }
+  }
+
+  const ball = L.ballInCourt(form);
+  const sel = { width: "100%" };
+  const dateLabel = { ASI: "Date issued", PR: "Date issued", CCD: "Date issued", COR: "Date received", CO: "Date" }[kind];
+  const dueLabel = { ASI: "Due (optional)", PR: "Pricing due from contractor", CCD: "Owner signature due", COR: "Setty review due", CO: "Signature due" }[kind];
+  const descLabel = { ASI: "Instruction", PR: "Change to be priced", CCD: "Directed change", COR: "Contractor's description of the change", CO: "Description" }[kind];
+  const sourceChoices = changes.filter(c => ["PR", "ASI", "CCD"].includes(c.kind) && c.id !== form.id && !(form.sourceIds || []).includes(c.id));
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 3000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "24px 16px", overflowY: "auto" }}>
+      <div role="dialog" aria-label={form.number} style={{ background: P.card, border: `1px solid ${P.accent}`, borderRadius: 14, padding: 28, width: 780, maxWidth: "98vw" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontSize: 11, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>{kindLabel}</div>
+            <div style={{ fontWeight: 800, fontSize: 18, color: ccKindColor(kind) }}>{form.number}</div>
+            <div style={{ fontSize: 12, color: P.textMuted, marginTop: 4 }}>
+              {project.projectNumber && <b style={{ color: P.text }}>{project.projectNumber} · </b>}{project.name}
+              {ball.who !== "none" && <span> · ⚑ {ball.label} holds the next move</span>}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select value={form.status} onChange={e => setStatus(e.target.value)} aria-label="Status" style={{ fontWeight: 700, fontSize: 12, padding: "4px 10px", borderRadius: 6 }}>
+              {L.STATUSES[kind].map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none", color: P.textDim, fontSize: 20, cursor: "pointer" }}>✕</button>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Title" style={{ gridColumn: "1 / -1" }}>
+            <input value={form.title || ""} onChange={e => setF("title", e.target.value)} style={{ ...sel, fontSize: 14, fontWeight: 600 }} />
+          </Field>
+          <Field label={dateLabel}><input type="date" value={form.date || ""} onChange={e => setF("date", e.target.value)} style={sel} /></Field>
+          <Field label={dueLabel}><input type="date" value={form.dueDate || ""} onChange={e => setF("dueDate", e.target.value)} style={sel} /></Field>
+          <Field label="Discipline">
+            <select value={form.discipline || ""} onChange={e => setF("discipline", e.target.value)} style={sel}>
+              <option value="">—</option>
+              {RFI_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
+            </select>
+          </Field>
+          {isCOR
+            ? <Field label="Contractor's COR / PCO number"><input value={form.contractorRef || ""} onChange={e => setF("contractorRef", e.target.value)} style={sel} /></Field>
+            : <Field label="Affected drawings / specs"><input value={form.sheets || ""} onChange={e => setF("sheets", e.target.value)} placeholder="e.g. M-201, M-401; 23 31 13" style={sel} /></Field>}
+
+          <Field label={descLabel} style={{ gridColumn: "1 / -1" }}>
+            <textarea value={form.description || ""} onChange={e => setF("description", e.target.value)} style={{ ...sel, height: 90, resize: "vertical", fontSize: 13 }} />
+          </Field>
+
+          {/* Money */}
+          {isCOR && (<>
+            <Field label="Contractor's requested amount ($)"><input value={form.amountRequested ?? ""} onChange={e => setF("amountRequested", e.target.value)} placeholder="0" style={sel} /></Field>
+            <Field label="Requested time (days)"><input value={form.daysRequested ?? ""} onChange={e => setF("daysRequested", e.target.value)} placeholder="0" style={sel} /></Field>
+            <Field label="Setty recommended amount ($)"><input value={form.amountRecommended ?? ""} onChange={e => setF("amountRecommended", e.target.value)} placeholder="leave blank to accept the request" style={sel} /></Field>
+            <Field label="Recommended time (days)"><input value={form.daysRecommended ?? ""} onChange={e => setF("daysRecommended", e.target.value)} style={sel} /></Field>
+            <Field label="Subconsultant reviewing the pricing (optional)">
+              <select value={form.subAssigned || ""} onChange={e => setF("subAssigned", e.target.value)} style={sel}>
+                <option value="">— None —</option>
+                {subList.map(s => <option key={s.id} value={s.id}>{s.firm || s.name || "(unnamed sub)"}{s.discipline ? " · " + s.discipline : ""}</option>)}
+              </select>
+            </Field>
+            <Field label="Answers (PR / ASI / CCD)">
+              <select value="" onChange={e => { if (e.target.value) setF("sourceIds", [...(form.sourceIds || []), e.target.value]); }} style={sel}>
+                <option value="">+ Link a document…</option>
+                {sourceChoices.map(c => <option key={c.id} value={c.id}>{c.number}{c.title ? " — " + c.title : ""}</option>)}
+              </select>
+            </Field>
+          </>)}
+          {(kind === "PR" || kind === "CCD") && (
+            <Field label={kind === "PR" ? "Setty's estimate ($, internal)" : "Estimated cost ($)"}><input value={form.amountEstimate ?? ""} onChange={e => setF("amountEstimate", e.target.value)} style={sel} /></Field>
+          )}
+          {kind === "CCD" && (
+            <Field label="Final agreed amount ($, when settled)"><input value={form.amountApproved ?? ""} onChange={e => setF("amountApproved", e.target.value)} style={sel} /></Field>
+          )}
+          {isCO && (<>
+            <Field label="Change in contract sum ($)"><input value={form.amountApproved ?? ""} onChange={e => setF("amountApproved", e.target.value)} style={sel} /></Field>
+            <Field label="Change in contract time (days)"><input value={form.daysApproved ?? ""} onChange={e => setF("daysApproved", e.target.value)} style={sel} /></Field>
+            <Field label="Included CORs and CCDs (fills the amounts above; you can still edit them)" style={{ gridColumn: "1 / -1" }}>
+              {eligible.length === 0
+                ? <div style={{ fontSize: 12, color: P.textDim }}>Nothing ready yet: a COR has to be marked Recommended, or a CCD Signed by Owner, before it can go into a change order.</div>
+                : <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {eligible.map(c => {
+                      const l = L.coLineAmount(c);
+                      return (
+                        <label key={c.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5 }}>
+                          <input type="checkbox" checked={members.has(c.id)} disabled={form.status === "Executed" || form.status === "Void"} onChange={e => toggleMember(c.id, e.target.checked)} />
+                          <b style={{ fontFamily: "JetBrains Mono" }}>{c.number}</b> {c.title}
+                          <span style={{ marginLeft: "auto", fontFamily: "JetBrains Mono" }}>{ccMoney(l.amount)}{l.days ? " · " + l.days + " d" : ""}</span>
+                        </label>
+                      );
+                    })}
+                  </div>}
+            </Field>
+          </>)}
+
+          {(form.sourceIds || []).length > 0 && !isCO && (
+            <Field label="Linked documents" style={{ gridColumn: "1 / -1" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {(form.sourceIds || []).map(id => byId.get(id)).filter(Boolean).map(c => (
+                  <span key={c.id} style={{ fontSize: 12, border: "1px solid " + P.border, borderRadius: 12, padding: "2px 8px" }}>
+                    {c.number} {c.title}{" "}
+                    <a href="#" aria-label={"Unlink " + c.number} onClick={e => { e.preventDefault(); setF("sourceIds", (form.sourceIds || []).filter(x => x !== c.id)); }} style={{ color: P.textDim }}>✕</a>
+                  </span>
+                ))}
+              </div>
+            </Field>
+          )}
+
+          {(project.rfis || []).length > 0 && (
+            <Field label="Related RFIs" style={{ gridColumn: "1 / -1" }}>
+              <select value="" onChange={e => { if (e.target.value) setF("relatedRfiIds", [...new Set([...(form.relatedRfiIds || []), e.target.value])]); }} style={{ ...sel, marginBottom: 6 }}>
+                <option value="">+ Link an RFI…</option>
+                {(project.rfis || []).filter(r => !(form.relatedRfiIds || []).includes(r.id)).map(r => <option key={r.id} value={r.id}>{r.number}{r.title ? " — " + r.title : ""}</option>)}
+              </select>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {(form.relatedRfiIds || []).map(id => (project.rfis || []).find(r => r.id === id)).filter(Boolean).map(r => (
+                  <span key={r.id} style={{ fontSize: 12, border: "1px solid " + P.border, borderRadius: 12, padding: "2px 8px" }}>
+                    {r.number}{" "}
+                    <a href="#" aria-label={"Unlink " + r.number} onClick={e => { e.preventDefault(); setF("relatedRfiIds", (form.relatedRfiIds || []).filter(x => x !== r.id)); }} style={{ color: P.textDim }}>✕</a>
+                  </span>
+                ))}
+              </div>
+            </Field>
+          )}
+
+          <Field label="Internal notes (not sent)" style={{ gridColumn: "1 / -1" }}>
+            <textarea value={form.notes || ""} onChange={e => setF("notes", e.target.value)} style={{ ...sel, height: 50, resize: "vertical", fontSize: 13 }} />
+          </Field>
+
+          <Field label="Documents (SharePoint)" style={{ gridColumn: "1 / -1" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}>
+              {form.spFolderUrl
+                ? <a href={form.spFolderUrl} target="_blank" rel="noreferrer" style={{ color: P.accentLight }}>📁 Open folder</a>
+                : <Btn small variant="ghost" onClick={createSpFolder} disabled={spStatus === "creating"}>📁 Create folder</Btn>}
+              <span style={{ color: String(spStatus).startsWith("error") ? P.red : P.textDim }}>
+                {spStatus === "creating" ? "⏳ Creating…" : spStatus === "done" ? "✓ Created and saved" : String(spStatus).startsWith("error") ? "✗ " + String(spStatus).slice(7) : form.spFolderUrl ? "" : "Construction Changes/" + form.number + "… in the project folder"}
+              </span>
+            </div>
+          </Field>
+
+          <Field label="Status history (the record)" style={{ gridColumn: "1 / -1" }}>
+            <div style={{ fontSize: 11.5, color: P.textMuted, maxHeight: 110, overflowY: "auto" }}>
+              {(form.history || []).slice().reverse().map((h, i) => (
+                <div key={i}>{String(h.at || "").slice(0, 16).replace("T", " ")} · <b>{h.status}</b>{h.from ? " (was " + h.from + ")" : ""}{h.by ? " · " + h.by : ""}{h.note ? " · " + h.note : ""}</div>
+              ))}
+            </div>
+          </Field>
+        </div>
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 18 }}>
+          <Btn small variant="ghost" onClick={draftEmail}>{EMAIL[kind].btn}</Btn>
+          {isCOR && form.subAssigned && <Btn small variant="ghost" onClick={draftSubEmail}>✉ Send pricing to sub</Btn>}
+          {["PR", "ASI", "CCD"].includes(kind) && form.status !== "Draft" && form.status !== "Void" && (
+            <Btn small variant="ghost" onClick={corForThis} title="The contractor has priced this: log their change order request, linked to this document">+ Contractor's COR for this</Btn>
+          )}
+          {isCO && form.status !== "Executed" && form.status !== "Void" && <Btn small variant="success" onClick={executeNow}>✓ Owner signed (execute)</Btn>}
+          {isCO && form.status !== "Executed" && form.status !== "Void" && <Btn small variant="ghost" onClick={voidNow}>Void CO</Btn>}
+          <span style={{ flex: 1 }} />
+          <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn onClick={save}>Save</Btn>
+        </div>
+        {msg.text && <div role="status" style={{ fontSize: 11.5, marginTop: 8, color: msg.ok ? P.green : P.red }}>{msg.text}</div>}
+      </div>
+    </div>
+  );
+}
+
 // ─── RFIs VIEW ────────────────────────────────────────────────────────────────
 
 function RFIsView({ project, onChange, staff, clients }) {
@@ -11880,8 +12753,8 @@ function RFIsView({ project, onChange, staff, clients }) {
   }, []);
 
   function addRFI() {
-    const r = newRFI(rfis, project.rfiDueDays || 5);
-    onChange({ ...project, rfis: [...rfis, r] });
+    const r = newRFI(rfis, project.rfiDueDays || 5, (project.caNumberHighWater || {}).rfi);
+    onChange(caWithNewItem(project, "rfi", r));
     setEditing(r);
   }
 
@@ -11891,6 +12764,8 @@ function RFIsView({ project, onChange, staff, clients }) {
 
   function deleteRFI(id) {
     const rfi = rfis.find(r => r.id === id);
+    const guard = caDeleteGuard(project, rfi, "rfi");
+    if (!guard.ok) { window.alert("RFI " + (rfi?.number || "") + " can't be deleted.\n\n" + guard.reason); return; }
     if (!window.confirm("Delete RFI " + (rfi?.number || "") + (rfi?.title ? " — \"" + rfi.title + "\"" : "") + "?\n\nAll notes, responses, and linked data will be lost. This cannot be undone.")) return;
     onChange({ ...project, rfis: rfis.filter(r => r.id !== id) });
   }
@@ -11905,6 +12780,7 @@ function RFIsView({ project, onChange, staff, clients }) {
   const openCount     = rfis.filter(r => RFI_OPEN_STATUSES.includes(r.status)).length;
   const overdueCount  = rfis.filter(r => isOverdue(r)).length;
   const pendingSubCnt = rfis.filter(r => r.status === "Pending Sub Response").length;
+  const subLateCnt    = caSubLateCount(project, rfis);
   const staffList     = project.teamMembers || [];
 
   return (
@@ -11917,7 +12793,10 @@ function RFIsView({ project, onChange, staff, clients }) {
         <KpiBox label="Pending Sub" val={String(pendingSubCnt)} color={pendingSubCnt > 0 ? P.yellow : P.textDim} />
         <KpiBox label="Closed" val={String(rfis.filter(r => r.status === "Closed").length)} color={P.green} />
         {rfis.some(isUnreviewedIntake) && <KpiBox label="Unreviewed" val={String(rfis.filter(isUnreviewedIntake).length)} color={P.yellow} />}
+        {subLateCnt > 0 && <KpiBox label="Sub late" val={String(subLateCnt)} color={P.red} />}
       </div>
+
+      <CaPrimePanel project={project} type="rfi" onChange={onChange} onOpen={setEditing} />
 
       {/* Controls */}
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
@@ -11938,6 +12817,7 @@ function RFIsView({ project, onChange, staff, clients }) {
               color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}>
             🤖 Backload from PDF/email
           </a>
+          <CaExportButtons project={project} type="rfi" />
           <Btn small onClick={addRFI}>+ Add RFI</Btn>
         </div>
       </div>
@@ -11987,7 +12867,7 @@ function RFIsView({ project, onChange, staff, clients }) {
                     <div style={{ color: overdue ? P.red : P.textMuted, marginBottom: 3 }}>{r.dueDate || "—"}</div>
                     <SlaChip dueDate={r.dueDate} isClosed={RFI_CLOSED_STATUSES.includes(r.status) || isUnreviewedIntake(r)} />
                   </td>
-                  <td><Badge color={sc} text={r.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}</td>
+                  <td><Badge color={sc} text={r.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}<CaBallChip item={r} type="rfi" project={project} /></td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
                       <Btn small variant="ghost" onClick={() => setEditing(r)}>Open</Btn>
@@ -12039,8 +12919,8 @@ function SubmittalsView({ project, onChange, staff, clients }) {
   const [newRegItem, setNewRegItem] = useState({ specSection: "", description: "", discipline: "Mechanical" });
 
   function addSubmittal() {
-    const s = newSubmittal(subs, project.submittalDueDays || 10);
-    onChange({ ...project, submittals: [...subs, s] });
+    const s = newSubmittal(subs, project.submittalDueDays || 10, (project.caNumberHighWater || {}).submittal);
+    onChange(caWithNewItem(project, "submittal", s));
     setEditing(s);
   }
 
@@ -12050,6 +12930,8 @@ function SubmittalsView({ project, onChange, staff, clients }) {
 
   function deleteSubmittal(id) {
     const sub2 = subs.find(s => s.id === id);
+    const guard = caDeleteGuard(project, sub2, "submittal");
+    if (!guard.ok) { window.alert("Submittal " + (sub2?.number || "") + " can't be deleted.\n\n" + guard.reason); return; }
     if (!window.confirm("Delete Submittal " + (sub2?.number || "") + (sub2?.description ? " — \"" + sub2.description + "\"" : "") + "?\n\nAll review comments and linked data will be lost. This cannot be undone.")) return;
     onChange({ ...project, submittals: subs.filter(s => s.id !== id) });
   }
@@ -12062,8 +12944,8 @@ function SubmittalsView({ project, onChange, staff, clients }) {
   }
 
   function createFromRegister(item) {
-    const s = { ...newSubmittal(subs, project.submittalDueDays || 10), specSection: item.specSection, description: item.description, discipline: item.discipline, registerItemId: item.id };
-    onChange({ ...project, submittals: [...subs, s] });
+    const s = { ...newSubmittal(subs, project.submittalDueDays || 10, (project.caNumberHighWater || {}).submittal), specSection: item.specSection, description: item.description, discipline: item.discipline, registerItemId: item.id };
+    onChange(caWithNewItem(project, "submittal", s));
     setEditing(s);
   }
 
@@ -12077,6 +12959,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
   const openCount    = subs.filter(s => SUB_OPEN_STATUSES.includes(s.status)).length;
   const overdueCount = subs.filter(s => isOverdue(s)).length;
   const pendingSubCnt= subs.filter(s => s.status === "Pending Sub Review").length;
+  const subLateCnt   = caSubLateCount(project, subs);
   const staffList    = project.teamMembers || [];
 
   return (
@@ -12090,7 +12973,10 @@ function SubmittalsView({ project, onChange, staff, clients }) {
         <KpiBox label="Returned" val={String(subs.filter(s => s.status === "Returned").length)} color={P.green} />
         <KpiBox label="Resubmittal Req." val={String(subs.filter(s => s.status === "Resubmittal Required").length)} color={P.red} />
         {subs.some(isUnreviewedIntake) && <KpiBox label="Unreviewed" val={String(subs.filter(isUnreviewedIntake).length)} color={P.yellow} />}
+        {subLateCnt > 0 && <KpiBox label="Sub late" val={String(subLateCnt)} color={P.red} />}
       </div>
+
+      <CaPrimePanel project={project} type="submittal" onChange={onChange} onOpen={setEditing} />
 
       {/* Controls */}
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
@@ -12114,6 +13000,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
           <Btn small variant="ghost" onClick={() => setShowRegister(v => !v)}>
             {showRegister ? "Hide Register" : "📋 Submittal Register" + (register.length > 0 ? ` (${register.length})` : "")}
           </Btn>
+          <CaExportButtons project={project} type="submittal" />
           <Btn small onClick={addSubmittal}>+ Add Submittal</Btn>
         </div>
       </div>
@@ -12209,7 +13096,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
                     <SlaChip dueDate={s.dueDate} isClosed={SUBMITTAL_CLOSED_STATUSES.includes(s.status) || isUnreviewedIntake(s)} />
                   </td>
                   <td>{s.stamp && s.stamp !== "—" ? <Badge color={stc} text={s.stamp} /> : <span style={{ color: P.textDim, fontSize: 12 }}>—</span>}</td>
-                  <td><Badge color={sc} text={s.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}</td>
+                  <td><Badge color={sc} text={s.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}<CaBallChip item={s} type="submittal" project={project} /></td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
                       <Btn small variant="ghost" onClick={() => setEditing(s)}>Open</Btn>
@@ -18889,7 +19776,7 @@ function ProjectIntelligencePanel({ projectNumber }) {
   );
 }
 
-const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos", "QA Reviews"];
+const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Construction Changes", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos", "QA Reviews"];
 
 // Tab groupings — top-level "sections" the user navigates by, with the existing
 // tabs as their sub-pages. Order reflects the natural project workflow.
@@ -18903,12 +19790,12 @@ const TAB_GROUPS = [
   { name: "Team",                        tabs: ["Team"] },
   { name: "Schedule",                    tabs: ["Schedule", "Gantt"] },
   { name: "QA",                          tabs: ["QA Reviews"] },
-  { name: "Construction Administration", tabs: ["RFIs", "Submittals"] },
+  { name: "Construction Administration", tabs: ["RFIs", "Submittals", "Construction Changes"] },
   { name: "Subconsultants",              tabs: ["Subconsultants"] },
   { name: "Financials",                  tabs: ["Financials", "Reimbursables", "Projections"] },
   { name: "Photos",                      tabs: ["Photos"] },
 ];
-const PIPELINE_HIDDEN_TABS = ["Change Orders", "RFIs", "Submittals", "Gantt"];
+const PIPELINE_HIDDEN_TABS = ["Change Orders", "RFIs", "Submittals", "Construction Changes", "Gantt"];
 
 // ── Project Timeline ─────────────────────────────────────────────────────────
 // A two-sided "now" line for ONE project: upcoming due-dates above the NOW
@@ -19859,10 +20746,14 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
 	        //    chip (or subs already exist on the project)
 	        //  · Fee / Financials — behind the fees.view capability
 	        const projInCA = project.status === "In Construction Administration" ||
-	                         (project.rfis || []).length > 0 || (project.submittals || []).length > 0;
+	                         (project.rfis || []).length > 0 || (project.submittals || []).length > 0 ||
+	                         (project.constructionChanges || []).length > 0;
+	        // Construction Changes: jobs where Setty is prime (the PMS is the
+	        // record), or any project that already has change documents.
+	        const changesOn = caSettyIsPrime(project) || (project.constructionChanges || []).length > 0;
 	        const subsOn = (project.subconsultants || []).length > 0 || !!project.subsEnabled;
 	        const visibleGroups = TAB_GROUPS
-	          .map(g => ({ ...g, visibleTabs: g.tabs.filter(t => !projIsPipeline || !PIPELINE_HIDDEN_TABS.includes(t)) }))
+	          .map(g => ({ ...g, visibleTabs: g.tabs.filter(t => (!projIsPipeline || !PIPELINE_HIDDEN_TABS.includes(t)) && (t !== "Construction Changes" || changesOn)) }))
 	          .filter(g => g.visibleTabs.length > 0)
 	          .filter(g => {
 	            if (g.name === "Construction Administration") return projInCA;
@@ -20101,6 +20992,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         {tab === "Change Orders" && <ChangeOrdersView project={project} onChange={onUpdate} />}
         {tab === "RFIs" && <RFIsView project={project} onChange={onUpdate} staff={staff} clients={clients} />}
         {tab === "Submittals" && <SubmittalsView project={project} onChange={onUpdate} staff={staff} clients={clients} />}
+        {tab === "Construction Changes" && <ConstructionChangesView project={project} onChange={onUpdate} />}
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} onEagerSave={onEagerSave} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
         {tab === "Directory" && <ProjectDirectoryView project={project} onChange={onUpdate} clients={clients} />}
