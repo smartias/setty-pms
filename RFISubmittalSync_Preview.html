@@ -110,7 +110,18 @@
   .modal .mhead h3 { margin:0; font-size:16px; } .modal .mhead .x { margin-left:auto; cursor:pointer; color:var(--muted); font-size:20px; background:none; border:0; padding:0; line-height:1; }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:16px 18px; }
   .fld { display:flex; flex-direction:column; gap:4px; } .fld.full { grid-column:1 / -1; }
-  .fld label { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:700; }
+  /* Only the field heading is uppercased — nested labels (the Assigned-to names) keep their case. */
+  .fld > label { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:700; }
+  .fld input[aria-invalid="true"], .fld textarea[aria-invalid="true"], .fld select[aria-invalid="true"], .discSel[aria-invalid="true"] { border-color:var(--danger); box-shadow:0 0 0 1px var(--danger); }
+  .formerr { color:var(--danger-txt); font-size:12px; font-weight:600; }
+  .filterbar button.chip { font-size:12px; padding:5px 10px; background:transparent; }
+  .filterbar button.chip[aria-pressed="true"] { background:var(--plat-bg); color:var(--plat-txt); border-color:var(--plat-txt); }
+  th.sortable { padding:0; } th.sortable button { all:unset; box-sizing:border-box; display:block; width:100%; padding:7px 12px; cursor:pointer; font:inherit; color:inherit; white-space:nowrap; }
+  th.sortable button:hover, th.sortable button:focus-visible { color:var(--txt); text-decoration:underline; text-underline-offset:3px; }
+  th.sortable[aria-sort] button { color:var(--txt); }
+  tr.grp td { background:var(--card); padding:9px 12px; border-bottom:1px solid var(--line); }
+  tr.grp .rowbtn { font-family:inherit; font-size:13px; }
+  .lhead { padding:10px 16px 2px; font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
   .fld input, .fld select, .fld textarea { background:var(--card2); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:7px 9px; font:inherit; }
   .fld textarea { min-height:60px; resize:vertical; }
   /* Sticky inside the scrolling overlay so Save / Cancel stay in reach on a tall form. */
@@ -168,8 +179,10 @@
   <select id="fDisc" aria-label="Filter by discipline" onchange="setF('disc',this.value)"></select>
   <select id="fStatus" aria-label="Filter by status" onchange="setF('status',this.value)"></select>
   <input id="fText" aria-label="Search by number, title, spec, or sender" placeholder="search # · title · spec · from…" oninput="setF('text',this.value)" style="width:220px" />
-  <button class="ghost" onclick="clearFilters()">Clear</button>
-  <span class="spacer"></span><span id="filterCount" role="status" class="muted" style="font-size:12px"></span>
+  <button type="button" class="chip" id="fMine" aria-pressed="false" onclick="toggleMine()" title="Only items assigned to you — matched by your sign-in or the name in the You box">👤 Mine</button>
+  <button type="button" class="chip" id="fUnrev" aria-pressed="false" onclick="toggleUnrev()" title="Only auto-imported items nobody has confirmed yet">📥 Unreviewed</button>
+  <button class="ghost" onclick="clearFilters()" title="Back to the default view: all types, all disciplines, open items">Reset</button>
+  <span id="filterCount" role="status" class="muted" style="font-size:13px"></span>
 </div>
 
 <div id="portal" class="portal" style="display:none" aria-live="polite"></div>
@@ -218,8 +231,25 @@ const H = { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + SUPABASE_A
 const settyAuthReady = (window.settyAuth ? settyAuth.init() : Promise.resolve(null)).catch(() => null)
   .then(() => { if (window.settyAuth) H.Authorization = "Bearer " + settyAuth.token(); });
 if (window.settyAuth) {
-  settyAuth.onChange(() => { H.Authorization = "Bearer " + settyAuth.token(); });
+  settyAuth.onChange(() => { H.Authorization = "Bearer " + settyAuth.token(); syncWho(); placePill(); });
   settyAuth.mountPill();
+}
+// "You" comes from the sign-in when there is one (read-only then); the free-text
+// box stays as the fallback while signed out, so the log always names someone.
+function syncWho(){
+  const el=document.getElementById("who"); if(!el) return;
+  const signedIn=!!(window.settyAuth&&settyAuth.isSignedIn&&settyAuth.isSignedIn());
+  const name=signedIn?String(settyAuth.displayName&&settyAuth.displayName()||"").trim():"";
+  if(name){ el.value=name; el.readOnly=true; el.title="From your sign-in"; saveWho(); }
+  else { el.readOnly=false; el.title=""; }
+}
+// The suite's floating sign-in pill sits bottom-right by default, over the
+// table and the toast — park it in the project bar instead.
+function placePill(){
+  const pill=document.getElementById("settyAuthPill"), host=document.querySelector(".pickbar .right");
+  if(!pill||!host||pill.parentElement===host) return;
+  Object.assign(pill.style,{position:"static",boxShadow:"none",padding:"7px 12px",fontSize:"12px",lineHeight:"1.2"});
+  host.prepend(pill);
 }
 
 const CA_STATUS = "In Construction Administration";
@@ -340,10 +370,11 @@ function srUndecide(sheet){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsW
 function srRestore(){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsWork||[]).filter(x=>x.status==="confirmed"); srPaint(); }
 
 /* =========================== STATE + PICKER =========================== */
-let PROJECTS=[], CURRENT=null, FILTER={type:"all",disc:"all",status:"__open__",text:""};
+const FILTER_DEFAULT=()=>({type:"all",disc:"all",status:"__open__",text:"",mine:false});
+let PROJECTS=[], CURRENT=null, FILTER=FILTER_DEFAULT();
 async function init(){
   try{ applyTheme(localStorage.getItem("rfiTrackTheme")==="light"?"light":"dark"); }catch(e){}
-  try{ document.getElementById("who").value = localStorage.getItem("rfiTrackUser")||"";
+  try{ document.getElementById("who").value = localStorage.getItem("rfiTrackUser")||""; syncWho(); placePill();
        const g=localStorage.getItem("rfiTrackGuide");
        if(g==="0") toggleGuide(); else if(g===null) localStorage.setItem("rfiTrackGuide","0"); }catch(e){}
   document.getElementById("fDisc").innerHTML = `<option value="all">All disciplines</option><option value="__unset__">(unset)</option>`+ALL_DISC.map(d=>`<option>${esc(d)}</option>`).join("");
@@ -453,13 +484,13 @@ async function selectAll(){
   document.getElementById("out").innerHTML=`<p class="empty">Loading all Construction-Admin projects…</p>`;
   try{
     const ids=PROJECTS.map(p=>p.id); if(!ids.length){ document.getElementById("out").innerHTML=`<p class="empty">No CA projects.</p>`; return; }
-    const rows=await fetchJson(`pms_projects?id=in.(${ids.join(",")})&select=id,name:project->>name,number:project->>projectNumber,rfis:project->rfis,submittals:project->submittals,team:project->teamMembers`);
+    const rows=await fetchJson(`pms_projects?id=in.(${ids.join(",")})&select=id,name:project->>name,number:project->>projectNumber,rfis:project->rfis,submittals:project->submittals,team:project->teamMembers,rfiDueDays:project->>rfiDueDays,submittalDueDays:project->>submittalDueDays`);
     const tag=(arr,row)=>(arr||[]).map(r=>({...r,__projId:row.id,__projName:row.name||"",__projNum:row.number||""}));
-    const rfis=[], subs=[], teams={};
-    for(const row of rows){ rfis.push(...tag(row.rfis,row)); subs.push(...tag(row.submittals,row)); teams[row.id]=row.team||[]; }
+    const rfis=[], subs=[], teams={}, dueDays={};
+    for(const row of rows){ rfis.push(...tag(row.rfis,row)); subs.push(...tag(row.submittals,row)); teams[row.id]=row.team||[]; dueDays[row.id]={rfi:+row.rfiDueDays||5, sub:+row.submittalDueDays||10}; }
     const byP=(a,b)=>String(a.__projNum||a.__projName).localeCompare(String(b.__projNum||b.__projName))||String(a.number).localeCompare(String(b.number));
     rfis.sort(byP); subs.sort(byP);
-    CURRENT={ proj:{id:"__ALL__",name:"All Construction-Admin projects"}, allMode:true, rfis, submittals:subs, inbox:{rfi:[],submittal:[]}, teams };
+    CURRENT={ proj:{id:"__ALL__",name:"All Construction-Admin projects"}, allMode:true, rfis, submittals:subs, inbox:{rfi:[],submittal:[]}, teams, dueDays };
     renderProject();
   }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
 }
@@ -470,22 +501,42 @@ async function selectProject(pid){
   document.getElementById("out").innerHTML=`<p class="empty">Loading ${esc(proj.name)}…</p>`;
   try{
     const [projRows, emails]=await Promise.all([
-      fetchJson(`pms_projects?id=eq.${pid}&select=rfis:project->rfis,submittals:project->submittals,team:project->teamMembers`),
+      fetchJson(`pms_projects?id=eq.${pid}&select=rfis:project->rfis,submittals:project->submittals,team:project->teamMembers,rfiDueDays:project->>rfiDueDays,submittalDueDays:project->>submittalDueDays`),
       fetchJson(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
     ]);
     const logged=projRows[0]||{}; const loggedRFIs=logged.rfis||[], loggedSubs=logged.submittals||[];
     const CI=window.CaIntake; if(!CI) throw new Error("caIntake.js did not load — reload the page.");
     const inbox=CI.buildInbox(emails,loggedRFIs,loggedSubs,pid);
-    CURRENT={ proj, rfis:loggedRFIs, submittals:loggedSubs, inbox, teams:{[pid]:(logged.team||[])} };
+    CURRENT={ proj, rfis:loggedRFIs, submittals:loggedSubs, inbox, teams:{[pid]:(logged.team||[])}, dueDays:{[pid]:{rfi:+logged.rfiDueDays||5, sub:+logged.submittalDueDays||10}} };
     renderProject();
   }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
 }
 
 /* =========================== FILTERS =========================== */
-function setF(k,v){ FILTER[k]= k==="text"?v.toLowerCase():v; renderProject(); if(k==="text"){const el=document.getElementById("fText"); el.focus(); el.setSelectionRange(el.value.length,el.value.length);} }
-function clearFilters(){ FILTER={type:"all",disc:"all",status:"all",text:""};
-  document.getElementById("fType").value="all"; document.getElementById("fDisc").value="all"; document.getElementById("fStatus").value="all"; document.getElementById("fText").value=""; renderProject(); }
+// The search box is static HTML (only #out re-renders), so typing never loses
+// the caret; the re-render itself is debounced so each keystroke stays cheap.
+let _textTimer=null;
+function setF(k,v){
+  if(k==="text"){ clearTimeout(_textTimer); _textTimer=setTimeout(()=>{ FILTER.text=v.toLowerCase(); renderProject(); },150); return; }
+  FILTER[k]=v; syncFilterUi(); renderProject();
+}
+function syncFilterUi(){
+  const g=id=>document.getElementById(id);
+  g("fType").value=FILTER.type; g("fDisc").value=FILTER.disc; g("fStatus").value=FILTER.status; if(g("fText").value.toLowerCase()!==FILTER.text) g("fText").value=FILTER.text;
+  g("fMine").setAttribute("aria-pressed",String(!!FILTER.mine)); g("fUnrev").setAttribute("aria-pressed",String(FILTER.status==="__unreviewed__"));
+}
+// Reset = back to the view the page opens on (open items), not "everything".
+function clearFilters(){ FILTER=FILTER_DEFAULT(); syncFilterUi(); renderProject(); }
+function toggleMine(){ if(!FILTER.mine&&!myIdentity()){ toast("Put your name in the You box (or sign in) so the Mine filter knows who you are.", false); return; } FILTER.mine=!FILTER.mine; syncFilterUi(); renderProject(); }
+function toggleUnrev(){ FILTER.status=FILTER.status==="__unreviewed__"?"__open__":"__unreviewed__"; syncFilterUi(); renderProject(); }
+// Who "me" is: the sign-in email when signed in, else the name typed in the You
+// box. Matched against the project's team members by email, then by name.
+function myIdentity(){ const email=String(window.settyAuth&&settyAuth.email&&settyAuth.email()||"").trim().toLowerCase(); const name=getWho().toLowerCase(); return (email||name)?{email,name}:null; }
+function isMine(r){ const me=myIdentity(); if(!me) return false; const team=teamOf(r);
+  return (r.assignedTo||[]).some(id=>{ const m=team.find(t=>t.id===id); if(!m) return false;
+    return (me.email&&String(m.email||"").trim().toLowerCase()===me.email)||(me.name&&String(m.name||"").trim().toLowerCase()===me.name); }); }
 function passFilter(r){
+  if(FILTER.mine&&!isMine(r)) return false;
   if(FILTER.disc==="__unset__"){ if((r.discipline||"")!=="") return false; }
   else if(FILTER.disc!=="all" && (r.discipline||"")!==FILTER.disc) return false;
   if(FILTER.status==="__open__"){ if(!OPEN_STATUSES.includes(r.status||"")) return false; }
@@ -519,10 +570,21 @@ function dateCell(iso, extra){ return `<td class="date" title="${esc(iso||"")}">
 // Display order: open items first, soonest due first (no due date last); then
 // closed items, most recently received first. All-projects mode keeps rows
 // grouped by project.
+// Column sort: click a heading for ascending, again for descending, a third
+// time for the default order. Rows stay grouped by project in all-projects mode.
+const SORT={rfi:null, submittal:null};
+const SORT_COLS={ number:r=>String(r.number||""), title:r=>String(r.title||r.description||""), description:r=>String(r.description||r.title||""), discipline:r=>String(r.discipline||""),
+  from:r=>String(r.from||""), assigned:r=>assigneeNames(r), stamp:r=>String(r.stamp&&r.stamp!=="—"?r.stamp:""), received:r=>String(r.dateReceived||""), due:r=>String(r.dueDate||"9999"), status:r=>String(r.status||"") };
+function sortBy(kind,key){ const cur=SORT[kind]; SORT[kind]=(!cur||cur.key!==key)?{key,dir:1}:cur.dir===1?{key,dir:-1}:null; renderProject(); }
+function sortTh(kind,key,label){ const cur=SORT[kind]; const on=cur&&cur.key===key;
+  return `<th scope="col" class="sortable"${on?` aria-sort="${cur.dir===1?"ascending":"descending"}"`:""}><button type="button" onclick="sortBy('${kind}','${key}')" title="${on?(cur.dir===1?"Sorted ascending — click for descending":"Sorted descending — click for the default order"):"Sort by "+esc(label)}">${esc(label)}${on?(cur.dir===1?" ▲":" ▼"):""}</button></th>`; }
 function sortForDisplay(kind, rows){
   const am=CURRENT&&CURRENT.allMode; const dk=r=>{const n=daysUntil(r.dueDate); return n===null?1e9:n;};
+  const grp=(a,b)=>am?String(a.__projNum||a.__projName||"").localeCompare(String(b.__projNum||b.__projName||"")):0;
+  const col=SORT[kind];
+  if(col&&SORT_COLS[col.key]){ const g=SORT_COLS[col.key]; return rows.slice().sort((a,b)=>grp(a,b)||col.dir*g(a).localeCompare(g(b),undefined,{numeric:true,sensitivity:"base"})||String(a.number||"").localeCompare(String(b.number||""))); }
   return rows.slice().sort((a,b)=>
-    (am?String(a.__projNum||a.__projName||"").localeCompare(String(b.__projNum||b.__projName||"")):0) ||
+    grp(a,b) ||
     (isOpenItem(kind,b)?1:0)-(isOpenItem(kind,a)?1:0) ||
     (isOpenItem(kind,a) ? dk(a)-dk(b) : String(b.dateReceived||"").localeCompare(String(a.dateReceived||""))) ||
     String(a.number||"").localeCompare(String(b.number||"")));
@@ -551,7 +613,7 @@ function renderProject(){
   let total=0, shownTot=0;
   if(FILTER.type!=="submittal"){ const s=renderSection("rfi","RFIs",CURRENT.rfis,CURRENT.inbox.rfi); out.appendChild(s.el); total+=s.total; shownTot+=s.shown; }
   if(FILTER.type!=="rfi"){ const s=renderSection("submittal","Submittals",CURRENT.submittals,CURRENT.inbox.submittal); out.appendChild(s.el); total+=s.total; shownTot+=s.shown; }
-  const filtered = FILTER.disc!=="all"||FILTER.status!=="all"||FILTER.text||FILTER.type!=="all";
+  const d=FILTER_DEFAULT(); const filtered=Object.keys(d).some(k=>FILTER[k]!==d[k]);
   document.getElementById("filterCount").textContent = filtered? `showing ${shownTot} of ${total}` : "";
 }
 function renderSection(kind, title, logged, inbox){
@@ -563,7 +625,7 @@ function renderSection(kind, title, logged, inbox){
   let html=`<div class="head"><h2>${title}</h2><span class="count">${shown.length===logged.length?logged.length:shown.length+" of "+logged.length} logged${late?` · <span class="late">${late} overdue</span>`:""}${unrev?` · <span class="unrev">${unrev} unreviewed</span>`:""}${news.length?` · ${news.length} to import`:""}</span><span class="spacer"></span>`+
     `<button class="ghost" style="font-size:12px" onclick="exportCSV('${kind}')">⬇ CSV</button>`+
     (am?`<span class="muted" style="font-size:12px">pick one project to add / import</span>`:
-       `<a href="${esc(caBackloadSeatUrl(kind, CURRENT.proj.name||"", CURRENT.proj.number||""))}" target="_blank" rel="noreferrer" title="For items still in Newforma: open a Claude seat to find the filed PDF / notification email, log it here (backfill), then review it against the current set and specs." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--accent);font-weight:600">🤖 Backload from PDF/email</a>`+
+       `<a href="${esc(caBackloadSeatUrl(kind, CURRENT.proj.name||"", CURRENT.proj.number||""))}" target="_blank" rel="noreferrer" title="For items still in Newforma: open a Claude seat to find the filed PDF / notification email, log it here (backfill), then review it against the current set and specs." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--accent);font-weight:600">🤖 Log from filed PDF/email</a>`+
        `<button class="primary" onclick="openEditor('${kind}',null)">+ Add ${kind==='rfi'?'RFI':'Submittal'}</button>`)+`</div>`;
   if(news.length){
     const head = kind==="rfi" ? "<th scope='col'>RFI</th><th scope='col'>Title</th><th scope='col'>Status</th><th scope='col'>Due</th><th scope='col'>Asked by</th><th scope='col'>Discipline</th><th scope='col' class='right'>Import</th>"
@@ -572,7 +634,7 @@ function renderSection(kind, title, logged, inbox){
     const rows=inbox.map(it=>{ const cb=it.verdict==="new"?`<input type="checkbox" class="pick" aria-label="Import ${kind==="rfi"?"RFI":"submittal"} #${esc(it.extNum)}" data-k="${kind}" data-ext="${esc(it.extNum)}" checked>`:"";
       const dv=(it.record&&it.record.discipline)||"";
       const dcell = it.verdict==="new"
-        ? `<td><select class="discSel" data-k="${kind}" data-ext="${esc(it.extNum)}" title="Discipline — inferred from spec section / title; adjust before import"><option value="" ${dv?"":"selected"}>—</option>${vocab.map(d=>`<option ${d===dv?"selected":""}>${esc(d)}</option>`).join("")}</select></td>`
+        ? `<td><select class="discSel" data-k="${kind}" data-ext="${esc(it.extNum)}" aria-label="Discipline for #${esc(it.extNum)}" title="Discipline — inferred from spec section / title; pick one before import" onchange="this.removeAttribute('aria-invalid')"><option value="" ${dv?"":"selected"}>—</option>${vocab.map(d=>`<option ${d===dv?"selected":""}>${esc(d)}</option>`).join("")}</select></td>`
         : `<td class="muted">${esc(dv||"—")}</td>`;
       const c = kind==="rfi" ? `<td class="num">#${esc(it.extNum)}</td><td class="title">${esc(it.title)}</td><td>${statusPill(it.status)}</td>${dateCell(it.dueDate)}<td>${esc(it.from||"")}</td>`
         : `<td class="num">#${esc(it.extNum)}${it.rev?` <span class=muted>r${it.rev}</span>`:""}</td><td class="title">${esc(it.title)}</td><td>${esc(it.specSection||"")}</td><td>${statusPill(it.status)}</td>${dateCell(it.dueDate)}`;
@@ -584,12 +646,17 @@ function renderSection(kind, title, logged, inbox){
   }
   if(!logged.length){ html+=`<div class="empty">No ${kind}s logged yet. Click “+ Add ${kind==='rfi'?'RFI':'Submittal'}” to log one, or import from the portal emails above.</div>`; }
   else {
-    const pcol=am?"<th scope='col'>Project</th>":"";
-    const head = pcol + (kind==="rfi" ? "<th scope='col'>RFI</th><th scope='col'>Title</th><th scope='col'>Discipline</th><th scope='col'>From</th><th scope='col'>Assigned</th><th scope='col'>Received</th><th scope='col'>Due</th><th scope='col'>Status</th>"
-                              : "<th scope='col'>Item</th><th scope='col'>Title / Spec</th><th scope='col'>Discipline</th><th scope='col'>Assigned</th><th scope='col'>Stamp</th><th scope='col'>Received</th><th scope='col'>Due</th><th scope='col'>Status</th>");
+    const T=(k,l)=>sortTh(kind,k,l);
+    const head = kind==="rfi" ? T("number","RFI")+T("title","Title")+T("discipline","Discipline")+T("from","From")+T("assigned","Assigned")+T("received","Received")+T("due","Due")+T("status","Status")
+                              : T("number","Item")+T("description","Title / Spec")+T("discipline","Discipline")+T("assigned","Assigned")+T("stamp","Stamp")+T("received","Received")+T("due","Due")+T("status","Status");
+    // All-projects mode: one header row per project (click it to open that
+    // project) instead of repeating the project name in every row.
+    const perProj={}; if(am) for(const r of shown) perProj[r.__projId]=(perProj[r.__projId]||0)+1;
+    let lastProj=null;
     const rows=shown.map(r=>{
-      const pp=am?PROJECTS.find(x=>x.id===r.__projId):null;
-      const pc=am?`<td class="muted" title="${esc(r.__projNum||"")}">${esc(r.__projName||r.__projNum||"")}${pp?platTagHtml(pp):""}</td>`:"";
+      let pc="";
+      if(am&&r.__projId!==lastProj){ lastProj=r.__projId; const pp=PROJECTS.find(x=>x.id===r.__projId); const n=perProj[r.__projId];
+        pc=`<tr class="grp"><td colspan="8"><button type="button" class="rowbtn" onclick="pickProject(${esc(JSON.stringify(r.__projId))})" title="Open this project">${esc(r.__projNum?r.__projNum+" — ":"")}${esc(r.__projName||r.__projNum||"(unnamed)")}</button>${pp?platTagHtml(pp):""} <span class="muted" style="font-weight:400">· ${n} item${n===1?"":"s"}</span></td></tr>`; }
       const asg=esc(assigneeNames(r));
       const open=`openEditor("${kind}",${esc(JSON.stringify(r.id))})`;
       // Keyboard path: real button on the number cell (stopPropagation so the
@@ -601,11 +668,13 @@ function renderSection(kind, title, logged, inbox){
         ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}${aiMark}</td><td>${esc(r.discipline||"")}</td><td>${esc(r.from||"")}</td><td class="muted">${asg}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}</td>`
         : `<td class="num">${numBtn}</td><td class="title">${esc(r.description||r.title||"—")}${aiMark}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${esc(r.discipline||"")}</td><td class="muted">${asg}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}</td>`;
       const nw=JUST_IMPORTED.has(r.id)?" justnew":"";
-      return `<tr class="click${nw}${lateRow}" onclick='${open}'>${pc}${c}</tr>`; }).join("");
-    html+=`<table><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan=${am?9:8} class="empty">No ${kind}s match the current filters.</td></tr>`}</tbody></table>`;
+      return pc+`<tr class="click${nw}${lateRow}" onclick='${open}'>${c}</tr>`; }).join("");
+    if(news.length) html+=`<div class="lhead">Logged — ${shown.length===logged.length?logged.length:shown.length+" of "+logged.length}</div>`;
+    html+=`<table><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan=8 class="empty">No ${kind}s match the current filters.</td></tr>`}</tbody></table>`;
   }
   sec.innerHTML=html; return {el:sec, total:logged.length, shown:shown.length};
 }
+function pickProject(id){ const f=document.getElementById("filter"); if(f.value){ f.value=""; rebuildPicker(); } document.getElementById("picker").value=id; window.scrollTo(0,0); selectProject(id); }
 function verdictBadge(it){ if(it.verdict==="new")return`<span class="badge new">NEW</span>`;
   if(it.verdict==="update")return`<span class="badge update">UPDATE</span>`; return`<span class="badge matched">matched</span>`; }
 
@@ -616,6 +685,32 @@ const RFI_FIELDS=[ {k:"number",l:"RFI #"},{k:"title",l:"Title",full:1},{k:"disci
 const SUB_FIELDS=[ {k:"number",l:"Submittal #"},{k:"specSection",l:"Spec Section"},{k:"discipline",l:"Discipline",sel:SUB_DISC},{k:"status",l:"Status",sel:SUB_STATUSES},
   {k:"stamp",l:"Stamp",sel:SUB_STAMPS},{k:"resubNumber",l:"Resubmittal #",t:"number"},{k:"from",l:"From / Ball in court"},{k:"dateReceived",l:"Received",t:"date"},
   {k:"dueDate",l:"Due",t:"date"},{k:"dateReturned",l:"Returned",t:"date"},{k:"description",l:"Description",full:1,ta:1},{k:"comments",l:"Review comments",full:1,ta:1},{k:"notes",l:"Internal notes",full:1,ta:1} ];
+// Outcome fields that cannot apply to an item being logged for the first time
+// (they keep their blank defaults and appear once the item is saved).
+const HIDE_ON_NEW={ rfi:["dateResponded"], submittal:["stamp","resubNumber","dateReturned"] };
+// Must be filled before Add / Save; the number must also be unique in this project's list.
+const REQUIRED={ rfi:[["number","RFI #"],["title","Title"]], submittal:[["number","Submittal #"],["specSection","Spec Section"],["description","Description"]] };
+// Same scheme as the main PMS (newRFI / newSubmittal: RFI-### / SUB-###), but
+// the next number is the highest one already used + 1, so a gap left by a
+// delete never produces a duplicate.
+function nextNumber(kind, list){ const pre=kind==="rfi"?"RFI-":"SUB-"; const re=new RegExp("^"+pre+"(\\d+)$","i"); let max=0;
+  for(const r of list){ const m=String(r.number||"").trim().match(re); if(m) max=Math.max(max,+m[1]); }
+  return pre+String(Math.max(max,list.length)+1).padStart(3,"0"); }
+function asgHtmlFor(team, checked){ return team.length ? team.map(t=>`<label style="display:inline-flex;align-items:center;gap:5px;margin:2px 12px 2px 0;font-size:12px;white-space:nowrap"><input type="checkbox" class="asg" value="${esc(t.id)}" ${checked.has(t.id)?"checked":""}> ${esc(t.name||t.role)}${(t.role&&t.name)?` <span class="muted">(${esc(t.role)})</span>`:""}</label>`).join("") : `<span class="muted" style="font-size:12px">No team members on this project — set them up in the PMS.</span>`; }
+const subName=s=>(s&&typeof s==="object")?(s.name||s.company||s.discipline||""):String(s||"");
+function subHtmlFor(subs, subVal){ return (subs&&subs.length)
+    ? `<select id="f_subAssigned"><option value="">— none —</option>${subs.map(s=>{const n=subName(s);return `<option ${n===subVal?"selected":""}>${esc(n)}</option>`;}).join("")}${subVal&&!subs.some(s=>subName(s)===subVal)?`<option selected>${esc(subVal)}</option>`:""}</select>`
+    : `<input id="f_subAssigned" value="${esc(subVal)}" placeholder="subconsultant (optional)">`; }
+function validateEditor(kind){
+  document.querySelectorAll("#modal [aria-invalid]").forEach(e=>e.removeAttribute("aria-invalid"));
+  const bad=[]; const list=kind==="rfi"?CURRENT.rfis:CURRENT.submittals;
+  for(const [k,l] of REQUIRED[kind]){ const el=document.getElementById("f_"+k); if(el&&!el.value.trim()){ el.setAttribute("aria-invalid","true"); bad.push({el,msg:l+" is required"}); } }
+  const numEl=document.getElementById("f_number"); const num=numEl?numEl.value.trim().toLowerCase():"";
+  if(num){ const dup=list.find(r=>r.id!==EDIT.id&&(r.__projId||CURRENT.proj.id)===EDIT.projId&&String(r.number||"").trim().toLowerCase()===num); if(dup){ numEl.setAttribute("aria-invalid","true"); bad.unshift({el:numEl,msg:`${dup.number} is already used by "${dup.title||dup.description||"another item"}"`}); } }
+  const box=document.getElementById("formErr");
+  if(bad.length){ box.textContent=bad.map(b=>b.msg).join(" · "); box.style.display="inline"; bad[0].el.focus(); return false; }
+  box.textContent=""; box.style.display="none"; return true;
+}
 function blankRFI(){ const t=today(); return {id:"",number:"",title:"",description:"",from:"",discipline:"Mechanical",assignedTo:[],subAssigned:"",dateReceived:t,dueDate:addWD(t,5),dateResponded:"",response:"",status:"Open",notes:"",spFolderUrl:"",links:[]}; }
 function blankSub(){ const t=today(); return {id:"",number:"",specSection:"",description:"",from:"",discipline:"Mechanical",assignedTo:[],subAssigned:"",dateReceived:t,dueDate:addWD(t,10),dateReturned:"",comments:"",status:"Received",stamp:"—",resubNumber:0,notes:"",spFolderUrl:"",links:[],registerItemId:""}; }
 
@@ -716,7 +811,7 @@ function caAcceptStamp(){ if(!EDIT||!EDIT.ai||!EDIT.ai.suggestedStamp)return; co
 function caAcceptNotes(){ if(!EDIT||!EDIT.ai)return; const el=document.getElementById("f_notes"); const t=(EDIT.ai.internalNotes||"").trim(); if(!el||!t)return; const cur=el.value||""; if(cur.includes(t)){ toast("Already added",true); return; } el.value=cur.trim()?cur.trim()+"\n\n"+t:t; }
 function caDismissAi(){ if(!EDIT)return; if(!confirm("Dismiss Claude's review? The suggested response, notes, and red flags on this record will be cleared when you save. Any red flags already tracked in QA stay there."))return; EDIT.dismissAi=true; const p=document.getElementById("aiPanel"); if(p)p.remove(); }
 
-let EDIT=null, EDIT_TEAM=[], EDIT_SUBS=[], LAST_FOCUS=null;
+let EDIT=null, EDIT_TEAM=[], EDIT_SUBS=[], LAST_FOCUS=null, EDIT_SEQ=0;
 // Footer drop-up menus (Email / Claude): one open at a time; Escape closes the
 // menu before it closes the editor; a click anywhere else closes them.
 function toggleMenu(btn){
@@ -746,14 +841,18 @@ async function openEditor(kind, id){
   const list = kind==="rfi"?CURRENT.rfis:CURRENT.submittals;
   const isNew = !id;
   let rec;
-  if(isNew){ rec = kind==="rfi"?blankRFI():blankSub(); rec.number = (kind==="rfi"?"RFI-":"SUB-")+String(list.length+1).padStart(3,"0"); }
+  if(isNew){ rec = kind==="rfi"?blankRFI():blankSub(); rec.number = nextNumber(kind, list); }
   else { rec = list.find(r=>r.id===id); if(!rec) return; }
   const projId = rec.__projId||CURRENT.proj.id;
-  EDIT={kind,isNew,id:rec.id,projId,projName:rec.__projName||CURRENT.proj.name||"",projNum:rec.__projNum||((CURRENT.proj&&CURRENT.proj.number)||""),ai:(rec.aiReview||null),dismissAi:false,sheetRefsWork:(rec.sheetRefs||[]).map(x=>({...x}))};
-  let team=(CURRENT.teams&&CURRENT.teams[projId])||[], subs=[];
-  try{ const pr=await fetchJson(`pms_projects?id=eq.${projId}&select=team:project->teamMembers,subs:project->subconsultants`); if(pr[0]){ team=pr[0].team||team; subs=pr[0].subs||[]; } }catch(e){}
-  team=team.filter(t=>t&&(t.name||t.role)); EDIT_TEAM=team; EDIT_SUBS=subs;
-  const grid = fields.map(f=>{
+  if(isNew){ const dd=(CURRENT.dueDays&&CURRENT.dueDays[projId])||{}; rec.dueDate=addWD(rec.dateReceived, kind==="rfi"?(dd.rfi||5):(dd.sub||10)); }
+  const seq=++EDIT_SEQ;
+  EDIT={kind,isNew,id:rec.id,projId,seq,projName:rec.__projName||CURRENT.proj.name||"",projNum:rec.__projNum||((CURRENT.proj&&CURRENT.proj.number)||""),ai:(rec.aiReview||null),dismissAi:false,sheetRefsWork:(rec.sheetRefs||[]).map(x=>({...x}))};
+  // Draw at once from what is already in memory; the team / subconsultant
+  // lists are refreshed in the background and patched in below.
+  let team=((CURRENT.teams&&CURRENT.teams[projId])||[]).filter(t=>t&&(t.name||t.role)), subs=[];
+  EDIT_TEAM=team; EDIT_SUBS=subs;
+  const hidden=new Set(isNew?HIDE_ON_NEW[kind]:[]);
+  const grid = fields.filter(f=>!hidden.has(f.k)).map(f=>{
     const v = rec[f.k]==null?"":rec[f.k];
     let input;
     if(f.sel) input=`<select id="f_${f.k}">${f.sel.map(o=>`<option ${o===v?"selected":""}>${esc(o)}</option>`).join("")}</select>`;
@@ -762,12 +861,9 @@ async function openEditor(kind, id){
     return `<div class="fld ${f.full?"full":""}"><label for="f_${f.k}">${esc(f.l)}</label>${input}</div>`;
   }).join("");
   const cur=new Set(rec.assignedTo||[]);
-  const asgHtml = team.length ? team.map(t=>`<label style="display:inline-flex;align-items:center;gap:5px;margin:2px 12px 2px 0;font-size:12px;white-space:nowrap"><input type="checkbox" class="asg" value="${esc(t.id)}" ${cur.has(t.id)?"checked":""}> ${esc(t.name||t.role)}${(t.role&&t.name)?` <span class="muted">(${esc(t.role)})</span>`:""}</label>`).join("") : `<span class="muted" style="font-size:12px">No team members on this project — set them up in the PMS.</span>`;
+  const asgHtml = asgHtmlFor(team, cur);
   const subVal=rec.subAssigned||"";
-  const subName=s=>(s&&typeof s==="object")?(s.name||s.company||s.discipline||""):String(s||"");
-  const subHtml = (subs&&subs.length)
-    ? `<select id="f_subAssigned"><option value="">— none —</option>${subs.map(s=>{const n=subName(s);return `<option ${n===subVal?"selected":""}>${esc(n)}</option>`;}).join("")}</select>`
-    : `<input id="f_subAssigned" value="${esc(subVal)}" placeholder="subconsultant (optional)">`;
+  const subHtml = subHtmlFor(subs, subVal);
   // Folder creation needs the main PMS's Microsoft sign-in (this app has
   // none) — the deep link opens the SAME item's modal there, where the
   // Create Folder button lives. Shown beside the field until a URL exists.
@@ -775,14 +871,14 @@ async function openEditor(kind, id){
     (rec.spFolderUrl?`<a href="${esc(rec.spFolderUrl)}" target="_blank" rel="noreferrer" style="background:#0078d4;color:#fff;border-radius:6px;padding:6px 11px;text-decoration:none;font-size:12px;white-space:nowrap;align-self:center"><span aria-hidden="true">📁</span> Open<span class="sr-only"> (opens in a new tab)</span></a>`
       :(isNew?"":`<a href="${esc(caItemDeepLink(kind, rec.number)||"#")}" target="_blank" rel="noreferrer" title="Opens this exact item in the main PMS, where the Create Folder button generates the SharePoint folder (needs the PMS's Microsoft sign-in). The folder URL saved there shows here after a refresh." style="border:1px solid var(--line);color:var(--accent);border-radius:6px;padding:6px 11px;text-decoration:none;font-size:12px;white-space:nowrap;align-self:center;font-weight:600"><span aria-hidden="true">📁</span> Create folder in PMS<span class="sr-only"> (opens in a new tab)</span></a>`))+`</div>`+
     `<div class="muted" style="font-size:11px;margin-top:3px">Creating a new folder needs Microsoft sign-in — do that in the main PMS, then paste the link here.</div>`;
-  const extra = `<div class="fld full"><label>Assigned to</label><div style="border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:var(--card2)">${asgHtml}</div></div>`+
-    `<div class="fld full"><label for="f_subAssigned">Subconsultant (optional)</label>${subHtml}</div>`+
+  const extra = `<div class="fld full"><label>Assigned to</label><div id="asgBox" style="border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:var(--card2)">${asgHtml}</div></div>`+
+    `<div class="fld full"><label for="f_subAssigned">Subconsultant (optional)</label><div id="subWrap" class="fld" style="gap:0">${subHtml}</div></div>`+
     `<div class="fld full"><label>Drawing sheet references <span class="muted" style="font-weight:400">(verify the callouts — same checker as the main PMS)</span></label><div id="sheetRefChips"><span class="muted" style="font-size:12px">Checking for drawing references…</span></div></div>`+
     `<div class="fld full"><label for="f_spFolderUrl">SharePoint folder</label>${spHtml}</div>`;
   const by = (rec.syncEditedBy||rec.loggedBy) ? `Last touched by ${esc(rec.syncEditedBy||rec.loggedBy)}${rec.syncEditedAt?" · "+esc((rec.syncEditedAt||"").slice(0,10)):""}` : (rec.source?`Imported from ${esc(rec.source)}`:"");
   const reviewUrl = caReviewSeatUrl(kind, rec, EDIT.projName, EDIT.projNum);
   const hint=t=>`<span class="hint">${t}</span>`;
-  const emailMenu = menuHtml("emailMenu", "✉ Email", [
+  const emailMenu = isNew ? "" : menuHtml("emailMenu", "✉ Email", [
     `<button type="button" role="menuitem" onclick="closeMenus();emailAction('${kind}','assign')">Assign to a team member${hint("Opens a pre-filled Outlook draft to the people ticked under Assigned to.")}</button>`,
     `<button type="button" role="menuitem" onclick="closeMenus();emailAction('${kind}','sub')">Forward to subconsultant${hint("Draft to the subconsultant picked above — never includes internal notes.")}</button>`,
     `<button type="button" role="menuitem" onclick="closeMenus();emailAction('${kind}','respond')">Draft ${kind==='rfi'?'response':'return'} email${hint(`Draft the formal ${kind==='rfi'?'RFI response':'submittal return'} from the fields as they are now.`)}</button>` ]);
@@ -806,13 +902,24 @@ async function openEditor(kind, id){
     `<div class="grid">${grid}${extra}</div>`+
     `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
     emailMenu+claudeMenu+
-    `<span class="by">${by}</span><span class="spacer"></span>`+
+    `<span class="by">${by}</span><span id="formErr" class="formerr" role="alert" style="display:none"></span><span class="spacer"></span>`+
     `<button onclick="closeEditor()">Cancel</button><button class="go" onclick="saveEditor()">${isNew?"Add to log":"Save"}</button></div>`;
   document.getElementById("overlay").classList.add("show");
   const ff=document.getElementById("modal").querySelector("input,select,textarea");
   if(ff) ff.focus();
   renderSheetRefChips(); // async; degrades to "unavailable" without blocking the editor
   startReviewPoll();
+  // Background refresh of the team and subconsultant lists for this project.
+  // Only the two blocks are patched, keeping whatever the user has ticked since.
+  fetchJson(`pms_projects?id=eq.${projId}&select=team:project->teamMembers,subs:project->subconsultants`).then(pr=>{
+    if(!EDIT||EDIT.seq!==seq||!pr[0]) return;
+    const t2=(pr[0].team||team).filter(t=>t&&(t.name||t.role)), s2=pr[0].subs||[];
+    EDIT_TEAM=t2; EDIT_SUBS=s2;
+    const box=document.getElementById("asgBox");
+    if(box){ const checked=new Set([...box.querySelectorAll(".asg:checked")].map(c=>c.value)); box.innerHTML=asgHtmlFor(t2, checked.size||!team.length?checked:cur); }
+    const wrap=document.getElementById("subWrap"), curSub=document.getElementById("f_subAssigned");
+    if(wrap&&s2.length&&curSub&&curSub.tagName==="INPUT") wrap.innerHTML=subHtmlFor(s2, curSub.value);
+  }).catch(()=>{});
 }
 // Confirm = "a person has checked this auto-imported item": saves the form as
 // it stands and flips intakeReviewed, the same write the main PMS makes.
@@ -871,6 +978,7 @@ function emailAction(kind, which){
 }
 async function saveEditor(){
   if(!EDIT)return; const {kind,isNew,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
+  if(!validateEditor(kind)){ EDIT.confirmIntake=false; return; }
   const edits=collectEdits(kind); const who=getWho(); const now=new Date().toISOString();
   edits.syncEditedBy=who||"(unknown)"; edits.syncEditedAt=now;
   if(EDIT.sheetRefsWork) edits.sheetRefs=EDIT.sheetRefsWork; // chip decisions ride the save
@@ -892,17 +1000,23 @@ async function saveEditor(){
   }catch(err){ if(EDIT) EDIT.confirmIntake=false; toast(err.message, false); }
 }
 async function deleteRecord(){
-  if(!EDIT||EDIT.isNew)return; const {kind,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
+  if(!EDIT||EDIT.isNew)return; const {kind,id,projId}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
   const rec=(kind==="rfi"?CURRENT.rfis:CURRENT.submittals).find(r=>r.id===id);
-  if(!confirm(`Delete ${rec?.number||""} — "${rec?.title||rec?.description||""}"?\n\nThis removes it from the log and cannot be undone.`)) return;
+  if(!confirm(`Delete ${rec?.number||""} — "${rec?.title||rec?.description||""}"?\n\nIt is removed from the log; an Undo button stays available for 60 seconds.`)) return;
   clearUndoBar();
-  try{ await writeArray(arrKey, arr=>arr.filter(r=>r.id!==id), false, EDIT.projId); closeEditor(); toast("Deleted ✓", true); selectProject(CURRENT.proj.id); }
-  catch(err){ toast(err.message, false); }
+  // Keep a clean copy (without the all-projects __proj tags) so Undo can put it back.
+  let kept=null;
+  try{
+    await writeArray(arrKey, arr=>{ kept=arr.find(r=>r.id===id)||null; return arr.filter(r=>r.id!==id); }, false, projId);
+    closeEditor(); toast("Deleted ✓", true);
+    if(kept) showUndoBar(arrKey, [id], projId, {record:kept, label:`Deleted ${kept.number||""}.`, undoLabel:"Undo delete"});
+    selectProject(CURRENT.proj.id);
+  }catch(err){ toast(err.message, false); }
 }
 
 /* =========================== IMPORT (sync) =========================== */
 let JUST_IMPORTED=new Set(); // ids added by the most recent import (row highlight; ids embed the project id, so no cross-project bleed)
-let UNDO=null;               // {arrKey, ids, projId, timer} — one-shot revert window for the last import
+let UNDO=null;               // {arrKey, ids, projId, record?, timer} — one-shot revert window for the last import or delete
 
 async function importSelected(kind){
   const arrKey=kind==="rfi"?"rfis":"submittals"; const inbox=CURRENT.inbox[kind];
@@ -914,6 +1028,10 @@ async function importSelected(kind){
   const picked=new Set([...document.querySelectorAll(`.pick[data-k="${kind}"]:checked`)].map(c=>c.dataset.ext));
   const records=inbox.filter(i=>i.verdict==="new"&&picked.has(i.extNum)).map(i=>i.record);
   if(!records.length){ toast("Nothing selected.", false); return; }
+  // A blank discipline would import as an empty cell nobody notices — ask for it now.
+  const missing=[...document.querySelectorAll(`.discSel[data-k="${kind}"]`)].filter(sel=>picked.has(sel.dataset.ext)&&!sel.value);
+  if(missing.length){ missing.forEach(sel=>sel.setAttribute("aria-invalid","true")); missing[0].focus();
+    toast(`Pick a discipline for ${missing.length} ticked item${missing.length===1?"":"s"} before importing (or untick ${missing.length===1?"it":"them"}).`, false); return; }
   if(!confirm(`Import ${records.length} ${kind}(s) into the log?\n\nExisting records are not modified.`)) return;
   try{
     let addedIds=[];
@@ -924,13 +1042,14 @@ async function importSelected(kind){
   }catch(err){ toast(err.message, false); }
 }
 
-function showUndoBar(arrKey, ids, projId){
+function showUndoBar(arrKey, ids, projId, opts){
   clearUndoBar();
   if(!ids.length) return;
-  UNDO={arrKey, ids, projId, timer:setTimeout(clearUndoBar, 60000)};
+  const o=opts||{};
+  UNDO={arrKey, ids, projId, record:o.record||null, timer:setTimeout(clearUndoBar, 60000)};
   const bar=document.getElementById("undobar");
-  bar.innerHTML=`<span>Imported ${ids.length} — highlighted in the log below.</span>`+
-    `<button class="ghost" style="font-size:12px" onclick="undoImport()">↩ Undo this import</button>`;
+  bar.innerHTML=`<span>${esc(o.label||`Imported ${ids.length} — highlighted in the log below.`)}</span>`+
+    `<button class="ghost" style="font-size:12px" onclick="undoLast()">↩ ${esc(o.undoLabel||"Undo this import")}</button>`;
   bar.classList.add("show");
 }
 function clearUndoBar(){
@@ -939,14 +1058,19 @@ function clearUndoBar(){
   const bar=document.getElementById("undobar");
   bar.classList.remove("show"); bar.innerHTML="";
 }
-async function undoImport(){
-  if(!UNDO) return; const {arrKey,ids,projId}=UNDO; const idSet=new Set(ids);
+async function undoLast(){
+  if(!UNDO) return; const {arrKey,ids,projId,record}=UNDO; const idSet=new Set(ids);
   try{
-    // Same version-guarded path as the import — a concurrent save aborts with
-    // the standard conflict message and nothing is removed.
-    await writeArray(arrKey, arr=>arr.filter(r=>!idSet.has(r.id)), false, projId);
-    JUST_IMPORTED.clear(); clearUndoBar();
-    toast(`Import undone — ${ids.length} removed ✓`, true); selectProject(CURRENT.proj.id);
+    // Same version-guarded path as the import / delete — a concurrent save
+    // aborts with the standard conflict message and nothing changes.
+    if(record){
+      await writeArray(arrKey, arr=>arr.some(r=>r.id===record.id)?arr:[...arr, record], false, projId);
+      clearUndoBar(); toast(`Restored ${record.number||""} ✓`, true);
+    } else {
+      await writeArray(arrKey, arr=>arr.filter(r=>!idSet.has(r.id)), false, projId);
+      JUST_IMPORTED.clear(); clearUndoBar(); toast(`Import undone — ${ids.length} removed ✓`, true);
+    }
+    selectProject(CURRENT.proj.id);
   }catch(err){ toast(err.message, false); }
 }
 
