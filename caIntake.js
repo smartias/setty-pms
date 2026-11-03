@@ -304,3 +304,32 @@ export function planIntake(emails, project, pid, opts = {}) {
   }
   return out;
 }
+
+/* ---------- which CA platform a project runs on ---------- */
+// Read from the filed notification emails, for the tracker's platform badge.
+// A guess until someone confirms it on the project (project.caPortal).
+export const CA_PLATFORMS = ["Procore", "Autodesk Build", "Newforma", "PMWeb", "Email only"];
+export function platformOfEmail(e) {
+  const from = (e && e.from_address) || "", subj = (e && e.subject) || "";
+  if (/procoretech/i.test(from)) return "Procore";
+  if (/forma\.autodesk|autodesk\.com|acc\.autodesk|bim360/i.test(from)) return "Autodesk Build";
+  if (/newforma/i.test(from) || /\b(RFI|Submittal)\s*Forwarded\s*:/i.test(subj) || /Responded to and Closed:/i.test(subj)) return "Newforma";
+  if (/pmweb/i.test(from) || /\bPMWeb\b/i.test(subj)) return "PMWeb";
+  return "";
+}
+// {projectId: {platform: count}} → {projectId: {platform, counts, total}};
+// platform is the one with the most emails (ties: CA_PLATFORMS order).
+export function detectPlatforms(emails) {
+  const by = {};
+  for (const e of emails || []) {
+    const p = platformOfEmail(e); if (!p) continue;
+    const pid = String(e.project_id || "");
+    const c = (by[pid] = by[pid] || {}); c[p] = (c[p] || 0) + 1;
+  }
+  const out = {};
+  for (const [pid, counts] of Object.entries(by)) {
+    const platform = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || CA_PLATFORMS.indexOf(a) - CA_PLATFORMS.indexOf(b))[0];
+    out[pid] = { platform, counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
+  }
+  return out;
+}

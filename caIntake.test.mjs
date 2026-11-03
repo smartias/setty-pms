@@ -168,3 +168,20 @@ test("planIntake: Procore only, new only, since-gated, marked Unreviewed", () =>
   assert.equal(plan.skipped.old, 1);
   assert.deepEqual([plan.rfis[0].intakeReviewed, plan.rfis[0].intake], [false, { at: "T", by: "ca-items-intake", vendor: "Procore" }]);
 });
+
+test("platformOfEmail / detectPlatforms: the portal a project's mail comes from", async () => {
+  const { platformOfEmail, detectPlatforms } = await import("./caIntake.js");
+  assert.equal(platformOfEmail({ from_address: "Gilbane_Building_Company@procoretech.com" }), "Procore");
+  assert.equal(platformOfEmail({ from_address: "no-reply@mail.forma.autodesk.com" }), "Autodesk Build");
+  assert.equal(platformOfEmail({ from_address: "pm@page.com", subject: "RFI Forwarded: Insulation - RFI:074:x" }), "Newforma");
+  assert.equal(platformOfEmail({ from_address: "a@b.com", subject: "DASNY PMWeb - CSI - Submittal Sets 056" }), "PMWeb");
+  assert.equal(platformOfEmail({ from_address: "a@b.com", subject: "Meeting minutes" }), "");
+  const d = detectPlatforms([
+    { project_id: "p1", from_address: "x@procoretech.com" }, { project_id: "p1", from_address: "y@procoretech.com" },
+    { project_id: "p1", subject: "RFI Forwarded: x" }, { project_id: "p2", subject: "Submittal Forwarded: y" },
+    { project_id: "p3", subject: "hello" },
+  ]);
+  assert.deepEqual(d.p1, { platform: "Procore", counts: { Procore: 2, Newforma: 1 }, total: 3 });
+  assert.equal(d.p2.platform, "Newforma");
+  assert.equal(d.p3, undefined);
+});
