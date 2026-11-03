@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v182-portal-ux";
+    window.__appVersion = "2026-11-03-pms-v183-explorer-bridge-check";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -5397,6 +5397,11 @@ const LINK_TYPE_ICONS = {
 // instead of firing a settypms:ndrive link the old script silently ignores
 // (it only recognizes `folder=`, so it exits with no visible failure).
 const EXPLORER_HANDLER_VERSION = 2;
+// Newest handler script shipped in explorer-bridge/ (v3: run log, visible
+// errors, settypms:check self-test, quoting-proof cowork launch). Not a
+// gate for any button — only the "re-run setup" nudge in My Settings, so a
+// bump here never takes a working button away from anyone.
+const EXPLORER_HANDLER_LATEST = 3;
 function explorerHandlerLevel() {
   return parseInt(localStorage.getItem("pmsExplorerHandler") || "0", 10) || 0;
 }
@@ -5405,6 +5410,9 @@ function explorerHandlerInstalled() {
 }
 function explorerHandlerSupportsNDrive() {
   return explorerHandlerLevel() >= EXPLORER_HANDLER_VERSION;
+}
+function explorerHandlerIsLatest() {
+  return explorerHandlerLevel() >= EXPLORER_HANDLER_LATEST;
 }
 
 // Strip path-illegal characters and collapse whitespace so a user-typed
@@ -23903,7 +23911,14 @@ function AskClaudeMenu({ project }) {
     const parts = safeDecodeFolderUrl(spUrl).replace(/\/+$/, "").split("/");
     return (parts[parts.length - 1] || "").trim();
   })();
+  // Shown whenever the project has a folder: with the per-device handler
+  // ticked in My Settings it is a direct settypms:cowork link; otherwise it
+  // opens the bridge page (explorer-bridge/open.html, the same page the
+  // Outlook add-in uses), which fires the link if the handler exists and
+  // shows the setup pointers and troubleshooting if it doesn't — instead of
+  // the entry silently not being there.
   const coworkReady = !!coworkFolderName && explorerHandlerInstalled();
+  const coworkBridgeUrl = "explorer-bridge/open.html?verb=cowork&folder=" + encodeURIComponent(coworkFolderName);
 
   const narrativeUrl = () => promptUrl([
     "Generate the design narrative / Basis of Design for " + label + " for the current phase.",
@@ -23923,6 +23938,12 @@ function AskClaudeMenu({ project }) {
     icon: "📁", title: "Work in the project folder",
     desc: "Opens Claude Code inside the synced folder to work on the actual files, not just chat",
     href: "settypms:cowork?folder=" + encodeURIComponent(coworkFolderName),
+    divider: true,
+  });
+  else if (coworkFolderName) entries.push({
+    icon: "📁", title: "Work in the project folder",
+    desc: "Opens Claude Code inside the synced folder. Needs the one-time handler setup on this computer (My Projects → My Settings) — this opens the setup page",
+    url: () => coworkBridgeUrl,
     divider: true,
   });
 
@@ -33777,13 +33798,33 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
                     // checking it just ran today's setup file, which is what
                     // the label below asks of anyone who set up before N:
                     // Drive one-click existed.
-                    if (on) localStorage.setItem("pmsExplorerHandler", String(EXPLORER_HANDLER_VERSION));
+                    if (on) localStorage.setItem("pmsExplorerHandler", String(EXPLORER_HANDLER_LATEST));
                     else localStorage.removeItem("pmsExplorerHandler");
                     setPrefsTick(t => t + 1);
                   }} />
                   Setup has been run on this computer — make 📂 one-click
                 </label>
+                {/* settypms:check — the v3 handler answers with a dialog
+                    (version, saved root, Claude CLI found or not, Windows
+                    Terminal). An older or missing handler shows nothing,
+                    which is itself the diagnosis: re-run the setup file. */}
+                <a href="settypms:check"
+                  title="Fires a settypms:check link. The handler answers with a dialog showing its version, your synced root, and whether the Claude Code CLI was found. No dialog within a few seconds = handler missing or older than v3: re-run the setup file."
+                  style={{ fontSize: 12.5, color: P.accentLight, textDecoration: "none", border: `1px solid ${P.border}`, borderRadius: 6, padding: "4px 10px" }}>
+                  🧪 Test the handler
+                </a>
               </div>
+              <div style={{ color: P.textMuted, fontSize: 11.5, marginTop: 6 }}>
+                Something not opening? Click <b>Test the handler</b>: a dialog should appear within a few seconds. No dialog means the handler
+                isn't installed, is an old version (it never updates itself — re-run the setup file), or security software blocked it.
+                Every click also writes <code>%LOCALAPPDATA%\SettyPMS\last-run.log</code> with what happened.
+              </div>
+              {explorerHandler && explorerHandlerSupportsNDrive() && !explorerHandlerIsLatest() && (
+                <div style={{ color: P.amber || "var(--c-fbbf24)", fontSize: 11.5, marginTop: 6 }}>
+                  ⚠ A newer handler is available (clearer errors, Test the handler, more reliable "Work in the project folder"):
+                  re-download the setup file above and run it, then un-tick and re-tick the box. Everything keeps working meanwhile.
+                </div>
+              )}
               {explorerHandler && !explorerHandlerSupportsNDrive() && (
                 <div style={{ color: P.amber || "var(--c-fbbf24)", fontSize: 11.5, marginTop: 6 }}>
                   ⚠ This computer's setup predates one-click N: Drive — re-download the setup file above, run it, then

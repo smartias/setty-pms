@@ -11,19 +11,32 @@
   URLs (Office.context.ui.openBrowserWindow rejects custom protocols), so it
   opens THIS page, and this page fires the settypms: link from inside the
   real browser, where the handler (see SettyPMS-Explorer-Setup.cmd in this
-  folder) is registered.
+  folder) is registered. The PMS also sends people here when the handler
+  isn't set up on their computer yet, because this page carries the setup
+  pointers instead of a dead end.
 
   URL contract:  open.html?folder=<encodeURIComponent(project folder name)>
   Optional:      &verb=cowork  — fires settypms:cowork instead of settypms:open
-  (launches a Claude Code session IN the folder; anything but the whitelisted
-  verbs falls back to "open"). URLSearchParams.get() decodes exactly ONCE, and
-  we re-encode exactly once when building the settypms: URI — so folder names
-  with a literal "%" ("100% CD") survive. Do not add another decode here.
+                 (launches a Claude Code session IN the folder)
+                 &verb=check   — fires settypms:check (handler self-test
+                 dialog; no folder needed)
+  Anything but the whitelisted verbs falls back to "open". URLSearchParams
+  .get() decodes exactly ONCE, and we re-encode exactly once when building
+  the settypms: URI — so folder names with a literal "%" ("100% CD")
+  survive. Do not add another decode here.
+
+  Did it work? The page cannot ask Windows, so it watches for the browser
+  losing focus within a few seconds of firing (the "Open SettyPMS?" prompt,
+  Explorer, the terminal or the handler's own dialog all take focus). If
+  that never happens, the handler almost certainly did not run, and the
+  troubleshooting block opens with the likely causes in order. Chromium
+  browsers may also refuse the automatic launch because the page had no
+  click yet — the big button is that click.
 -->
 <style>
   body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: #0f1420; color: #e5e9f0;
          display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-  .card { max-width: 480px; padding: 32px 36px; background: #171d2b; border: 1px solid #2a3347; border-radius: 12px; }
+  .card { max-width: 520px; padding: 32px 36px; background: #171d2b; border: 1px solid #2a3347; border-radius: 12px; }
   h1 { font-size: 18px; margin: 0 0 6px; }
   .folder { color: #8ab4f8; font-weight: 600; word-break: break-all; }
   p { font-size: 13.5px; color: #9aa4b5; line-height: 1.5; }
@@ -31,27 +44,59 @@
          font-size: 13.5px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; }
   .ghost { background: none; border: 1px solid #2a3347; color: #9aa4b5; margin-left: 8px; }
   .hint { font-size: 12px; color: #6b7484; margin-top: 18px; border-top: 1px solid #2a3347; padding-top: 12px; }
-  .hint a { color: #8ab4f8; }
+  .hint a, .trouble a { color: #8ab4f8; }
   #copyMsg { font-size: 12px; color: #34d399; margin-left: 8px; }
+  #status { font-size: 13px; margin: 10px 0 14px; min-height: 18px; }
+  #status.ok { color: #34d399; }
+  #status.warn { color: #fbbf24; }
+  .trouble { display: none; font-size: 12.5px; color: #c3cad6; margin-top: 14px; background: #1f2637;
+             border: 1px solid #2a3347; border-radius: 8px; padding: 12px 14px; line-height: 1.5; }
+  .trouble.show { display: block; }
+  .trouble ol { margin: 6px 0 0; padding-left: 20px; }
+  .trouble li { margin-bottom: 7px; }
+  .trouble b { color: #e5e9f0; }
+  code { font-size: 11.5px; background: #0f1420; padding: 1px 5px; border-radius: 4px; }
 </style>
 </head>
 <body>
 <div class="card">
-  <h1>📂 Opening in File Explorer…</h1>
-  <p>Project folder: <span class="folder" id="folderName">(none)</span></p>
-  <p>If nothing happened, your browser may be asking to allow "SettyPMS" links
-     (tick "always allow"), or the one-click handler isn't set up on this
-     computer yet.</p>
+  <h1 id="heading">📂 Opening in File Explorer…</h1>
+  <p id="folderLine">Project folder: <span class="folder" id="folderName">(none)</span></p>
+  <div id="status"></div>
   <div>
     <button id="openBtn">Open again</button>
     <button id="copyBtn" class="ghost">Copy local path</button>
     <span id="copyMsg"></span>
   </div>
-  <div class="hint">
+  <div class="trouble" id="trouble">
+    <b>Nothing opened?</b> The usual causes, in order:
+    <ol>
+      <li><b>The browser is asking first.</b> Look for an "Open SettyPMS?" / "This site wants to open an application"
+          prompt (often behind this tab or at the top of the window). Tick "always allow" and confirm.</li>
+      <li><b>The handler isn't installed on this computer.</b> One-time setup, no admin rights: download
+          <a href="SettyPMS-Explorer-Setup.cmd" download>SettyPMS-Explorer-Setup.cmd</a>, run it, then click
+          <b>Open again</b>. <a href="https://github.com/smartias/setty-pms/tree/main/explorer-bridge" target="_blank" rel="noreferrer">What it does ↗</a></li>
+      <li id="staleLi"><b>The handler is an old version.</b> It is cached on this computer and never updates itself. Symptoms:
+          "Work in the project folder" just opens File Explorer, or <b>Test the handler</b> below shows no dialog.
+          Re-run the same setup file above; it replaces the handler.</li>
+      <li id="cliLi"><b>Claude Code isn't installed</b> (Work in the project folder only). The Claude desktop app is not
+          enough: install Claude Code from <a href="https://claude.com/claude-code" target="_blank" rel="noreferrer">claude.com/claude-code</a>
+          and sign in once. The handler says so in a dialog when this is the cause.</li>
+      <li><b>Company security software blocked it.</b> On managed machines, endpoint protection can silently stop
+          the browser from starting PowerShell. IT can allow the handler (details in the PMS Admin Console guide).</li>
+    </ol>
+    <p style="margin:10px 0 0">
+      <a href="#" id="checkLink">🧪 Test the handler</a> — a dialog with the handler version and what it found
+      should appear within a few seconds. No dialog at all means cause 2, 3 or 5.
+      The handler also writes <code>%LOCALAPPDATA%\SettyPMS\last-run.log</code> on every click.
+    </p>
+  </div>
+  <div class="hint" id="hint">
     No handler yet? Download the one-time
     <a href="SettyPMS-Explorer-Setup.cmd" download>setup file</a>
     (readable source <a href="https://github.com/smartias/setty-pms/tree/main/explorer-bridge" target="_blank" rel="noreferrer">here</a>),
     run it, then click "Open again". No admin rights needed.
+    <a href="#" id="troubleLink">Troubleshooting</a>
   </div>
 </div>
 <script>
@@ -59,18 +104,65 @@
   var params = new URLSearchParams(location.search);
   var folder = (params.get("folder") || "").trim();
   // Whitelisted verbs only; anything else degrades to the safe default.
-  var verb = params.get("verb") === "cowork" ? "cowork" : "open";
+  var rawVerb = params.get("verb");
+  var verb = rawVerb === "cowork" ? "cowork" : rawVerb === "check" ? "check" : "open";
+  var statusEl = document.getElementById("status");
+  var trouble = document.getElementById("trouble");
   document.getElementById("folderName").textContent = folder || "(none)";
   if (verb === "cowork") {
-    document.querySelector("h1").textContent = "📁 Opening Claude Code in the project folder…";
+    document.getElementById("heading").textContent = "📁 Opening Claude Code in the project folder…";
     document.title = "Work in the project folder — Setty PMS";
+  } else if (verb === "check") {
+    document.getElementById("heading").textContent = "🧪 Testing the Setty PMS handler…";
+    document.title = "Handler check — Setty PMS";
+    document.getElementById("folderLine").style.display = "none";
+    document.getElementById("copyBtn").style.display = "none";
+    document.getElementById("openBtn").textContent = "Test again";
   }
 
-  function fire() {
-    if (!folder) return;
-    location.href = "settypms:" + verb + "?folder=" + encodeURIComponent(folder);
+  // Launch detection: Windows takes focus away from the browser when the
+  // handler (or the browser's own "open app?" prompt) appears. No focus loss
+  // within the window below means nothing ran.
+  var firedAt = 0, settled = false, timer = null;
+  function handedOff() {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    statusEl.className = "ok";
+    statusEl.textContent = verb === "check"
+      ? "✓ Handed off to Windows — the handler's dialog should be on screen."
+      : "✓ Handed off to Windows. If the folder still didn't open, see Troubleshooting below.";
+    trouble.classList.remove("show");
   }
+  function notSeen() {
+    if (settled) return;
+    statusEl.className = "warn";
+    statusEl.textContent = "Nothing seems to have opened.";
+    trouble.classList.add("show");
+  }
+  window.addEventListener("blur", function () { if (firedAt && Date.now() - firedAt < 6000) handedOff(); });
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden && firedAt && Date.now() - firedAt < 6000) handedOff();
+  });
+
+  function fireVerb(v) {
+    if (v !== "check" && !folder) return;
+    settled = false;
+    firedAt = Date.now();
+    statusEl.className = "";
+    statusEl.textContent = "Asking Windows to open it…";
+    clearTimeout(timer);
+    timer = setTimeout(notSeen, 3500);
+    location.href = "settypms:" + v + (v === "check" ? "" : "?folder=" + encodeURIComponent(folder));
+  }
+  function fire() { fireVerb(verb); }
   document.getElementById("openBtn").onclick = fire;
+  document.getElementById("checkLink").onclick = function (e) { e.preventDefault(); fireVerb("check"); };
+  document.getElementById("troubleLink").onclick = function (e) { e.preventDefault(); trouble.classList.toggle("show"); };
+  if (verb === "check") {
+    document.getElementById("staleLi").style.display = "";
+    document.getElementById("cliLi").style.display = "none";
+  }
 
   // Same-origin bonus: the PMS stores the per-device Explorer root in
   // localStorage (stage 1's copy-path button). If it's set on this device,
@@ -91,8 +183,9 @@
   };
 
   // Auto-fire on load. Browsers that require a user gesture for external
-  // protocols simply no-op here; the "Open again" button is the gesture.
-  if (folder) setTimeout(fire, 250);
+  // protocols simply no-op here, and the detection above then opens the
+  // troubleshooting block; the "Open again" button is the gesture.
+  if (folder || verb === "check") setTimeout(fire, 250);
 </script>
 </body>
 </html>
