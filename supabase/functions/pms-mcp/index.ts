@@ -12432,7 +12432,7 @@ const CA_INTAKE_VENDORS = ["Procore", "Autodesk Forma", "Newforma", "Kahua"];
 // Newforma, whose notifications arrive from whoever forwarded them).
 const CA_INTAKE_EMAIL_FILTER = "or=(" + [
   "from_address.ilike.*procoretech*", "from_address.ilike.*forma.autodesk*", "from_address.ilike.*kahua*",
-  "subject.ilike.*RFI Forwarded*", "subject.ilike.*Submittal Forwarded*", "subject.ilike.*Responded to and Closed*",
+  "subject.ilike.*RFI Forwarded*", "subject.ilike.*Submittal Forwarded*", "subject.ilike.*Responded to and Closed*", "subject.ilike.*Sent and Closed*",
 ].map(encodeURIComponent).join(",") + ")";
 const CA_INTAKE_BUDGET_MS = 40_000;
 app.options("/pms-mcp/admin/ca-items-intake", (c) => c.body(null, 204, DOCS_SYNC_CORS));
