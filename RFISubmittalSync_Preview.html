@@ -515,7 +515,9 @@ function comboSelect(id){
 function comboFocus(e){ e.target.select(); comboRender(""); }          // whole list; typing replaces the label
 function comboInput(e){ comboRender(e.target.value); }
 function comboBlur(){ setTimeout(()=>{ if(COMBO.open) comboClose(true); },120); }
-function comboToggle(){ const inp=document.getElementById("projInput"); if(COMBO.open) comboClose(true); else inp.focus(); }
+// The arrow must render the list itself: after Escape the input keeps focus,
+// so focus() alone would not fire onfocus and the list could not reopen.
+function comboToggle(){ const inp=document.getElementById("projInput"); if(COMBO.open) comboClose(true); else { inp.focus(); inp.select(); comboRender(""); } }
 function comboKey(e){
   const inp=e.target;
   if(e.key==="ArrowDown"){ e.preventDefault(); if(!COMBO.open) comboRender(""); else if(COMBO.hi<COMBO.items.length-1){ COMBO.hi++; comboHiSync(); } }
