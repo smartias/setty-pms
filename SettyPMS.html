@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v177-portal-guest-status";
+    window.__appVersion = "2026-11-03-pms-v178-portal-intake-folders";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -96,6 +96,13 @@
 <script type="module">
   import * as Closeout from "./closeout.js";
   window.Closeout = Closeout;
+</script>
+<!-- Client portal submit convention on prime jobs: the RFIs / Submittals
+     folders, form workbooks and readmes under the portal Uploads folder. Own
+     block, same reason. -->
+<script type="module">
+  import * as PortalForms from "./portalForms.js";
+  window.PortalForms = PortalForms;
 </script>
   <script>
     // Theme preference: "system" (default, follows the OS), "light" or "dark".
@@ -5928,6 +5935,46 @@ async function createClientPortalFolders(project) {
   };
 }
 
+
+// ── Portal submit convention: RFIs / Submittals under Uploads ─────────────────
+// Step 1 of PROPOSAL-portal-ca-exchange.md. On a job where Setty is prime the
+// contractor has no Procore, so the portal Uploads folder gets two subfolders,
+// each seeded with a blank form workbook and a readme (portalForms.js holds
+// the convention and builds both). Get-or-create and re-runnable: a re-run
+// refreshes the blank form and the readme and never touches anything the
+// contractor saved there. Returns the two folder URLs for project.portalIntake,
+// whose presence is also the opt-in the intake sweep (step 2) will look for.
+async function ensurePortalIntakeFolders(project) {
+  const PF = window.PortalForms;
+  if (!PF) throw new Error("portalForms.js did not load. Reload the page and try again.");
+  const uploadsUrl = (project.clientUploadsFolderUrl || "").trim();
+  if (!uploadsUrl) throw new Error("Set up the client portal folders first.");
+  const driveId = SP_NYSHARE_DRIVE_ID;
+  // The Uploads URL's last two segments are the drive-root-relative path
+  // ("<number>/<name> Uploads"), the same way the sharing modal resolves it.
+  const segs = safeDecodeFolderUrl(uploadsUrl).replace(/\/$/, "").split("/");
+  if (segs.length < 2) throw new Error("Cannot read the Uploads folder path from its URL.");
+  const parentPath = segs.slice(-2).join("/");
+  const names = portalFolderNames(project);
+  const urls = {};
+  for (const kind of Object.keys(PF.PORTAL_INTAKE_KINDS)) {
+    const info = PF.PORTAL_INTAKE_KINDS[kind];
+    const childPath = await ensureSpSubfolder(driveId, parentPath, info.folder);
+    const item = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodeSpPath(childPath));
+    if (!item || !item.id) throw new Error("Could not open the " + info.folder + " folder after creating it.");
+    const files = [
+      [info.readmeFile, new TextEncoder().encode(PF.buildIntakeReadme(kind, names))],
+      [info.formFile,   await PF.buildFormWorkbook(kind, names.label)],
+    ];
+    for (const [fileName, bytes] of files) {
+      const r = await graphFetch("PUT",
+        "/drives/" + driveId + "/items/" + item.id + ":/" + encodeURIComponent(fileName) + ":/content", bytes);
+      if (!r || !r.id) throw new Error("Could not save " + fileName + " into " + info.folder + ".");
+    }
+    urls[kind] = item.webUrl;
+  }
+  return { rfisUrl: urls.rfi, submittalsUrl: urls.submittal };
+}
 
 // ── TEAMS NOTIFICATIONS ───────────────────────────────────────────────────────
 // Opt-in per project. Creates a dedicated channel in the NYC Project Team and
@@ -30744,6 +30791,37 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projec
   const [portalStatus, setPortalStatus] = React.useState("idle"); // idle | creating | done | error
   const [portalMsg, setPortalMsg] = React.useState("");
   const [showSharingModal, setShowSharingModal] = React.useState(false);
+  // RFIs / Submittals intake folders under Uploads (prime jobs).
+  const [intakeStatus, setIntakeStatus] = React.useState("idle"); // idle | working | done | error
+  const [intakeMsg, setIntakeMsg]       = React.useState("");
+  const settyIsPrimeHere = isSettyFirm(project.prime || "");
+
+  // Plant the intake folders and record them on the project. Called from the
+  // button, and automatically after portal folder creation on prime jobs.
+  // Returns the portalIntake record, or null when it failed (the message says
+  // why) so callers can carry on with what did succeed.
+  async function plantIntakeFolders(proj) {
+    setIntakeStatus("working");
+    setIntakeMsg("\u23f3 Creating RFIs and Submittals folders with their forms\u2026");
+    try {
+      const { rfisUrl, submittalsUrl } = await ensurePortalIntakeFolders(proj);
+      const portalIntake = { rfisUrl, submittalsUrl, setUpAt: new Date().toISOString(), setUpBy: getCurrentUser() };
+      setIntakeStatus("done");
+      setIntakeMsg("\u2713 RFIs and Submittals folders ready, each with a blank form and a readme. " +
+        "Invite the contractor's contact with Manage Sharing if they are not on the portal yet.");
+      return portalIntake;
+    } catch (e) {
+      setIntakeStatus("error");
+      setIntakeMsg("\u2717 Intake folders: " + e.message);
+      return null;
+    }
+  }
+  async function setupIntakeFolders() {
+    const portalIntake = await plantIntakeFolders(project);
+    if (!portalIntake) return;
+    if (onEagerSave) await onEagerSave({ ...project, portalIntake }).catch(() => {});
+    else onUpdate("portalIntake", portalIntake);
+  }
 
   const url = project.projectFolderUrl || "";
   const hasFolder = !!url;
@@ -30818,6 +30896,12 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projec
         onUpdate("settyDeliverablesFolderUrl", settyDeliverablesUrl);
         setPortalStatus("done");
         setPortalMsg("\u2713 Client portal folders ready \u2014 use Manage Sharing to invite the client.");
+        // Prime job: the contractor submits through the portal, so plant the
+        // RFIs / Submittals folders now. Non-fatal; the button can retry.
+        if (settyIsPrimeHere) {
+          const portalIntake = await plantIntakeFolders(updatedProject);
+          if (portalIntake) { updatedProject.portalIntake = portalIntake; onUpdate("portalIntake", portalIntake); }
+        }
       } catch (portalErr) {
         setPortalStatus("error");
         setPortalMsg("\u26a0 Portal folders failed: " + portalErr.message);
@@ -30854,12 +30938,16 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projec
       const { clientUploadsUrl, settyDeliverablesUrl } = await createClientPortalFolders(project);
       onUpdate("clientUploadsFolderUrl",     clientUploadsUrl);
       onUpdate("settyDeliverablesFolderUrl", settyDeliverablesUrl);
-      if (onEagerSave) {
-        await onEagerSave({ ...project,
-          clientUploadsFolderUrl:     clientUploadsUrl,
-          settyDeliverablesFolderUrl: settyDeliverablesUrl,
-        }).catch(() => {});
+      const patched = { ...project,
+        clientUploadsFolderUrl:     clientUploadsUrl,
+        settyDeliverablesFolderUrl: settyDeliverablesUrl,
+      };
+      // Prime job: plant the RFIs / Submittals folders too (non-fatal).
+      if (settyIsPrimeHere) {
+        const portalIntake = await plantIntakeFolders(patched);
+        if (portalIntake) { patched.portalIntake = portalIntake; onUpdate("portalIntake", portalIntake); }
       }
+      if (onEagerSave) await onEagerSave(patched).catch(() => {});
       setPortalStatus("done");
       setPortalMsg("\u2713 Client portal folders ready \u2014 use Manage Sharing to invite the client.");
     } catch(e) {
@@ -30961,6 +31049,52 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projec
                   padding: "2px 10px", textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 }}>
                 Open
               </a>
+            </div>
+          )}
+          {/* RFIs / Submittals intake folders (the contractor's submit convention
+              on prime jobs). Shown as links once planted; otherwise a button,
+              offered on any project with an Uploads folder but explained as a
+              prime-job tool. */}
+          {project.portalIntake && project.portalIntake.rfisUrl && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <span style={{ fontSize: 12, color: P.textDim, minWidth: 128, flexShrink: 0 }}>📨 RFIs (intake)</span>
+              <a href={project.portalIntake.rfisUrl} target="_blank" rel="noreferrer"
+                style={{ fontSize: 11, background: "#0078d4", color: "#fff", borderRadius: 4,
+                  padding: "2px 10px", textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 }}>
+                Open
+              </a>
+            </div>
+          )}
+          {project.portalIntake && project.portalIntake.submittalsUrl && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <span style={{ fontSize: 12, color: P.textDim, minWidth: 128, flexShrink: 0 }}>📨 Submittals (intake)</span>
+              <a href={project.portalIntake.submittalsUrl} target="_blank" rel="noreferrer"
+                style={{ fontSize: 11, background: "#0078d4", color: "#fff", borderRadius: 4,
+                  padding: "2px 10px", textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 }}>
+                Open
+              </a>
+              <button onClick={setupIntakeFolders} disabled={intakeStatus === "working"}
+                style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer",
+                  fontSize: 11, textDecoration: "underline", padding: 0 }}
+                title="Re-plant the blank forms and readmes (does not touch anything the contractor saved)">
+                refresh forms
+              </button>
+            </div>
+          )}
+          {project.clientUploadsFolderUrl && !(project.portalIntake && project.portalIntake.rfisUrl) && intakeStatus !== "working" && (
+            <div style={{ marginTop: 6 }}>
+              <button onClick={setupIntakeFolders}
+                style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 5,
+                  color: P.textDim, cursor: "pointer", fontSize: 11, padding: "3px 10px" }}
+                title={"Creates RFIs and Submittals folders under the Uploads folder, each with a blank form workbook and a readme, so the contractor submits through the portal instead of email. Meant for jobs where Setty is prime" + (settyIsPrimeHere ? "." : " (this project's Prime is not Setty).")}>
+                📨 Set Up RFI / Submittal Intake
+              </button>
+            </div>
+          )}
+          {intakeMsg && (
+            <div style={{ fontSize: 11, marginTop: 4,
+              color: intakeStatus === "done" ? P.green : intakeStatus === "error" ? P.red : P.textDim }}>
+              {intakeMsg}
             </div>
           )}
           {portalMsg && (
