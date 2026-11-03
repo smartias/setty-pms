@@ -154,12 +154,15 @@ function formaStamp(body) {
 //   "RFI Forwarded: SAPX188032.00_NVCC Howsmon & Colgan - RFI-40 Lab Gas Valve Box Door Clarification - RFI:166:YvTUq"
 //   "Submittal Forwarded: SAPX259009.00_Gordonsville FireCompany - Diffusers, Registers & Grilles - Submittal:233713-001-0 :9PAkD"
 //   "Submittal Responded to and Closed: SAPX196006.00_… - 1st Floor Sheetmetal … - Submittal:233113-002-0:FCqqN"
+//   "Submittal Sent and Closed: SAPX186034.03_SUNY Old Westbury NSB Add3 - Site Planning for AVANCE Systems - Submittal:220000-001-0:NKi0a"
+// "Sent and Closed" is Newforma's wording when the response goes out without
+// a separate "responded" step; both close the item.
 // The id sits between "RFI:"/"Submittal:" and the trailing Info Exchange tag.
 // Only a notification counts: "RE:", "FW:" and "Automatic reply:" are people
 // answering it, never a new event. The same item forwarded by the architect's
 // Newforma and by Setty's own (two tags, same id) collapses on the id; Setty's
 // own forwards stop once Newforma is retired internally.
-const NF_HEAD = /^\s*(RFI|Submittal)\s+(Forwarded|Responded to and Closed)\s*:\s*/i;
+const NF_HEAD = /^\s*(RFI|Submittal)\s+(Forwarded|Responded to and Closed|Sent and Closed)\s*:\s*/i;
 // The subject's middle is "<a> - <b> - …"; one segment is the project (a
 // SAPX… code, a project number, or the body's "Project:" name, possibly cut
 // off with "..."), the rest is the title.
@@ -543,7 +546,7 @@ export function platformOfEmail(e) {
   const from = (e && e.from_address) || "", subj = (e && e.subject) || "";
   if (/procoretech/i.test(from)) return "Procore";
   if (/forma\.autodesk|autodesk\.com|acc\.autodesk|bim360/i.test(from)) return "Autodesk Build";
-  if (/newforma/i.test(from) || /\b(RFI|Submittal)\s*Forwarded\s*:/i.test(subj) || /Responded to and Closed:/i.test(subj)) return "Newforma";
+  if (/newforma/i.test(from) || /\b(RFI|Submittal)\s*Forwarded\s*:/i.test(subj) || /(Responded to|Sent) and Closed:/i.test(subj)) return "Newforma";
   if (/kahua\.com/i.test(from)) return "Kahua";
   if (/pmweb/i.test(from) || /\bPMWeb\b/i.test(subj)) return "PMWeb";
   return "";
