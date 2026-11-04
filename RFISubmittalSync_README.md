@@ -8,6 +8,21 @@ It is a **separate app, but shares the PMS data**: it reads and writes the same
 `pms_projects` records SettyPMS uses, so nothing diverges. It loads fast because it reads
 only the RFI/submittal arrays, not the whole project.
 
+## Training
+
+- **[RFI & Submittal Playbook](https://claude.ai/artifact/KCerM8gpgUnSGKipc4ae2P)** — the
+  step-by-step guide for CA staff: how items get into the log (sweeps, the import strip,
+  the Outlook add-in, by hand), checking and confirming auto-logged items, sending each
+  one through Claude review **before** it is assigned internally (subs get it as
+  received), answering RFIs, stamping and returning submittals, filing follow-up emails,
+  the open-items report, and a one-page cheat sheet. Every step has a screenshot.
+- **[Portal Intake Switch-On](https://claude.ai/artifact/Kw95Z7JyfRFFNio8uhK3vb)** — for the
+  PMS admin: scheduling the client-portal intake sweep as a dry run in Supabase, reading
+  its log, and switching it live.
+
+Both pages are private claude.ai artifacts: the owner shares them from the page's Share
+menu, so a new team member who gets "no access" needs to be added there.
+
 ## How staff use it
 
 In short:
@@ -32,7 +47,10 @@ In short:
    or returned automatically. **🤖 Backload from PDF/email** (per section) does the same for
    an item not in the PMS yet — Claude finds the filed PDF / notification email, logs it,
    then reviews it. Same records as the main PMS, so a review saved from either surface
-   shows in both.
+   shows in both. **Review before assigning:** ✉ Email → *Assign to a team member* warns
+   when the item has no Claude review yet (with a *Send for review* link and *Assign
+   anyway*); the assignment draft carries the review, the *Forward to subconsultant*
+   draft never does.
 
 6. **Open-items report by PM** (📊 button, top-right). Pick a Project Manager (taken from
    the project's *Project Manager* field), RFIs and/or submittals, and "open only" /
