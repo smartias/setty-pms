@@ -12,9 +12,10 @@ only the RFI/submittal arrays, not the whole project.
 
 - **[RFI & Submittal Playbook](https://claude.ai/artifact/KCerM8gpgUnSGKipc4ae2P)** — the
   step-by-step guide for CA staff: how items get into the log (sweeps, the import strip,
-  the Outlook add-in, by hand), checking and confirming auto-logged items, assigning and
-  forwarding to subs, answering RFIs, stamping and returning submittals, filing follow-up
-  emails, the open-items report, and a one-page cheat sheet. Every step has a screenshot.
+  the Outlook add-in, by hand), checking and confirming auto-logged items, sending each
+  one through Claude review **before** it is assigned internally (subs get it as
+  received), answering RFIs, stamping and returning submittals, filing follow-up emails,
+  the open-items report, and a one-page cheat sheet. Every step has a screenshot.
 - **[Portal Intake Switch-On](https://claude.ai/artifact/Kw95Z7JyfRFFNio8uhK3vb)** — for the
   PMS admin: scheduling the client-portal intake sweep as a dry run in Supabase, reading
   its log, and switching it live.
