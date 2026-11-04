@@ -8,6 +8,20 @@ It is a **separate app, but shares the PMS data**: it reads and writes the same
 `pms_projects` records SettyPMS uses, so nothing diverges. It loads fast because it reads
 only the RFI/submittal arrays, not the whole project.
 
+## Training
+
+- **[RFI & Submittal Playbook](https://claude.ai/artifact/KCerM8gpgUnSGKipc4ae2P)** — the
+  step-by-step guide for CA staff: how items get into the log (sweeps, the import strip,
+  the Outlook add-in, by hand), checking and confirming auto-logged items, assigning and
+  forwarding to subs, answering RFIs, stamping and returning submittals, filing follow-up
+  emails, the open-items report, and a one-page cheat sheet. Every step has a screenshot.
+- **[Portal Intake Switch-On](https://claude.ai/artifact/Kw95Z7JyfRFFNio8uhK3vb)** — for the
+  PMS admin: scheduling the client-portal intake sweep as a dry run in Supabase, reading
+  its log, and switching it live.
+
+Both pages are private claude.ai artifacts: the owner shares them from the page's Share
+menu, so a new team member who gets "no access" needs to be added there.
+
 ## How staff use it
 
 In short:
