@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-04-transmittal-v20-flow-polish";
+    window.__appVersion = "2026-11-04-transmittal-v21-single-issue-date";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -430,6 +430,16 @@
     <input type="file" id="localUploadFilesInput" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.dwg,.rvt,.dgn,.dxf" style="display:none"/>
     <div class="status" id="loadStatus" role="status"></div>
 
+    <!-- ONE issue date. It is read from the dated set folder (YYYY-MM-DD_…)
+         and feeds the cover sheet, the register entry and the backfill. There
+         used to be a second "Date issued" on the backfill panel that only the
+         backfill read, while live sends ignored the form date entirely. -->
+    <div style="max-width:360px;margin-top:4px">
+      <label for="transmittalDate">Issue date</label>
+      <input type="date" id="transmittalDate" oninput="onIssueDateInput()" style="margin-bottom:6px"/>
+      <div class="hint" id="issueDateHint" style="margin-bottom:12px"></div>
+    </div>
+
     <details class="quiet">
       <summary>Folder not listed? Paste a SharePoint folder URL</summary>
       <div style="display:flex;gap:10px;align-items:flex-end;margin-top:10px">
@@ -447,7 +457,7 @@
        draft: who it goes to, the number, the date, what it is issued for. -->
   <div class="card" id="coverCard">
     <h2 class="card-title"><span class="step-num" aria-hidden="true">2</span> Cover sheet details</h2>
-    <p class="hint">Who the transmittal goes to and what it says. Most of this fills in from the project; check the contact and the number.</p>
+    <p class="hint">Who the transmittal goes to and what it says. Most of this fills in from the project; check the contact and the number. The date on the cover is the issue date from step 1.</p>
     <div class="form-row">
       <div>
         <label for="projectName">Project Name</label>
@@ -460,13 +470,23 @@
     </div>
     <div class="form-row">
       <div>
-        <label for="transmittalDate">Transmittal Date</label>
-        <input type="date" id="transmittalDate"/>
-      </div>
-      <div>
         <label for="transmittalNoTop">Transmittal No.</label>
         <input type="text" id="transmittalNoTop" placeholder="e.g. T-001" oninput="onTxNoInput(this.value)"/>
         <div class="status" id="txNoWarning" role="status" style="margin-top:-8px"></div>
+      </div>
+      <div>
+        <label for="issuedFor">Issued For</label>
+        <select id="issuedFor">
+          <option>Issued for Review</option>
+          <option>Issued for Bid</option>
+          <option>Issued for Construction</option>
+          <option>Issued for Permit</option>
+          <option>Issued for Coordination</option>
+          <option>Record Set</option>
+          <option>Preliminary Review</option>
+          <option>Design Development Review</option>
+          <option>For your Information and Use</option>
+        </select>
       </div>
     </div>
     <div class="form-row">
@@ -501,20 +521,7 @@
         <label for="recipientName">Attn: Name</label>
         <input type="text" id="recipientName" placeholder="Auto-filled from contact"/>
       </div>
-      <div>
-        <label for="issuedFor">Issued For</label>
-        <select id="issuedFor">
-          <option>Issued for Review</option>
-          <option>Issued for Bid</option>
-          <option>Issued for Construction</option>
-          <option>Issued for Permit</option>
-          <option>Issued for Coordination</option>
-          <option>Record Set</option>
-          <option>Preliminary Review</option>
-          <option>Design Development Review</option>
-          <option>For your Information and Use</option>
-        </select>
-      </div>
+      <div></div>
     </div>
 
     <!-- CC picker. Lets the user CC multiple people from any project company.
@@ -550,7 +557,7 @@
     <h2 class="card-title"><span class="step-num" aria-hidden="true">3</span> Sheet list
       <span class="count-badge" id="sheetCount"></span>
     </h2>
-    <p class="hint">Check the sheets going out. Only checked rows appear on the cover sheet and in the package.</p>
+    <p class="hint">Check the sheets going out. Only checked rows appear on the cover sheet and in the package. Rev. date is each sheet's own date: read from the title block where possible, otherwise the issue date from step 1.</p>
 
     <div class="toolbar">
       <button class="btn btn-ghost" id="selectAllBtn">☑ Select All</button>
@@ -569,7 +576,7 @@
             <th scope="col" style="width:110px">Sheet No.</th>
             <th scope="col">Sheet Name / Title</th>
             <th scope="col" style="width:80px">Revision</th>
-            <th scope="col" style="width:110px">Date</th>
+            <th scope="col" style="width:110px" title="The sheet's own date: its revision date when read from the title block, otherwise the issue date from step 1.">Rev. date</th>
             <th scope="col" style="width:32px"><span class="sr-only">Remove</span></th>
           </tr>
         </thead>
@@ -629,13 +636,12 @@
       <summary><strong style="color:var(--text)">Log a past transmittal (backfill)</strong> — record a set that already went out, without sending anything</summary>
       <div class="hint" style="margin-top:10px">
         For logging historic submissions so the drawing register covers past issues. This <strong>only writes the log entry</strong>:
-        nothing is zipped, uploaded, emailed or sent. Load the submission folder in step 1, check the sheets that went out in step 3, set the
-        date they were actually issued, then log it. Review the parsed sheet numbers and revisions first &mdash; a file
-        that does not follow current naming may read as revision 0 rather than unknown.
+        nothing is zipped, uploaded, emailed or sent. Load the submission folder in step 1, check the sheets that went out in step 3, make sure
+        the <strong>issue date in step 1</strong> is the day they actually went out, then log it. Review the parsed sheet numbers and revisions
+        first &mdash; a file that does not follow current naming may read as revision 0 rather than unknown.
       </div>
       <div class="action-row">
-        <label for="backfillDate" style="margin:0">Date issued</label>
-        <input type="date" id="backfillDate" style="width:auto;margin-bottom:0">
+        <span style="font-size:12.5px">Logs the checked sheets as issued on <strong id="backfillDateEcho">—</strong></span>
         <button class="btn" id="backfillBtn" style="background:#431407;color:#fb923c;border:1px solid #7c2d12">&#128194; Log past transmittal</button>
         <label for="backfillMilestone" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--text);margin:0">
           <input type="checkbox" id="backfillMilestone" checked>
@@ -874,6 +880,7 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
   if (opts.issuedAt) {
     row.created_at     = opts.issuedAt;
     row.files.issuedAt = opts.issuedAt;
+    row.files.issuedAtFrom = issueDateSource;
     row.files.backfilled = true;
   } else {
     // A live send still needs an ISSUE date, and created_at is only a filing
@@ -881,14 +888,13 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
     // report a year-superseded Bulletin #1 as its current set: the record was
     // filed 2026-07-30 for a set issued 2025-04-10.
     //
-    // The set folder carries the real date, so take it. created_at is left
-    // alone and stays honest about when the record was written; issuedAt says
-    // when the work went out. They differ, and both are worth keeping.
-    const folderDate = parseFolderDate(datedPathSegment(resolvedFolderPath));
-    if (folderDate) {
-      row.files.issuedAt     = folderDate + "T12:00:00.000Z";
-      row.files.issuedAtFrom = "set folder name";
-    }
+    // The issue date in step 1 is read from the set folder and can be
+    // corrected by the person sending, so it is the truth here; the folder
+    // date used to be taken directly and whatever was typed was ignored.
+    // created_at is left alone and stays honest about when the record was
+    // written; issuedAt says when the work went out. Both are worth keeping.
+    row.files.issuedAt     = issueDate() + "T12:00:00.000Z";
+    row.files.issuedAtFrom = issueDateSource;   // "today" | "set folder name" | "typed"
   }
   // Replace, do not duplicate. A failure here is warned about and the write
   // still goes ahead: losing the record of a transmittal entirely is worse than
@@ -964,6 +970,8 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
     }
     // Set today's date
     document.getElementById("transmittalDate").value = new Date().toISOString().slice(0, 10);
+    issueDateSource = "today";
+    updateIssueDateHint();
   } catch (prefillErr) {
     console.warn("[transmittal] init prefill error (non-fatal):", prefillErr);
   }
@@ -1688,7 +1696,7 @@ function onDriveFolderInput(v) {
   driveFolderPath = String(v || "").trim();
   resolvedFolderPath = driveFolderPath.replace(/\\/g, "/").replace(/\/+$/, "");
   document.getElementById("folderUrlDisplay").textContent = driveFolderPath || "Set folder on the drive — paste the path above.";
-  prefillBackfillDate();
+  prefillIssueDate();
 }
 function enterDriveMode(proj) {
   driveMode = true;
@@ -1769,7 +1777,7 @@ async function loadLocalSet(picked) {
   if (!sheets.length) sheets = [emptyRow(), emptyRow(), emptyRow()];
   renderTable();
   showSheetCards();
-  prefillBackfillDate();
+  prefillIssueDate();
   setStatus("loadStatus", "success", "✓ Read " + files.length + " file" + (files.length === 1 ? "" : "s") + " from the drive folder. Nothing was uploaded.");
   void maybeAutoReadTitleBlocks();
 }
@@ -1922,7 +1930,7 @@ async function loadFolder() {
 
     renderTable();
     showSheetCards();
-    prefillBackfillDate();
+    prefillIssueDate();
 
     void maybeAutoReadTitleBlocks();
 
@@ -2415,6 +2423,7 @@ async function readTitleBlocks() {
 
   sheets = rows.filter(Boolean);
   renderTable();
+  applyIssueDateToRows();   // list-only and filename-fallback rows take the issue date
   const fromTb = rows.length - fromList - unreadable.length;
   setStatus("loadStatus", "success",
     "✓ Read " + pdfs.length + " PDF" + (pdfs.length === 1 ? "" : "s") + " — " +
@@ -2638,7 +2647,7 @@ function renderTable() {
       <td><input type="text" id="sheet-${s.id}-sheetNo" value="${esc(s.sheetNo)}" placeholder="M-501" aria-label="Sheet number for ${rowRef}" onchange="sheets[${i}].sheetNo=this.value"/></td>
       <td><input type="text" id="sheet-${s.id}-title" value="${esc(s.title)}" placeholder="Sheet title…" aria-label="Title for ${rowRef}" onchange="sheets[${i}].title=this.value"/></td>
       <td><input type="text" id="sheet-${s.id}-revision" value="${esc(s.revision)}" placeholder="0" style="width:60px" aria-label="Revision for ${rowRef}" onchange="sheets[${i}].revision=this.value"/></td>
-      <td><input type="text" id="sheet-${s.id}-date" value="${esc(s.date)}" placeholder="YYYY-MM-DD" aria-label="Date for ${rowRef}" onchange="sheets[${i}].date=this.value"/></td>
+      <td><input type="text" id="sheet-${s.id}-date" value="${esc(s.date)}" placeholder="YYYY-MM-DD" aria-label="Revision date for ${rowRef}" onchange="sheets[${i}].date=this.value;sheets[${i}].dateSource='user'"/></td>
       <td><button id="sheet-${s.id}-remove" onclick="removeRow(${i})" aria-label="Remove ${rowRef}" style="background:none;border:none;color:#8b949e;cursor:pointer;font-size:13px">✕</button></td>
     `;
     tbody.appendChild(tr);
@@ -2712,11 +2721,71 @@ function datedPathSegment(path) {
   return "";
 }
 
-function prefillBackfillDate() {
-  const el = document.getElementById("backfillDate");
-  if (!el || el.value) return; // never overwrite a date someone typed
-  const guess = parseFolderDate(datedPathSegment(resolvedFolderPath));
-  if (guess) el.value = guess;
+// ─── ISSUE DATE ─────────────────────────────────────────────────────────────
+// One date, owned by step 1. It is read from the dated set folder when the
+// folder changes, falls back to today, and is left alone once someone has
+// typed one for THIS set (switching to another set re-reads it). It feeds the
+// cover sheet, the register's issuedAt on live sends and backfills alike, and
+// the Rev. date of every sheet row that has no title-block date of its own.
+let issueDateSource = "today";     // "today" | "set folder name" | "typed"
+let issueDateTypedFor = null;      // dated folder segment the typed date belongs to
+
+function issueDate() {
+  const v = (document.getElementById("transmittalDate")?.value || "").trim();
+  return v || new Date().toISOString().slice(0, 10);
+}
+
+function onIssueDateInput() {
+  issueDateSource = "typed";
+  issueDateTypedFor = datedPathSegment(resolvedFolderPath) || "";
+  updateIssueDateHint();
+  applyIssueDateToRows();
+}
+
+function prefillIssueDate() {
+  const el = document.getElementById("transmittalDate");
+  if (!el) return;
+  const seg = datedPathSegment(resolvedFolderPath) || "";
+  if (issueDateSource === "typed" && issueDateTypedFor === seg) {
+    updateIssueDateHint();          // same set: keep what they typed
+    applyIssueDateToRows();
+    return;
+  }
+  const guess = parseFolderDate(seg);
+  el.value = guess || new Date().toISOString().slice(0, 10);
+  issueDateSource = guess ? "set folder name" : "today";
+  issueDateTypedFor = null;
+  updateIssueDateHint();
+  applyIssueDateToRows();
+}
+
+function updateIssueDateHint() {
+  const echo = document.getElementById("backfillDateEcho");
+  if (echo) echo.textContent = issueDate();
+  const el = document.getElementById("issueDateHint");
+  if (!el) return;
+  const uses = "Goes on the cover sheet, into the register, and on any backfill.";
+  if (issueDateSource === "typed") {
+    el.textContent = "Set by you. " + uses;
+  } else if (issueDateSource === "set folder name") {
+    el.textContent = "Read from the folder name \u201c" + datedPathSegment(resolvedFolderPath) + "\u201d. " + uses + " Change it if the set went out on another day.";
+  } else {
+    el.textContent = "Today, because the folder name carries no date. Change it if the set went out on another day. " + uses;
+  }
+}
+
+// Rows without a date of their own follow the issue date. A title-block row
+// keeps its revision date; a row whose date someone typed keeps that.
+// Filename-parsed rows used to carry the file's SharePoint "last modified"
+// time, which for a backfilled set is the day it was copied, not issued.
+function applyIssueDateToRows() {
+  const d = issueDate();
+  let changed = false;
+  (sheets || []).forEach(sh => {
+    if (sh.source === "title-block" || sh.dateSource === "user") return;
+    if (sh.date !== d) { sh.date = d; changed = true; }
+  });
+  if (changed) renderTable();
 }
 
 // The project id is needed by both the filing-log write and the milestone
@@ -2802,10 +2871,12 @@ async function backfillTransmittal() {
     setStatus("backfillStatus", "error", "\u2717 Load a folder and check the sheets that went out first.");
     return;
   }
-  const dateVal = (document.getElementById("backfillDate").value || "").trim();
-  if (!dateVal) {
-    setStatus("backfillStatus", "error", "\u2717 Set the date this transmittal was issued. Without it the entry would be dated today and the history would be wrong.");
-    document.getElementById("backfillDate").focus();
+  const dateVal = issueDate();
+  if (issueDateSource === "today") {
+    // Today is never right for a backfill. Say so instead of filing a record
+    // that would make a historic set look like it went out just now.
+    setStatus("backfillStatus", "error", "\u2717 The issue date in step 1 is today. Set it to the day this set actually went out, then log it.");
+    document.getElementById("transmittalDate").focus();
     return;
   }
   // Midday UTC keeps the calendar date stable either side of the date line.
@@ -2815,7 +2886,7 @@ async function backfillTransmittal() {
     return;
   }
   if (!window.confirm("Log " + included.length + " sheet" + (included.length === 1 ? "" : "s") +
-                      " as issued on " + dateVal + "?\n\nThis only writes the register entry. Nothing is sent.")) return;
+                      " as issued on " + dateVal + " (the issue date in step 1)?\n\nThis only writes the register entry. Nothing is sent.")) return;
 
   btn.disabled = true;
   setStatus("backfillStatus", "info", "\u23f3 Logging\u2026");
