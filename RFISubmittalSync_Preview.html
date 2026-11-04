@@ -1174,7 +1174,9 @@ async function writeArray(arrKey, mutate, returnAdded, projId){
    the project picker. Data is loaded when the dialog opens so the "Open report"
    click can call window.open synchronously (pop-up blockers allow that). */
 let REPORT=null;
-const RFI_OPEN=["Open","Pending Sub Response"], SUB_OPEN=["Received","Under Review","Pending Sub Review","Resubmittal Required"];
+// Resubmittal Required is the contractor's move (stamped Revise and Resubmit /
+// Rejected): not open, not overdue, same as OPEN_STATUSES above and the PMS.
+const RFI_OPEN=["Open","Pending Sub Response"], SUB_OPEN=["Received","Under Review","Pending Sub Review"];
 function localISO(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
 function daysUntil(due){ if(!/^\d{4}-\d{2}-\d{2}/.test(due||""))return null; const a=new Date(localISO(new Date())+"T00:00:00"), b=new Date(due.slice(0,10)+"T00:00:00"); return Math.round((b-a)/86400000); }
 function dueLabel(r){ const n=daysUntil(r.dueDate); if(n===null)return "No due date"; if(n<0)return "OVERDUE "+(-n)+" day"+(n===-1?"":"s"); if(n===0)return "Due today"; return "Due in "+n+" day"+(n===1?"":"s"); }
@@ -1211,7 +1213,7 @@ async function openReport(){
       <div class="row">
         <label><input type="checkbox" id="rpRfi" checked onchange="reportPreview()"> RFIs</label>
         <label><input type="checkbox" id="rpSub" checked onchange="reportPreview()"> Submittals</label>
-        <label title="Open RFIs = Open, Pending Sub Response. Open submittals = Received, Under Review, Pending Sub Review, Resubmittal Required."><input type="checkbox" id="rpOpen" checked onchange="reportPreview()"> Open items only</label>
+        <label title="Open RFIs = Open, Pending Sub Response. Open submittals = Received, Under Review, Pending Sub Review. Resubmittal Required is with the contractor and is not counted."><input type="checkbox" id="rpOpen" checked onchange="reportPreview()"> Open items only</label>
         <label><input type="checkbox" id="rpOver" onchange="reportPreview()"> Overdue only</label>
       </div>
       <div id="rpCount" role="status" class="muted" style="font-size:13px"></div>
