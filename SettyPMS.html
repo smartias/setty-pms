@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-03-pms-v186-calendar-categories";
+    window.__appVersion = "2026-11-04-pms-v187-review-before-assign";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -11416,6 +11416,10 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const [form, setForm] = useState({ ...item });
   const [emailStatus, setEmailStatus] = useState("idle");
   const [emailMsg, setEmailMsg] = useState("");
+  // Policy: an item goes to a Setty engineer with the Claude review already on
+  // it. "Assign to the team" with no review → warning with the review link and
+  // "Assign anyway"; the sub forward never carries the review.
+  const [assignWarn, setAssignWarn] = useState(false);
   const [spStatus, setSpStatus] = useState("idle");
   // Latest form for async handlers (createSpFolder persists after awaits).
   const formRef = React.useRef(form); formRef.current = form;
@@ -11691,9 +11695,11 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const company = (clients || []).find(c => c.name && c.name.toLowerCase() === companyName.toLowerCase());
   const clientContacts = company ? (company.contacts || []) : [];
 
-  async function draftAssignEmail() {
+  async function draftAssignEmail(force) {
     const assignees = (staffList || []).filter(s => (form.assignedTo || []).includes(s.id));
     if (!assignees.length) { setEmailMsg("Select at least one assignee first."); setEmailStatus("error"); return; }
+    if (!ai && force !== true) { setAssignWarn(true); return; }
+    setAssignWarn(false);
     setEmailStatus("sending");
     const typLabel = isRFI ? "RFI" : "Submittal";
     const bodyHtml = "<div style='font-family:Segoe UI,sans-serif;font-size:13px;color:#1a1a1a'>"
@@ -11738,7 +11744,6 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       + questionEmailBlock()
       + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
       + caOpenInPmsBtn
-      + aiEmailSection(false)
       + "<p style='font-size:11px;color:#44546A'>Please send your response to this email. Thank you.</p></div>";
     try {
       const sub = subList.find(x => x.id === form.subAssigned) || null;
@@ -12357,10 +12362,10 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
                 hint: "For reviewers who answered by email: finds the emailed reply to this " + (isRFI ? "RFI" : "submittal") + " and files it here as the suggested response, citing the email." },
             ]} />
             <DropMenu label="✉ Email" title="Outlook drafts for this item" items={[
-              { onClick: draftAssignEmail, label: "Assign to the team", hint: "A draft to the people ticked under Assigned To, with the question and the folder link." },
+              { onClick: () => draftAssignEmail(false), label: "Assign to the team", hint: "A draft to the people ticked under Assigned To, with the question, the folder link and the Claude review. Warns if there is no review yet." },
               (subList.length > 0 || form.subAssigned)
                 ? { onClick: draftSubEmail, label: "Forward to sub",
-                    hint: isPrimeJob ? "A draft to the sub picked above; records the date sent, and their deadline defaults to 2 working days before the contractor's." : "A draft to the subconsultant picked above. Internal notes are never included." }
+                    hint: isPrimeJob ? "A draft to the sub picked above; records the date sent, and their deadline defaults to 2 working days before the contractor's." : "A draft to the subconsultant picked above. Internal notes and the Claude review are never included." }
                 : null,
             ]} />
             {isRFI && isProcoreRfi(project, form) && (
@@ -12379,6 +12384,14 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
               ✉ {isRFI ? "Draft Response" : "Draft Return"}
             </Btn>
           </div>
+          {assignWarn && (
+            <div role="alert" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flex: "1 1 100%", fontSize: 11.5, padding: "6px 10px", borderRadius: 6, border: "1px solid " + P.yellow, background: P.yellowDim, color: P.text }}>
+              <span style={{ flex: "1 1 320px" }}>🤖 No Claude review on this {isRFI ? "RFI" : "submittal"} yet. Send it for review first, so the engineer opens it with the red flags and a drafted {isRFI ? "answer" : "stamp"} already there.</span>
+              <a href={reviewSeatUrl} target="_blank" rel="noreferrer" onClick={() => setAssignWarn(false)}
+                 style={{ fontSize: 11.5, fontWeight: 600, color: P.accent, textDecoration: "none", whiteSpace: "nowrap" }}>Send to Claude for review</a>
+              <Btn small variant="ghost" title="Open the assignment draft without a Claude review on the item" onClick={() => draftAssignEmail(true)}>Assign anyway</Btn>
+            </div>
+          )}
           {emailMsg && (
             <span role="status" style={{ fontSize: 11, color: emailStatus === "done" ? P.green : P.red, fontWeight: 500 }}>{emailMsg}</span>
           )}

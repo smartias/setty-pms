@@ -936,11 +936,11 @@ async function openEditor(kind, id){
     `<div class="fld full"><label>Drawing sheet references <span class="muted" style="font-weight:400">(verify the callouts — same checker as the main PMS)</span></label><div id="sheetRefChips"><span class="muted" style="font-size:12px">Checking for drawing references…</span></div></div>`+
     `<div class="fld full"><label for="f_spFolderUrl">SharePoint folder</label>${spHtml}</div>`;
   const by = (rec.syncEditedBy||rec.loggedBy) ? `Last touched by ${esc(rec.syncEditedBy||rec.loggedBy)}${rec.syncEditedAt?" · "+esc((rec.syncEditedAt||"").slice(0,10)):""}` : (rec.source?`Imported from ${esc(rec.source)}`:"");
-  const reviewUrl = caReviewSeatUrl(kind, rec, EDIT.projName, EDIT.projNum);
+  const reviewUrl = caReviewSeatUrl(kind, rec, EDIT.projName, EDIT.projNum); EDIT.reviewUrl=reviewUrl;
   const hint=t=>`<span class="hint">${t}</span>`;
   const emailMenu = isNew ? "" : menuHtml("emailMenu", "✉ Email", [
     `<button type="button" role="menuitem" onclick="closeMenus();emailAction('${kind}','assign')">Assign to a team member${hint("Opens a pre-filled Outlook draft to the people ticked under Assigned to.")}</button>`,
-    `<button type="button" role="menuitem" onclick="closeMenus();emailAction('${kind}','sub')">Forward to subconsultant${hint("Draft to the subconsultant picked above — never includes internal notes.")}</button>`,
+    `<button type="button" role="menuitem" onclick="closeMenus();emailAction('${kind}','sub')">Forward to subconsultant${hint("Draft to the subconsultant picked above — never includes internal notes or the Claude review.")}</button>`,
     `<button type="button" role="menuitem" onclick="closeMenus();emailAction('${kind}','respond')">Draft ${kind==='rfi'?'response':'return'} email${hint(`Draft the formal ${kind==='rfi'?'RFI response':'submittal return'} from the fields as they are now.`)}</button>` ]);
   // Review only makes sense once the item is in the log (a new record isn't
   // saved yet and carries only a placeholder number) — no Claude menu until then.
@@ -958,6 +958,7 @@ async function openEditor(kind, id){
     `<button type="button" class="x" aria-label="Close editor" onclick="closeEditor()">✕</button></div>`+
     intakeBar+
     `<div id="aiReadyBar" style="display:none;align-items:center;gap:10px;background:var(--card2);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;margin:0 18px 8px;font-size:12.5px">🤖 A new Claude review was saved for this item. <span style="flex:1"></span><button class="go" onclick="reloadEditorItem()">Reload to view</button></div>`+
+    `<div id="assignWarn" class="intake" role="alert" style="display:none;margin-top:0;margin-bottom:8px"></div>`+
     caAiPanelHtml(rec, kind)+
     `<div class="grid">${grid}${extra}</div>`+
     `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
@@ -1001,8 +1002,10 @@ function mailto(to, subject, body){ window.location.href="mailto:"+(to||"")+"?su
 /* The review travels with the item when it goes out for review: the assign
    draft carries Claude's suggestion, the internal notes, and the reference
    links; the sub forward carries the suggestion and links but NEVER the
-   internal notes (marked not-for-external). The formal response draft is
-   untouched — the human accepts the suggestion into the real fields first. */
+   internal notes (marked not-for-external). Only the internal assignment
+   draft carries it: the subconsultant forward never does, by policy. The
+   formal response draft is untouched — the human accepts the suggestion into
+   the real fields first. */
 function caAiEmailText(includeInternal){
   const ai=EDIT&&EDIT.ai; if(!ai) return "";
   const links=Array.isArray(ai.docLinks)?ai.docLinks.filter(l=>l&&/^https:\/\//i.test(l.url)):[];
@@ -1030,15 +1033,27 @@ function emailAction(kind, which){
   // and from the Claude section that follows in these plain-text drafts.
   const qBlock=desc?`\n--- Contractor's ${kind==="rfi"?"question":"description"} ---\n${desc}\n---\n`:"";
   if(which==="assign"){
+    // Policy: an item goes to a Setty engineer with the Claude review already on
+    // it. No review yet → warn, offer the review link, and let them assign anyway.
+    if(!(EDIT&&EDIT.ai)&&!(EDIT&&EDIT.assignAnyway)){ showAssignWarn(kind); return; }
+    hideAssignWarn();
     const to=[...document.querySelectorAll(".asg:checked")].map(c=>{const m=EDIT_TEAM.find(t=>t.id===c.value);return m&&m.email;}).filter(Boolean).join(",");
     mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}\n${qBlock}\nDue: ${due||"—"}\nFrom: ${from||"—"}\n${dlLine}${caAiEmailText(true)}`);
   } else if(which==="sub"){
     const sv=g("subAssigned"); const so=EDIT_SUBS.find(s=>((s&&s.name)||(s&&s.company)||String(s))===sv);
-    mailto((so&&so.email)||"", `[${lbl}] For your input — ${title}${proj}`, `Please review and advise on ${lbl}: ${title}\n${qBlock}${dlLine}${caAiEmailText(false)}`);
+    mailto((so&&so.email)||"", `[${lbl}] For your input — ${title}${proj}`, `Please review and advise on ${lbl}: ${title}\n${qBlock}${dlLine}`);
   } else {
     mailto("", `RE: ${lbl} — ${title}${proj}`, kind==="rfi" ? `Response to ${lbl}: ${title}\n\n${resp||"[your response]"}\n\nOriginal question:\n${desc}\n` : `Submittal ${num} ${spec} returned${stamp&&stamp!=="—"?" — "+stamp:""}\n\n${comments||"[review comments]"}\n`);
   }
 }
+function showAssignWarn(kind){
+  const w=document.getElementById("assignWarn"); if(!w||!EDIT) return;
+  w.innerHTML=`<span style="flex:1 1 360px">🤖 No Claude review on this ${kind==="rfi"?"RFI":"submittal"} yet. Send it for review first, so the engineer opens it with the red flags and a drafted ${kind==="rfi"?"answer":"stamp"} already there.</span>`+
+    `<a class="go" style="font-size:12px;text-decoration:none" href="${esc(EDIT.reviewUrl||"#")}" target="_blank" rel="noreferrer" onclick="hideAssignWarn()">Send for review</a>`+
+    `<button type="button" class="ghost" style="font-size:12px" title="Open the assignment draft without a Claude review on the item" onclick="EDIT.assignAnyway=true;emailAction('${kind}','assign')">Assign anyway</button>`;
+  w.style.display="flex"; w.querySelector("a").focus();
+}
+function hideAssignWarn(){ const w=document.getElementById("assignWarn"); if(w){ w.style.display="none"; w.innerHTML=""; } }
 async function saveEditor(){
   if(!EDIT)return; const {kind,isNew,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
   if(!validateEditor(kind)){ EDIT.confirmIntake=false; return; }

@@ -47,7 +47,10 @@ In short:
    or returned automatically. **🤖 Backload from PDF/email** (per section) does the same for
    an item not in the PMS yet — Claude finds the filed PDF / notification email, logs it,
    then reviews it. Same records as the main PMS, so a review saved from either surface
-   shows in both.
+   shows in both. **Review before assigning:** ✉ Email → *Assign to a team member* warns
+   when the item has no Claude review yet (with a *Send for review* link and *Assign
+   anyway*); the assignment draft carries the review, the *Forward to subconsultant*
+   draft never does.
 
 6. **Open-items report by PM** (📊 button, top-right). Pick a Project Manager (taken from
    the project's *Project Manager* field), RFIs and/or submittals, and "open only" /
