@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-09-15-transmittal-v19-drive-register-only";
+    window.__appVersion = "2026-11-04-transmittal-v20-flow-polish";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -177,6 +177,18 @@
       font-size: 11px; color: var(--muted); font-weight: 600;
       text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;
     }
+    /* Numbered step badge in each card title: the page reads top-to-bottom
+       as 1 pick the set, 2 cover details, 3 check the sheets, 4 deliver. */
+    .step-num {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+      background: var(--navy); color: #fff; font-size: 11px; font-weight: 700;
+    }
+    .hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
+    .action-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .section-sub { font-size: 12px; font-weight: 700; color: var(--text); margin: 18px 0 8px; }
+    details.quiet > summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+    details.quiet > summary:hover { color: var(--text); }
 
     /* Status */
     .status {
@@ -352,15 +364,14 @@
 
 <main class="main" id="main" inert>
 
-  <!-- Folder & Project Info -->
-  <div class="card">
-    <h2 class="card-title">📁 Folder &amp; Project Info</h2>
-    <div class="folder-url-display" id="folderUrlDisplay">No folder linked — paste the project's SharePoint folder URL below, or open this tool from a project's PMS page.</div>
-    <!-- Pick a project, then walk its folder tree. Replaces hunting a URL in
-         SharePoint and pasting it: picking from the list means the project is
-         matched exactly rather than regexed out of a path, and the full path
-         stays known so the issue date and milestone name can be read from a
-         dated ancestor folder rather than the leaf. -->
+  <!-- 1 · Project & set folder.
+       Picking a project opens its Outgoing folder; opening a dated submission
+       folder loads the drawings straight away. A milestone deep link
+       (?folder=) lands here with the folder already open and loaded. -->
+  <div class="card" id="folderCard">
+    <h2 class="card-title"><span class="step-num" aria-hidden="true">1</span> Project &amp; set folder</h2>
+    <p class="hint">Pick the project, then open the dated submission folder that holds the drawings. The files load as soon as a folder is opened.</p>
+
     <div style="margin-bottom:14px">
       <label for="projectSearch">Project</label>
       <div style="position:relative">
@@ -374,9 +385,9 @@
       <div id="folderBreadcrumb" style="font-size:12px;color:var(--muted,#8b949e);margin-bottom:6px;word-break:break-all"></div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <button type="button" class="btn btn-ghost" id="folderUpBtn" style="white-space:nowrap">↑ Up</button>
-        <select id="folderChildSelect" style="flex:1;min-width:220px"></select>
+        <select id="folderChildSelect" style="flex:1;min-width:220px;margin-bottom:0"></select>
       </div>
-      <div class="status" id="browseStatus" role="status"></div>
+      <div class="status" id="browseStatus" role="status" style="margin-top:10px"></div>
     </div>
 
     <!-- Drive projects (v19, register-only mode). Offices still on network
@@ -400,17 +411,43 @@
       </div>
     </div>
 
-    <details style="margin-bottom:14px">
-      <summary style="cursor:pointer;font-size:12.5px;color:var(--muted,#8b949e)">Or paste a SharePoint folder URL</summary>
-      <div style="display:flex;gap:10px;align-items:flex-end;margin-top:8px">
+
+    <div class="folder-url-display" id="folderUrlDisplay">No folder selected yet — pick a project above, or open this tool from a milestone in the PMS.</div>
+
+    <div class="action-row" style="margin-bottom:10px">
+      <button class="btn btn-primary" id="loadFolderBtn" title="Re-read the drawings in the folder shown above.">🔍 Load files from this folder</button>
+      <button type="button" class="btn btn-ghost" id="localUploadBtn"
+        title="Pick a folder on your computer or a mapped network drive. Its drawing files are copied into the SharePoint folder above, replacing any files with the same name.">📤 Upload a folder of drawings…</button>
+      <button type="button" class="btn btn-ghost" id="localUploadFilesBtn"
+        title="Pick individual files instead of a whole folder. Same destination, same replace-on-same-name behavior.">📄 Upload individual files…</button>
+    </div>
+    <!-- webkitdirectory turns the picker into an OS folder dialog; the browser
+         hands back every file inside (subfolders included) but never the local
+         path itself. Mapped network drives work — the dialog is the OS's.
+         The second input is the plain multi-file picker; both feed the same
+         uploadLocalFiles() flow. -->
+    <input type="file" id="localUploadInput" webkitdirectory multiple style="display:none"/>
+    <input type="file" id="localUploadFilesInput" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.dwg,.rvt,.dgn,.dxf" style="display:none"/>
+    <div class="status" id="loadStatus" role="status"></div>
+
+    <details class="quiet">
+      <summary>Folder not listed? Paste a SharePoint folder URL</summary>
+      <div style="display:flex;gap:10px;align-items:flex-end;margin-top:10px">
         <div style="flex:1">
           <label for="folderUrlInput">SharePoint Folder URL</label>
-          <input type="text" id="folderUrlInput" placeholder="Paste the folder's SharePoint URL (…/Project Document Library/…)"/>
+          <input type="text" id="folderUrlInput" placeholder="Paste the folder's SharePoint URL (…/Project Document Library/…)" style="margin-bottom:0"/>
         </div>
-        <button type="button" class="btn btn-ghost" id="useFolderUrlBtn" onclick="applyFolderUrlInput()" style="white-space:nowrap">Use this folder</button>
+        <button type="button" class="btn btn-ghost" id="useFolderUrlBtn" onclick="applyFolderUrlInput()" style="white-space:nowrap">Open this folder</button>
       </div>
-      <div style="font-size:11.5px;color:var(--muted,#8b949e);margin-top:6px">For the few projects with no folder recorded in PMS, or a folder outside the usual tree.</div>
+      <div class="hint" style="margin-top:6px;margin-bottom:0">For the few projects with no folder recorded in PMS, or a folder outside the usual tree. The files load as soon as you open it.</div>
     </details>
+  </div>
+
+  <!-- 2 · Cover sheet details. Everything on the cover and in the email
+       draft: who it goes to, the number, the date, what it is issued for. -->
+  <div class="card" id="coverCard">
+    <h2 class="card-title"><span class="step-num" aria-hidden="true">2</span> Cover sheet details</h2>
+    <p class="hint">Who the transmittal goes to and what it says. Most of this fills in from the project; check the contact and the number.</p>
     <div class="form-row">
       <div>
         <label for="projectName">Project Name</label>
@@ -429,7 +466,7 @@
       <div>
         <label for="transmittalNoTop">Transmittal No.</label>
         <input type="text" id="transmittalNoTop" placeholder="e.g. T-001" oninput="onTxNoInput(this.value)"/>
-        <div class="status" id="txNoWarning" role="status" style="margin-top:6px"></div>
+        <div class="status" id="txNoWarning" role="status" style="margin-top:-8px"></div>
       </div>
     </div>
     <div class="form-row">
@@ -464,38 +501,6 @@
         <label for="recipientName">Attn: Name</label>
         <input type="text" id="recipientName" placeholder="Auto-filled from contact"/>
       </div>
-      <div></div>
-    </div>
-
-    <!-- CC picker. Lets the user CC multiple people from any project company.
-         Same data source as the To dropdown (project companies + directory),
-         and the same contact lookup against the global directory. Picked
-         recipients render as removable chips below; an empty list means no
-         CC line is added to the DOCX or the Outlook draft. -->
-    <div class="form-row">
-      <div>
-        <label for="ccCompany">CC Company</label>
-        <select id="ccCompany" onchange="onCcCompanyChange()">
-          <option value="">— Pick a company —</option>
-        </select>
-      </div>
-      <div>
-        <label for="ccContact">CC Contact</label>
-        <select id="ccContact">
-          <option value="">— Pick a contact —</option>
-        </select>
-      </div>
-    </div>
-    <div class="form-row" style="margin-top:-4px;margin-bottom:8px;">
-      <div>
-        <button type="button" class="btn btn-ghost" id="addCcBtn" onclick="addCcRecipient()"
-          style="padding:4px 10px;font-size:12px;">+ Add to CC</button>
-      </div>
-      <div></div>
-    </div>
-    <div id="ccChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;"></div>
-
-    <div class="form-row">
       <div>
         <label for="issuedFor">Issued For</label>
         <select id="issuedFor">
@@ -510,31 +515,42 @@
           <option>For your Information and Use</option>
         </select>
       </div>
-      <div></div>
     </div>
+
+    <!-- CC picker. Lets the user CC multiple people from any project company.
+         Same data source as the To dropdown (project companies + directory),
+         and the same contact lookup against the global directory. Picked
+         recipients render as removable chips below; an empty list means no
+         CC line is added to the DOCX or the Outlook draft. -->
+    <div class="section-sub">CC <span style="font-weight:400;color:var(--muted)">(optional)</span></div>
+    <div class="form-row">
+      <div>
+        <label for="ccCompany">CC Company</label>
+        <select id="ccCompany" onchange="onCcCompanyChange()">
+          <option value="">— Pick a company —</option>
+        </select>
+      </div>
+      <div>
+        <label for="ccContact">CC Contact</label>
+        <div style="display:flex;gap:8px;align-items:flex-start">
+          <select id="ccContact" style="flex:1">
+            <option value="">— Pick a contact —</option>
+          </select>
+          <button type="button" class="btn btn-ghost" id="addCcBtn" onclick="addCcRecipient()"
+            style="padding:8px 12px;font-size:12px;white-space:nowrap">+ Add</button>
+        </div>
+      </div>
+    </div>
+    <div id="ccChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:-6px"></div>
     <input type="hidden" id="transmittalNo" value="T-001"/>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <button class="btn btn-primary" id="loadFolderBtn">🔍 Load Files from SharePoint</button>
-      <button type="button" class="btn btn-ghost" id="localUploadBtn"
-        title="Pick a folder on your computer or a mapped network drive. Its drawing files are copied into the SharePoint folder above, replacing any files with the same name.">📤 Upload a folder of drawings…</button>
-      <button type="button" class="btn btn-ghost" id="localUploadFilesBtn"
-        title="Pick individual files instead of a whole folder. Same destination, same replace-on-same-name behavior.">📄 Upload individual files…</button>
-    </div>
-    <!-- webkitdirectory turns the picker into an OS folder dialog; the browser
-         hands back every file inside (subfolders included) but never the local
-         path itself. Mapped network drives work — the dialog is the OS's.
-         The second input is the plain multi-file picker; both feed the same
-         uploadLocalFiles() flow. -->
-    <input type="file" id="localUploadInput" webkitdirectory multiple style="display:none"/>
-    <input type="file" id="localUploadFilesInput" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.dwg,.rvt,.dgn,.dxf" style="display:none"/>
-    <div class="status" id="loadStatus" role="status"></div>
   </div>
 
-  <!-- Sheet List -->
+  <!-- 3 · Sheet list (shown once a folder has loaded) -->
   <div class="card" id="sheetListCard" style="display:none">
-    <h2 class="card-title">📋 Sheet List
+    <h2 class="card-title"><span class="step-num" aria-hidden="true">3</span> Sheet list
       <span class="count-badge" id="sheetCount"></span>
     </h2>
+    <p class="hint">Check the sheets going out. Only checked rows appear on the cover sheet and in the package.</p>
 
     <div class="toolbar">
       <button class="btn btn-ghost" id="selectAllBtn">☑ Select All</button>
@@ -561,70 +577,73 @@
       </table>
     </div>
 
-    <div class="status" id="parseStatus" role="status"></div>
+    <div class="status" id="parseStatus" role="status" style="margin-top:14px"></div>
+  </div>
 
-    <div style="margin-top:20px;display:flex;flex-direction:column;gap:14px">
-      <div>
-        <div class="step-label">Step 1 — Required</div>
-        <button class="btn btn-green" id="generateBtn">1. 📄 Generate Transmittal (.docx)</button>
+  <!-- 4 · Deliver (shown with the sheet list). One primary action, the
+       delivery method as its option, and the partial actions as secondaries.
+       The cover .docx is rebuilt from the form on every action, so there is
+       no separate "generate first" step and nothing can go out stale. -->
+  <div class="card" id="deliverCard" style="display:none">
+    <h2 class="card-title"><span class="step-num" aria-hidden="true">4</span> Deliver</h2>
+    <p class="hint">The cover sheet is built from steps 2 and 3 when you click an action, so it always matches what is on screen. Nothing is emailed automatically: the draft opens in Outlook for you to review and send.</p>
+
+    <!-- Delivery-method picker. The person sending chooses how the package
+         reaches the client, so a broken/unavailable portal never blocks a
+         send — "Email as attachment" attaches the files straight to the
+         Outlook draft with no SharePoint dependency at all. -->
+    <fieldset id="deliveryModeGroup" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+      <legend style="font-size:12px;font-weight:600;color:var(--muted);padding:0 6px">How should the package reach them?</legend>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);margin:0">
+          <input type="radio" name="deliveryMode" value="portal" id="dmPortal"> 🌐 Via Client Portal (link)
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);margin:0">
+          <input type="radio" name="deliveryMode" value="attach" id="dmAttach" checked> 📎 Email as attachment
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);margin:0">
+          <input type="radio" name="deliveryMode" value="zip" id="dmZip"> 📦 Zip + 30-day link
+        </label>
       </div>
-      <div>
-        <div class="step-label">Step 2 — Choose one delivery option</div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <button class="btn btn-primary" id="saveToSpBtn" disabled title="Generate the transmittal first" aria-describedby="step2LockNote">2a. 💾 Save .docx to SharePoint</button>
-          <button class="btn btn-primary" id="zipBtn" disabled title="Generate the transmittal first" aria-describedby="step2LockNote">2b. 📦 Download ZIP only</button>
-          <button class="btn btn-send" id="sendToClientBtn" disabled title="Generate the transmittal first" aria-describedby="step2LockNote">2c. ✉️ Package &amp; Draft Email</button>
-        </div>
-        <div id="step2LockNote" class="sr-only">Disabled until the transmittal is generated in Step 1.</div>
+      <div id="deliveryModeHint" style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.5"></div>
+    </fieldset>
 
-        <!-- Delivery-method picker for 2c. The person sending chooses how the
-             package reaches the client, so a broken/unavailable portal never
-             blocks a send — "Email attachment" attaches the files straight to
-             the Outlook draft with no SharePoint dependency at all. -->
-        <fieldset id="deliveryModeGroup" style="margin-top:12px;border:1px solid var(--border);border-radius:8px;padding:10px 12px">
-          <legend style="font-size:12px;font-weight:600;color:var(--muted);padding:0 6px">How should 2c deliver the package?</legend>
-          <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px">
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-              <input type="radio" name="deliveryMode" value="portal" id="dmPortal"> 🌐 Via Client Portal (link)
-            </label>
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-              <input type="radio" name="deliveryMode" value="attach" id="dmAttach" checked> 📎 Email as attachment
-            </label>
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-              <input type="radio" name="deliveryMode" value="zip" id="dmZip"> 📦 Zip + 30-day link
-            </label>
-          </div>
-          <div id="deliveryModeHint" style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.5"></div>
-        </fieldset>
-
-        <div style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.5">
-          <strong>2c. Package &amp; Draft Email</strong> is the full client-send flow; pick the delivery method above first. <strong>Via Client Portal</strong> publishes the checked files + cover to a dated folder under <strong>Setty Deliverables</strong> and links there (no expiry — clients use their portal access). <strong>Email as attachment</strong> attaches the files directly to the draft (no portal needed — use this if the portal isn't set up or isn't cooperating; best for smaller sets). <strong>Zip + 30-day link</strong> bundles everything and shares a 30-day anonymous link (good for large sets with no portal). Either way an Outlook draft opens for review — nothing is sent automatically. <strong>2a</strong> and <strong>2b</strong> are partial alternatives if you only need the cover saved or a local zip.
-        </div>
-
-        <div style="margin-top:16px;padding:12px 14px;border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:8px;background:var(--card2)">
-          <div style="font-weight:600;font-size:13px;margin-bottom:4px">Backfill &mdash; record a transmittal that already went out</div>
-          <div style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-bottom:10px">
-            For logging historic submissions so the drawing register covers past issues. This <strong>only writes the log entry</strong>:
-            nothing is zipped, uploaded, emailed or sent. Load the submission folder above, check the sheets that went out, set the
-            date they were actually issued, then log it. Review the parsed sheet numbers and revisions in the table first &mdash; a file
-            that does not follow current naming may read as revision 0 rather than unknown.
-          </div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-            <label for="backfillDate" style="font-size:12.5px">Date issued</label>
-            <input type="date" id="backfillDate" style="border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;padding:6px 10px;font-size:13px">
-            <button class="btn" id="backfillBtn">&#128194; Log past transmittal</button>
-            <label for="backfillMilestone" style="font-size:12.5px;display:inline-flex;align-items:center;gap:6px;cursor:pointer">
-              <input type="checkbox" id="backfillMilestone" checked>
-              Also add to the schedule as a completed milestone
-            </label>
-          </div>
-          <div class="status" id="backfillStatus" role="status"></div>
-        </div>
-      </div>
+    <div class="action-row" style="margin-top:14px">
+      <button class="btn btn-send" id="sendToClientBtn">✉️ Package &amp; draft email</button>
+      <span class="hint" style="margin:0">Sends the checked files plus the cover sheet the way chosen above, then opens an Outlook draft.</span>
     </div>
-    <div class="status" id="generateStatus" role="status"></div>
-    <div class="status" id="zipStatus" role="status"></div>
-    <div class="status" id="sendStatus" role="status"></div>
+
+    <div class="step-label" style="margin-top:18px">Other actions</div>
+    <div class="action-row">
+      <button class="btn btn-ghost" id="saveToSpBtn" title="Build the cover sheet and file it in the folder from step 1. Nothing is emailed.">💾 Save cover to SharePoint</button>
+      <button class="btn btn-ghost" id="zipBtn" title="Download the checked files and the cover sheet as one .zip on this computer. Nothing is uploaded or emailed.">📦 Download ZIP</button>
+      <button class="btn btn-ghost" id="generateBtn" title="Download just the cover sheet (.docx) to this computer.">📄 Download cover (.docx)</button>
+    </div>
+    <div class="status" id="deliverStatus" role="status" style="margin-top:14px;margin-bottom:0"></div>
+  </div>
+
+  <!-- Backfill: a different job from sending, so it lives in its own card,
+       collapsed. Shown with the sheet list because it needs the checked rows. -->
+  <div class="card" id="backfillCard" style="display:none;border-left:3px solid var(--amber,#d97706)">
+    <details class="quiet">
+      <summary><strong style="color:var(--text)">Log a past transmittal (backfill)</strong> — record a set that already went out, without sending anything</summary>
+      <div class="hint" style="margin-top:10px">
+        For logging historic submissions so the drawing register covers past issues. This <strong>only writes the log entry</strong>:
+        nothing is zipped, uploaded, emailed or sent. Load the submission folder in step 1, check the sheets that went out in step 3, set the
+        date they were actually issued, then log it. Review the parsed sheet numbers and revisions first &mdash; a file
+        that does not follow current naming may read as revision 0 rather than unknown.
+      </div>
+      <div class="action-row">
+        <label for="backfillDate" style="margin:0">Date issued</label>
+        <input type="date" id="backfillDate" style="width:auto;margin-bottom:0">
+        <button class="btn" id="backfillBtn" style="background:#431407;color:#fb923c;border:1px solid #7c2d12">&#128194; Log past transmittal</button>
+        <label for="backfillMilestone" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--text);margin:0">
+          <input type="checkbox" id="backfillMilestone" checked>
+          Also add to the schedule as a completed milestone
+        </label>
+      </div>
+      <div class="status" id="backfillStatus" role="status" style="margin-top:12px;margin-bottom:0"></div>
+    </details>
   </div>
 
   <!-- Transmittal History — record-keeping view of past sends for this
@@ -632,7 +651,7 @@
        SharePoint list was removed with the register work.) Each row
        expands to show the sheet register captured at issue time. -->
   <div class="card" id="historyCard">
-    <h2 class="card-title">🗂️ Transmittal History
+    <h2 class="card-title">🗂️ Transmittal history
       <span class="count-badge" id="historyCount"></span>
     </h2>
     <div class="status" id="historyStatus" role="status"></div>
@@ -711,6 +730,7 @@ let folderFiles = []; // raw Graph driveItems for the drawings in this folder (u
 let sheets = [];
 let generatedBlob = null;
 let generatedFileName = "";
+let generatedStamp = null;        // { number, date } for the stamp once a send or save succeeds
 let historyTxNumbers = []; // [{num, date}] parsed from the Transmittals Sent history (for auto-increment + dupe warning)
 let txNoUserEdited = false; // user typed a custom transmittal number this session — never clobber it
 let pmsClients = []; // loaded from Supabase
@@ -1042,7 +1062,11 @@ async function loadPmsData() {
         const searchBox = document.getElementById("projectSearch");
         if (searchBox && !searchBox.value) {
           searchBox.value = (proj.projectNumber || "") + " - " + (proj.name || "");
-          if (!folderUrl && msalAccount) {
+          // With no ?folder= the browser opens at the project's Outgoing folder.
+          // Drive projects always take the drive path; a ?folder= on them is
+          // not browsable here. Only browse when already signed in, so page
+          // load never triggers an auth prompt.
+          if (msalAccount && (!folderUrl || projectIsDriveBased(proj))) {
             try { await startBrowsingProject(proj); } catch (e) {
               console.warn("[TX] could not open folder browser:", e.message);
             }
@@ -1052,6 +1076,17 @@ async function loadPmsData() {
         // Project not found by number — use URL params directly
         if (urlProject) document.getElementById("projectName").value = urlProject;
         document.getElementById("projectNumber").value = urlNumber;
+      }
+    }
+
+    // Milestone deep link (?folder=): the folder is already known, so open the
+    // browser there and load its files straight away. Before this the person
+    // landed on a filled form with nothing loaded, had to find the Load button
+    // under the recipient fields, and had no way to step into a subfolder.
+    if (folderUrl && msalAccount && !driveMode) {
+      try { await openDeepLinkedFolder(); } catch (e) {
+        console.warn("[TX] could not open linked folder:", e.message);
+        setStatus("loadStatus", "error", "\u2717 Could not open the linked folder: " + e.message);
       }
     }
 
@@ -1498,10 +1533,11 @@ function applyFolderUrlInput() {
     }
   } catch (e) {}
   if (decoded.indexOf("Project Document Library/") === -1) {
-    setStatus("loadStatus", "warn", "⚠ That URL doesn't look like a Project Document Library folder — Load Files may fail.");
-  } else {
-    setStatus("loadStatus", "info", "Folder set — click \"Load Files from SharePoint\".");
+    setStatus("loadStatus", "warn", "⚠ That URL doesn't look like a Project Document Library folder — loading its files may fail.");
+    return;
   }
+  // Open the browser there too, so subfolders stay one click away, and load.
+  openDeepLinkedFolder().catch(e => setStatus("loadStatus", "error", "✗ " + e.message));
 }
 
 // Transmittal-number handling. The audit list doesn't store a per-row number,
@@ -1732,7 +1768,7 @@ async function loadLocalSet(picked) {
   sheets = folderFiles.map(f => parseFilename(f.name, f.lastModifiedDateTime)).filter(Boolean);
   if (!sheets.length) sheets = [emptyRow(), emptyRow(), emptyRow()];
   renderTable();
-  document.getElementById("sheetListCard").style.display = "block";
+  showSheetCards();
   prefillBackfillDate();
   setStatus("loadStatus", "success", "✓ Read " + files.length + " file" + (files.length === 1 ? "" : "s") + " from the drive folder. Nothing was uploaded.");
   void maybeAutoReadTitleBlocks();
@@ -1776,6 +1812,21 @@ async function startBrowsingProject(proj) {
     if (outgoing) browsePath = root + "/" + outgoing;
   } catch (e) { /* no Outgoing, or listing failed: stay at the project root */ }
   await refreshFolderBrowser(false);
+}
+
+// Land the folder browser on a known library folder and load its files.
+// Used by the ?folder= deep link and by the paste-a-URL fallback.
+async function openDeepLinkedFolder() {
+  const path = libraryPathFromUrl(folderUrl);
+  if (!path) {
+    document.getElementById("folderUrlDisplay").textContent = safeDecodeFolderUrl(folderUrl);
+    setStatus("loadStatus", "warn",
+      "\u26a0 The linked folder is not in the Project Document Library, so it cannot be browsed here. Pick the project above to browse, or paste the folder URL below.");
+    return;
+  }
+  leaveDriveMode();
+  browsePath = path;
+  await refreshFolderBrowser(true);
 }
 
 function renderProjectResults(matches) {
@@ -1870,7 +1921,7 @@ async function loadFolder() {
     }
 
     renderTable();
-    document.getElementById("sheetListCard").style.display = "block";
+    showSheetCards();
     prefillBackfillDate();
 
     void maybeAutoReadTitleBlocks();
@@ -2606,6 +2657,16 @@ function renderTable() {
   updateCount();
 }
 
+// Steps 3 and 4 (and the backfill card) only make sense once a folder has
+// loaded; they appear together so the page reads as one sequence.
+function showSheetCards() {
+  ["sheetListCard", "deliverCard", "backfillCard"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = "block";
+  });
+  syncDeliveryModeUI();
+}
+
 function updateCount() {
   const included = sheets.filter(s => s.include).length;
   document.getElementById("sheetCount").textContent = `${included} of ${sheets.length} selected`;
@@ -2790,26 +2851,28 @@ async function backfillTransmittal() {
 document.getElementById("backfillBtn").onclick = backfillTransmittal;
 
 // ─── PACKAGE DRAWINGS AS ZIP ──────────────────────────────────────────────────
-// Bundles every drawing/document file (.pdf/.doc/.docx/.dwg/.rvt/.dgn/.dxf) found in the folder into
-// a single .zip and triggers a browser download. No SharePoint upload — the
+// Bundles the checked drawing/document files plus the cover .docx into a
+// single .zip and triggers a browser download. No SharePoint upload — the
 // user attaches the resulting zip to email or uploads it manually.
 async function packageAsZip() {
   const btn = document.getElementById("zipBtn");
-  setStatus("zipStatus", "", "");
+  setStatus("deliverStatus", "", "");
 
   if (!folderFiles.length) {
-    setStatus("zipStatus", "error", "✗ Load a folder with drawing files first.");
+    setStatus("deliverStatus", "error", "✗ Load a folder with drawing files first.");
     return;
   }
   if (typeof JSZip === "undefined") {
-    setStatus("zipStatus", "error", "✗ ZIP library failed to load. Check your internet connection.");
+    setStatus("deliverStatus", "error", "✗ ZIP library failed to load. Check your internet connection.");
     return;
   }
 
   btn.disabled = true;
   try {
+    if (!(await ensureCover())) return;
     const archiveName = buildArchiveFileName();
     const zip = new JSZip();
+    zip.file(generatedFileName, generatedBlob); // the cover travels with the drawings
 
     // Auth-based /content endpoint — never expires, unlike @microsoft.graph.downloadUrl
     // which is a pre-signed CDN URL with a ~1-hour TTL that goes stale silently.
@@ -2822,25 +2885,25 @@ async function packageAsZip() {
     const includedFilenames = new Set((sheets || []).filter(s => s.include && s.filename).map(s => s.filename));
     const filesToZip = folderFiles.filter(f => includedFilenames.has(f.name));
     if (filesToZip.length === 0) {
-      setStatus("zipStatus", "error", "✗ No files selected — check at least one row before downloading the ZIP.");
+      setStatus("deliverStatus", "error", "✗ No files selected — check at least one row before downloading the ZIP.");
       btn.disabled = false;
       return;
     }
     let done = 0;
     for (const f of filesToZip) {
-      setStatus("zipStatus", "info", `⏳ Adding ${f.name} (${done + 1}/${filesToZip.length})…`);
+      setStatus("deliverStatus", "info", `⏳ Adding ${f.name} (${done + 1}/${filesToZip.length})…`);
       zip.file(f.name, await fileBytes(f, downloadToken));
       done++;
     }
 
-    setStatus("zipStatus", "info", "⏳ Compressing…");
+    setStatus("deliverStatus", "info", "⏳ Compressing…");
     const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
     saveAs(blob, archiveName); // file-saver, already loaded for the .docx export
 
-    setStatus("zipStatus", "success", `✓ "${archiveName}" downloaded (${done} file${done !== 1 ? "s" : ""}).`);
+    setStatus("deliverStatus", "success", `✓ "${archiveName}" downloaded (${done} file${done !== 1 ? "s" : ""} + cover sheet). Nothing was uploaded or emailed.`);
     void logTransmittalGenerated("zip", { archiveName, fileCount: done });
   } catch(e) {
-    setStatus("zipStatus", "error", "✗ " + e.message);
+    setStatus("deliverStatus", "error", "✗ " + e.message);
     console.error(e);
   } finally {
     btn.disabled = false;
@@ -2879,23 +2942,48 @@ function buildArchiveFileName() {
   return [safe(number), safe(milestone), date].filter(Boolean).join("_") + ".zip";
 }
 
+// "Download cover (.docx)": build the cover from the current form and save it
+// to this computer. Nothing is sent, filed or logged. The download used to be
+// forced on every build (and the stamp played then), which read as "done"
+// before anything had gone anywhere.
 async function generateDocx() {
+  const btn = document.getElementById("generateBtn");
+  btn.disabled = true;
+  try {
+    if (!(await ensureCover())) return;
+    saveAs(generatedBlob, generatedFileName);
+    setStatus("deliverStatus", "success", `✓ "${generatedFileName}" downloaded. Nothing has been sent or saved to SharePoint.`);
+  } catch (e) {
+    setStatus("deliverStatus", "error", "✗ " + e.message);
+    console.error(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Every deliver action calls this first, so the cover always reflects the
+// form and the sheet list as they are NOW. (The old flow generated once and
+// let the blob go stale behind later edits.) Returns false, with focus on the
+// problem, when nothing is selected; throws if the build itself fails.
+async function ensureCover() {
   const included = sheets.filter(s => s.include);
   if (included.length === 0) {
-    setStatus("generateStatus", "error", "No sheets selected.");
+    setStatus("deliverStatus", "error", "✗ No sheets selected — check at least one row in the sheet list.");
     // Send focus to the relevant control: the first include checkbox, or the
     // Select All button when the table is empty.
     const firstCb = document.querySelector("#sheetTableBody input[type=checkbox]");
     if (firstCb) { firstCb.setAttribute("aria-invalid", "true"); firstCb.focus(); }
     else document.getElementById("selectAllBtn").focus();
-    return;
+    return false;
   }
+  setStatus("deliverStatus", "info", "⏳ Building the cover sheet…");
+  await buildCoverDocx(included);
+  return true;
+}
 
-  const btn = document.getElementById("generateBtn");
-  btn.disabled = true;
-  setStatus("generateStatus", "info", "⏳ Generating transmittal…");
-
-  try {
+// Renders the cover .docx into generatedBlob / generatedFileName.
+async function buildCoverDocx(included) {
+  {
     const docxLib = window.docx || docx;
     const {
       Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
@@ -3155,33 +3243,20 @@ async function generateDocx() {
     const buffer = await Packer.toBlob(doc);
     generatedBlob = buffer;
     generatedFileName = `${projectNumber ? projectNumber + "_" : ""}Transmittal_${txNo.replace(/[^a-zA-Z0-9]/g,"")}_${txDate}.docx`;
-
-    // Auto-download
-    saveAs(buffer, generatedFileName);
-    playStamp({ number: txNo, date: dateDisplay });   // rubber-stamp celebration
-    // Unlock Step 2 actions now that the cover docx exists in memory
-    ["saveToSpBtn", "zipBtn", "sendToClientBtn"].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) { el.disabled = false; el.removeAttribute("title"); el.removeAttribute("aria-describedby"); }
-    });
-    syncDeliveryModeUI(); // default the delivery picker now that a send is possible
-    setStatus("generateStatus", "success", `✓ "${generatedFileName}" downloaded. Step 2 actions are now unlocked below.`);
-
-  } catch(e) {
-    setStatus("generateStatus", "error", "✗ " + e.message);
-    console.error(e);
+    generatedStamp = { number: txNo, date: dateDisplay }; // played once a send or save succeeds
   }
-  btn.disabled = false;
 }
 
 // ─── SAVE TO SHAREPOINT ───────────────────────────────────────────────────────
 async function saveToSharePoint() {
-  if (driveMode) { setStatus("generateStatus", "warn", "Drive project: save the downloaded .docx into the set folder on the drive yourself — this page holds no drive credential."); return; }
-  if (!generatedBlob) { setStatus("generateStatus", "error", "Generate the transmittal first."); return; }
-  if (!resolvedDriveId || !resolvedFolderPath) { setStatus("generateStatus", "error", "Load the folder first."); return; }
+  if (driveMode) { setStatus("deliverStatus", "warn", "Drive project: use “Download cover (.docx)” and save it into the set folder on the drive yourself — this page holds no drive credential."); return; }
+  if (!resolvedDriveId || !resolvedFolderPath) { setStatus("deliverStatus", "error", "✗ Load a folder in step 1 first."); return; }
 
-  setStatus("generateStatus", "info", "⏳ Saving to SharePoint…");
+  const btn = document.getElementById("saveToSpBtn");
+  btn.disabled = true;
   try {
+    if (!(await ensureCover())) return;
+    setStatus("deliverStatus", "info", "⏳ Saving to SharePoint…");
     const token = await getToken();
     const path = `/drives/${resolvedDriveId}/root:/${encodeURIComponent(resolvedFolderPath)}/${encodeURIComponent(generatedFileName)}:/content`;
     const arrayBuffer = await generatedBlob.arrayBuffer();
@@ -3191,10 +3266,13 @@ async function saveToSharePoint() {
       body: arrayBuffer,
     });
     if (!res.ok) throw new Error("Upload failed: " + res.status);
-    setStatus("generateStatus", "success", `✓ Saved to SharePoint folder as "${generatedFileName}"`);
-    void logTransmittalGenerated("save-sp", { docxFileName: generatedFileName });
+    setStatus("deliverStatus", "success", `✓ Saved to the SharePoint folder as "${generatedFileName}". Nothing was emailed.`);
+    playStamp(generatedStamp);
+    void logTransmittalGenerated("save-sp", { docxFileName: generatedFileName }).then(() => loadTransmittalHistory());
   } catch(e) {
-    setStatus("generateStatus", "error", "✗ " + e.message);
+    setStatus("deliverStatus", "error", "✗ " + e.message);
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -3217,7 +3295,7 @@ const ANONYMOUS_LINK_EXPIRY_DAYS = 30;
 document.getElementById("sendToClientBtn").onclick = sendToClient;
 
 // ─── DELIVERY-MODE PICKER ─────────────────────────────────────────────────────
-// The 2c send offers three delivery modes; the person sending picks one so a
+// The send offers three delivery modes; the person sending picks one so a
 // missing/broken portal never blocks a send. Attachment sends have a real
 // mailbox size ceiling (Exchange caps a message around 25–35 MB), so we guard
 // against oversized attachment sends and steer those to portal/zip instead.
@@ -3287,22 +3365,18 @@ document.querySelectorAll('input[name="deliveryMode"]').forEach(r => {
 
 async function sendToClient() {
   const btn = document.getElementById("sendToClientBtn");
-  setStatus("sendStatus", "", "");
+  setStatus("deliverStatus", "", "");
 
   // ── Validate prerequisites ────────────────────────────────────────────────
   if (!folderFiles.length) {
-    setStatus("sendStatus", "error", "✗ Load a folder with files first.");
-    return;
-  }
-  if (!generatedBlob) {
-    setStatus("sendStatus", "error", "✗ Click 'Generate Transmittal (.docx)' first — the cover sheet must be in memory.");
+    setStatus("deliverStatus", "error", "✗ Load a folder with files first.");
     return;
   }
   const recipientEmailEl = document.getElementById("recipientEmail");
   recipientEmailEl.removeAttribute("aria-invalid");
   const recipientEmail = (recipientEmailEl.value || "").trim();
   if (!recipientEmail || !recipientEmail.includes("@")) {
-    setStatus("sendStatus", "error", "✗ Enter a valid recipient email.");
+    setStatus("deliverStatus", "error", "✗ Enter a valid recipient email.");
     recipientEmailEl.setAttribute("aria-invalid", "true");
     recipientEmailEl.focus();
     return;
@@ -3310,6 +3384,8 @@ async function sendToClient() {
 
   btn.disabled = true;
   try {
+    if (!(await ensureCover())) return;
+
     // ── 1. Download the selected files (common to both delivery modes) ──────
     // Use authenticated /content endpoint rather than @microsoft.graph.downloadUrl —
     // the latter is a pre-signed CDN URL that expires ~1 hour after the folder was
@@ -3328,14 +3404,14 @@ async function sendToClient() {
     const fileBlobs = [];
     for (let i = 0; i < filesToSend.length; i++) {
       const f = filesToSend[i];
-      setStatus("sendStatus", "info", `⏳ Reading ${f.name} (${i + 1}/${filesToSend.length})…`);
+      setStatus("deliverStatus", "info", `⏳ Reading ${f.name} (${i + 1}/${filesToSend.length})…`);
       const blob = await fileBytes(f, downloadToken);
       totalBytes += blob.size;
       fileBlobs.push({ name: f.name, blob });
     }
     totalBytes += generatedBlob.size;
 
-    // ── 2. Deliver, per the delivery mode the user picked in Step 2. ──────────
+    // ── 2. Deliver, per the delivery mode picked in the Deliver card. ──────────
     //   portal → copy into a dated Setty Deliverables folder; email links there
     //   attach → attach the files straight to the draft (no SharePoint at all)
     //   zip    → bundle + upload + 30-day anonymous link
@@ -3376,7 +3452,7 @@ async function sendToClient() {
       fileBlobs.forEach(f => zip.file(f.name, f.blob));
       zip.file(generatedFileName, generatedBlob);
 
-      setStatus("sendStatus", "info", "⏳ Compressing…");
+      setStatus("deliverStatus", "info", "⏳ Compressing…");
       const zipBlob = await zip.generateAsync({
         type: "blob",
         compression: "DEFLATE",
@@ -3384,10 +3460,10 @@ async function sendToClient() {
       });
       const zipName = buildArchiveFileName();
 
-      setStatus("sendStatus", "info", `⏳ Uploading ${(zipBlob.size / 1024 / 1024).toFixed(1)} MB to SharePoint…`);
+      setStatus("deliverStatus", "info", `⏳ Uploading ${(zipBlob.size / 1024 / 1024).toFixed(1)} MB to SharePoint…`);
       const uploadedItem = await uploadLargeFileToFolder(zipBlob, zipName);
 
-      setStatus("sendStatus", "info", "⏳ Creating share link…");
+      setStatus("deliverStatus", "info", "⏳ Creating share link…");
       const linkInfo = await createAnonymousLink(uploadedItem.id);
       linkUrl     = linkInfo.link.webUrl;
       linkLabel   = zipName;
@@ -3403,7 +3479,7 @@ async function sendToClient() {
 
     // ── 4. Create an Outlook draft via Graph (HTML body so the share URL can
     //       hide behind a readable label) and open it for review. ─────────────
-    setStatus("sendStatus", "info", attachments
+    setStatus("deliverStatus", "info", attachments
       ? `⏳ Attaching ${attachments.length} file${attachments.length !== 1 ? "s" : ""} to the Outlook draft…`
       : "⏳ Creating Outlook draft…");
     const draft = await createOutlookDraft({
@@ -3417,12 +3493,13 @@ async function sendToClient() {
     window.open(draft.webLink, "_blank");
 
     const draftedCount = fileBlobs.length + 1; // selected files + cover doc
-    setStatus("sendStatus", "success",
+    setStatus("deliverStatus", "success",
       deliveryMode === "portal"
         ? `✓ ${draftedCount} file${draftedCount !== 1 ? "s" : ""} published to the Client Portal (${packageName}). Outlook draft open — review and click Send.`
       : deliveryMode === "attach"
         ? `✓ ${draftedCount} file${draftedCount !== 1 ? "s" : ""} attached to the Outlook draft (${(totalBytes / 1024 / 1024).toFixed(1)} MB). Review and click Send.`
         : `✓ Package uploaded. Outlook draft open — review and click Send. Link expires ${new Date(expiryIso).toLocaleDateString()}.`);
+    playStamp(generatedStamp);
     // Refresh the history panel only once the log row has actually landed,
     // otherwise the send just made would be missing from the table.
     void logTransmittalGenerated("send-email", {
@@ -3435,7 +3512,7 @@ async function sendToClient() {
       packageName,
     }).then(() => loadTransmittalHistory());
   } catch (e) {
-    setStatus("sendStatus", "error", "✗ " + e.message);
+    setStatus("deliverStatus", "error", "✗ " + e.message);
     console.error(e);
   } finally {
     btn.disabled = false;
@@ -3551,11 +3628,11 @@ async function publishToPortal(fileBlobs, settyDeliverablesUrl) {
   // Upload every file into the dated folder (chunked — handles large PDFs).
   for (let i = 0; i < fileBlobs.length; i++) {
     const f = fileBlobs[i];
-    setStatus("sendStatus", "info", `⏳ Publishing ${f.name} (${i + 1}/${fileBlobs.length}) to Client Portal…`);
+    setStatus("deliverStatus", "info", `⏳ Publishing ${f.name} (${i + 1}/${fileBlobs.length}) to Client Portal…`);
     await uploadLargeFileToFolder(f.blob, f.name, { driveId: SP_NYSHARE_DRIVE_ID, parentPath: folderPath });
   }
   // The transmittal cover docx travels with the set.
-  setStatus("sendStatus", "info", "⏳ Publishing transmittal cover…");
+  setStatus("deliverStatus", "info", "⏳ Publishing transmittal cover…");
   await uploadLargeFileToFolder(generatedBlob, generatedFileName, { driveId: SP_NYSHARE_DRIVE_ID, parentPath: folderPath });
 
   return { webUrl: folder.webUrl, folderName, folderPath };
@@ -3924,7 +4001,7 @@ async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, linkLabel
   if (attachMode) {
     for (let i = 0; i < attachments.length; i++) {
       const a = attachments[i];
-      setStatus("sendStatus", "info", `⏳ Attaching ${a.name} (${i + 1}/${attachments.length})…`);
+      setStatus("deliverStatus", "info", `⏳ Attaching ${a.name} (${i + 1}/${attachments.length})…`);
       await attachFileToMessage(draft.id, a.name, a.blob);
     }
   }
