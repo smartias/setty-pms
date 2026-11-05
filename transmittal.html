@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-05-transmittal-v24-subfolders";
+    window.__appVersion = "2026-11-05-transmittal-v25-register-write-visibility";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -632,6 +632,7 @@
   <div class="card" id="deliverCard" style="display:none">
     <h2 class="card-title"><span class="step-num" aria-hidden="true">4</span> Deliver</h2>
     <p class="hint">The cover sheet is built from steps 2 and 3 when you click an action, so it always matches what is on screen. Nothing is emailed automatically: the draft opens in Outlook for you to review and send.</p>
+    <div class="status" id="deliverAuthNote" role="status"></div>
 
     <!-- Delivery-method picker. The person sending chooses how the package
          reaches the client, so a broken/unavailable portal never blocks a
@@ -678,6 +679,7 @@
         the <strong>issue date in step 1</strong> is the day they actually went out, then log it. Review the parsed sheet numbers and revisions
         first &mdash; a file that does not follow current naming may read as revision 0 rather than unknown.
       </div>
+      <div class="status" id="backfillAuthNote" role="status"></div>
       <div class="action-row">
         <span style="font-size:12.5px">Logs the checked sheets as issued on <strong id="backfillDateEcho">—</strong></span>
         <button class="btn" id="backfillBtn" style="background:#431407;color:#fb923c;border:1px solid #7c2d12">&#128194; Log past transmittal</button>
@@ -744,6 +746,24 @@ const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 // JWT when signed in, anon key otherwise — call sites below use it directly.
 const settyAuthReady = settyAuth.init().catch(() => null);
 settyAuth.mountPill();
+// The register (pms_filing_log) only accepts rows from a signed-in suite user,
+// and only shows them to one. That is a SEPARATE session from the page's own
+// Microsoft sign-in (SharePoint + Outlook), so a person can send a perfectly
+// good transmittal while the register silently refuses to record it. Signing
+// in or out through the pill re-checks the notices and reloads the history.
+settyAuth.onChange(() => { syncRegisterAuthNotes(); void loadTransmittalHistory(); });
+
+const REGISTER_SIGNIN_MSG =
+  "Not signed in to the Setty suite (the \u201cSign in\u201d pill at the top right). " +
+  "Transmittals cannot be logged to the register, and the history stays empty, until you are. " +
+  "This is separate from the Microsoft sign-in used for SharePoint and Outlook.";
+function registerSignedIn() {
+  return !!(window.settyAuth && typeof settyAuth.isSignedIn === "function" && settyAuth.isSignedIn());
+}
+function syncRegisterAuthNotes() {
+  const msg = registerSignedIn() ? "" : "\u26a0 " + REGISTER_SIGNIN_MSG;
+  ["deliverAuthNote", "backfillAuthNote"].forEach(id => setStatus(id, msg ? "warn" : "", msg));
+}
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 let msalApp = null;
@@ -789,8 +809,13 @@ let pmsMilestoneId = "";
 // ─── FILING LOG WRITER ──────────────────────────────────────────────────────
 // Records a successful transmittal generation/distribution event into the
 // shared pms_filing_log table. PMS reads this on load to render the chip in
-// its "generated" state. Fire-and-forget — a logging failure must never
-// affect the user's perception that their generation worked.
+// its "generated" state, the history card and the connector's Current Set
+// read it too. It THROWS when the row did not land: the register is the
+// record of what went out, so a refused write has to be visible. Callers
+// decide how loud — the backfill fails outright (logging is all it does),
+// a send or save reports "done, but NOT logged". It used to be
+// fire-and-forget and never looked at the response, so a row the database
+// rejected (no suite sign-in → RLS) read as success on screen.
 // Re-registering a set must REPLACE its record, not add a second one. The
 // backfill path had no upsert at all, so re-reading a folder to correct it left
 // the old filename-derived row sitting alongside the new one and the register
@@ -856,7 +881,8 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
     const hit = (pmsProjects || []).find(p => String(p.projectNumber || "").trim() === n);
     return hit ? (hit.id || "") : "";
   })();
-  if (!projId) return; // genuinely cannot attribute this transmittal to a project
+  if (!projId) throw new Error("this transmittal could not be matched to a PMS project, so there is nothing to log it against. Pick the project in step 1 (or open the tool from the PMS) and try again.");
+  if (!registerSignedIn()) throw new Error(REGISTER_SIGNIN_MSG);
   const folderUrlDecoded = safeDecodeFolderUrl(folderUrl);
   const subject = (document.getElementById("transmittalNo")?.value || "") +
                   " · " +
@@ -950,8 +976,9 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
     row.files.supersedeFailed = true;
   }
 
+  let res;
   try {
-    await fetch(SUPABASE_URL + "/rest/v1/pms_filing_log", {
+    res = await fetch(SUPABASE_URL + "/rest/v1/pms_filing_log", {
       method: "POST",
       headers: {
         "apikey": SUPABASE_ANON,
@@ -962,8 +989,15 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
       body: JSON.stringify(row),
     });
   } catch (e) {
-    // Non-fatal — generation succeeded; this is just the PMS feedback signal.
-    console.warn("[transmittal] filing-log write failed (non-fatal):", e.message);
+    throw new Error("could not reach the register (" + e.message + ")");
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.warn("[transmittal] filing-log write refused:", res.status, body);
+    if (res.status === 401 || res.status === 403) throw new Error(REGISTER_SIGNIN_MSG);
+    let detail = "";
+    try { const j = JSON.parse(body); detail = j.message || j.hint || j.details || ""; } catch (_) { detail = body.slice(0, 160); }
+    throw new Error("the register refused the entry (HTTP " + res.status + (detail ? ": " + detail : "") + ")");
   }
 }
 
@@ -1049,6 +1083,7 @@ function onSignedIn() {
 async function loadPmsData() {
   try {
     await settyAuthReady;   // session header ready before the first read
+    syncRegisterAuthNotes();
     const headers = {
       "apikey": SUPABASE_ANON,
       "Authorization": "Bearer " + settyAuth.token(),
@@ -2928,6 +2963,7 @@ function showSheetCards() {
     if (el) el.style.display = "block";
   });
   syncDeliveryModeUI();
+  syncRegisterAuthNotes();
 }
 
 function updateCount() {
@@ -3141,6 +3177,10 @@ async function backfillTransmittal() {
     setStatus("backfillStatus", "error", "\u2717 That date could not be read.");
     return;
   }
+  if (!registerSignedIn()) {
+    setStatus("backfillStatus", "error", "\u2717 " + REGISTER_SIGNIN_MSG);
+    return;
+  }
   if (!window.confirm("Log " + included.length + " sheet" + (included.length === 1 ? "" : "s") +
                       " as issued on " + dateVal + " (the issue date in step 1)?\n\nThis only writes the register entry. Nothing is sent.")) return;
 
@@ -3248,7 +3288,9 @@ async function packageAsZip() {
     saveAs(blob, archiveName); // file-saver, already loaded for the .docx export
 
     setStatus("deliverStatus", "success", `✓ "${archiveName}" downloaded (${done} file${done !== 1 ? "s" : ""} + cover sheet). Nothing was uploaded or emailed.`);
-    void logTransmittalGenerated("zip", { archiveName, fileCount: done });
+    logTransmittalGenerated("zip", { archiveName, fileCount: done })
+      .then(() => loadTransmittalHistory())
+      .catch(e => setStatus("deliverStatus", "warn", `⚠ "${archiveName}" downloaded, but this issue was NOT logged to the transmittal register: ${e.message} It will not appear in the history or the Current Set.`));
   } catch(e) {
     setStatus("deliverStatus", "error", "✗ " + e.message);
     console.error(e);
@@ -3615,7 +3657,9 @@ async function saveToSharePoint() {
     if (!res.ok) throw new Error("Upload failed: " + res.status);
     setStatus("deliverStatus", "success", `✓ Saved to the SharePoint folder as "${generatedFileName}". Nothing was emailed.`);
     playStamp(generatedStamp);
-    void logTransmittalGenerated("save-sp", { docxFileName: generatedFileName }).then(() => loadTransmittalHistory());
+    logTransmittalGenerated("save-sp", { docxFileName: generatedFileName })
+      .then(() => loadTransmittalHistory())
+      .catch(e => setStatus("deliverStatus", "warn", `⚠ Saved to SharePoint as "${generatedFileName}", but this issue was NOT logged to the transmittal register: ${e.message} It will not appear in the history or the Current Set.`));
   } catch(e) {
     setStatus("deliverStatus", "error", "✗ " + e.message);
   } finally {
@@ -3849,7 +3893,7 @@ async function sendToClient() {
     playStamp(generatedStamp);
     // Refresh the history panel only once the log row has actually landed,
     // otherwise the send just made would be missing from the table.
-    void logTransmittalGenerated("send-email", {
+    logTransmittalGenerated("send-email", {
       recipientEmail,
       ccEmails: (ccRecipients || []).map(r => r.email).filter(Boolean),
       deliveryMode,
@@ -3857,7 +3901,9 @@ async function sendToClient() {
       linkExpiresAt: expiryIso || undefined,
       linkUrl: linkUrl || undefined,
       packageName,
-    }).then(() => loadTransmittalHistory());
+    })
+      .then(() => loadTransmittalHistory())
+      .catch(e => setStatus("deliverStatus", "warn", `⚠ The Outlook draft is open, but this send was NOT logged to the transmittal register: ${e.message} It will not appear in the history or the Current Set.`));
   } catch (e) {
     setStatus("deliverStatus", "error", "✗ " + e.message);
     console.error(e);
@@ -4175,7 +4221,12 @@ async function loadTransmittalHistory() {
         "Authorization": "Bearer " + settyAuth.token(),
       },
     });
-    if (!res.ok) throw new Error("HTTP " + res.status);
+    if (res.status === 401 || res.status === 403) {
+      setStatus("historyStatus", "warn", "\u26a0 " + REGISTER_SIGNIN_MSG);
+      wrap.innerHTML = ""; countEl.textContent = "";
+      return;
+    }
+    if (!res.ok) throw new Error("the register did not answer (HTTP " + res.status + ")");
     const rows = await res.json();
 
     // Map log rows onto the field names renderHistoryTable() reads.
@@ -4215,7 +4266,7 @@ async function loadTransmittalHistory() {
     setStatus("historyStatus", "", "");
     wrap.innerHTML = renderHistoryTable(items);
   } catch (e) {
-    setStatus("historyStatus", "error", "✗ Could not load history: " + e.message);
+    setStatus("historyStatus", "error", "✗ Could not load the transmittal history: " + e.message);
     wrap.innerHTML = "";
   }
 }
