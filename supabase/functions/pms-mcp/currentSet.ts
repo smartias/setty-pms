@@ -86,6 +86,35 @@ export function canonicalSheet(sheet: any): { sheetNo: string; key: string; disc
   return { sheetNo: m[1] + m[2], key: m[1] + m[2].replace(/\.\d{1,2}$/, ""), discipline: m[1] };
 }
 
+
+// Specification sections. A set usually goes out with its specs, and the
+// transmittal tool records each section as a register row entry with
+// kind:"spec" and the CSI MasterFormat number in sheetNo — "16010" (1995,
+// five digits) or "23 05 00" / "230500" (2004+, three pairs, optional ".NN"
+// suffix). They are folded like sheets (first sighting wins) but kept APART:
+// a section is not a sheet, so it never lands in the discipline groups, the
+// sheet counts, or the "unusable" list, and "16010" can never collide with a
+// sheet key. An explicit kind:"drawing" wins over the number pattern, so a
+// row someone corrected by hand is respected.
+export function canonicalSpec(sheet: any): { section: string; key: string; division: number | null } | null {
+  const kind = String(sheet?.kind || "").toLowerCase();
+  if (kind === "drawing") return null;
+  const raw = String(sheet?.sheetNo || "").trim().replace(/\s+/g, " ");
+  const compact = raw.replace(/[ _]/g, "");
+  let m = /^(\d{2})(\d{2})(\d{2})(?:\.(\d{2}))?$/.exec(compact);
+  if (m) {
+    return { section: `${m[1]} ${m[2]} ${m[3]}` + (m[4] ? "." + m[4] : ""), key: "SPEC:" + compact, division: Number(m[1]) };
+  }
+  m = /^(\d{5})$/.exec(compact);
+  if (m) return { section: m[1], key: "SPEC:" + m[1], division: Number(m[1].slice(0, 2)) };
+  // Recorded as a spec but the number is not a CSI shape: still a spec, keyed
+  // on the text it carries, so it is listed rather than lost.
+  if (kind === "spec" && raw) return { section: raw, key: "SPEC:" + raw.toUpperCase(), division: null };
+  return null;
+}
+// Sections sort by their digits; "23 05 00.13" after "23 05 00".
+export const specRank = (section: any): number => Number(String(section || "").replace(/[^0-9]/g, "").padEnd(8, "0")) || 0;
+
 // pms_filing_log.sp_folder_url is stored DECODED (a set named "Addendum #2"
 // carries a literal '#', and milestone folders are named "50% CD"/"100% CD").
 // A raw href truncates at the '#', and encoding spaces BEFORE '%' turns
@@ -123,8 +152,14 @@ export const sheetRank = (no: string) => {
 // diffed and are counted out where the caller can see them.
 export function setDelta(setSheets: any[], priorRows: any[]) {
   const prevBySheet = new Map<string, any>();
+  const prevBySection = new Map<string, any>();
   for (const row of (Array.isArray(priorRows) ? priorRows : [])) {
     for (const s of sheetsOf(row)) {
+      const sp = canonicalSpec(s);
+      if (sp) {
+        if (!prevBySection.has(sp.key)) prevBySection.set(sp.key, { revision: s?.revision ?? null, issuedIn: row?.files?.milestoneName || null });
+        continue;
+      }
       const c = canonicalSheet(s);
       if (c && !prevBySheet.has(c.key)) {
         prevBySheet.set(c.key, { revision: s?.revision ?? null, issuedIn: row?.files?.milestoneName || null });
@@ -134,9 +169,24 @@ export function setDelta(setSheets: any[], priorRows: any[]) {
   const newSheets: string[] = [];
   const revised: any[] = [];
   const reissued: string[] = [];
+  // Specification sections diffed the same way, reported apart.
+  const newSections: string[] = [];
+  const revisedSections: any[] = [];
+  const reissuedSections: string[] = [];
   let unkeyable = 0;
   const seen = new Set<string>();
   for (const s of (Array.isArray(setSheets) ? setSheets : [])) {
+    const sp = canonicalSpec(s);
+    if (sp) {
+      if (seen.has(sp.key)) continue;
+      seen.add(sp.key);
+      const prev = prevBySection.get(sp.key);
+      if (!prev) newSections.push(sp.section);
+      else if (String(prev.revision ?? "") !== String(s?.revision ?? "")) {
+        revisedSections.push({ section: sp.section, from: prev.revision ?? null, to: s?.revision ?? null, previouslyIn: prev.issuedIn });
+      } else reissuedSections.push(sp.section);
+      continue;
+    }
     const c = canonicalSheet(s);
     if (!c) { unkeyable++; continue; }
     if (seen.has(c.key)) continue;
@@ -147,7 +197,10 @@ export function setDelta(setSheets: any[], priorRows: any[]) {
       revised.push({ sheet: c.sheetNo, from: prev.revision ?? null, to: s?.revision ?? null, previouslyIn: prev.issuedIn });
     } else reissued.push(c.sheetNo);
   }
-  return { newSheets, revised, reissued, unkeyable, priorSheetsKnown: prevBySheet.size };
+  return {
+    newSheets, revised, reissued, unkeyable, priorSheetsKnown: prevBySheet.size,
+    specs: { newSections, revised: revisedSections, reissued: reissuedSections, priorSectionsKnown: prevBySection.size },
+  };
 }
 
 // Fold register rows (NEWEST-ISSUE-FIRST — call prepareRegisterRows first) into
@@ -157,15 +210,49 @@ export function setDelta(setSheets: any[], priorRows: any[]) {
 // 2, 3, 6, 13), so a label sort returns the superseded sheet.
 export function composeCurrentSet(rows: any[]) {
   const current = new Map<string, any>();
+  const specCurrent = new Map<string, any>();
   const unusable: any[] = [];
   const sourceSets = new Map<string, any>();
   let supersededCount = 0;
+  let supersededSpecCount = 0;
 
   for (const row of rows) {
     const issueDate = registerIssueDate(row);
     const setName = row?.files?.milestoneName || null;
     const transmittalNumber = row?.files?.transmittalNumber || null;
     for (const s of sheetsOf(row)) {
+      // A specification section folds on its own key and never touches the
+      // sheet groups. It still counts toward the set it came from.
+      const sp = canonicalSpec(s);
+      if (sp) {
+        if (specCurrent.has(sp.key)) { supersededSpecCount++; continue; }
+        specCurrent.set(sp.key, {
+          section: sp.section,
+          division: sp.division,
+          // For a spec the register's discipline is set by the transmittal tool
+          // from the CSI division, so unlike a sheet's it is worth carrying.
+          discipline: String(s?.discipline || "").trim() || null,
+          title: String(s?.title || "").replace(/\s+/g, " ").trim() || null,
+          revision: s?.revision ?? null,
+          revisionDate: s?.revisionDate ?? null,
+          filename: s?.filename ?? null,
+          issuedIn: setName,
+          transmittalNumber,
+          issueDate,
+          backfilled: row?.files?.backfilled === true,
+          folderUrl: encodeSpUrl(row?.sp_folder_url),
+          webUrl: s?.webUrl ?? null,
+        });
+        const key = `${issueDate}|${setName ?? ""}`;
+        let ss = sourceSets.get(key);
+        if (!ss) {
+          ss = { setName, issueDate, transmittalNumbers: new Set<string>(), currentSheets: 0, currentSpecs: 0 };
+          sourceSets.set(key, ss);
+        }
+        ss.currentSpecs++;
+        if (transmittalNumber) ss.transmittalNumbers.add(transmittalNumber);
+        continue;
+      }
       const c = canonicalSheet(s);
       if (!c) {
         unusable.push({
@@ -198,7 +285,7 @@ export function composeCurrentSet(rows: any[]) {
       const key = `${issueDate}|${setName ?? ""}`;
       let ss = sourceSets.get(key);
       if (!ss) {
-        ss = { setName, issueDate, transmittalNumbers: new Set<string>(), currentSheets: 0 };
+        ss = { setName, issueDate, transmittalNumbers: new Set<string>(), currentSheets: 0, currentSpecs: 0 };
         sourceSets.set(key, ss);
       }
       ss.currentSheets++;
@@ -232,10 +319,17 @@ export function composeCurrentSet(rows: any[]) {
     d.sheets.push(sheet);
   }
 
+  const specifications = [...specCurrent.values()].sort((a, b) =>
+    specRank(a.section) - specRank(b.section) || String(a.section).localeCompare(String(b.section)));
+
   return {
     disciplines,
     sheetCount: all.length,
     supersededCount,
+    // Specification sections at their most recent issuance, in section order.
+    specifications,
+    specCount: specifications.length,
+    supersededSpecCount,
     sourceSets: [...sourceSets.values()]
       .sort((a, b) => String(b.issueDate).localeCompare(String(a.issueDate)))
       .map((s) => ({ ...s, transmittalNumbers: [...s.transmittalNumbers].sort() })),

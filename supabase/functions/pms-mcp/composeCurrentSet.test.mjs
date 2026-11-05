@@ -19,7 +19,7 @@
 //      Folding on that key would collapse two disciplines into one row.
 
 import {
-  composeCurrentSet, canonicalSheet, disciplineRank, sheetRank,
+  composeCurrentSet, canonicalSheet, canonicalSpec, specRank, disciplineRank, sheetRank,
   DISCIPLINE_ORDER, registerIssueDate, prepareRegisterRows, encodeSpUrl, setDelta,
 } from "./currentSet.ts";
 import * as browser from "../../../currentSetFold.js";
@@ -239,6 +239,63 @@ check(registerIssueDate(eveningEt) === "2026-01-22",
 check(composeCurrentSet(prepareRegisterRows(raw)).sheetCount ===
   composeCurrentSet(prepareRegisterRows(raw)).disciplines.reduce((n, d) => n + d.sheetCount, 0),
   "prepare+compose is internally consistent");
+
+// ── 8d. Specification sections: folded like sheets, reported apart ─────────
+// Shaped as the transmittal tool writes them since 2026-11-05 (kind:"spec",
+// sheetNo = CSI section). K128 Reso A's 100% CD set is the model: eleven
+// Division 16 sections plus one combined electrical drawing file.
+const S1 = row("T-001", "2026_04_13 CO- SAPX256007.01 — 100% CD", "2026-04-13", [
+  { kind: "spec", sheetNo: "16010", title: "General Provisions For Electrical Work", revision: "0", discipline: "Electrical", filename: "16010 - General Provisions For Electrical Work.pdf", webUrl: "https://setty.sharepoint.com/x/16010.pdf" },
+  { kind: "spec", sheetNo: "16120", title: "Wiring Systems", revision: "0", discipline: "Electrical", filename: "16120 - Wiring Systems.pdf" },
+  { kind: "spec", sheetNo: "15400", title: "Plumbing", revision: "0", discipline: "Plumbing", filename: "15400 - Plumbing.pdf" },
+  { kind: "drawing", sheetNo: "", title: "Electrical drawing set", revision: "0", discipline: "Electrical", filename: "SAPX256007.00_E.pdf" },
+]);
+// A later addendum re-issues one section at a new revision and adds a 2004-style one.
+const S2 = row("T-002", "2026-06-01_Addendum #1", "2026-06-01", [
+  { kind: "spec", sheetNo: "16120", title: "Wiring Systems", revision: "1", discipline: "Electrical", filename: "16120 - Wiring Systems.pdf" },
+  { kind: "spec", sheetNo: "23 05 00", title: "Common Work Results for HVAC", revision: "0", discipline: "Mechanical", filename: "23 05 00 - Common Work Results for HVAC.pdf" },
+  { kind: "drawing", sheetNo: "E-101", title: "Electrical plan", revision: "1", discipline: "Electrical", filename: "E-101.pdf" },
+]);
+const SPEC_REGISTER = prepareRegisterRows([...REGISTER, S1, S2]);
+const outS = composeCurrentSet(SPEC_REGISTER);
+check(canonicalSpec({ kind: "spec", sheetNo: "16010" })?.key === "SPEC:16010", "a five-digit section keys as SPEC:16010");
+check(canonicalSpec({ sheetNo: "23 05 00" })?.section === "23 05 00", "a spaced six-digit section is recognised by shape alone");
+check(canonicalSpec({ sheetNo: "230500.13" })?.section === "23 05 00.13", "an unspaced six-digit section with a suffix normalises to pairs");
+check(canonicalSpec({ sheetNo: "E-211" }) === null, "a sheet number is not a section");
+check(canonicalSpec({ kind: "drawing", sheetNo: "16010" }) === null, "an explicit kind:drawing wins over the number shape");
+check(canonicalSpec({ kind: "spec", sheetNo: "DIV 16" })?.key === "SPEC:DIV 16", "a spec with an unreadable number is still listed, keyed on its text");
+check(canonicalSheet({ kind: "spec", sheetNo: "16010" }) === null, "canonicalSheet never claims a section");
+check(specRank("23 05 00.13") > specRank("23 05 00"), "a suffixed section sorts after its parent");
+check(outS.specCount === 4, `4 current sections (got ${outS.specCount})`);
+check(outS.specifications.map((s) => s.section).join(",") === "15400,16010,16120,23 05 00",
+  `sections run in CSI order (got ${outS.specifications.map((s) => s.section).join(",")})`);
+const w = outS.specifications.find((s) => s.section === "16120");
+check(w.revision === "1" && w.issuedIn === "2026-06-01_Addendum #1", "a re-issued section shows at its newest issuance");
+check(outS.supersededSpecCount === 1, `the earlier 16120 sighting was superseded (got ${outS.supersededSpecCount})`);
+check(outS.specifications.find((s) => s.section === "16010").webUrl === "https://setty.sharepoint.com/x/16010.pdf", "a section's file link is carried through");
+check(outS.specifications.find((s) => s.section === "15400").discipline === "Plumbing", "a section keeps the discipline the tool set from its division");
+check(outS.sheetCount === 9, `sections never count as sheets: 8 + E101 (got ${outS.sheetCount})`);
+check(!outS.disciplines.some((d) => d.sheets.some((s) => /^\d/.test(s.sheetNo))), "no section landed in a discipline group");
+check(outS.unusable.length === 3, `the combined E file (no sheet number) is unusable, sections are not (got ${outS.unusable.length})`);
+check(!outS.unusable.some((u) => u.filename.startsWith("16")), "...and no spec file is reported unusable");
+const k128 = outS.sourceSets.find((s) => s.issueDate === "2026-04-13");
+check(k128.currentSpecs === 2 && k128.currentSheets === 0, `the 100% CD set still supplies 2 current sections (got ${k128?.currentSpecs}/${k128?.currentSheets})`);
+{
+  const prior = SPEC_REGISTER.filter((r) => r !== S2);
+  const d = setDelta(S2.files.sheets, prior);
+  check(d.specs.revised.length === 1 && d.specs.revised[0].section === "16120" && d.specs.revised[0].from === "0" && d.specs.revised[0].to === "1",
+    "the addendum's re-issued section is reported as revised, with both labels");
+  check(d.specs.newSections.join(",") === "23 05 00", "the new 2004-style section is reported new");
+  check(d.newSheets.join(",") === "E101" && d.unkeyable === 0, "sheets are diffed as before and sections are not counted unkeyable");
+}
+check(JSON.stringify(outS) === JSON.stringify(browser.composeCurrentSet(SPEC_REGISTER)),
+  "currentSetFold.js composes IDENTICALLY to currentSet.ts with specification sections in the register");
+check(JSON.stringify(browser.setDelta(S2.files.sheets, SPEC_REGISTER.filter((r) => r !== S2))) ===
+  JSON.stringify(setDelta(S2.files.sheets, SPEC_REGISTER.filter((r) => r !== S2))),
+  "setDelta agrees across edge/browser with sections");
+for (const s of [{ kind: "spec", sheetNo: "16010" }, { sheetNo: "23 05 00" }, { kind: "drawing", sheetNo: "16010" }, { sheetNo: "E-211" }]) {
+  check(JSON.stringify(browser.canonicalSpec(s)) === JSON.stringify(canonicalSpec(s)), `canonicalSpec agrees across edge/browser for ${JSON.stringify(s)}`);
+}
 
 // ── 9. DRIFT GUARD: the browser mirror matches the Edge source exactly ─────
 // This is what lets the panel and the connector share one answer. If someone
