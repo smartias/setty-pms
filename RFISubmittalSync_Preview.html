@@ -610,12 +610,19 @@ function isOpenItem(kind, r){ return (kind==="rfi"?RFI_OPEN:SUB_OPEN).includes((
    state is derived: none → waiting (sent, nothing back) → stale (nothing back
    after AI_STALE_MIN, usually the Claude tab was closed before Enter) →
    ready (aiReview.at is newer than the request). */
-const AI_STALE_MIN=30;
-function aiState(r){ const req=r&&r.aiReviewRequested, ai=r&&r.aiReview;
-  const reqAt=req?(Date.parse(req.at||"")||0):0, aiAt=ai?(Date.parse(ai.at||"")||0):0;
-  if(reqAt&&reqAt>aiAt){ const mins=Math.max(0,Math.round((Date.now()-reqAt)/60000)); return {state:mins>=AI_STALE_MIN?"stale":"waiting", mins, by:String(req.by||"")}; }
+/* Three stamps, five states. aiReviewStarted is written by the connector's
+   mark_ca_review_started, the review skill's first call, so "reviewing" means
+   Claude really has the item; "notstarted" after AI_NOT_STARTED_MIN means the
+   request never reached Claude (tab closed before Enter); "stalled" after
+   AI_STALE_MIN of reviewing means the chat hung part way. */
+const AI_NOT_STARTED_MIN=5, AI_STALE_MIN=30;
+function aiState(r){ const req=r&&r.aiReviewRequested, st=r&&r.aiReviewStarted, ai=r&&r.aiReview;
+  const t=x=>x?(Date.parse(x.at||"")||0):0; const reqAt=t(req), stAt=t(st), aiAt=t(ai);
+  const mins=from=>Math.max(0,Math.round((Date.now()-from)/60000)); const by=String((req&&req.by)||"");
+  if(stAt>aiAt&&stAt>=reqAt){ const m=mins(stAt); return {state:m>=AI_STALE_MIN?"stalled":"reviewing", mins:m, by}; }
+  if(reqAt>aiAt){ const m=mins(reqAt); return {state:m>=AI_NOT_STARTED_MIN?"notstarted":"waiting", mins:m, by}; }
   return {state:ai?"ready":"none"}; }
-function aiWaiting(r){ const st=aiState(r).state; return st==="waiting"||st==="stale"; }
+function aiWaiting(r){ const st=aiState(r).state; return st!=="ready"&&st!=="none"; }
 function agoLabel(m){ return m<1?"just now":m<60?m+" min ago":Math.round(m/60)+" h ago"; }
 function findRec(kind,id){ return ((kind==="rfi"?CURRENT.rfis:CURRENT.submittals)||[]).find(x=>x.id===id); }
 // Due-date urgency — thresholds mirror the main PMS slaState (SLA_DUE_SOON_DAYS = 2).
@@ -732,8 +739,10 @@ function renderSection(kind, title, logged, inbox){
       const numBtn=`<button type="button" class="rowbtn" aria-label="Open ${kind==="rfi"?"RFI":"submittal"} ${esc(r.number||"(no number)")}" onclick='event.stopPropagation();${open}'>${esc(r.number||"—")}</button>`;
       const aiSt=aiState(r);
       const aiMark=aiSt.state==="ready"?` <span title="Claude review waiting for sign-off — open to review" style="font-size:11px" role="img" aria-label="Claude review pending">🤖</span>`
-        :aiSt.state==="waiting"?` <span title="Sent to Claude ${agoLabel(aiSt.mins)} — waiting for the review" style="font-size:11px" role="img" aria-label="Waiting for Claude review">⏳</span>`
-        :aiSt.state==="stale"?` <span title="Sent to Claude ${agoLabel(aiSt.mins)} and nothing came back — open to re-send" style="font-size:11px" role="img" aria-label="Claude review overdue">⏳</span>`:"";
+        :aiSt.state==="reviewing"?` <span title="Claude is reviewing — started ${agoLabel(aiSt.mins)}" style="font-size:11px" role="img" aria-label="Claude is reviewing">⏳</span>`
+        :aiSt.state==="waiting"?` <span title="Sent to Claude ${agoLabel(aiSt.mins)} — waiting for Claude to pick it up" style="font-size:11px" role="img" aria-label="Waiting for Claude review">⏳</span>`
+        :aiSt.state==="notstarted"?` <span title="Sent to Claude ${agoLabel(aiSt.mins)} and Claude has not started it — open to re-send" style="font-size:11px" role="img" aria-label="Claude review not started">⏳</span>`
+        :aiSt.state==="stalled"?` <span title="Claude started this review ${agoLabel(aiSt.mins)} and has not finished — open to re-send" style="font-size:11px" role="img" aria-label="Claude review stalled">⏳</span>`:"";
       const ds=dueState(kind,r); const lateRow=ds&&ds.cls==="late"?" late":"";
       const c = kind==="rfi"
         ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}${aiMark}</td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${esc(r.from||"")}</td><td>${asg||'<span class="muted">—</span>'}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}</td>`
@@ -816,7 +825,7 @@ function caReviewSeatUrl(kind, rec, projName, projNum){
   return caSeatUrl([
     "Review this "+(isRFI?"RFI":"submittal")+" for "+caProjRef(projNum, projName)+": "+(rec.number||"(unsaved — add it to the log first)")+(subject?' — "'+subject+'"':"")+".",
     "",
-    "Use the Setty PMS connector and the submittal-rfi-review skill: identify the project by its number, read the item with read_rfi_submittal, review it against the current issued drawing set and the governing spec section, then save the suggested "+(isRFI?"response":"response and stamp")+", internal notes, and cost/scope red flags with save_ca_review so they appear here in the PMS for my sign-off."+(isRFI?"":" Open the submitted cut sheet (render it with view_drawing, or use the pdf-highlighted-selections skill if I attach the PDF) and confirm the MARKED selection — what's circled/highlighted/checked — against the spec and schedule basis of design; the marking is what you're reviewing, not just the notification metadata.")+" If it isn't logged in the PMS yet, backfill it from the filed PDF or notification email first with backload_ca_item.",
+    "Use the Setty PMS connector and the submittal-rfi-review skill: identify the project by its number, call mark_ca_review_started for the item first (so the PMS shows the review is under way), read it with read_rfi_submittal, review it against the current issued drawing set and the governing spec section, then save the suggested "+(isRFI?"response":"response and stamp")+", internal notes, and cost/scope red flags with save_ca_review so they appear here in the PMS for my sign-off."+(isRFI?"":" Open the submitted cut sheet (render it with view_drawing, or use the pdf-highlighted-selections skill if I attach the PDF) and confirm the MARKED selection — what's circled/highlighted/checked — against the spec and schedule basis of design; the marking is what you're reviewing, not just the notification metadata.")+" If it isn't logged in the PMS yet, backfill it from the filed PDF or notification email first with backload_ca_item.",
   ]);
 }
 function caPullReplySeatUrl(kind, rec, projName, projNum){
@@ -1088,12 +1097,14 @@ async function markReviewRequested(kind, id){
 function renderAiWaitBar(){
   const w=document.getElementById("aiWaitBar"); if(!w||!EDIT||EDIT.isNew) return;
   const rec=findRec(EDIT.kind,EDIT.id); const st=rec?aiState(rec):{state:"none"};
-  if(st.state!=="waiting"&&st.state!=="stale"){ w.style.display="none"; w.innerHTML=""; return; }
+  if(!aiWaiting(rec)){ w.style.display="none"; w.innerHTML=""; return; }
   const resend=`<a class="ghost" style="font-size:12px;text-decoration:none;padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-weight:600" href="${esc(EDIT.reviewUrl||"#")}" target="_blank" rel="noreferrer" onclick='markReviewRequested("${EDIT.kind}",${esc(JSON.stringify(EDIT.id))})'>Re-send</a>`;
   const check=`<button type="button" class="go" style="font-size:12px" onclick="checkReviewNow()">Check now</button>`;
-  w.innerHTML = st.state==="stale"
-    ? `<span style="flex:1 1 360px">⏳ Sent to Claude ${esc(agoLabel(st.mins))} and nothing has come back. Usually the Claude tab was closed before the request was sent, or the chat stalled part way: re-send it, or type "continue" in that chat.</span>${check}${resend}`
-    : `<span style="flex:1 1 360px">⏳ Sent to Claude${st.by?" by "+esc(st.by):""} ${esc(agoLabel(st.mins))}. Waiting for the review — it usually takes a few minutes. This bar updates on its own when it lands.</span><span id="aiWaitNote" class="muted" style="font-size:12px"></span>${check}${resend}`;
+  const lead = st.state==="reviewing" ? `🤖 Claude is reviewing — started ${esc(agoLabel(st.mins))}. It usually takes a few minutes; this bar updates on its own when the review lands.`
+    : st.state==="stalled" ? `⏳ Claude started this review ${esc(agoLabel(st.mins))} and has not finished. The chat probably stalled: type "continue" in that Claude tab, or re-send.`
+    : st.state==="notstarted" ? `⏳ Sent to Claude ${esc(agoLabel(st.mins))} and Claude has not started it. Usually the Claude tab was closed before the request was sent: press Enter in that tab, or re-send.`
+    : `⏳ Sent to Claude${st.by?" by "+esc(st.by):""} ${esc(agoLabel(st.mins))}. Waiting for Claude to pick it up — this bar updates on its own.`;
+  w.innerHTML = `<span style="flex:1 1 360px">${lead}</span><span id="aiWaitNote" class="muted" style="font-size:12px"></span>${check}${resend}`;
   w.style.display="flex";
 }
 async function checkReviewNow(){

@@ -11141,17 +11141,30 @@ function isUnreviewedIntake(item) { return !!item && item.intakeReviewed === fal
 // back) → stale (nothing back after CA_AI_STALE_MIN; usually the Claude tab
 // was closed before Enter, or the chat stalled) → ready (aiReview.at is newer
 // than the request).
-const CA_AI_STALE_MIN = 30;
+// Three stamps, five states. aiReviewStarted is written by the connector's
+// mark_ca_review_started (the review skill's first call), so "reviewing" means
+// Claude really has the item; "notstarted" after CA_AI_NOT_STARTED_MIN means
+// the request never reached Claude; "stalled" after CA_AI_STALE_MIN of
+// reviewing means the chat hung part way.
+const CA_AI_NOT_STARTED_MIN = 5, CA_AI_STALE_MIN = 30;
 function caAiState(item) {
-  const req = item && item.aiReviewRequested, ai = item && item.aiReview;
-  const reqAt = req ? (Date.parse(req.at || "") || 0) : 0, aiAt = ai ? (Date.parse(ai.at || "") || 0) : 0;
-  if (reqAt && reqAt > aiAt) {
-    const mins = Math.max(0, Math.round((Date.now() - reqAt) / 60000));
-    return { state: mins >= CA_AI_STALE_MIN ? "stale" : "waiting", mins, by: String(req.by || "") };
-  }
+  const req = item && item.aiReviewRequested, st = item && item.aiReviewStarted, ai = item && item.aiReview;
+  const t = x => x ? (Date.parse(x.at || "") || 0) : 0;
+  const reqAt = t(req), stAt = t(st), aiAt = t(ai);
+  const mins = from => Math.max(0, Math.round((Date.now() - from) / 60000));
+  const by = String((req && req.by) || "");
+  if (stAt > aiAt && stAt >= reqAt) { const m = mins(stAt); return { state: m >= CA_AI_STALE_MIN ? "stalled" : "reviewing", mins: m, by }; }
+  if (reqAt > aiAt) { const m = mins(reqAt); return { state: m >= CA_AI_NOT_STARTED_MIN ? "notstarted" : "waiting", mins: m, by }; }
   return { state: ai ? "ready" : "none" };
 }
-function caAiWaiting(item) { const st = caAiState(item).state; return st === "waiting" || st === "stale"; }
+function caAiWaiting(item) { const st = caAiState(item).state; return st !== "ready" && st !== "none"; }
+function caAiLead(st) {
+  const ago = caAgoLabel(st.mins);
+  return st.state === "reviewing" ? "🤖 Claude is reviewing — started " + ago + ". It usually takes a few minutes; this updates on its own when the review lands."
+    : st.state === "stalled" ? "⏳ Claude started this review " + ago + " and has not finished. The chat probably stalled: type \"continue\" in that Claude tab, or re-send."
+    : st.state === "notstarted" ? "⏳ Sent to Claude " + ago + " and Claude has not started it. Usually the Claude tab was closed before the request was sent: press Enter in that tab, or re-send."
+    : "⏳ Sent to Claude" + (st.by ? " by " + st.by : "") + " " + ago + ". Waiting for Claude to pick it up — this updates on its own.";
+}
 function caAgoLabel(m) { return m < 1 ? "just now" : m < 60 ? m + " min ago" : Math.round(m / 60) + " h ago"; }
 function caWhoName() {
   try {
@@ -11164,8 +11177,10 @@ function AiReviewMark({ item }) {
   const st = caAiState(item);
   if (st.state === "none") return null;
   const title = st.state === "ready" ? "Claude review waiting for sign-off — open to review"
-    : st.state === "stale" ? "Sent to Claude " + caAgoLabel(st.mins) + " and nothing came back — open to re-send"
-    : "Sent to Claude " + caAgoLabel(st.mins) + " — waiting for the review";
+    : st.state === "reviewing" ? "Claude is reviewing — started " + caAgoLabel(st.mins)
+    : st.state === "stalled" ? "Claude started this review " + caAgoLabel(st.mins) + " and has not finished — open to re-send"
+    : st.state === "notstarted" ? "Sent to Claude " + caAgoLabel(st.mins) + " and Claude has not started it — open to re-send"
+    : "Sent to Claude " + caAgoLabel(st.mins) + " — waiting for Claude to pick it up";
   return (
     <span title={title} role="img" aria-label={st.state === "ready" ? "Claude review pending" : "Waiting for Claude review"}
       style={{ marginLeft: 6, fontSize: 11, verticalAlign: "middle" }}>{st.state === "ready" ? "🤖" : "⏳"}</span>
@@ -11525,7 +11540,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const reviewSeatUrl = "https://claude.ai/new?q=" + encodeURIComponent([
     "Review this " + (isRFI ? "RFI" : "submittal") + " for " + projLabel + ": " + (form.number || "(unsaved — save it first)") + (aiSubject ? " — \"" + aiSubject + "\"" : "") + ".",
     "",
-    "Use the Setty PMS connector and the submittal-rfi-review skill: read it with read_rfi_submittal, review it against the current issued drawing set and the governing spec section, then save the suggested " + (isRFI ? "response" : "response and stamp") + ", internal notes, and cost/scope red flags with save_ca_review so they appear here in the PMS for my sign-off." + (isRFI ? "" : " Open the submitted cut sheet (render it with view_drawing, or use the pdf-highlighted-selections skill if I attach the PDF) and confirm the MARKED selection — what's circled/highlighted/checked — against the spec and schedule basis of design; the marking is what you're reviewing, not just the notification metadata.") + " If it isn't logged in the PMS yet, backfill it from the filed PDF or notification email first with backload_ca_item.",
+    "Use the Setty PMS connector and the submittal-rfi-review skill: call mark_ca_review_started for it first (so the PMS shows the review is under way), read it with read_rfi_submittal, review it against the current issued drawing set and the governing spec section, then save the suggested " + (isRFI ? "response" : "response and stamp") + ", internal notes, and cost/scope red flags with save_ca_review so they appear here in the PMS for my sign-off." + (isRFI ? "" : " Open the submitted cut sheet (render it with view_drawing, or use the pdf-highlighted-selections skill if I attach the PDF) and confirm the MARKED selection — what's circled/highlighted/checked — against the spec and schedule basis of design; the marking is what you're reviewing, not just the notification metadata.") + " If it isn't logged in the PMS yet, backfill it from the filed PDF or notification email first with backload_ca_item.",
   ].join("\n"));
   // Accepting is idempotent: if the target field already contains the
   // suggested text, do nothing — so a double-click, or reopening the modal and
@@ -12063,12 +12078,10 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           </div>
         )}
         {/* Waiting-for-Claude bar: the request was recorded and nothing has landed yet */}
-        {(aiSt.state === "waiting" || aiSt.state === "stale") && !freshReviewAt && (
+        {caAiWaiting(form) && !freshReviewAt && (
           <div role="status" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: P.yellowDim, border: "1px solid " + P.yellow, borderRadius: 8, padding: "8px 12px", marginBottom: 14, fontSize: 12.5, color: P.text }}>
             <span style={{ flex: "1 1 320px" }}>
-              {aiSt.state === "stale"
-                ? "⏳ Sent to Claude " + caAgoLabel(aiSt.mins) + " and nothing has come back. Usually the Claude tab was closed before the request was sent, or the chat stalled part way: re-send it, or type \"continue\" in that chat."
-                : "⏳ Sent to Claude" + (aiSt.by ? " by " + aiSt.by : "") + " " + caAgoLabel(aiSt.mins) + ". Waiting for the review — it usually takes a few minutes. This bar updates on its own when it lands."}
+              {caAiLead(aiSt)}
               {aiNote && <span style={{ display: "block", color: P.textMuted, fontSize: 11.5, marginTop: 2 }}>{aiNote}</span>}
             </span>
             <Btn small variant="ghost" onClick={checkReviewNow}>Check now</Btn>
