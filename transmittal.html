@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-04-transmittal-v21-single-issue-date";
+    window.__appVersion = "2026-11-04-transmittal-v22-title-block-progress";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -245,6 +245,20 @@
     .disc-G { background: #1e1e2a; color: #94a3b8; }
 
     .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+    /* Title-block reading: the prompt (reading did not start on its own) and
+       the progress bar sit above the table they are about to change. */
+    .tb-prompt {
+      display: none; align-items: center; gap: 12px; flex-wrap: wrap;
+      padding: 10px 14px; margin-bottom: 14px; border-radius: 6px; font-size: 12px;
+      background: #1e3a5f; color: #cfe4ff; border: 1px solid #1d4ed8;
+    }
+    .tb-prompt.show { display: flex; }
+    .tb-prompt .btn { padding: 6px 12px; font-size: 12px; background: var(--navy); color: #fff; }
+    .tb-progress { display: none; margin-bottom: 14px; }
+    .tb-progress.show { display: block; }
+    .tb-progress-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 12px; }
+    .tb-progress-track { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+    .tb-progress-bar { height: 100%; width: 0; background: var(--blue); transition: width .2s; }
     .count-badge { font-size: 11px; color: var(--muted); margin-left: auto; }
 
     /* Sign-in overlay */
@@ -563,9 +577,26 @@
       <button class="btn btn-ghost" id="selectAllBtn">☑ Select All</button>
       <button class="btn btn-ghost" id="deselectAllBtn">☐ Deselect All</button>
       <button class="btn btn-ghost" id="addRowBtn">+ Add Row</button>
-      <button class="btn btn-ghost" id="readTitleBlocksBtn" title="Open each PDF and read its title block. Finds the real sheet numbers and splits a combined PDF into one row per sheet.">&#128209; Read sheet data from drawings</button>
+      <button class="btn btn-ghost" id="readTitleBlocksBtn" title="Open each PDF and read its title block. Finds the real sheet numbers and splits a combined PDF into one row per sheet. Rows you have edited are kept.">&#128209; Read title blocks from PDFs</button>
       <button class="btn btn-ghost" id="sortBtn">↕ Sort by Sheet No.</button>
     </div>
+
+    <!-- Title-block reading. It downloads every PDF, so it only starts on its
+         own for a small set in a folder with no subfolders (the set folder
+         itself). Otherwise this prompt says why and offers it; the progress
+         bar shows how far along it is and lets the person stop it. -->
+    <div class="tb-prompt" id="tbPrompt" role="status">
+      <span id="tbPromptText" style="flex:1;min-width:240px;line-height:1.5"></span>
+      <button type="button" class="btn" id="tbPromptBtn">&#128209; Read title blocks</button>
+    </div>
+    <div class="tb-progress" id="tbProgress" role="status" aria-live="polite">
+      <div class="tb-progress-head">
+        <span id="tbProgressText">Reading title blocks…</span>
+        <button type="button" class="btn btn-ghost" id="tbCancelBtn" style="padding:4px 10px;font-size:12px">Stop</button>
+      </div>
+      <div class="tb-progress-track"><div class="tb-progress-bar" id="tbProgressBar"></div></div>
+    </div>
+    <div class="status" id="parseStatus" role="status"></div>
 
     <div style="overflow-x:auto">
       <table class="sheet-table" id="sheetTable">
@@ -584,7 +615,6 @@
       </table>
     </div>
 
-    <div class="status" id="parseStatus" role="status" style="margin-top:14px"></div>
   </div>
 
   <!-- 4 · Deliver (shown with the sheet list). One primary action, the
@@ -2278,39 +2308,90 @@ async function loadPdfJs() {
 }
 
 const AUTO_TITLE_BLOCK_LIMIT = 20;
+const folderPdfs = () => (folderFiles || []).filter(f => /\.pdf$/i.test(f.name));
+const mbOf = bytes => (bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0) + " MB";
+
+// Reading downloads every PDF in full, which on a drawing set is a lot of
+// bytes and a long wait. It used to start on its own after EVERY folder the
+// browser opened on the way down (Outgoing, then the dated folder, then
+// Drawings), so the wait came three times and nobody had asked for it. Now it
+// starts on its own only for a small set in a folder with no subfolders, i.e.
+// the set folder itself; anywhere else it is offered, with the cost stated.
 async function maybeAutoReadTitleBlocks() {
-  const pdfs = (folderFiles || []).filter(f => /\.pdf$/i.test(f.name));
+  hideTbPrompt();
+  setStatus("parseStatus", "", "");
+  const pdfs = folderPdfs();
   if (!pdfs.length) return;
-  if (pdfs.length > AUTO_TITLE_BLOCK_LIMIT) {
-    setStatus("loadStatus", "info",
-      "✓ Found " + pdfs.length + " PDFs. Sheet numbers below are read from FILENAMES, which is often wrong " +
-      "and shows combined PDFs as a single row. Click “Read sheet data from drawings” to open them and read " +
-      "the real title blocks.");
-    return;
-  }
-  await readTitleBlocks();
+  const bytes = pdfs.reduce((t, f) => t + (f.size || 0), 0);
+  const leaf = driveMode || !(browseChildFolders || []).length;
+  if (leaf && pdfs.length <= AUTO_TITLE_BLOCK_LIMIT) { await readTitleBlocks(); return; }
+  const why = !leaf
+    ? "This folder has subfolders, so reading did not start on its own — open the set folder itself, or read here."
+    : pdfs.length + " PDFs is more than the " + AUTO_TITLE_BLOCK_LIMIT + " that read on their own.";
+  showTbPrompt(
+    "Sheet numbers were read from FILENAMES, which is often wrong and shows a combined PDF as one row. " + why,
+    "\ud83d\udcd1 Read title blocks from " + pdfs.length + " PDF" + (pdfs.length === 1 ? "" : "s") + " (" + mbOf(bytes) + ")");
 }
 
+function showTbPrompt(text, buttonLabel) {
+  const el = document.getElementById("tbPrompt");
+  if (!el) return;
+  document.getElementById("tbPromptText").textContent = text;
+  document.getElementById("tbPromptBtn").textContent = buttonLabel;
+  el.classList.add("show");
+}
+function hideTbPrompt() { document.getElementById("tbPrompt")?.classList.remove("show"); }
+
+function tbProgress(done, total, text) {
+  const box = document.getElementById("tbProgress");
+  if (!box) return;
+  box.classList.add("show");
+  document.getElementById("tbProgressBar").style.width = total ? Math.round(100 * done / total) + "%" : "0";
+  document.getElementById("tbProgressText").textContent = text;
+}
+function tbProgressDone() { document.getElementById("tbProgress")?.classList.remove("show"); }
+
 let titleBlockRunning = false;
+let titleBlockCancel = false;
+function cancelTitleBlocks() {
+  if (!titleBlockRunning) return;
+  titleBlockCancel = true;
+  document.getElementById("tbCancelBtn").disabled = true;
+  document.getElementById("tbProgressText").textContent = "Stopping after the current file…";
+}
+
 async function readTitleBlocks() {
   if (titleBlockRunning) return;
   const btn = document.getElementById("readTitleBlocksBtn");
-  const pdfs = (folderFiles || []).filter(f => /\.pdf$/i.test(f.name));
+  const pdfs = folderPdfs();
   if (!pdfs.length) {
-    setStatus("loadStatus", "warn", "⚠ No PDFs in this folder to read.");
+    setStatus("parseStatus", "warn", "⚠ No PDFs in this folder to read.");
     return;
   }
   titleBlockRunning = true;
+  titleBlockCancel = false;
   btn.disabled = true;
-  const token = driveMode ? null : await getToken();
-  let lib;
+  hideTbPrompt();
+  setStatus("parseStatus", "", "");
+  document.getElementById("tbCancelBtn").disabled = false;
+  tbProgress(0, pdfs.length, "Starting…");
   try {
-    lib = await loadPdfJs();
+    await readTitleBlocksInner(pdfs);
   } catch (e) {
-    setStatus("loadStatus", "error", "✗ " + e.message);
-    titleBlockRunning = false; btn.disabled = false;
-    return;
+    setStatus("parseStatus", "error", "✗ " + e.message);
+    console.error(e);
+  } finally {
+    tbProgressDone();
+    titleBlockRunning = false;
+    btn.disabled = false;
   }
+}
+
+async function readTitleBlocksInner(pdfs) {
+  const token = driveMode ? null : await getToken();
+  const lib = await loadPdfJs();
+  const totalBytes = pdfs.reduce((t, f) => t + (f.size || 0), 0);
+  let bytesRead = 0;
 
   const rows = [];
   const listed = new Map();   // sheetNo -> {sheetNo,title,discipline,filename,date}: the cover-sheet drawing list, harvested across every file
@@ -2321,11 +2402,16 @@ async function readTitleBlocks() {
   // the same sheet in the table twice — and both copies into the register.
   const sheetKey = no => String(no || "").toUpperCase().replace(/[\s\-_]+/g, "").replace(/\.\d{1,2}$/, "");
   const fileMeta = []; // {name, lmd, tb, listFirst} per successfully-read file — fallback decided AFTER the loop
+  const notRead = [];   // PDFs skipped because the person pressed Stop
   for (let n = 0; n < pdfs.length; n++) {
     const f = pdfs[n];
-    setStatus("loadStatus", "info", "⏳ Reading title blocks — file " + (n + 1) + " of " + pdfs.length + " (" + f.name + ")…");
+    if (titleBlockCancel) { notRead.push(f); continue; }
+    tbProgress(n, pdfs.length,
+      "Reading " + f.name + " (" + (n + 1) + " of " + pdfs.length + ")" +
+      (totalBytes ? " · " + mbOf(bytesRead) + " of " + mbOf(totalBytes) : ""));
     try {
       const blob = await fileBytes(f, token);
+      bytesRead += blob.size || 0;
       const doc = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
       let fileTb = 0, fileList = 0;
       for (let p = 1; p <= doc.numPages; p++) {
@@ -2421,21 +2507,39 @@ async function readTitleBlocks() {
     });
   }
 
-  sheets = rows.filter(Boolean);
+  // Stopped early: the PDFs never opened keep their filename reading, so
+  // every file is still represented and the package filter still finds it.
+  for (const f of notRead) rows.push(parseFilename(f.name, f.lastModifiedDateTime));
+
+  // Merge with what is on screen. Reading REPLACES the unedited PDF rows and
+  // nothing else: a row someone has edited is kept as-is and the fresh rows
+  // for that file are dropped; a file unchecked before the read stays
+  // unchecked after it; rows for non-PDF files (DWG, DOCX) and hand-added
+  // rows stay put. Before this the whole table was rebuilt, so edits made
+  // while the read ran, and every non-PDF file, were silently lost.
+  const pdfNames = new Set(pdfs.map(f => f.name));
+  const keptEdited = (sheets || []).filter(sh => sh.filename && pdfNames.has(sh.filename) && sh.edited);
+  const editedFiles = new Set(keptEdited.map(sh => sh.filename));
+  const uncheckedFiles = new Set((sheets || []).filter(sh => sh.filename && pdfNames.has(sh.filename) && !sh.include).map(sh => sh.filename));
+  const others = (sheets || []).filter(sh => !sh.filename || !pdfNames.has(sh.filename));
+  const fresh = rows.filter(Boolean).filter(r => !editedFiles.has(r.filename));
+  fresh.forEach(r => { if (uncheckedFiles.has(r.filename)) r.include = false; });
+  sheets = fresh.concat(keptEdited, others);
   renderTable();
   applyIssueDateToRows();   // list-only and filename-fallback rows take the issue date
-  const fromTb = rows.length - fromList - unreadable.length;
-  setStatus("loadStatus", "success",
-    "✓ Read " + pdfs.length + " PDF" + (pdfs.length === 1 ? "" : "s") + " — " +
-    fromTb + " sheet" + (fromTb === 1 ? "" : "s") + " from title blocks" +
-    (fromList ? ", " + fromList + " from drawing lists" : "") +
-    (unreadable.length
-      ? ". " + unreadable.length + " file" + (unreadable.length === 1 ? "" : "s") +
-        " had no readable title block or drawing list and kept the filename reading: " + unreadable.slice(0, 3).join(", ") +
-        (unreadable.length > 3 ? ", …" : "")
-      : "."));
-  titleBlockRunning = false;
-  btn.disabled = false;
+
+  const readCount = pdfs.length - notRead.length;
+  const fromTb = rows.filter(r => r && r.source === "title-block").length;
+  const parts = [];
+  parts.push((notRead.length ? "Stopped after " : "Read ") + readCount + " of " + pdfs.length + " PDF" + (pdfs.length === 1 ? "" : "s") +
+    " — " + fromTb + " sheet" + (fromTb === 1 ? "" : "s") + " from title blocks" +
+    (fromList ? ", " + fromList + " from drawing lists" : "") + ".");
+  if (unreadable.length) parts.push(unreadable.length + " file" + (unreadable.length === 1 ? "" : "s") +
+    " had no readable title block or drawing list and kept the filename reading: " + unreadable.slice(0, 3).join(", ") +
+    (unreadable.length > 3 ? ", …" : "") + ".");
+  if (notRead.length) parts.push(notRead.length + " PDF" + (notRead.length === 1 ? "" : "s") + " not read kept the filename reading.");
+  if (keptEdited.length) parts.push(keptEdited.length + " row" + (keptEdited.length === 1 ? "" : "s") + " you had edited " + (keptEdited.length === 1 ? "was" : "were") + " kept.");
+  setStatus("parseStatus", notRead.length ? "warn" : "success", (notRead.length ? "⏹ " : "✓ ") + parts.join(" "));
 }
 
 // Title blocks carry US dates ("10/29/2024", or "11/01/19" on older sheets).
@@ -2638,16 +2742,16 @@ function renderTable() {
       <td>
         <select class="disc-badge disc-${dc}" id="sheet-${s.id}-disc" aria-label="Discipline for ${rowRef}" title="Change discipline"
           style="appearance:none;-webkit-appearance:none;border:none;font:inherit;font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;cursor:pointer"
-          onchange="sheets[${i}].discipline=this.value;renderTable()">
+          onchange="sheets[${i}].discipline=this.value;sheets[${i}].edited=true;renderTable()">
           ${DISCIPLINE_NAMES.map(d =>
             `<option ${d === s.discipline ? "selected" : ""}>${d}</option>`
           ).join("")}
         </select>
       </td>
-      <td><input type="text" id="sheet-${s.id}-sheetNo" value="${esc(s.sheetNo)}" placeholder="M-501" aria-label="Sheet number for ${rowRef}" onchange="sheets[${i}].sheetNo=this.value"/></td>
-      <td><input type="text" id="sheet-${s.id}-title" value="${esc(s.title)}" placeholder="Sheet title…" aria-label="Title for ${rowRef}" onchange="sheets[${i}].title=this.value"/></td>
-      <td><input type="text" id="sheet-${s.id}-revision" value="${esc(s.revision)}" placeholder="0" style="width:60px" aria-label="Revision for ${rowRef}" onchange="sheets[${i}].revision=this.value"/></td>
-      <td><input type="text" id="sheet-${s.id}-date" value="${esc(s.date)}" placeholder="YYYY-MM-DD" aria-label="Revision date for ${rowRef}" onchange="sheets[${i}].date=this.value;sheets[${i}].dateSource='user'"/></td>
+      <td><input type="text" id="sheet-${s.id}-sheetNo" value="${esc(s.sheetNo)}" placeholder="M-501" aria-label="Sheet number for ${rowRef}" onchange="sheets[${i}].sheetNo=this.value;sheets[${i}].edited=true"/></td>
+      <td><input type="text" id="sheet-${s.id}-title" value="${esc(s.title)}" placeholder="Sheet title…" aria-label="Title for ${rowRef}" onchange="sheets[${i}].title=this.value;sheets[${i}].edited=true"/></td>
+      <td><input type="text" id="sheet-${s.id}-revision" value="${esc(s.revision)}" placeholder="0" style="width:60px" aria-label="Revision for ${rowRef}" onchange="sheets[${i}].revision=this.value;sheets[${i}].edited=true"/></td>
+      <td><input type="text" id="sheet-${s.id}-date" value="${esc(s.date)}" placeholder="YYYY-MM-DD" aria-label="Revision date for ${rowRef}" onchange="sheets[${i}].date=this.value;sheets[${i}].dateSource='user';sheets[${i}].edited=true"/></td>
       <td><button id="sheet-${s.id}-remove" onclick="removeRow(${i})" aria-label="Remove ${rowRef}" style="background:none;border:none;color:#8b949e;cursor:pointer;font-size:13px">✕</button></td>
     `;
     tbody.appendChild(tr);
@@ -2686,6 +2790,8 @@ function esc(s) { return (s || "").replace(/"/g, "&quot;"); }
 
 document.getElementById("addRowBtn").onclick = () => { sheets.push(emptyRow()); renderTable(); };
 document.getElementById("readTitleBlocksBtn").onclick = readTitleBlocks;
+document.getElementById("tbPromptBtn").onclick = readTitleBlocks;
+document.getElementById("tbCancelBtn").onclick = cancelTitleBlocks;
 document.getElementById("selectAllBtn").onclick = () => { sheets.forEach(s => s.include = true); renderTable(); };
 document.getElementById("deselectAllBtn").onclick = () => { sheets.forEach(s => s.include = false); renderTable(); };
 document.getElementById("sortBtn").onclick = () => {
