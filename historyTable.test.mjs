@@ -29,7 +29,7 @@ const withSheets = {
     { sheetNo: "E221", title: "GROUND FLOOR PLAN - COMMONS", revision: "13", discipline: "Electrical", filename: "STTQ-01-E_Bulletin #13.pdf" },
     { sheetNo: "E602", title: "ELECTRICAL EQUIPMENT SCHEDULES", revision: "13", discipline: "Electrical", filename: "STTQ-01-E_Bulletin #13.pdf" },
   ],
-  fields: { MilestoneName: "Bulletin #13", RecipientEmails: "", FileCount: 2, AnonymousLink: "", LinkExpiry: "", SenderUPN: "sara@setty.com", SenderDisplayName: "Sara", Status: "Logged (backfill)" },
+  fields: { TxNo: "T-013", MilestoneName: "Bulletin #13", RecipientEmails: "", FileCount: 2, AnonymousLink: "", LinkExpiry: "", SenderUPN: "sara@setty.com", SenderDisplayName: "Sara", Status: "Logged (backfill)" },
 };
 // A send from before the register existed. It genuinely has no sheets.
 const noSheets = {
@@ -47,7 +47,8 @@ check((out.match(/class="sheet-toggle"/g) || []).length === 1,
 check(out.includes('id="sheet-detail-0"'), "the detail row is keyed to its parent row");
 check(out.includes("hidden"), "the detail row starts collapsed");
 check(out.includes('aria-expanded="false"'), "the toggle reports its state to assistive tech");
-check(out.includes('colspan="7"'), "the detail row spans the full table");
+check(out.includes('colspan="8"'), "the detail row spans the full table (8 columns since the No. column)");
+check(out.includes("<td>T-013</td>"), "the transmittal number is shown so a reused number can be checked at a glance");
 
 // ── The register itself is rendered ────────────────────────────────────────
 for (const v of ["E221", "GROUND FLOOR PLAN - COMMONS", "13", "Electrical", "STTQ-01-E_Bulletin #13.pdf"]) {

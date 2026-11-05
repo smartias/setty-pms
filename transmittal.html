@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-04-transmittal-v22-title-block-progress";
+    window.__appVersion = "2026-11-05-transmittal-v23-tx-number-prefill";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -485,8 +485,9 @@
     <div class="form-row">
       <div>
         <label for="transmittalNoTop">Transmittal No.</label>
-        <input type="text" id="transmittalNoTop" placeholder="e.g. T-001" oninput="onTxNoInput(this.value)"/>
-        <div class="status" id="txNoWarning" role="status" style="margin-top:-8px"></div>
+        <input type="text" id="transmittalNoTop" placeholder="e.g. T-001" oninput="onTxNoInput(this.value)" style="margin-bottom:6px"/>
+        <div class="hint" id="txNoHint" style="margin-bottom:8px"></div>
+        <div class="status" id="txNoWarning" role="status" style="margin-top:0"></div>
       </div>
       <div>
         <label for="issuedFor">Issued For</label>
@@ -767,7 +768,7 @@ let sheets = [];
 let generatedBlob = null;
 let generatedFileName = "";
 let generatedStamp = null;        // { number, date } for the stamp once a send or save succeeds
-let historyTxNumbers = []; // [{num, date}] parsed from the Transmittals Sent history (for auto-increment + dupe warning)
+let historyTx = []; // [{num, raw, date, milestone, superseded}] from the register, newest first (next-number prefill + reuse warning)
 let txNoUserEdited = false; // user typed a custom transmittal number this session — never clobber it
 let pmsClients = []; // loaded from Supabase
 let pmsProjects = []; // loaded from Supabase
@@ -1588,17 +1589,52 @@ function onTxNoInput(v) {
   checkTxNoAgainstHistory(v);
 }
 
+// The number's numeric part ("T-014" → 14, "14" → 14). NaN when there is none.
+function txNoNumber(v) {
+  const m = String(v || "").match(/(\d+)\s*$/);
+  return m ? parseInt(m[1], 10) : NaN;
+}
+
+// Build the used-number list from the register rows. Every distribution
+// action logs a row (save, zip, send, backfill), so COUNTING rows over-counts:
+// one issue that was saved and then emailed came out as two, and the next
+// number offered was wrong. The numbers themselves are on the rows, so read
+// them. Superseded rows (a re-read of the same folder) still used their
+// number, so they count for "next" but not for the reuse warning.
+function setHistoryTx(rows) {
+  historyTx = (rows || []).map(r => {
+    const f = r.files || {};
+    const raw = String(f.transmittalNumber || "").trim();
+    const num = txNoNumber(raw);
+    return isNaN(num) ? null : {
+      num, raw,
+      date: (f.issuedAt || r.created_at || "").slice(0, 10),
+      milestone: f.milestoneName || "",
+      superseded: f.superseded === true,
+    };
+  }).filter(Boolean);
+}
+
+// Next number: one past the highest used, in the spelling the project uses
+// ("T-014" → "T-015"; a bare "14" → "15"). T-001 when nothing is logged.
+function nextTxNo() {
+  if (!historyTx.length) return "T-001";
+  const top = historyTx.reduce((a, b) => (b.num > a.num ? b : a));
+  const prefix = top.raw.replace(/\d+\s*$/, "");          // "" when the project writes bare numbers
+  const digits = (top.raw.match(/(\d+)\s*$/) || ["", ""])[1].length;
+  const width = prefix ? Math.max(3, digits) : digits;       // "T-014" → "T-015", "14" → "15"
+  return prefix + String(top.num + 1).padStart(width, "0");
+}
+
 function checkTxNoAgainstHistory(v) {
   const el = document.getElementById("txNoWarning");
   if (!el) return;
-  const m = String(v || "").match(/(\d+)\s*$/);
-  const n = m ? parseInt(m[1], 10) : NaN;
-  if (historyTxNumbers.length && !isNaN(n) && n <= historyTxNumbers.length) {
-    const latest = historyTxNumbers[0] && historyTxNumbers[0].date ? " (latest " + historyTxNumbers[0].date + ")" : "";
-    el.className = "status warn";
-    el.textContent = "⚠ " + String(v).trim() + " may already be used — this project has " +
-      historyTxNumbers.length + " logged transmittal" + (historyTxNumbers.length === 1 ? "" : "s") +
-      latest + ". Saving can overwrite that cover sheet.";
+  const n = txNoNumber(v);
+  const used = isNaN(n) ? null : historyTx.find(h => h.num === n && !h.superseded);
+  if (used) {
+    el.className = "status warn show";
+    el.textContent = "⚠ " + String(v).trim() + " was already used" + (used.date ? " on " + used.date : "") +
+      (used.milestone ? " for " + used.milestone : "") + ". Fine for a re-issue; otherwise the next free number is " + nextTxNo() + ".";
   } else {
     el.className = "status";
     el.textContent = "";
@@ -1612,11 +1648,20 @@ function maybePrefillTxNo() {
   const cur = (top.value || "").trim();
   // Only prefill over the pristine default or our own previous auto-fill.
   if (cur && cur !== "T-001" && cur !== top.dataset.autofill) return;
-  const next = "T-" + String(historyTxNumbers.length + 1).padStart(3, "0");
+  const next = nextTxNo();
   top.value = next;
   hidden.value = next;
   top.dataset.autofill = next;
   checkTxNoAgainstHistory(next);
+  // Say where the number came from, so a surprising one can be checked
+  // against the history table below instead of trusted blindly.
+  const el = document.getElementById("txNoHint");
+  if (el) {
+    const last = historyTx.length ? historyTx.reduce((a, b) => (b.num > a.num ? b : a)) : null;
+    el.textContent = last
+      ? "Next after " + last.raw + (last.date ? " (" + last.date + ")" : "") + ", the highest number in this project's history."
+      : "First transmittal logged for this project.";
+  }
 }
 
 // ─── PROJECT SEARCH + FOLDER BROWSER ────────────────────────────────────
@@ -4019,6 +4064,7 @@ async function loadTransmittalHistory() {
         // second query. They were already in this payload and thrown away.
         sheets: sheetRows,
         fields: {
+          TxNo:            f.transmittalNumber || "",
           MilestoneName:   f.milestoneName || (r.sp_folder_url || "").split("/").pop() || String(f.driveFolder || "").split(/[\\/]/).pop() || "",
           RecipientEmails: [f.recipientEmail, (f.ccEmails || []).length ? "CC: " + f.ccEmails.join(", ") : ""]
                              .filter(Boolean).join("\n"),
@@ -4034,7 +4080,7 @@ async function loadTransmittalHistory() {
     });
 
     countEl.textContent = items.length ? items.length + " logged" : "";
-    historyTxNumbers = (rows || []).map(r => ({ date: (r.created_at || "").slice(0, 10) }));
+    setHistoryTx(rows);
     maybePrefillTxNo();
     if (!items.length) {
       setStatus("historyStatus", "info", "No transmittals logged for this project yet.");
@@ -4054,7 +4100,7 @@ function renderHistoryTable(items) {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const head =
     '<table class="sheet-table"><thead><tr>' +
-    '<th scope="col">Date</th><th scope="col">Milestone</th><th scope="col">Recipients</th><th scope="col">Files</th>' +
+    '<th scope="col">Date</th><th scope="col">No.</th><th scope="col">Milestone</th><th scope="col">Recipients</th><th scope="col">Files</th>' +
     '<th scope="col">Download</th><th scope="col">Sent By</th><th scope="col">Status</th>' +
     '</tr></thead><tbody>';
   const body = items.map((it, idx) => {
@@ -4080,6 +4126,7 @@ function renderHistoryTable(items) {
       : esc(f.FileCount);
     const main = '<tr>' +
       '<td>' + esc(date) + '</td>' +
+      '<td>' + esc(f.TxNo) + '</td>' +
       '<td>' + esc(f.MilestoneName) + '</td>' +
       '<td style="white-space:pre-line">' + esc(f.RecipientEmails) + '</td>' +
       '<td>' + filesCell + '</td>' +
@@ -4090,7 +4137,7 @@ function renderHistoryTable(items) {
     if (!sheets.length) return main;
     const detail =
       '<tr class="sheet-detail" id="sheet-detail-' + idx + '" hidden>' +
-      '<td colspan="7" style="background:var(--card2);padding:10px 14px">' +
+      '<td colspan="8" style="background:var(--card2);padding:10px 14px">' +
       '<table class="sheet-table" style="margin:0"><thead><tr>' +
       '<th scope="col">Sheet</th><th scope="col">Title</th><th scope="col">Rev</th>' +
       '<th scope="col">Discipline</th><th scope="col">File</th>' +
