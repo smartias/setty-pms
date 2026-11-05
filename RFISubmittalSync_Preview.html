@@ -84,6 +84,10 @@
   .badge.new { background:var(--new-badge); color:#1c1917; } .badge.matched { background:var(--matched); color:var(--matched-txt); }
   .badge.update { background:var(--update); color:#082f49; }
   .badge.old { background:var(--unrev-bg); color:var(--warn); }
+  .badge.ready { background:var(--due-ok-bg); color:var(--due-ok); }
+  .issue { margin:12px 18px 0; border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-size:12.5px; background:var(--card2); }
+  .issue .lbl { font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin-bottom:6px; }
+  .issue .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; }
   .pill { display:inline-block; padding:2px 8px; border-radius:6px; font-size:11px; font-weight:600; }
   .badge.unrev { background:var(--unrev-bg); color:var(--warn); }
   /* Due-date chip — same thresholds as the main PMS SlaChip (overdue / today / ≤2 days / later). */
@@ -186,6 +190,7 @@
   <input id="fText" aria-label="Search by number, title, spec, or sender" placeholder="search # · title · spec · from…" oninput="setF('text',this.value)" style="width:220px" />
   <button type="button" class="chip" id="fMine" aria-pressed="false" onclick="toggleMine()" title="Only items assigned to you (matched by your sign-in)">👤 Mine</button>
   <button type="button" class="chip" id="fUnrev" aria-pressed="false" onclick="toggleUnrev()" title="Only auto-imported items nobody has confirmed yet">📥 Unreviewed</button>
+  <button type="button" class="chip" id="fReady" aria-pressed="false" onclick="toggleReady()" title="Answered by the engineer and waiting for someone to issue it to the contractor">📤 Ready to issue</button>
   <button class="ghost" onclick="clearFilters()" title="Back to the default view: all types, all disciplines, open items">Reset</button>
   <span id="filterCount" role="status" class="muted" style="font-size:13px"></span>
 </div>
@@ -371,7 +376,7 @@ function srUndecide(sheet){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsW
 function srRestore(){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsWork||[]).filter(x=>x.status==="confirmed"); srPaint(); }
 
 /* =========================== STATE + PICKER =========================== */
-const FILTER_DEFAULT=()=>({type:"all",disc:"all",status:"__open__",text:"",mine:false});
+const FILTER_DEFAULT=()=>({type:"all",disc:"all",status:"__open__",text:"",mine:false,ready:false});
 let PROJECTS=[], CURRENT=null, FILTER=FILTER_DEFAULT();
 async function init(){
   try{ applyTheme(localStorage.getItem("rfiTrackTheme")==="light"?"light":"dark"); }catch(e){}
@@ -574,12 +579,13 @@ function setF(k,v){
 function syncFilterUi(){
   const g=id=>document.getElementById(id);
   g("fType").value=FILTER.type; g("fDisc").value=FILTER.disc; g("fStatus").value=FILTER.status; if(g("fText").value.toLowerCase()!==FILTER.text) g("fText").value=FILTER.text;
-  g("fMine").setAttribute("aria-pressed",String(!!FILTER.mine)); g("fUnrev").setAttribute("aria-pressed",String(FILTER.status==="__unreviewed__"));
+  g("fMine").setAttribute("aria-pressed",String(!!FILTER.mine)); g("fUnrev").setAttribute("aria-pressed",String(FILTER.status==="__unreviewed__")); g("fReady").setAttribute("aria-pressed",String(!!FILTER.ready));
 }
 // Reset = back to the view the page opens on (open items), not "everything".
 function clearFilters(){ FILTER=FILTER_DEFAULT(); syncFilterUi(); renderProject(); }
 function toggleMine(){ if(!FILTER.mine&&!myIdentity()){ toast("Sign in so the Mine filter knows who you are.", false); return; } FILTER.mine=!FILTER.mine; syncFilterUi(); renderProject(); }
 function toggleUnrev(){ FILTER.status=FILTER.status==="__unreviewed__"?"__open__":"__unreviewed__"; syncFilterUi(); renderProject(); }
+function toggleReady(){ FILTER.ready=!FILTER.ready; syncFilterUi(); renderProject(); }
 // Who "me" is: the sign-in email and display name, matched against the
 // project's team members by email, then by name.
 function myIdentity(){ const email=String(window.settyAuth&&settyAuth.email&&settyAuth.email()||"").trim().toLowerCase(); const name=getWho().toLowerCase(); return (email||name)?{email,name}:null; }
@@ -588,6 +594,7 @@ function isMine(r){ const me=myIdentity(); if(!me) return false; const team=team
     return (me.email&&String(m.email||"").trim().toLowerCase()===me.email)||(me.name&&String(m.name||"").trim().toLowerCase()===me.name); }); }
 function passFilter(r){
   if(FILTER.mine&&!isMine(r)) return false;
+  if(FILTER.ready&&!isAnswerReady(r)) return false;
   if(FILTER.disc==="__unset__"){ if((r.discipline||"")!=="") return false; }
   else if(FILTER.disc!=="all" && (r.discipline||"")!==FILTER.disc) return false;
   if(FILTER.status==="__open__"){ if(!OPEN_STATUSES.includes(r.status||"")) return false; }
@@ -625,6 +632,28 @@ function aiState(r){ const req=r&&r.aiReviewRequested, st=r&&r.aiReviewStarted, 
 function aiWaiting(r){ const st=aiState(r).state; return st!=="ready"&&st!=="none"; }
 function agoLabel(m){ return m<1?"just now":m<60?m+" min ago":Math.round(m/60)+" h ago"; }
 function findRec(kind,id){ return ((kind==="rfi"?CURRENT.rfis:CURRENT.submittals)||[]).find(x=>x.id===id); }
+/* ---- Hand-off: "Answer ready" ----
+   Engineers sometimes issue their own responses and sometimes hand them to
+   the CA coordinator. answerReady {at, by} on an OPEN item says "answered,
+   not yet issued"; it clears when the status moves on (Responded / Returned /
+   Closed / Void), which is what issuing does. The PMS and the add-in read the
+   same field. */
+function isAnswerReady(r){ return !!(r&&r.answerReady&&r.answerReady.at)&&OPEN_STATUSES.includes(r.status||""); }
+function readyBadge(r){ return isAnswerReady(r)?` <span class="badge ready" title="Answered by ${esc(r.answerReady.by||"the engineer")} ${esc(agoLabel(Math.round((Date.now()-(Date.parse(r.answerReady.at)||Date.now()))/60000)))} — waiting to be issued to the contractor">Ready to issue</span>`:""; }
+/* How a response leaves the building depends on the job's CA platform. The
+   two automated paths (Reply in Procore, Return via Portal) live in the main
+   PMS, which has Graph access; the Tracker links to them. */
+function caIssueGuide(platform, kind){
+  const isRFI=kind==="rfi"; const p=String(platform||"").replace(/\?$/,"");
+  if(p==="Procore") return isRFI
+    ? {where:"Procore", how:"Reply in Procore: a reply to the Procore notification email, carrying the response, is logged by Procore as the RFI response. The button is in the main PMS.", pms:true}
+    : {where:"Procore", how:"Procore submittals are returned in Procore: upload the stamped document and record the response there, then set the status here to Returned (or Resubmittal Required)."};
+  if(p==="Client Portal") return {where:"the client portal", how:"Return via Portal writes the "+(isRFI?"response":"stamped return")+" into the portal's Deliverables folder and records it. The button is in the main PMS.", pms:true};
+  if(p) return {where:p, how:"Post the "+(isRFI?"response":"review and stamp")+" in "+p+" so the contractor's log closes there, then set the status here. An email alone does not close "+p+"."};
+  return {where:"email", how:"Email the formal "+(isRFI?"response":"return")+" to the contractor: Email → Draft "+(isRFI?"response":"return")+" email."};
+}
+function copyField(id){ const el=document.getElementById(id); const v=(el&&el.value)||""; if(!v){ toast("Nothing to copy yet.", false); return; }
+  (navigator.clipboard&&navigator.clipboard.writeText?navigator.clipboard.writeText(v):Promise.reject()).then(()=>toast("Copied ✓", true)).catch(()=>{ el.focus(); el.select(); toast("Press Ctrl+C to copy.", true); }); }
 // Due-date urgency — thresholds mirror the main PMS slaState (SLA_DUE_SOON_DAYS = 2).
 function dueState(kind, r){
   if(!isOpenItem(kind,r)||isUnreviewed(r)) return null;
@@ -694,8 +723,8 @@ function renderSection(kind, title, logged, inbox){
   const news=inbox.filter(i=>i.verdict==="new");
   const shown=sortForDisplay(kind, logged.filter(passFilter));
   const am=CURRENT.allMode;
-  const late=logged.filter(r=>{const s=dueState(kind,r);return s&&s.cls==="late"&&daysUntil(r.dueDate)<0;}).length, unrev=logged.filter(isUnreviewed).length;
-  let html=`<div class="head"><h2>${title}</h2><span class="count">${shown.length===logged.length?logged.length:shown.length+" of "+logged.length} logged${late?` · <span class="late">${late} overdue</span>`:""}${unrev?` · <span class="unrev">${unrev} unreviewed</span>`:""}${news.length?` · ${news.length} to import`:""}</span><span class="spacer"></span>`+
+  const late=logged.filter(r=>{const s=dueState(kind,r);return s&&s.cls==="late"&&daysUntil(r.dueDate)<0;}).length, unrev=logged.filter(isUnreviewed).length, ready=logged.filter(isAnswerReady).length;
+  let html=`<div class="head"><h2>${title}</h2><span class="count">${shown.length===logged.length?logged.length:shown.length+" of "+logged.length} logged${late?` · <span class="late">${late} overdue</span>`:""}${unrev?` · <span class="unrev">${unrev} unreviewed</span>`:""}${ready?` · <span style="color:var(--due-ok);font-weight:700">${ready} ready to issue</span>`:""}${news.length?` · ${news.length} to import`:""}</span><span class="spacer"></span>`+
     `<button class="ghost" style="font-size:12px" onclick="exportCSV('${kind}')">⬇ CSV</button>`+
     (am?`<span class="muted" style="font-size:12px">pick one project to add / import</span>`:
        `<a href="${esc(caBackloadSeatUrl(kind, CURRENT.proj.name||"", CURRENT.proj.number||""))}" target="_blank" rel="noreferrer" title="For items still in Newforma: open a Claude seat to find the filed PDF / notification email, log it here (backfill), then review it against the current set and specs." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--accent);font-weight:600">🤖 Log from filed PDF/email</a>`+
@@ -745,8 +774,8 @@ function renderSection(kind, title, logged, inbox){
         :aiSt.state==="stalled"?` <span title="Claude started this review ${agoLabel(aiSt.mins)} and has not finished — open to re-send" style="font-size:11px" role="img" aria-label="Claude review stalled">⏳</span>`:"";
       const ds=dueState(kind,r); const lateRow=ds&&ds.cls==="late"?" late":"";
       const c = kind==="rfi"
-        ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}${aiMark}</td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${esc(r.from||"")}</td><td>${asg||'<span class="muted">—</span>'}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}</td>`
-        : `<td class="num">${numBtn}</td><td class="title">${esc(r.description||r.title||"—")}${aiMark}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${asg||'<span class="muted">—</span>'}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}</td>`;
+        ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}${aiMark}</td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${esc(r.from||"")}</td><td>${asg||'<span class="muted">—</span>'}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}${readyBadge(r)}</td>`
+        : `<td class="num">${numBtn}</td><td class="title">${esc(r.description||r.title||"—")}${aiMark}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${asg||'<span class="muted">—</span>'}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}${readyBadge(r)}</td>`;
       const nw=JUST_IMPORTED.has(r.id)?" justnew":"";
       return pc+`<tr class="click${nw}${lateRow}" onclick='${open}'>${c}</tr>`; }).join("");
     if(news.length) html+=`<div class="lhead">Logged — ${shown.length===logged.length?logged.length:shown.length+" of "+logged.length}</div>`;
@@ -989,6 +1018,7 @@ async function openEditor(kind, id){
     `<div id="aiWaitBar" class="intake" role="status" style="display:none;margin-top:0;margin-bottom:8px"></div>`+
     caAiPanelHtml(rec, kind)+
     `<div class="grid">${grid}${extra}</div>`+
+    (isNew?"":issuePanelHtml(kind, rec))+
     `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
     emailMenu+claudeMenu+
     `<span class="by">${by}</span><span id="formErr" class="formerr" role="alert" style="display:none"></span><span class="spacer"></span>`+
@@ -1076,8 +1106,7 @@ function emailAction(kind, which){
       `2. The contractor's ${isRFI?"question":"submittal"} and attachments are in the SharePoint folder: ${sp||"(no folder link on the item yet — ask the sender)"}`,
       isRFI ? `3. Write your answer in the Response field. "Copy into Response" takes the Claude suggestion if it is right; edit it until it is yours. Anything internal goes in Internal notes, which never leave the office.`
             : `3. Pick the Stamp and write the Review comments that go back to the contractor. The status follows the stamp. Anything internal goes in Internal notes, which never leave the office.`,
-      isRFI ? `4. Set Responded to today, Save, then Email → Draft response email: that opens the formal response for you to check and send. From Outlook, the same is "Log Response" on any email filed to this RFI.`
-            : `4. Set Returned to today, Save, then Email → Draft return email: that opens the return for you to check and send. From Outlook, the same is "Log Review" on any email filed to this submittal.`,
+      `4. When your answer is final, either issue it yourself — the item's "Issue it" panel shows how for this job (${(()=>{const p=PROJECTS.find(x=>x.id===(EDIT&&EDIT.projId))||{}; return caIssueGuide(p.platform||p.detected||"", kind).where;})()}) — or press "Answer ready — hand to CA" and ${pm||"the CA coordinator"} issues it. Issuing sets the status to ${isRFI?"Responded":"Returned"}.`,
       `5. If this is not yours, or you cannot meet the date, tell ${pm||"the project manager"} today rather than on the due date.`
     ].join("\n");
     mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}${proj}.\nDue back to the contractor: ${due||"—"}. From: ${from||"—"}.\n\nWHAT TO DO\n${steps}\n${qBlock}${caAiEmailText(true)}`);
@@ -1096,6 +1125,34 @@ function showAssignWarn(kind){
   w.style.display="flex"; w.querySelector("a").focus();
 }
 function hideAssignWarn(){ const w=document.getElementById("assignWarn"); if(w){ w.style.display="none"; w.innerHTML=""; } }
+/* "Issue it" panel: how this job's responses go out, the hand-off button, and
+   the one-click paths. Re-rendered in place after Answer ready changes. */
+function issuePanelHtml(kind, rec){
+  const isRFI=kind==="rfi"; const p=PROJECTS.find(x=>x.id===(EDIT&&EDIT.projId))||{}; const platform=p.platform||(p.detected?p.detected:"");
+  const g=caIssueGuide(platform, kind); const dl=caItemDeepLink(kind, rec.number||""); const ready=isAnswerReady(rec);
+  const readyBtn = ready
+    ? `<span class="badge ready">Ready to issue</span><span class="muted">answered by ${esc(rec.answerReady.by||"")} ${esc(agoLabel(Math.round((Date.now()-(Date.parse(rec.answerReady.at)||Date.now()))/60000)))}</span><button type="button" class="ghost" style="font-size:12px" onclick="markAnswerReady('${kind}',${esc(JSON.stringify(rec.id))},false)">Clear</button>`
+    : `<button type="button" class="go" style="font-size:12px" title="Mark the answer final so the CA coordinator issues it. Your edits in this form are saved with it." onclick="markAnswerReady('${kind}',${esc(JSON.stringify(rec.id))},true)">✓ Answer ready — hand to CA</button>`;
+  const copyBtn=`<button type="button" class="ghost" style="font-size:12px" onclick="copyField('${isRFI?"f_response":"f_comments"}')">Copy ${isRFI?"response":"review comments"}</button>`;
+  const pmsBtn = g.pms&&dl ? `<a class="go" style="font-size:12px;text-decoration:none" href="${esc(dl)}" target="_blank" rel="noreferrer">${platform==="Procore"?"↩ Reply in Procore (main PMS)":"🌐 Return via Portal (main PMS)"}</a>` : "";
+  const openBtn = (!g.pms&&p.url) ? `<a class="ghost" style="font-size:12px;text-decoration:none;padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-weight:600" href="${esc(p.url)}" target="_blank" rel="noreferrer">Open ${esc(g.where)} ↗</a>` : "";
+  const mailBtn=`<button type="button" class="ghost" style="font-size:12px" onclick="emailAction('${kind}','respond')">✉ Draft ${isRFI?"response":"return"} email</button>`;
+  return `<div class="issue" id="issuePanel"><div class="lbl">Issue it — this job runs on ${esc(g.where)}</div>`+
+    `<div>${esc(g.how)} Issue it yourself, or mark the answer ready and the CA coordinator will.</div>`+
+    `<div class="row">${readyBtn}</div><div class="row">${pmsBtn}${openBtn}${copyBtn}${mailBtn}</div></div>`;
+}
+async function markAnswerReady(kind, id, on){
+  const arrKey=kind==="rfi"?"rfis":"submittals"; const stamp={at:new Date().toISOString(), by:getWho()||"(unknown)"};
+  const rec=findRec(kind,id); const projId=(rec&&rec.__projId)||(EDIT&&EDIT.id===id&&EDIT.projId)||(CURRENT.proj&&CURRENT.proj.id);
+  // Carry the form's current text with it: "answer ready" with a stale response saved would mislead the issuer.
+  const edits=(EDIT&&EDIT.id===id&&!EDIT.isNew)?collectEdits(kind):{};
+  try{
+    await writeArray(arrKey, arr=>arr.map(r=>{ if(r.id!==id) return r; const m={...r, ...edits}; if(on) m.answerReady=stamp; else delete m.answerReady; return m; }), false, projId);
+    if(rec){ Object.assign(rec, edits); if(on) rec.answerReady=stamp; else delete rec.answerReady; }
+    const panel=document.getElementById("issuePanel"); if(panel&&rec) panel.outerHTML=issuePanelHtml(kind, rec);
+    renderProject(); toast(on?"Marked ready to issue ✓ — the CA coordinator sees it in the Ready to issue filter":"Cleared", true);
+  }catch(err){ toastErr(err); }
+}
 /* The Send / Re-send link opens the Claude tab itself (href, target=_blank);
    this records the request on the item so every surface can show "waiting".
    Best-effort: a save conflict is reported but the Claude tab is already open. */
@@ -1165,6 +1222,7 @@ async function saveEditor(){
     await writeArray(arrKey, arr=>{
       if(isNew){ const base=kind==="rfi"?blankRFI():blankSub(); return [...arr, {...base, ...edits, id:uid(), loggedBy:who||"(unknown)", loggedAt:now}]; }
       return arr.map(r=>{ if(r.id!==id) return r; const m={...r, ...edits};
+        if(m.answerReady&&!OPEN_STATUSES.includes(m.status||"")) delete m.answerReady; // issued (or closed): the hand-off is done
         if(EDIT.confirmIntake&&isUnreviewed(m)){ m.intakeReviewed=true; m.intake={...(m.intake||{}), reviewedAt:now, reviewedBy:who||null}; }
         // Dismiss removes ONLY the review the user actually saw. writeArray re-reads
         // the project at save time, so a re-review saved after this modal opened is

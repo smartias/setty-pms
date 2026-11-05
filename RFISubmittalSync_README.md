@@ -52,6 +52,13 @@ In short:
    waiting" bar with *Check now* and *Re-send*, and the page says "Claude review ready"
    when it lands (the row flips to 🤖). After 30 minutes with nothing back the bar says
    so — usually the Claude tab was closed before the request was sent.
+   **Issue it:** every open item carries an *Issue it* panel that says how responses
+   leave on this job (Reply in Procore for Procore RFIs, upload in Procore for Procore
+   submittals, post in Autodesk Build / Kahua / Newforma / PMWeb, Return via Portal on
+   prime jobs, or the response email), with the one-click paths linked. Engineers who
+   hand off instead press **Answer ready — hand to CA**: the row shows *Ready to issue*,
+   the **📤 Ready to issue** filter lists them, and the flag clears when the status moves
+   to Responded / Returned.
    **Review before assigning:** ✉ Email → *Assign to a team member* warns
    when the item has no Claude review yet (with a *Send for review* link and *Assign
    anyway*); the assignment draft carries the review, the *Forward to subconsultant*
