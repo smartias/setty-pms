@@ -1343,7 +1343,9 @@ async function findFoldersByName(driveId: string, needleLower: string, cap: numb
 }
 
 const RFI_OPEN = new Set(["Open", "Pending Sub Response"]);
-const SUBMITTAL_OPEN = new Set(["Received", "Under Review", "Pending Sub Review", "Resubmittal Required"]);
+// Resubmittal Required is the contractor's move (stamped Revise and Resubmit /
+// Rejected): not open, matching SUB_OPEN_STATUSES in SettyPMS.html and the Tracker.
+const SUBMITTAL_OPEN = new Set(["Received", "Under Review", "Pending Sub Review"]);
 const openActionItems = (p: any) =>
   (p.notes ?? []).filter((n: any) => n.actionItem && (n.actionStatus ?? "open") !== "done");
 
