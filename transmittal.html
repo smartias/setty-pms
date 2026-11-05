@@ -9,7 +9,19 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-05-transmittal-v25-register-write-visibility";
+    window.__appVersion = "2026-11-05-transmittal-v26-light-dark";
+
+    // Theme, applied before the stylesheet paints so there is no flash of the
+    // other scheme. Remembered per browser; first visit follows the OS setting.
+    (function () {
+      try {
+        var t = localStorage.getItem("tx:theme");
+        if (t !== "light" && t !== "dark") {
+          t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+        }
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) { document.documentElement.setAttribute("data-theme", "dark"); }
+    })();
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -76,9 +88,68 @@
       --off-white: #F8F8F8;
       --bg: #0d1117;
       --card: #161b22;
+      --card2: #21262d;
       --border: #30363d;
       --text: #e6edf3;
       --muted: #8b949e;
+      --link: #7db4f0;
+      --focus: #60a5fa;
+      --amber: #d97706;
+      --input-bg: #0d1117;
+      --input-ro-bg: #1a2030;
+      --input-ro-fg: #94a3b8;
+      --chip-bg: #1a2030;
+      --chip-bd: #334155;
+      --chip-fg: #cbd5e1;
+      --row-alt: #0d1117;
+      --row-hover: #21262d;
+      --badge-outline: #475569;
+      --info-bg: #1e3a5f;    --info-fg: #60b4ff;  --info-bd: #1d4ed8;  --info-fg-strong: #cfe4ff;
+      --ok-bg: #14532d;      --ok-fg: #4ade80;    --ok-bd: #166534;
+      --err-bg: #450a0a;     --err-fg: #f87171;   --err-bd: #7f1d1d;
+      --warn-bg: #431407;    --warn-fg: #fb923c;  --warn-bd: #7c2d12;
+      --send-bg: #7c2d12;    --send-fg: #fed7aa;  --send-bd: #9a3412;  --send-hover: #9a3412;
+      --disc-M-bg: #1a2a3a;  --disc-M-fg: #60b4ff;
+      --disc-E-bg: #2a1a3a;  --disc-E-fg: #c084fc;
+      --disc-P-bg: #1a3a2a;  --disc-P-fg: #34d399;
+      --disc-FP-bg: #3a1a1a; --disc-FP-fg: #f87171;
+      --disc-G-bg: #1e1e2a;  --disc-G-fg: #94a3b8;
+      --overlay: rgba(0,0,0,0.8);
+      color-scheme: dark;
+    }
+    /* Light scheme: same hues, inverted lightness. The header keeps its navy
+       band and the stamp its red in both — those are the brand, not the theme. */
+    :root[data-theme="light"] {
+      --bg: #f3f4f6;
+      --card: #ffffff;
+      --card2: #f1f5f9;
+      --border: #d0d7de;
+      --text: #1f2937;
+      --muted: #57606a;
+      --link: #1d4ed8;
+      --focus: #2563eb;
+      --amber: #d97706;
+      --input-bg: #ffffff;
+      --input-ro-bg: #f1f5f9;
+      --input-ro-fg: #57606a;
+      --chip-bg: #eef2f7;
+      --chip-bd: #cbd5e1;
+      --chip-fg: #1f2937;
+      --row-alt: #f8fafc;
+      --row-hover: #eef2f7;
+      --badge-outline: #94a3b8;
+      --info-bg: #e8f1fd;    --info-fg: #1d4ed8;  --info-bd: #93c5fd;  --info-fg-strong: #1e3a8a;
+      --ok-bg: #e6f7ec;      --ok-fg: #166534;    --ok-bd: #86efac;
+      --err-bg: #fde8e8;     --err-fg: #b91c1c;   --err-bd: #fca5a5;
+      --warn-bg: #fff4e5;    --warn-fg: #b45309;  --warn-bd: #fcd34d;
+      --send-bg: #c2410c;    --send-fg: #ffffff;  --send-bd: #9a3412;  --send-hover: #9a3412;
+      --disc-M-bg: #dbeafe;  --disc-M-fg: #1d4ed8;
+      --disc-E-bg: #ede9fe;  --disc-E-fg: #6d28d9;
+      --disc-P-bg: #dcfce7;  --disc-P-fg: #047857;
+      --disc-FP-bg: #fee2e2; --disc-FP-fg: #b91c1c;
+      --disc-G-bg: #e5e7eb;  --disc-G-fg: #374151;
+      --overlay: rgba(15,23,42,0.6);
+      color-scheme: light;
     }
     body { font-family: "Segoe UI", Calibri, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
 
@@ -117,7 +188,7 @@
       padding: 20px 24px;
       margin-bottom: 20px;
     }
-    .skip-link { position: absolute; left: -9999px; top: 0; z-index: 10000; background: var(--card, #161b22); color: #7db4f0; padding: 10px 16px; font-size: 13px; font-weight: 600; }
+    .skip-link { position: absolute; left: -9999px; top: 0; z-index: 10000; background: var(--card, #161b22); color: var(--link); padding: 10px 16px; font-size: 13px; font-weight: 600; }
     .skip-link:focus { left: 0; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
     .card-title {
@@ -136,7 +207,7 @@
     label { display: block; font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px; }
     input[type="text"], input[type="date"], select, textarea {
       width: 100%;
-      background: #0d1117;
+      background: var(--input-bg);
       border: 1px solid var(--border);
       border-radius: 6px;
       color: var(--text);
@@ -146,7 +217,7 @@
       margin-bottom: 14px;
     }
     input:focus, select:focus, textarea:focus { border-color: var(--blue); }
-    :focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+    :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
 
@@ -166,13 +237,13 @@
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .btn-primary { background: var(--navy); color: #fff; }
     .btn-primary:hover:not(:disabled) { background: var(--blue); }
-    .btn-green { background: #14532d; color: #4ade80; border: 1px solid #166534; }
-    .btn-green:hover:not(:disabled) { background: #166534; }
+    .btn-green { background: var(--ok-bg); color: var(--ok-fg); border: 1px solid var(--ok-bd); }
+    .btn-green:hover:not(:disabled) { background: var(--ok-bd); }
     .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
     .btn-ghost:hover:not(:disabled) { background: var(--card); color: var(--text); }
-    .btn-red { background: #450a0a; color: #f87171; border: 1px solid #7f1d1d; }
-    .btn-send { background: #7c2d12; color: #fed7aa; border: 1px solid #9a3412; }
-    .btn-send:hover:not(:disabled) { background: #9a3412; }
+    .btn-red { background: var(--err-bg); color: var(--err-fg); border: 1px solid var(--err-bd); }
+    .btn-send { background: var(--send-bg); color: var(--send-fg); border: 1px solid var(--send-bd); }
+    .btn-send:hover:not(:disabled) { background: var(--send-hover); }
     .step-label {
       font-size: 11px; color: var(--muted); font-weight: 600;
       text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;
@@ -199,10 +270,10 @@
       display: none;
     }
     .status.show { display: block; }
-    .status.info { background: #1e3a5f; color: #60b4ff; border: 1px solid #1d4ed8; }
-    .status.success { background: #14532d; color: #4ade80; border: 1px solid #166534; }
-    .status.error { background: #450a0a; color: #f87171; border: 1px solid #7f1d1d; }
-    .status.warn { background: #431407; color: #fb923c; border: 1px solid #7c2d12; }
+    .status.info { background: var(--info-bg); color: var(--info-fg); border: 1px solid var(--info-bd); }
+    .status.success { background: var(--ok-bg); color: var(--ok-fg); border: 1px solid var(--ok-bd); }
+    .status.error { background: var(--err-bg); color: var(--err-fg); border: 1px solid var(--err-bd); }
+    .status.warn { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-bd); }
 
     /* Sheet table */
     .sheet-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -217,8 +288,8 @@
       letter-spacing: 0.5px;
     }
     .sheet-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-    .sheet-table tr:nth-child(even) td { background: #0d1117; }
-    .sheet-table tr:hover td { background: #21262d; }
+    .sheet-table tr:nth-child(even) td { background: var(--row-alt); }
+    .sheet-table tr:hover td { background: var(--row-hover); }
     .sheet-table input[type="text"] { margin-bottom: 0; padding: 4px 8px; font-size: 12px; }
     .sheet-table input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--blue); }
     .sheet-table:not(.has-folders) .col-folder { display: none; }
@@ -240,12 +311,12 @@
       cursor: pointer;
       transition: filter 0.1s;
     }
-    .disc-badge:hover { filter: brightness(1.2); outline: 1px solid #475569; }
-    .disc-M { background: #1a2a3a; color: #60b4ff; }
-    .disc-E { background: #2a1a3a; color: #c084fc; }
-    .disc-P { background: #1a3a2a; color: #34d399; }
-    .disc-FP { background: #3a1a1a; color: #f87171; }
-    .disc-G { background: #1e1e2a; color: #94a3b8; }
+    .disc-badge:hover { filter: brightness(1.1); outline: 1px solid var(--badge-outline); }
+    .disc-M { background: var(--disc-M-bg); color: var(--disc-M-fg); }
+    .disc-E { background: var(--disc-E-bg); color: var(--disc-E-fg); }
+    .disc-P { background: var(--disc-P-bg); color: var(--disc-P-fg); }
+    .disc-FP { background: var(--disc-FP-bg); color: var(--disc-FP-fg); }
+    .disc-G { background: var(--disc-G-bg); color: var(--disc-G-fg); }
 
     .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
     /* Title-block reading: the prompt (reading did not start on its own) and
@@ -253,7 +324,7 @@
     .tb-prompt {
       display: none; align-items: center; gap: 12px; flex-wrap: wrap;
       padding: 10px 14px; margin-bottom: 14px; border-radius: 6px; font-size: 12px;
-      background: #1e3a5f; color: #cfe4ff; border: 1px solid #1d4ed8;
+      background: var(--info-bg); color: var(--info-fg-strong); border: 1px solid var(--info-bd);
     }
     .tb-prompt.show { display: flex; }
     .tb-prompt .btn { padding: 6px 12px; font-size: 12px; background: var(--navy); color: #fff; }
@@ -267,7 +338,7 @@
     /* Sign-in overlay */
     #signInOverlay {
       position: fixed; inset: 0;
-      background: rgba(0,0,0,0.8);
+      background: var(--overlay);
       display: flex; align-items: center; justify-content: center;
       z-index: 100;
     }
@@ -299,7 +370,7 @@
       cursor: pointer;
     }
     .sign-in-btn:hover { background: var(--blue); }
-    #signInError { margin-top: 12px; font-size: 12px; color: #f87171; min-height: 20px; }
+    #signInError { margin-top: 12px; font-size: 12px; color: var(--err-fg); min-height: 20px; }
 
     .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 13px; }
     .folder-url-display { font-size: 11px; color: var(--muted); font-family: monospace; word-break: break-all; margin-bottom: 14px; }
@@ -374,6 +445,7 @@
     </div>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
+    <button class="sign-btn" id="themeBtn" type="button" aria-label="Switch color scheme">☀️ Light</button>
     <button class="sign-btn" id="backToPmsBtn" title="Open this project's record in the PMS — or the PMS home if no project is selected yet.">← Back to PMS</button>
     <button class="sign-btn" id="signOutBtn" style="display:none">Sign out</button>
   </div>
@@ -522,7 +594,7 @@
       <div>
         <label for="recipientCompany">Company / Agency</label>
         <input type="text" id="recipientCompany" placeholder="Auto-filled from project" readonly
-          style="background:#1a2030;color:#94a3b8;cursor:default"/>
+          style="background:var(--input-ro-bg);color:var(--input-ro-fg);cursor:default"/>
       </div>
     </div>
     <div class="form-row">
@@ -682,7 +754,7 @@
       <div class="status" id="backfillAuthNote" role="status"></div>
       <div class="action-row">
         <span style="font-size:12.5px">Logs the checked sheets as issued on <strong id="backfillDateEcho">—</strong></span>
-        <button class="btn" id="backfillBtn" style="background:#431407;color:#fb923c;border:1px solid #7c2d12">&#128194; Log past transmittal</button>
+        <button class="btn" id="backfillBtn" style="background:var(--warn-bg);color:var(--warn-fg);border:1px solid var(--warn-bd)">&#128194; Log past transmittal</button>
         <label for="backfillMilestone" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--text);margin:0">
           <input type="checkbox" id="backfillMilestone" checked>
           Also add to the schedule as a completed milestone
@@ -1434,10 +1506,10 @@ function renderCcChips() {
     const safeLabel = label.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const safeName = (r.name || r.email || "this recipient")
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-    return `<span style="display:inline-flex;align-items:center;gap:6px;background:#1a2030;border:1px solid #334155;color:#cbd5e1;font-size:12px;padding:4px 8px;border-radius:14px;">
+    return `<span style="display:inline-flex;align-items:center;gap:6px;background:var(--chip-bg);border:1px solid var(--chip-bd);color:var(--chip-fg);font-size:12px;padding:4px 8px;border-radius:14px;">
       <span>${safeLabel}</span>
       <button type="button" onclick="removeCcRecipient(${i})" title="Remove" aria-label="Remove ${safeName} from CC"
-        style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:14px;line-height:1;padding:0;">✕</button>
+        style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0;">✕</button>
     </span>`;
   }).join("");
 }
@@ -2186,6 +2258,22 @@ document.getElementById("localUploadFilesInput").onchange = onLocalPick;
 // Back to the PMS record this transmittal belongs to. resolveLogProjectId()
 // covers both launch modes: ?projectId= from a PMS deep link, or the project
 // number typed/picked in a direct launch. No project yet → PMS home.
+// ─── THEME TOGGLE ─────────────────────────────────────────────────────────────
+// The attribute is set in <head> before paint; this only flips it and keeps
+// the button naming the scheme a click would switch TO.
+function currentTheme() { return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark"; }
+function applyTheme(t) {
+  document.documentElement.setAttribute("data-theme", t);
+  try { localStorage.setItem("tx:theme", t); } catch (e) {}
+  const b = document.getElementById("themeBtn");
+  if (b) {
+    b.textContent = t === "light" ? "\ud83c\udf19 Dark" : "\u2600\ufe0f Light";
+    b.title = t === "light" ? "Switch to dark mode" : "Switch to light mode";
+  }
+}
+applyTheme(currentTheme());
+document.getElementById("themeBtn").onclick = () => applyTheme(currentTheme() === "light" ? "dark" : "light");
+
 document.getElementById("backToPmsBtn").onclick = () => {
   const id = resolveLogProjectId();
   window.location.href = "https://smartias.github.io/setty-pms/SettyPMS.html" +
@@ -2937,7 +3025,7 @@ function renderTable() {
       <td class="col-folder" title="${esc(s.subfolder || "")}">${esc(s.subfolder || "")}</td>
       <td><input type="text" id="sheet-${s.id}-revision" value="${esc(s.revision)}" placeholder="0" style="width:60px" aria-label="Revision for ${rowRef}" onchange="sheets[${i}].revision=this.value;sheets[${i}].edited=true"/></td>
       <td><input type="text" id="sheet-${s.id}-date" value="${esc(s.date)}" placeholder="YYYY-MM-DD" aria-label="Revision date for ${rowRef}" onchange="sheets[${i}].date=this.value;sheets[${i}].dateSource='user';sheets[${i}].edited=true"/></td>
-      <td><button id="sheet-${s.id}-remove" onclick="removeRow(${i})" aria-label="Remove ${rowRef}" style="background:none;border:none;color:#8b949e;cursor:pointer;font-size:13px">✕</button></td>
+      <td><button id="sheet-${s.id}-remove" onclick="removeRow(${i})" aria-label="Remove ${rowRef}" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">✕</button></td>
     `;
     tbody.appendChild(tr);
   });
@@ -4531,8 +4619,8 @@ function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, 
         td(mapDiscipline(s.discipline), "color:#2E5395;font-size:10px;") +
         td(s.sheetNo) +
         td(s.title) +
-        td(s.revision, "color:#666;") +
-        td(s.date, "color:#666;") +
+        td(s.revision, "color:var(--muted);") +
+        td(s.date, "color:var(--muted);") +
         `</tr>`;
     }).join("");
     tableHtml =
