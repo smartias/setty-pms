@@ -95,6 +95,42 @@ eq(mod.mapDiscipline("T"), "Technology", "T maps to Technology");
 eq(mod.mapDiscipline("STTQ"), "STTQ", "an unknown code still passes through rather than being lost");
 eq(mod.mapDiscipline(""), "General", "an empty code defaults to General");
 
+// ── 6. Specification sections (CSI MasterFormat), both numbering schemes ──
+// Real names from SAPX256007.00's 100% CD set (1995 five-digit) plus the
+// 2004+ six-digit form. Before this, every one fell through to a General row
+// with no number and the whole filename as its title.
+const s1 = parse("16010 - General Provisions For Electrical Work.pdf");
+eq(s1.kind, "spec", "a five-digit CSI number marks the row as a spec");
+eq(s1.sheetNo, "16010", "the section number is the row number");
+eq(s1.discipline, "Electrical", "Division 16 is Electrical");
+eq(s1.title, "General Provisions For Electrical Work", "the section title is the title");
+eq(parse("15400 - Plumbing.pdf").discipline, "Plumbing", "15400s are Plumbing within Division 15");
+eq(parse("15300 - Fire Protection.pdf").discipline, "Fire Protection", "15300s are Fire Protection within Division 15");
+eq(parse("15500 - HVAC.pdf").discipline, "Mechanical", "the rest of Division 15 is Mechanical");
+eq(parse("16721 - Fire Alarm.doc").discipline, "Fire Alarm", "16720s are Fire Alarm");
+eq(parse("16740 - Telephone.doc").discipline, "Technology", "16700s are Technology");
+const s2 = parse("23 05 00 - Common Work Results for HVAC.pdf");
+eq(s2.kind, "spec", "a six-digit CSI number marks the row as a spec");
+eq(s2.sheetNo, "23 05 00", "six-digit sections are spaced in pairs");
+eq(s2.discipline, "Mechanical", "Division 23 is Mechanical");
+eq(parse("230500 - Common Work Results.pdf").sheetNo, "23 05 00", "an unspaced six-digit number is normalised to pairs");
+eq(parse("23 05 00.13 - Common Motor Requirements.pdf").sheetNo, "23 05 00.13", "a two-digit suffix is kept");
+eq(parse("22 11 16 Domestic Water Piping.pdf").discipline, "Plumbing", "Division 22 is Plumbing");
+eq(parse("21 13 13 - Wet-Pipe Sprinkler.pdf").discipline, "Fire Protection", "Division 21 is Fire Protection");
+eq(parse("26 05 19 - Conductors.pdf").discipline, "Electrical", "Division 26 is Electrical");
+eq(parse("27 10 00 - Structured Cabling.pdf").discipline, "Technology", "Division 27 is Technology");
+eq(parse("28 31 00 - Fire Detection and Alarm.pdf").discipline, "Fire Alarm", "Division 28 is Fire Alarm");
+eq(parse("01 10 00 - Summary.pdf").discipline, "General", "Division 01 is General");
+eq(parse("M-101 Mechanical Plan.pdf").kind, "drawing", "a drawing is still a drawing");
+check(parse("2025-04-10_TablerQ_E_Bulletin #1.pdf").kind !== "spec", "a date-led name is not mistaken for a spec section");
+
+// ── 7. Combined discipline set: project number + discipline letter only ────
+const combined = parse("SAPX256007.00_E.pdf");
+eq(combined.kind, "drawing", "a combined set is a drawing file");
+eq(combined.sheetNo, "", "no sheet number is invented out of the project number");
+eq(combined.discipline, "Electrical", "the discipline letter after the project number is read");
+check(combined.title.toLowerCase().includes("electrical"), "the title names the discipline set");
+
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`
   : `\nall ${total} assertions pass (parseFilename evaluated directly from transmittal.html)`);
