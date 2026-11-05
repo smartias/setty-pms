@@ -3957,6 +3957,13 @@ mcp.tool("read_rfi_submittal", {
       closed: item.dateResponded || item.dateReturned || null,
       question: cap(htmlToText(item.description || "")), response: cap(htmlToText(item.response || item.comments || "")),
       notes: item.notes || null,
+      // Where the contractor's files are. The cut sheet / attachments are filed
+      // in the item's own SharePoint folder (usually under IN); a portal item
+      // also carries the form the contractor filled. Open the folder with
+      // list_project_documents {projectNumber, folderUrl}, read PDFs with
+      // read_document, render the marked page with view_drawing DIRECT mode.
+      ...(item.spFolderUrl ? { spFolderUrl: item.spFolderUrl, filesNote: "The contractor's attachments (cut sheet, markups) are filed in spFolderUrl — list it with list_project_documents {projectNumber, folderUrl: spFolderUrl} (look under IN), read a PDF with read_document, and render the marked page with view_drawing DIRECT mode. Ask the reviewer to attach the PDF only if it is not there." } : { filesNote: "No SharePoint folder is linked on this record; ask the reviewer where the contractor's files are, or to attach the PDF." }),
+      ...(item.intake && item.intake.formUrl ? { intakeFormUrl: item.intake.formUrl } : {}),
       ...(() => {
         const links = outgoingLinks(p, item);
         const linkedFrom = incomingLinks(p, type, item.id);
@@ -4963,7 +4970,9 @@ mcp.tool("list_project_documents", {
     "Museum Plan', 'Buro Happold Engineering_HPCM Refrigeration Upgrade'), so pass folderMatch with a " +
     "distinctive word from the project name (e.g. 'Tabler') + library:'Proposals' to find the folder(s). " +
     "(3) folderId — list the contents of a specific folder returned by a prior call (folders carry a " +
-    "composite itemId you can pass straight back here). Then call read_document on a file's itemId. Treat " +
+    "composite itemId you can pass straight back here). (4) folderUrl + projectNumber — open a SharePoint folder " +
+    "by its URL, e.g. the `spFolderUrl` an RFI/submittal record carries (read_rfi_submittal returns it): the " +
+    "contractor's cut sheets and attachments are filed there, usually under IN. Then call read_document on a file's itemId. Treat " +
     "MEETING MINUTES and DRAWING REVIEW COMMENTS/RESPONSES as HIGH-VALUE ('Dr. Checks' / DrChecks = the agencies' design-review comment system, so 'Dr. Checks comments' means AGENCY review comments). The default (projectNumber) result " +
     "also lists availableLibraries + librariesWithProject + a hint for reaching proposals/contracts.",
   inputSchema: z.object({
@@ -4972,9 +4981,27 @@ mcp.tool("list_project_documents", {
     library: z.string().optional().describe("Scope to one library by name (e.g. 'Proposals', 'Contract Library'). Recommended with folderMatch."),
     folderMatch: z.string().optional().describe("Find folders whose NAME contains this text (case-insensitive) — for Proposals/Contract libraries (named by project/client name). Pass a distinctive word from the project name. Returns matching folders; then call with folderId to open one. Empty string with a library = browse that library's folders."),
     folderId: z.string().optional().describe("Composite 'driveId|itemId' of a folder (from a prior result) to list its contents directly."),
+    folderUrl: z.string().optional().describe("A SharePoint folder URL to open directly — the spFolderUrl of an RFI/submittal record, or a link someone pasted. Pass projectNumber with it. Resolved through the Graph shares API, so the folder must be on a site the connector's app can read."),
   }),
-  handler: async ({ projectNumber, subfolder, library, folderMatch, folderId }) => {
+  handler: async ({ projectNumber, subfolder, library, folderMatch, folderId: folderIdIn, folderUrl }) => {
+    let folderId = folderIdIn;
     try {
+      // Mode 4: a folder URL (an item's spFolderUrl) resolves to its composite
+      // id and then lists like mode 3. The site lookup below still needs the
+      // project, so ask for it rather than guess.
+      if (folderUrl && String(folderUrl).trim()) {
+        if (!String(projectNumber || "").trim()) return asText({ error: "folderUrl needs projectNumber as well (the project's region decides which site is read).", nextStep: "Pass the project number from the item with the folder URL." });
+        const url = String(folderUrl).trim();
+        if (!/^https:\/\//i.test(url)) return asText({ error: "folderUrl must be an https SharePoint link." });
+        try {
+          const f = await graphGet(`/shares/${encodeURIComponent(shareToken(url))}/driveItem?$select=id,name,folder,parentReference`);
+          if (!f?.id || !f?.parentReference?.driveId) return asText({ error: "That URL did not resolve to a SharePoint item.", nextStep: "Check the link opens in a browser; the connector's app needs access to that site." });
+          if (!f.folder) return asText({ error: `"${f.name}" is a file, not a folder.`, itemId: f.parentReference.driveId + "|" + f.id, nextStep: "Open it with read_document (text) or view_drawing DIRECT mode (image)." });
+          folderId = f.parentReference.driveId + "|" + f.id;
+        } catch (e) {
+          return asText({ error: `Could not open that folder URL: ${String((e as any)?.message ?? e)}`, nextStep: "If the link is on another site (a client portal), the connector's Graph app may not be granted there — ask IT, or ask the reviewer to attach the file." });
+        }
+      }
       // Slice B: an `az:` folderId opens a folder on a region's drive share.
       if (isAzId(folderId)) {
         const dec = decodeAzId(folderId);

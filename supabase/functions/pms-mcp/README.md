@@ -460,6 +460,14 @@ number is left alone unless `update:true`), stamped with source/provenance. Both
 signed-in-only (`qaLedgerCaller`); neither touches SharePoint or the transmittal
 register.
 
+**Where the files are** (2026-11-05): `read_rfi_submittal` now returns the
+item's `spFolderUrl` (and `intakeFormUrl` for a portal item) with a `filesNote`,
+and `list_project_documents` gained a fourth mode, `folderUrl` + `projectNumber`,
+that opens a SharePoint folder by its URL through the Graph shares API. The
+review skill reads the contractor's cut sheet from that folder (under `IN`)
+and renders the marked page with `view_drawing` DIRECT mode; an attached PDF is
+the fallback, not the first ask.
+
 **`mark_ca_review_started`** (2026-11-05) is the skill's first call. The pages
 stamp `aiReviewRequested {at, by}` on the item when a person presses "Send to
 Claude" (they only open a Claude tab, so that stamp is the only trace of the
