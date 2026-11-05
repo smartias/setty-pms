@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-05-transmittal-v27-log-past-vs-repair-links";
+    window.__appVersion = "2026-11-05-transmittal-v28-specs";
 
     // Theme, applied before the stylesheet paints so there is no flash of the
     // other scheme. Remembered per browser; first visit follows the OS setting.
@@ -293,6 +293,8 @@
     .sheet-table input[type="text"] { margin-bottom: 0; padding: 4px 8px; font-size: 12px; }
     .sheet-table input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--blue); }
     .sheet-table:not(.has-folders) .col-folder { display: none; }
+    .kind-select { appearance: none; -webkit-appearance: none; border: 1px solid var(--border); background: var(--card2); color: var(--muted); font: inherit; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px; cursor: pointer; width: auto; margin: 0; }
+    .kind-select.kind-spec { color: var(--info-fg); border-color: var(--info-bd); }
     .sheet-table .col-folder { font-size: 11px; color: var(--muted); white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
     .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); cursor: pointer; text-transform: none; letter-spacing: 0; margin: 0; }
 
@@ -676,12 +678,14 @@
       <div class="tb-progress-track"><div class="tb-progress-bar" id="tbProgressBar"></div></div>
     </div>
     <div class="status" id="parseStatus" role="status"></div>
+    <div class="status" id="specNote" role="status"></div>
 
     <div style="overflow-x:auto">
       <table class="sheet-table" id="sheetTable">
         <thead>
           <tr>
             <th scope="col" style="width:32px"><span aria-hidden="true">✓</span><span class="sr-only">Include</span></th>
+            <th scope="col" style="width:84px" title="Drawing sheet or specification section. Specs are recognised from a CSI MasterFormat number at the start of the filename (16010, 23 05 00); change it here if a file was read wrong.">Type</th>
             <th scope="col" style="width:90px">Discipline</th>
             <th scope="col" style="width:110px">Sheet No.</th>
             <th scope="col">Sheet Name / Title</th>
@@ -994,6 +998,8 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
           revision:   sh.revision   || "",
           discipline: sh.discipline || "",
           filename:   sh.filename,
+          // "drawing" or "spec": a spec's sheetNo is its CSI section number.
+          kind:       sh.kind === "spec" ? "spec" : "drawing",
           // Subfolder of the set folder the file sits in ("" for the folder
           // itself). Readers that rebuild a path from sp_folder_url + filename
           // need it once a set spans Drawings / Specs / per-discipline folders.
@@ -1987,6 +1993,7 @@ async function loadLocalSet(picked) {
   subfoldersIncluded = folderFiles.some(f => f.subfolder);
   sheets = folderFiles.map(rowFromFile).filter(Boolean);
   if (!sheets.length) sheets = [emptyRow(), emptyRow(), emptyRow()];
+  pairSpecFormats();
   renderTable();
   showSheetCards();
   prefillIssueDate();
@@ -2152,6 +2159,7 @@ async function loadFolder() {
       sheets = [emptyRow(), emptyRow(), emptyRow()];
     }
 
+    pairSpecFormats();
     renderTable();
     showSheetCards();
     prefillIssueDate();
@@ -2578,7 +2586,7 @@ async function loadPdfJs() {
 }
 
 const AUTO_TITLE_BLOCK_LIMIT = 20;
-const folderPdfs = () => (folderFiles || []).filter(f => /\.pdf$/i.test(f.name));
+const folderPdfs = () => (folderFiles || []).filter(f => /\.pdf$/i.test(f.name) && !specSection(f.name.replace(/\.pdf$/i, "")));
 const mbOf = bytes => (bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0) + " MB";
 
 // Reading downloads every PDF in full, which on a drawing set is a lot of
@@ -2801,6 +2809,7 @@ async function readTitleBlocksInner(pdfs) {
   const fresh = rows.filter(Boolean).filter(r => !editedFiles.has(keyOf(r)));
   fresh.forEach(r => { if (uncheckedFiles.has(keyOf(r))) r.include = false; });
   sheets = fresh.concat(keptEdited, others);
+  pairSpecFormats();
   renderTable();
   applyIssueDateToRows();   // list-only and filename-fallback rows take the issue date
 
@@ -2840,6 +2849,26 @@ function parseFilename(filename, modifiedDate) {
     return m ? { rev: m[1], rest: s.slice(0, s.length - m[0].length) } : { rev: "0", rest: s };
   };
 
+  // ── Specification sections come first: a CSI MasterFormat number leads the
+  // name ("16010 - General Provisions", "23 05 00 - Common Work Results").
+  // Without this they fell through every drawing pattern and landed as
+  // "General" rows with no number and the whole filename as the title.
+  const spec = specSection(base);
+  if (spec) {
+    return {
+      id: uid(),
+      include: true,
+      kind: "spec",
+      discipline: spec.discipline,
+      sheetNo: spec.section,
+      title: cleanTitle(spec.title),
+      revision: "0",
+      date: modifiedDate ? modifiedDate.slice(0, 10) : new Date().toISOString().slice(0, 10),
+      filename,
+      source: "filename",
+    };
+  }
+
   // ── Pattern 1: Discipline-Number separator Title [Rev X]
   // Handles: M-501_Title_Rev2  M-501 Title Rev2  FP-301_Title
   let m = base.match(/^([A-Z]{1,4})-([0-9]{2,4}[A-Z]?)(?:[\s_]+)(.+)$/);
@@ -2873,6 +2902,25 @@ function parseFilename(filename, modifiedDate) {
       sheetNo = m[1] + "-" + m[2];
       title = "";
       revision = "0";
+    }
+  }
+
+  // ── Combined discipline set: project number then ONLY a discipline letter
+  // ("SAPX256007.00_E" is the whole electrical set in one PDF). The generic
+  // fallback used to carve "APX-2560" out of the project number. There is no
+  // sheet number; the title-block reader splits the file into real sheets.
+  if (!sheetNo) {
+    m = base.match(/^[A-Z]{3,4}[0-9]+[\w.]*[\s_-]+([A-Z]{1,3})(?:[\s_-]+(?:set|drawings|dwgs))?$/i);
+    if (m) {
+      discipline = m[1].toUpperCase();
+      sheetNo = "";
+      title = mapDiscipline(discipline) + " drawing set";
+      revision = "0";
+      return {
+        id: uid(), include: true, kind: "drawing", discipline: mapDiscipline(discipline), sheetNo, title, revision,
+        date: modifiedDate ? modifiedDate.slice(0, 10) : new Date().toISOString().slice(0, 10),
+        filename, source: "filename",
+      };
     }
   }
 
@@ -2943,6 +2991,7 @@ function parseFilename(filename, modifiedDate) {
   return {
     id: uid(),
     include: true,
+    kind: "drawing",
     discipline: mapDiscipline(discipline),
     sheetNo,
     title,
@@ -2962,6 +3011,51 @@ function parseFilename(filename, modifiedDate) {
 // could produce a discipline ("Fire Alarm", "Technology") that the dropdown had
 // no option for, so the row displayed the wrong one and you could not pick it
 // back. Add a discipline in ONE place.
+// ─── SPEC SECTIONS (CSI MasterFormat) ──────────────────────────────────────
+// Two numbering schemes are in circulation. MasterFormat 1995 is five digits
+// ("16010"); the division is the first two. MasterFormat 2004+ is six digits
+// in three pairs ("23 05 00", also written "230500"), optionally with a
+// two-digit suffix ("23 05 00.13"). The division alone usually names the
+// discipline; in the 1995 scheme Division 15 covers all of mechanical, so
+// the section range is needed to tell plumbing and fire protection apart.
+function specSection(base) {
+  const b = String(base || "").trim();
+  let m = b.match(/^(\d{2})[ _]?(\d{2})[ _]?(\d{2})(?:\.(\d{2}))?(?=[\s_.\-–—]|$)[\s_.\-–—]*(.*)$/);
+  if (m) {
+    const division = parseInt(m[1], 10);
+    const section = m[1] + " " + m[2] + " " + m[3] + (m[4] ? "." + m[4] : "");
+    return { section, division, scheme: "2004", discipline: specDiscipline(division, parseInt(m[1] + m[2] + m[3], 10), "2004"), title: m[5] || "" };
+  }
+  m = b.match(/^(\d{5})(?=[\s_.\-–—]|$)[\s_.\-–—]*(.*)$/);
+  if (m) {
+    const num = parseInt(m[1], 10);
+    const division = Math.floor(num / 1000);
+    return { section: m[1], division, scheme: "1995", discipline: specDiscipline(division, num, "1995"), title: m[2] || "" };
+  }
+  return null;
+}
+function specDiscipline(division, num, scheme) {
+  if (scheme === "2004") {
+    return ({ 21: "Fire Protection", 22: "Plumbing", 23: "Mechanical", 25: "Mechanical",
+              26: "Electrical", 27: "Technology", 28: "Fire Alarm", 33: "Civil" })[division] || "General";
+  }
+  if (division === 15) {
+    if (num >= 15300 && num < 15400) return "Fire Protection";
+    if (num >= 15400 && num < 15500) return "Plumbing";
+    return "Mechanical";
+  }
+  if (division === 16) {
+    if (num >= 16720 && num < 16730) return "Fire Alarm";
+    if (num >= 16700 && num < 16800) return "Technology";
+    return "Electrical";
+  }
+  if (division === 13) {
+    if (num >= 13850 && num < 13860) return "Fire Alarm";
+    if (num >= 13900 && num < 14000) return "Fire Protection";
+  }
+  return "General";
+}
+
 const DISCIPLINES = [
   ["M",  "Mechanical"],
   ["E",  "Electrical"],
@@ -2988,7 +3082,7 @@ function discCode(disc) {
 }
 
 function emptyRow() {
-  return { id: uid(), include: true, discipline: "General", sheetNo: "", title: "", revision: "0", date: new Date().toISOString().slice(0, 10), filename: "" };
+  return { id: uid(), include: true, kind: "drawing", discipline: "General", sheetNo: "", title: "", revision: "0", date: new Date().toISOString().slice(0, 10), filename: "" };
 }
 
 function uid() { return Math.random().toString(36).slice(2, 9); }
@@ -3016,6 +3110,13 @@ function renderTable() {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><input type="checkbox" id="sheet-${s.id}-include" ${s.include ? "checked" : ""} aria-label="Include ${rowRef}" onchange="sheets[${i}].include=this.checked;this.removeAttribute('aria-invalid');updateCount()"/></td>
+      <td>
+        <select class="kind-select ${s.kind === "spec" ? "kind-spec" : ""}" id="sheet-${s.id}-kind" aria-label="Type for ${rowRef}" title="Drawing sheet or specification section"
+          onchange="sheets[${i}].kind=this.value;sheets[${i}].edited=true;renderTable()">
+          <option value="drawing" ${s.kind !== "spec" ? "selected" : ""}>Drawing</option>
+          <option value="spec" ${s.kind === "spec" ? "selected" : ""}>Spec</option>
+        </select>
+      </td>
       <td>
         <select class="disc-badge disc-${dc}" id="sheet-${s.id}-disc" aria-label="Discipline for ${rowRef}" title="Change discipline"
           style="appearance:none;-webkit-appearance:none;border:none;font:inherit;font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;cursor:pointer"
@@ -3060,8 +3161,11 @@ function showSheetCards() {
 }
 
 function updateCount() {
-  const included = sheets.filter(s => s.include).length;
-  document.getElementById("sheetCount").textContent = `${included} of ${sheets.length} selected`;
+  const included = sheets.filter(s => s.include);
+  const specs = included.filter(s => s.kind === "spec").length;
+  const drawings = included.length - specs;
+  document.getElementById("sheetCount").textContent = `${included.length} of ${sheets.length} selected` +
+    (specs ? ` (${drawings} drawing${drawings === 1 ? "" : "s"}, ${specs} spec section${specs === 1 ? "" : "s"})` : "");
 }
 
 function removeRow(i) { sheets.splice(i, 1); renderTable(); }
@@ -3074,7 +3178,9 @@ document.getElementById("tbCancelBtn").onclick = cancelTitleBlocks;
 document.getElementById("selectAllBtn").onclick = () => { sheets.forEach(s => s.include = true); renderTable(); };
 document.getElementById("deselectAllBtn").onclick = () => { sheets.forEach(s => s.include = false); renderTable(); };
 document.getElementById("sortBtn").onclick = () => {
-  sheets.sort((a, b) => (a.sheetNo || "").localeCompare(b.sheetNo || ""));
+  // Drawings first, then spec sections; each group by its number.
+  const k = r => (r.kind === "spec" ? 1 : 0);
+  sheets.sort((a, b) => k(a) - k(b) || (a.sheetNo || "").localeCompare(b.sheetNo || "", undefined, { numeric: true }));
   renderTable();
 };
 
@@ -3329,6 +3435,43 @@ async function backfillTransmittal() {
 }
 document.getElementById("backfillBtn").onclick = backfillTransmittal;
 
+// ─── SPEC TWINS ──────────────────────────────────────────────────────────────
+// Specs usually sit in the folder twice, the Word source beside the issued
+// PDF. Only the PDF goes out, so the Word twin starts unchecked: still listed,
+// still packable if someone ticks it. Keyed by section within a subfolder;
+// each row is touched once, so a tick made afterwards is left alone.
+function pairSpecFormats() {
+  const groups = new Map();
+  (sheets || []).forEach(sh => {
+    if (sh.kind !== "spec" || !sh.filename) return;
+    const k = (sh.subfolder || "") + "|" + sh.sheetNo;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(sh);
+  });
+  let paired = 0;
+  for (const rows of groups.values()) {
+    const pdf = rows.find(r => /\.pdf$/i.test(r.filename));
+    if (!pdf) continue;
+    rows.forEach(r => {
+      if (r === pdf || /\.pdf$/i.test(r.filename) || r.pairedWith) return;
+      r.include = false;
+      r.pairedWith = pdf.filename;
+      paired++;
+    });
+  }
+  updateSpecNote();
+  return paired;
+}
+function updateSpecNote() {
+  const specs = (sheets || []).filter(sh => sh.kind === "spec");
+  if (!specs.length) { setStatus("specNote", "", ""); return; }
+  const twins = specs.filter(sh => sh.pairedWith).length;
+  setStatus("specNote", "info",
+    "\ud83d\udcc4 " + specs.length + " specification section" + (specs.length === 1 ? "" : "s") +
+    " recognised from CSI numbers; discipline set from the division (check the Discipline column)." +
+    (twins ? " " + twins + " Word version" + (twins === 1 ? "" : "s") + " left unchecked because the PDF of the same section goes out." : ""));
+}
+
 // ─── PACKAGE SELECTION ────────────────────────────────────────────────────────
 // The files whose sheet row is still checked, matched on the path inside the
 // set folder (relPath) so a name that recurs across subfolders cannot pull in
@@ -3564,12 +3707,11 @@ async function buildCoverDocx(included) {
     // Document column gets the freed-up space so long titles wrap less.
     const COL_DOCX = [1620, 720, 5880, 540, 600]; // disc, sheet no, document, rev, date — total 9360
 
-    // Sheet rows
-    const sheetRows = included.map((s, i) => {
+    // Rows for one table. Spell out the discipline ("General" not "G"):
+    // mapDiscipline handles both full-name inputs and code inputs, so legacy
+    // sheet data still resolves correctly.
+    const makeRows = list => list.map((s, i) => {
       const isEven = i % 2 === 1;
-      // Spell out the discipline ("General" not "G"). mapDiscipline handles
-      // both full-name inputs ("General" → "General") and code inputs ("G"
-      // → "General"), so legacy sheet data still resolves correctly.
       const discFull = mapDiscipline(s.discipline);
       return new TableRow({
         children: [
@@ -3581,6 +3723,41 @@ async function buildCoverDocx(included) {
         ]
       });
     });
+    const makeTable = (list, numberHeader) => new Table({
+      width: { size: 9360, type: WidthType.DXA },
+      columnWidths: COL_DOCX,
+      rows: [
+        new TableRow({
+          tableHeader: true,
+          children: [
+            headerCell("DISCIPLINE", COL_DOCX[0]),
+            headerCell(numberHeader, COL_DOCX[1]),
+            headerCell("DOCUMENT", COL_DOCX[2]),
+            headerCell("REV.", COL_DOCX[3]),
+            headerCell("DATE", COL_DOCX[4]),
+          ]
+        }),
+        ...makeRows(list)
+      ]
+    });
+    const sectionHeading = (text, before) => new Paragraph({ spacing: { before, after: 160 },
+      children: [new TextRun({ text, font: "Calibri", size: 24, bold: true, color: NAVY })]
+    });
+    // Drawings and specifications are different things to the reader, so when
+    // both go out they get their own headed tables; a drawings-only set keeps
+    // the single "Transmitted documents" table it always had.
+    const drawingsIncluded = included.filter(s => s.kind !== "spec");
+    const specsIncluded = included.filter(s => s.kind === "spec");
+    const documentSections = specsIncluded.length
+      ? [
+          ...(drawingsIncluded.length ? [sectionHeading("TRANSMITTED DRAWINGS", 200), makeTable(drawingsIncluded, "SHEET NO.")] : []),
+          sectionHeading("TRANSMITTED SPECIFICATIONS", drawingsIncluded.length ? 320 : 200),
+          makeTable(specsIncluded, "SECTION"),
+        ]
+      : [sectionHeading("TRANSMITTED DOCUMENTS", 200), makeTable(included, "SHEET NO.")];
+    const totalsText = specsIncluded.length
+      ? `Total: ${drawingsIncluded.length} drawing${drawingsIncluded.length !== 1 ? "s" : ""}, ${specsIncluded.length} specification section${specsIncluded.length !== 1 ? "s" : ""}     `
+      : `Total: ${included.length} sheet${included.length !== 1 ? "s" : ""}     `;
 
     // Load logo
     let logoImageRun = null;
@@ -3704,35 +3881,15 @@ async function buildCoverDocx(included) {
             ]
           }),
 
-          new Paragraph({ spacing: { before: 200, after: 160 },
-            children: [new TextRun({ text: "TRANSMITTED DOCUMENTS", font: "Calibri", size: 24, bold: true, color: NAVY })]
-          }),
-
-          // Sheet table
-          new Table({
-            width: { size: 9360, type: WidthType.DXA },
-            columnWidths: COL_DOCX,
-            rows: [
-              new TableRow({
-                tableHeader: true,
-                children: [
-                  headerCell("DISCIPLINE", COL_DOCX[0]),
-                  headerCell("SHEET NO.", COL_DOCX[1]),
-                  headerCell("DOCUMENT", COL_DOCX[2]),
-                  headerCell("REV.", COL_DOCX[3]),
-                  headerCell("DATE", COL_DOCX[4]),
-                ]
-              }),
-              ...sheetRows
-            ]
-          }),
+          // Drawings table, specifications table (or the single documents table)
+          ...documentSections,
 
           // Footer note
           new Paragraph({
             spacing: { before: 300 },
             border: { top: { style: BorderStyle.SINGLE, size: 4, color: LIGHT, space: 1 } },
             children: [
-              new TextRun({ text: `Total: ${included.length} sheet${included.length !== 1 ? "s" : ""}     `, font: "Calibri", size: 18, color: GRAY }),
+              new TextRun({ text: totalsText, font: "Calibri", size: 18, color: GRAY }),
               new TextRun({ text: `Generated: ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}     `, font: "Calibri", size: 18, color: GRAY }),
               new TextRun({ text: "Setty & Associates", font: "Calibri", size: 18, bold: true, color: NAVY }),
             ]
@@ -4636,7 +4793,7 @@ function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, 
   if (includedSheets && includedSheets.length) {
     const th = `style="background:#1F3864;color:#fff;font-family:Calibri,Arial,sans-serif;font-size:11px;font-weight:bold;text-align:left;padding:6px 8px;border:1px solid #1F3864;"`;
     const tdBase = `font-family:Calibri,Arial,sans-serif;font-size:11px;padding:5px 8px;border:1px solid #d0d7e2;vertical-align:top;`;
-    const rows = includedSheets.map((s, i) => {
+    const rowsHtml = list => list.map((s, i) => {
       const bg = i % 2 === 1 ? "#f8f8f8" : "#ffffff";
       const td = (text, extra = "") => `<td style="${tdBase}background:${bg};${extra}">${esc(text || "—")}</td>`;
       return `<tr>` +
@@ -4647,17 +4804,23 @@ function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, 
         td(s.date, "color:#666;") +
         `</tr>`;
     }).join("");
-    tableHtml =
+    const tableFor = (list, numberHeader, caption) =>
+      (caption ? `<p style="font-family:Calibri,Arial,sans-serif;font-size:12px;font-weight:bold;color:#1F3864;margin:12px 0 4px 0;">${caption}</p>` : "") +
       `<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin:8px 0 16px 0;width:100%;max-width:720px;">` +
       `<thead><tr>` +
         `<th ${th}>DISCIPLINE</th>` +
-        `<th ${th}>SHEET NO.</th>` +
+        `<th ${th}>${numberHeader}</th>` +
         `<th ${th}>DOCUMENT</th>` +
         `<th ${th}>REV.</th>` +
         `<th ${th}>DATE</th>` +
       `</tr></thead>` +
-      `<tbody>${rows}</tbody>` +
+      `<tbody>${rowsHtml(list)}</tbody>` +
       `</table>`;
+    const drawings = includedSheets.filter(s => s.kind !== "spec");
+    const specs = includedSheets.filter(s => s.kind === "spec");
+    tableHtml = specs.length
+      ? (drawings.length ? tableFor(drawings, "SHEET NO.", "Drawings") : "") + tableFor(specs, "SECTION", "Specifications")
+      : tableFor(includedSheets, "SHEET NO.", "");
   }
 
   // Attachment mode: files ride on the email itself, no link. Otherwise it's
