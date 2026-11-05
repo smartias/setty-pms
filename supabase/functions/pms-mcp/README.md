@@ -460,6 +460,18 @@ number is left alone unless `update:true`), stamped with source/provenance. Both
 signed-in-only (`qaLedgerCaller`); neither touches SharePoint or the transmittal
 register.
 
+**`mark_ca_review_started`** (2026-11-05) is the skill's first call. The pages
+stamp `aiReviewRequested {at, by}` on the item when a person presses "Send to
+Claude" (they only open a Claude tab, so that stamp is the only trace of the
+request); this tool stamps `aiReviewStarted {at, by}` so the PMS, the Tracker
+and the add-in can show "Claude is reviewing" rather than "waiting", and tell a
+request that never reached Claude (no start after a few minutes: the tab was
+closed before Enter) from a chat that stalled (started, nothing saved after 30
+minutes). The three surfaces derive the state the same way: `ready` when
+`aiReview.at` is newer than both stamps, else `reviewing`/`stalled` when the
+start is newer than the request, else `waiting`/`notstarted`. Same guards as
+`save_ca_review`; writes nothing else.
+
 **The feedback loop (1.19.0).** When an engineer saves an RFI/submittal record that
 carries an `aiReview` block, the PMS modal records the suggested vs. final response,
 the stamps, an outcome (`accepted` / `edited` / `replaced` / `dismissed`) and the

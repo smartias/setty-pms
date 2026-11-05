@@ -44,9 +44,10 @@ Three rules govern everything below, same spirit as the coordination review:
    A review that looks complete but silently skipped the governing spec
    paragraph is worse than no review.
 3. **Read-only on the documents.** You never modify drawings, specs, or issue
-   anything. The only writes are `backload_ca_item` (log the item) and
-   `save_ca_review` (persist the suggestion onto the record) — both are
-   version-guarded and neither touches SharePoint or the transmittal register.
+   anything. The only writes are `mark_ca_review_started` (a timestamp so the
+   PMS shows the review is under way), `backload_ca_item` (log the item) and
+   `save_ca_review` (persist the suggestion onto the record) — all
+   version-guarded and none touches SharePoint or the transmittal register.
 
 ## Post-bid cost posture — the reason this review exists
 
@@ -74,6 +75,12 @@ response wording on any contested RFI or rejected submittal.
 
 ## Step 0 — Resolve the item, or backfill it first
 
+0. **`mark_ca_review_started`** (project + type + number) — do this before
+   anything else. The person who sent you this is looking at an item marked
+   "waiting"; this one call turns it into "Claude is reviewing", and without it
+   they cannot tell a review in progress from a request that never arrived. If
+   it answers that the item is not logged, carry on to step 2 and call it again
+   right after `backload_ca_item`.
 1. `read_rfi_submittal` (project + type + number) for the full text: the
    submittal description / the RFI question, spec section, discipline, status,
    any response already there, and linked items.

@@ -47,7 +47,12 @@ In short:
    or returned automatically. **🤖 Backload from PDF/email** (per section) does the same for
    an item not in the PMS yet — Claude finds the filed PDF / notification email, logs it,
    then reviews it. Same records as the main PMS, so a review saved from either surface
-   shows in both. **Review before assigning:** ✉ Email → *Assign to a team member* warns
+   shows in both. **Status while you wait:** sending records the request on the item, so
+   the row shows ⏳ (hover for who sent it and when), the editor shows a "Sent to Claude …
+   waiting" bar with *Check now* and *Re-send*, and the page says "Claude review ready"
+   when it lands (the row flips to 🤖). After 30 minutes with nothing back the bar says
+   so — usually the Claude tab was closed before the request was sent.
+   **Review before assigning:** ✉ Email → *Assign to a team member* warns
    when the item has no Claude review yet (with a *Send for review* link and *Assign
    anyway*); the assignment draft carries the review, the *Forward to subconsultant*
    draft never does.

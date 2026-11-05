@@ -10385,6 +10385,51 @@ mcp.tool("search_review_feedback", {
   },
 });
 
+// mark_ca_review_started — the FIRST call of the submittal-rfi-review skill.
+// The PMS, the Tracker and the add-in stamp aiReviewRequested when a person
+// presses "Send to Claude"; this stamps aiReviewStarted so those pages can show
+// "Claude is reviewing" instead of "waiting", and tell a request that never
+// reached Claude (no start after a few minutes) from a chat that stalled part
+// way (started, nothing saved after 30 minutes). Nothing else on the item
+// changes; save_ca_review still writes the review itself.
+mcp.tool("mark_ca_review_started", {
+  description:
+    "Mark that Claude has STARTED reviewing one submittal or RFI: stamps `aiReviewStarted {at, by}` on the CA " +
+    "record so the PMS, the Tracker and the Outlook add-in show \"Claude is reviewing\" instead of \"waiting\". " +
+    "Call it FIRST in the submittal-rfi-review skill, before read_rfi_submittal; if the item is not logged yet, " +
+    "run backload_ca_item and then call this. Writes nothing else — save_ca_review persists the review. " +
+    "Version-guarded; signed-in callers only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR name."),
+    type: z.enum(["rfi", "submittal"]),
+    number: z.string().describe("The RFI/submittal number as logged (e.g. '004' or 'SUB-012')."),
+  }),
+  handler: async ({ projectNumber, type, number }) => {
+    const who = qaLedgerCaller();
+    if (!who.ok) return who.response;
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const at = new Date().toISOString();
+    let itemNumber: string = String(number);
+    try {
+      await updateProjectRecord(pid, (proj) => {
+        const key = caArrKey(type);
+        const arr = Array.isArray(proj[key]) ? proj[key] : [];
+        const item = findCaItem(arr, number);
+        if (!item) throw new Error(`No ${type} "${number}" on this project — run backload_ca_item first, then call this again.`);
+        itemNumber = String(item.number || number);
+        return { ...proj, [key]: arr.map((x: any) => (x === item ? { ...x, aiReviewStarted: { at, by: who.email } } : x)) };
+      });
+    } catch (e) {
+      return asText({ error: `Could not mark the review started: ${String((e as any)?.message ?? e)}` });
+    }
+    return asText({
+      ok: true, type, number: itemNumber, startedAt: at, by: who.email,
+      note: "The PMS now shows this item as being reviewed. Continue with read_rfi_submittal and finish with save_ca_review.",
+    });
+  },
+});
+
 mcp.tool("backload_ca_item", {
   description:
     "BACKFILL the RFI/submittal log: create a CA record for an item that is not in the PMS yet (the hybrid " +

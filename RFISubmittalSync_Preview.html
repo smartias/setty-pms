@@ -603,6 +603,28 @@ function passFilter(r){
 // counted as overdue until confirmed.
 function isUnreviewed(r){ return !!r && r.intakeReviewed===false; }
 function isOpenItem(kind, r){ return (kind==="rfi"?RFI_OPEN:SUB_OPEN).includes((r&&r.status)||""); }
+/* ---- Claude review status ----
+   "Send for review" only opens a Claude tab, so nothing would otherwise tell
+   the page a review was asked for. The click records aiReviewRequested
+   {at, by} on the item (same field the PMS and the add-in write) and the
+   state is derived: none → waiting (sent, nothing back) → stale (nothing back
+   after AI_STALE_MIN, usually the Claude tab was closed before Enter) →
+   ready (aiReview.at is newer than the request). */
+/* Three stamps, five states. aiReviewStarted is written by the connector's
+   mark_ca_review_started, the review skill's first call, so "reviewing" means
+   Claude really has the item; "notstarted" after AI_NOT_STARTED_MIN means the
+   request never reached Claude (tab closed before Enter); "stalled" after
+   AI_STALE_MIN of reviewing means the chat hung part way. */
+const AI_NOT_STARTED_MIN=5, AI_STALE_MIN=30;
+function aiState(r){ const req=r&&r.aiReviewRequested, st=r&&r.aiReviewStarted, ai=r&&r.aiReview;
+  const t=x=>x?(Date.parse(x.at||"")||0):0; const reqAt=t(req), stAt=t(st), aiAt=t(ai);
+  const mins=from=>Math.max(0,Math.round((Date.now()-from)/60000)); const by=String((req&&req.by)||"");
+  if(stAt>aiAt&&stAt>=reqAt){ const m=mins(stAt); return {state:m>=AI_STALE_MIN?"stalled":"reviewing", mins:m, by}; }
+  if(reqAt>aiAt){ const m=mins(reqAt); return {state:m>=AI_NOT_STARTED_MIN?"notstarted":"waiting", mins:m, by}; }
+  return {state:ai?"ready":"none"}; }
+function aiWaiting(r){ const st=aiState(r).state; return st!=="ready"&&st!=="none"; }
+function agoLabel(m){ return m<1?"just now":m<60?m+" min ago":Math.round(m/60)+" h ago"; }
+function findRec(kind,id){ return ((kind==="rfi"?CURRENT.rfis:CURRENT.submittals)||[]).find(x=>x.id===id); }
 // Due-date urgency — thresholds mirror the main PMS slaState (SLA_DUE_SOON_DAYS = 2).
 function dueState(kind, r){
   if(!isOpenItem(kind,r)||isUnreviewed(r)) return null;
@@ -659,7 +681,7 @@ function exportCSV(kind){
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
 function renderProject(){
-  renderPortal();
+  renderPortal(); startWaitPoll();
   const out=document.getElementById("out"); out.innerHTML=""; document.getElementById("filterbar").style.display="flex";
   let total=0, shownTot=0;
   if(FILTER.type!=="submittal"){ const s=renderSection("rfi","RFIs",CURRENT.rfis,CURRENT.inbox.rfi); out.appendChild(s.el); total+=s.total; shownTot+=s.shown; }
@@ -715,7 +737,12 @@ function renderSection(kind, title, logged, inbox){
       // Keyboard path: real button on the number cell (stopPropagation so the
       // row's mouse-convenience onclick doesn't fire the editor twice).
       const numBtn=`<button type="button" class="rowbtn" aria-label="Open ${kind==="rfi"?"RFI":"submittal"} ${esc(r.number||"(no number)")}" onclick='event.stopPropagation();${open}'>${esc(r.number||"—")}</button>`;
-      const aiMark=r.aiReview?` <span title="Claude review waiting for sign-off — open to review" style="font-size:11px" role="img" aria-label="Claude review pending">🤖</span>`:"";
+      const aiSt=aiState(r);
+      const aiMark=aiSt.state==="ready"?` <span title="Claude review waiting for sign-off — open to review" style="font-size:11px" role="img" aria-label="Claude review pending">🤖</span>`
+        :aiSt.state==="reviewing"?` <span title="Claude is reviewing — started ${agoLabel(aiSt.mins)}" style="font-size:11px" role="img" aria-label="Claude is reviewing">⏳</span>`
+        :aiSt.state==="waiting"?` <span title="Sent to Claude ${agoLabel(aiSt.mins)} — waiting for Claude to pick it up" style="font-size:11px" role="img" aria-label="Waiting for Claude review">⏳</span>`
+        :aiSt.state==="notstarted"?` <span title="Sent to Claude ${agoLabel(aiSt.mins)} and Claude has not started it — open to re-send" style="font-size:11px" role="img" aria-label="Claude review not started">⏳</span>`
+        :aiSt.state==="stalled"?` <span title="Claude started this review ${agoLabel(aiSt.mins)} and has not finished — open to re-send" style="font-size:11px" role="img" aria-label="Claude review stalled">⏳</span>`:"";
       const ds=dueState(kind,r); const lateRow=ds&&ds.cls==="late"?" late":"";
       const c = kind==="rfi"
         ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}${aiMark}</td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${esc(r.from||"")}</td><td>${asg||'<span class="muted">—</span>'}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}</td>`
@@ -798,7 +825,7 @@ function caReviewSeatUrl(kind, rec, projName, projNum){
   return caSeatUrl([
     "Review this "+(isRFI?"RFI":"submittal")+" for "+caProjRef(projNum, projName)+": "+(rec.number||"(unsaved — add it to the log first)")+(subject?' — "'+subject+'"':"")+".",
     "",
-    "Use the Setty PMS connector and the submittal-rfi-review skill: identify the project by its number, read the item with read_rfi_submittal, review it against the current issued drawing set and the governing spec section, then save the suggested "+(isRFI?"response":"response and stamp")+", internal notes, and cost/scope red flags with save_ca_review so they appear here in the PMS for my sign-off."+(isRFI?"":" Open the submitted cut sheet (render it with view_drawing, or use the pdf-highlighted-selections skill if I attach the PDF) and confirm the MARKED selection — what's circled/highlighted/checked — against the spec and schedule basis of design; the marking is what you're reviewing, not just the notification metadata.")+" If it isn't logged in the PMS yet, backfill it from the filed PDF or notification email first with backload_ca_item.",
+    "Use the Setty PMS connector and the submittal-rfi-review skill: identify the project by its number, call mark_ca_review_started for the item first (so the PMS shows the review is under way), read it with read_rfi_submittal, review it against the current issued drawing set and the governing spec section, then save the suggested "+(isRFI?"response":"response and stamp")+", internal notes, and cost/scope red flags with save_ca_review so they appear here in the PMS for my sign-off."+(isRFI?"":" Open the submitted cut sheet (render it with view_drawing, or use the pdf-highlighted-selections skill if I attach the PDF) and confirm the MARKED selection — what's circled/highlighted/checked — against the spec and schedule basis of design; the marking is what you're reviewing, not just the notification metadata.")+" If it isn't logged in the PMS yet, backfill it from the filed PDF or notification email first with backload_ca_item.",
   ]);
 }
 function caPullReplySeatUrl(kind, rec, projName, projNum){
@@ -945,7 +972,7 @@ async function openEditor(kind, id){
   // Review only makes sense once the item is in the log (a new record isn't
   // saved yet and carries only a placeholder number) — no Claude menu until then.
   const claudeMenu = isNew ? "" : menuHtml("claudeMenu", "🤖 Claude", [
-    `<a role="menuitem" href="${esc(reviewUrl)}" target="_blank" rel="noreferrer" onclick="closeMenus()">${rec.aiReview?"Re-review":"Send for review"}${hint("Opens your Claude seat. It reviews this item against the current set and specs and saves a suggestion here for your sign-off. Nothing is sent or stamped.")}</a>`,
+    `<a role="menuitem" href="${esc(reviewUrl)}" target="_blank" rel="noreferrer" onclick='closeMenus();markReviewRequested("${kind}",${esc(JSON.stringify(rec.id))})'>${aiState(rec).state==="ready"?"Re-review":aiWaiting(rec)?"Re-send to Claude":"Send for review"}${hint("Opens your Claude seat. It reviews this item against the current set and specs and saves a suggestion here for your sign-off. Nothing is sent or stamped. The item shows ⏳ until the review lands.")}</a>`,
     `<a role="menuitem" href="${esc(caPullReplySeatUrl(kind, rec, EDIT.projName, EDIT.projNum))}" target="_blank" rel="noreferrer" onclick="closeMenus()">Pull reply from email${hint("For reviewers who answered by email: finds the emailed reply and files it here as the suggested response, citing the email.")}</a>` ]);
   const intakeBar = isUnreviewed(rec)
     ? `<div class="intake" role="status"><span style="flex:1 1 360px">📥 Logged automatically from ${esc((rec.intake&&rec.intake.vendor)||"a portal email")}${rec.intake&&rec.intake.at?" on "+esc(String(rec.intake.at).slice(0,10)):""}. Check the discipline, assignee and dates, then confirm. Until then it is not counted as overdue.</span><span style="flex:1"></span><button type="button" class="go" style="font-size:12px" title="Mark this item as checked. It then counts like any other item — your edits in this form are saved with it." onclick="confirmIntake()">✓ Confirm</button></div>`
@@ -959,6 +986,7 @@ async function openEditor(kind, id){
     intakeBar+
     `<div id="aiReadyBar" style="display:none;align-items:center;gap:10px;background:var(--card2);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;margin:0 18px 8px;font-size:12.5px">🤖 A new Claude review was saved for this item. <span style="flex:1"></span><button class="go" onclick="reloadEditorItem()">Reload to view</button></div>`+
     `<div id="assignWarn" class="intake" role="alert" style="display:none;margin-top:0;margin-bottom:8px"></div>`+
+    `<div id="aiWaitBar" class="intake" role="status" style="display:none;margin-top:0;margin-bottom:8px"></div>`+
     caAiPanelHtml(rec, kind)+
     `<div class="grid">${grid}${extra}</div>`+
     `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
@@ -969,7 +997,7 @@ async function openEditor(kind, id){
   const ff=document.getElementById("modal").querySelector("input,select,textarea");
   if(ff) ff.focus();
   renderSheetRefChips(); // async; degrades to "unavailable" without blocking the editor
-  startReviewPoll();
+  startReviewPoll(); renderAiWaitBar();
   // Background refresh of the team and subconsultant lists for this project.
   // Only the two blocks are patched, keeping whatever the user has ticked since.
   fetchJson(`pms_projects?id=eq.${projId}&select=team:project->teamMembers,subs:project->subconsultants`).then(pr=>{
@@ -1049,11 +1077,69 @@ function emailAction(kind, which){
 function showAssignWarn(kind){
   const w=document.getElementById("assignWarn"); if(!w||!EDIT) return;
   w.innerHTML=`<span style="flex:1 1 360px">🤖 No Claude review on this ${kind==="rfi"?"RFI":"submittal"} yet. Send it for review first, so the engineer opens it with the red flags and a drafted ${kind==="rfi"?"answer":"stamp"} already there.</span>`+
-    `<a class="go" style="font-size:12px;text-decoration:none" href="${esc(EDIT.reviewUrl||"#")}" target="_blank" rel="noreferrer" onclick="hideAssignWarn()">Send for review</a>`+
+    `<a class="go" style="font-size:12px;text-decoration:none" href="${esc(EDIT.reviewUrl||"#")}" target="_blank" rel="noreferrer" onclick='hideAssignWarn();markReviewRequested("${kind}",${esc(JSON.stringify(EDIT.id))})'>Send for review</a>`+
     `<button type="button" class="ghost" style="font-size:12px" title="Open the assignment draft without a Claude review on the item" onclick="EDIT.assignAnyway=true;emailAction('${kind}','assign')">Assign anyway</button>`;
   w.style.display="flex"; w.querySelector("a").focus();
 }
 function hideAssignWarn(){ const w=document.getElementById("assignWarn"); if(w){ w.style.display="none"; w.innerHTML=""; } }
+/* The Send / Re-send link opens the Claude tab itself (href, target=_blank);
+   this records the request on the item so every surface can show "waiting".
+   Best-effort: a save conflict is reported but the Claude tab is already open. */
+async function markReviewRequested(kind, id){
+  const arrKey=kind==="rfi"?"rfis":"submittals"; const stamp={at:new Date().toISOString(), by:getWho()||"(unknown)"};
+  const rec=findRec(kind,id); const projId=(rec&&rec.__projId)||(EDIT&&EDIT.id===id&&EDIT.projId)||(CURRENT.proj&&CURRENT.proj.id);
+  try{
+    await writeArray(arrKey, arr=>arr.map(r=>r.id===id?{...r, aiReviewRequested:stamp}:r), false, projId);
+    if(rec) rec.aiReviewRequested=stamp;
+    renderProject(); renderAiWaitBar(); startWaitPoll();
+  }catch(err){ toastErr(err); }
+}
+function renderAiWaitBar(){
+  const w=document.getElementById("aiWaitBar"); if(!w||!EDIT||EDIT.isNew) return;
+  const rec=findRec(EDIT.kind,EDIT.id); const st=rec?aiState(rec):{state:"none"};
+  if(!aiWaiting(rec)){ w.style.display="none"; w.innerHTML=""; return; }
+  const resend=`<a class="ghost" style="font-size:12px;text-decoration:none;padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-weight:600" href="${esc(EDIT.reviewUrl||"#")}" target="_blank" rel="noreferrer" onclick='markReviewRequested("${EDIT.kind}",${esc(JSON.stringify(EDIT.id))})'>Re-send</a>`;
+  const check=`<button type="button" class="go" style="font-size:12px" onclick="checkReviewNow()">Check now</button>`;
+  const lead = st.state==="reviewing" ? `🤖 Claude is reviewing — started ${esc(agoLabel(st.mins))}. It usually takes a few minutes; this bar updates on its own when the review lands.`
+    : st.state==="stalled" ? `⏳ Claude started this review ${esc(agoLabel(st.mins))} and has not finished. The chat probably stalled: type "continue" in that Claude tab, or re-send.`
+    : st.state==="notstarted" ? `⏳ Sent to Claude ${esc(agoLabel(st.mins))} and Claude has not started it. Usually the Claude tab was closed before the request was sent: press Enter in that tab, or re-send.`
+    : `⏳ Sent to Claude${st.by?" by "+esc(st.by):""} ${esc(agoLabel(st.mins))}. Waiting for Claude to pick it up — this bar updates on its own.`;
+  w.innerHTML = `<span style="flex:1 1 360px">${lead}</span><span id="aiWaitNote" class="muted" style="font-size:12px"></span>${check}${resend}`;
+  w.style.display="flex";
+}
+async function checkReviewNow(){
+  if(!EDIT) return; const {kind,id,projId}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
+  const note=document.getElementById("aiWaitNote"); if(note) note.textContent="Checking…";
+  try{
+    const rows=await fetchJson(`pms_projects?id=eq.${projId}&select=items:project->${arrKey}`);
+    const hit=((rows[0]&&rows[0].items)||[]).find(x=>x.id===id);
+    if(hit&&aiState(hit).state==="ready"){ const rec=findRec(kind,id); if(rec) rec.aiReview=hit.aiReview; const b=document.getElementById("aiReadyBar"); if(b) b.style.display="flex"; const w=document.getElementById("aiWaitBar"); if(w) w.style.display="none"; renderProject(); return; }
+    if(note) note.textContent="No review yet — Claude may still be working.";
+  }catch(e){ if(note) note.textContent="Could not check: "+e.message; }
+}
+/* Page-level watcher: while any listed item is waiting on Claude, poll every
+   minute and announce when a review lands (the editor has its own 20 s poll
+   for the item that is open). Stops on its own when nothing is waiting. */
+let _waitPoll=null, _aiOpen=null;
+function startWaitPoll(){
+  if(_waitPoll||!CURRENT) return;
+  const pending=()=>[...(CURRENT.rfis||[]).map(r=>({kind:"rfi",r})),...(CURRENT.submittals||[]).map(r=>({kind:"submittal",r}))].filter(x=>aiWaiting(x.r));
+  if(!pending().length) return;
+  _waitPoll=setInterval(async()=>{
+    try{
+      const wait=pending(); if(!wait.length){ clearInterval(_waitPoll); _waitPoll=null; return; }
+      const ids=[...new Set(wait.map(x=>x.r.__projId||(CURRENT.proj&&CURRENT.proj.id)).filter(Boolean))];
+      const rows=await fetchJson(`pms_projects?id=in.(${ids.join(",")})&select=id,rfis:project->rfis,submittals:project->submittals`);
+      const landed=[];
+      for(const x of wait){ const row=rows.find(p=>p.id===(x.r.__projId||(CURRENT.proj&&CURRENT.proj.id))); const hit=row&&((x.kind==="rfi"?row.rfis:row.submittals)||[]).find(i=>i.id===x.r.id);
+        if(hit&&aiState(hit).state==="ready"){ x.r.aiReview=hit.aiReview; landed.push(x); } }
+      if(!landed.length) return;
+      renderProject(); renderAiWaitBar();
+      if(landed.length===1){ _aiOpen={kind:landed[0].kind,id:landed[0].r.id}; toast(`🤖 Claude review ready for ${landed[0].r.number||"an item"}`, true, {label:"Open", fn:"function(){openEditor(_aiOpen.kind,_aiOpen.id)}"}); }
+      else toast(`🤖 ${landed.length} Claude reviews ready — look for the 🤖 on the rows`, true);
+    }catch(e){ /* best-effort */ }
+  },60000);
+}
 async function saveEditor(){
   if(!EDIT)return; const {kind,isNew,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
   if(!validateEditor(kind)){ EDIT.confirmIntake=false; return; }
