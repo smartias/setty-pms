@@ -174,10 +174,15 @@ notification metadata (Forma/Procore) tells you a submittal came in; it does
 NOT tell you which of the options on the page was selected. Reviewing the
 metadata without reading the marking is reviewing the envelope, not the letter.
 
-1. **Find the submitted file.** `list_project_documents` / `find_document` in
-   the submittal's own folder (the record's `spFolderUrl`), or the project's
-   Submittals folder, for the cut sheet / product data PDF. Get its
-   `driveId|itemId` composite.
+1. **Find the submitted file — in the item's folder first.** The contractor's
+   cut sheet and attachments are filed in the record's own SharePoint folder:
+   `read_rfi_submittal` returns it as `spFolderUrl` (and `intakeFormUrl` for a
+   portal item). Open it with `list_project_documents {projectNumber,
+   folderUrl: spFolderUrl}`, look under `IN` (and any per-email subfolder),
+   and take the cut sheet / product data PDF's `driveId|itemId` composite.
+   Fall back to `find_document` or the project's Submittals folder only when
+   the record has no folder or it is empty. Do NOT ask the reviewer to attach
+   the PDF while the folder has it: they filed it there so you would read it.
 2. **Read it two ways — text AND image:**
    - `read_document` for the text layer: enumerate the models/options printed
      on the page and their published performance data.
@@ -185,11 +190,12 @@ metadata without reading the marking is reviewing the envelope, not the letter.
      data-sheet page) renders the page as an IMAGE — the highlight, circle, or
      check is drawn on the raster, so you can SEE what was marked. Use a
      `region` zoom to read a dense capacity table or a handwritten note.
-   - **If the reviewer attached the PDF to this chat** (the most reliable
-     case), use the **pdf-highlighted-selections** skill together with the
-     public **pdf** skill instead — they read the annotation layer and mark
-     colors directly and catch faint highlights a single render can miss. Fall
-     back to `view_drawing` renders when the file lives only in SharePoint.
+   - **If the reviewer attached the PDF to this chat**, use the
+     **pdf-highlighted-selections** skill together with the public **pdf**
+     skill as well — they read the annotation layer and mark colors directly
+     and catch faint highlights a single render can miss. Ask for the
+     attachment only when the folder has no cut sheet, or a render is too
+     faint or too dense to read the mark with confidence; say which page.
 3. **Identify the selection with the highlighted-selections discipline:**
    - Exactly ONE thing marked → that is the selection. Record the product,
      model/size/tag, the marked options/accessories, the mark type, and where
