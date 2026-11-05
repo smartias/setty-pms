@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-05-transmittal-v28-specs";
+    window.__appVersion = "2026-11-05-transmittal-v29-current-set-celebration";
 
     // Theme, applied before the stylesheet paints so there is no flash of the
     // other scheme. Remembered per browser; first visit follows the OS setting.
@@ -422,6 +422,55 @@
       margin-top: 8px; padding-top: 7px;
       border-top: 3px double var(--red);
     }
+
+    /* ─── Current-set celebration ───
+       Plays once the register entry has actually landed: sheets fly into a
+       folder, the folder pops, and a card says the Current Set is updated
+       and what that means. Decorative overlay like the stamp: pointer-events
+       off, self-removing, static card only under prefers-reduced-motion. */
+    #setOverlay {
+      position: fixed; inset: 0; z-index: 9001; pointer-events: none;
+      display: flex; align-items: center; justify-content: center;
+    }
+    @media print { #setOverlay { display: none !important; } }
+    .set-stage { position: relative; width: 320px; height: 220px; }
+    .set-folder {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      font-size: 84px; line-height: 1; filter: drop-shadow(0 8px 18px rgba(0,0,0,.35));
+    }
+    .set-folder.set-pop { animation: setPop .45s cubic-bezier(.3,1.6,.5,1); }
+    @keyframes setPop { 0% { transform: translate(-50%, -50%) scale(1); } 45% { transform: translate(-50%, -50%) scale(1.22) rotate(-4deg); } 100% { transform: translate(-50%, -50%) scale(1); } }
+    .set-sheet {
+      position: absolute; width: 26px; height: 34px; border-radius: 3px;
+      background: #fff; border: 1.5px solid var(--navy);
+      box-shadow: 0 3px 8px rgba(0,0,0,.3);
+      left: var(--sx); top: var(--sy); opacity: 0;
+      animation: setFly .75s cubic-bezier(.4,0,.2,1) forwards; animation-delay: var(--sd);
+    }
+    .set-sheet::before, .set-sheet::after {
+      content: ""; position: absolute; left: 5px; right: 5px; height: 2px; background: var(--blue); opacity: .7;
+    }
+    .set-sheet::before { top: 8px; } .set-sheet::after { top: 15px; right: 10px; }
+    .set-sheet.set-spec { border-color: #6d28d9; } .set-sheet.set-spec::before, .set-sheet.set-spec::after { background: #6d28d9; }
+    @keyframes setFly {
+      0%   { opacity: 0; transform: translate(0, 0) rotate(var(--sr)) scale(1); }
+      15%  { opacity: 1; }
+      100% { opacity: 0; transform: translate(var(--dx), var(--dy)) rotate(0deg) scale(.35); }
+    }
+    .set-card {
+      position: fixed; left: 50%; bottom: 36px; transform: translateX(-50%) translateY(24px);
+      width: min(520px, calc(100% - 32px));
+      background: var(--card); color: var(--text); border: 1px solid var(--border);
+      border-left: 5px solid var(--ok-bd); border-radius: 12px; padding: 14px 18px;
+      box-shadow: 0 16px 40px rgba(0,0,0,.35); opacity: 0;
+      animation: setCardIn .4s ease forwards;
+    }
+    .set-card.set-out { animation: setCardOut .5s ease forwards; }
+    @keyframes setCardIn  { to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+    @keyframes setCardOut { to { opacity: 0; transform: translateX(-50%) translateY(16px); } }
+    .set-card-title { font-size: 15px; font-weight: 800; color: var(--ok-fg); display: flex; align-items: center; gap: 8px; }
+    .set-card-sub { font-size: 13px; font-weight: 600; margin-top: 4px; }
+    .set-card-what { font-size: 12px; color: var(--muted); line-height: 1.5; margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -1082,6 +1131,17 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
     try { const j = JSON.parse(body); detail = j.message || j.hint || j.details || ""; } catch (_) { detail = body.slice(0, 160); }
     throw new Error("the register refused the entry (HTTP " + res.status + (detail ? ": " + detail : "") + ")");
   }
+  const sheetsWritten = Array.isArray(row.files.sheets) ? row.files.sheets : [];
+  return {
+    distributionKind,
+    transmittalNumber: row.files.transmittalNumber || "",
+    issuedAt: (row.files.issuedAt || "").slice(0, 10),
+    milestoneName: row.files.milestoneName || "",
+    drawings: sheetsWritten.filter(x => x.kind !== "spec").length,
+    specs: sheetsWritten.filter(x => x.kind === "spec").length,
+    superseded: Array.isArray(row.files.replaces) ? row.files.replaces.length : 0,
+    firstForProject: !(historyTx || []).length,
+  };
 }
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
@@ -3405,7 +3465,7 @@ async function backfillTransmittal() {
   btn.disabled = true;
   setStatus("backfillStatus", "info", "\u23f3 Logging\u2026");
   try {
-    await logTransmittalGenerated("backfill", { sheetCount: included.length }, { issuedAt });
+    const logged = await logTransmittalGenerated("backfill", { sheetCount: included.length }, { issuedAt });
     let msNote = "";
     if (document.getElementById("backfillMilestone")?.checked) {
       const projId = resolveLogProjectId();
@@ -3426,6 +3486,7 @@ async function backfillTransmittal() {
     }
     setStatus("backfillStatus", "success", "\u2713 Logged " + included.length + " sheet" +
       (included.length === 1 ? "" : "s") + " as issued " + dateVal + "." + msNote);
+    celebrateCurrentSet(logged);
     void loadTransmittalHistory();
   } catch (e) {
     setStatus("backfillStatus", "error", "\u2717 " + e.message);
@@ -3544,7 +3605,7 @@ async function packageAsZip() {
 
     setStatus("deliverStatus", "success", `✓ "${archiveName}" downloaded (${done} file${done !== 1 ? "s" : ""} + cover sheet). Nothing was uploaded or emailed.`);
     logTransmittalGenerated("zip", { archiveName, fileCount: done })
-      .then(() => loadTransmittalHistory())
+      .then(r => { celebrateCurrentSet(r); return loadTransmittalHistory(); })
       .catch(e => setStatus("deliverStatus", "warn", `⚠ "${archiveName}" downloaded, but this issue was NOT logged to the transmittal register: ${e.message} It will not appear in the history or the Current Set.`));
   } catch(e) {
     setStatus("deliverStatus", "error", "✗ " + e.message);
@@ -3927,7 +3988,7 @@ async function saveToSharePoint() {
     setStatus("deliverStatus", "success", `✓ Saved to the SharePoint folder as "${generatedFileName}". Nothing was emailed.`);
     playStamp(generatedStamp);
     logTransmittalGenerated("save-sp", { docxFileName: generatedFileName })
-      .then(() => loadTransmittalHistory())
+      .then(r => { celebrateCurrentSet(r); return loadTransmittalHistory(); })
       .catch(e => setStatus("deliverStatus", "warn", `⚠ Saved to SharePoint as "${generatedFileName}", but this issue was NOT logged to the transmittal register: ${e.message} It will not appear in the history or the Current Set.`));
   } catch(e) {
     setStatus("deliverStatus", "error", "✗ " + e.message);
@@ -4171,7 +4232,7 @@ async function sendToClient() {
       linkUrl: linkUrl || undefined,
       packageName,
     })
-      .then(() => loadTransmittalHistory())
+      .then(r => { celebrateCurrentSet(r); return loadTransmittalHistory(); })
       .catch(e => setStatus("deliverStatus", "warn", `⚠ The Outlook draft is open, but this send was NOT logged to the transmittal register: ${e.message} It will not appear in the history or the Current Set.`));
   } catch (e) {
     setStatus("deliverStatus", "error", "✗ " + e.message);
@@ -4862,8 +4923,10 @@ function setStatus(id, type, msg) {
 // UI, and removes itself once the animation finishes.
 //   opts.number — transmittal no. shown on the stamp's sub-line (optional)
 //   opts.date   — formatted date shown on the sub-line (optional)
+let lastStampAt = 0;
 function playStamp(opts) {
   opts = opts || {};
+  lastStampAt = Date.now();
   // Accessibility: respect the OS "reduce motion" setting — no animation.
   if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 
@@ -4898,6 +4961,94 @@ function playStamp(opts) {
   }, SLAM + SHAKE + HOLD);
 
   setTimeout(() => overlay.remove(), SLAM + SHAKE + HOLD + OUT);
+}
+
+// ─── CURRENT-SET CELEBRATION ─────────────────────────────────────────────────
+// Fires only when logTransmittalGenerated resolved, i.e. the register row is
+// really there. That row is what the Claude connector's get_current_set and
+// the PMS Current Set panel read, so landing it is the moment worth marking,
+// and the card says so in words rather than leaving a quiet status line.
+//   info — the writer's return value: transmittalNumber, issuedAt, drawings,
+//          specs, superseded (prior rows replaced), firstForProject.
+function celebrateCurrentSet(info) {
+  if (!info) return;
+  // Let the TRANSMITTED stamp finish first when one just played.
+  const sinceStamp = Date.now() - lastStampAt;
+  if (sinceStamp < 2100) { setTimeout(() => celebrateCurrentSet(info), 2100 - sinceStamp); return; }
+
+  const stale = document.getElementById("setOverlay");
+  if (stale) stale.remove();
+  const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const title = info.superseded ? "Current set updated"
+              : info.firstForProject ? "Current set created"
+              : "Current set recorded";
+  const parts = [];
+  if (info.drawings) parts.push(info.drawings + " drawing" + (info.drawings === 1 ? "" : "s"));
+  if (info.specs) parts.push(info.specs + " spec section" + (info.specs === 1 ? "" : "s"));
+  const sub = [info.transmittalNumber, info.issuedAt, parts.join(", ")].filter(Boolean).join("  \u00b7  ");
+  const what = info.superseded
+    ? "This replaces the earlier entry for this folder. The Claude connector and the PMS Current Set panel now answer with this set."
+    : "This is now the authoritative issued set: the Claude connector (get_current_set) and the PMS Current Set panel answer with it.";
+
+  const overlay = document.createElement("div");
+  overlay.id = "setOverlay";
+  overlay.setAttribute("aria-hidden", "true");
+
+  if (!reduce) {
+    const stage = document.createElement("div");
+    stage.className = "set-stage";
+    const folder = document.createElement("div");
+    folder.className = "set-folder";
+    folder.textContent = "\ud83d\udcc2";
+    stage.appendChild(folder);
+    // Up to a dozen sheets from the edges, each with its own start, delay
+    // and tilt, converging on the folder. Specs get the purple rule lines.
+    const n = Math.min(12, Math.max(4, (info.drawings || 0) + (info.specs || 0)));
+    const specShare = n ? Math.round(n * ((info.specs || 0) / Math.max(1, (info.drawings || 0) + (info.specs || 0)))) : 0;
+    for (let i = 0; i < n; i++) {
+      const sheet = document.createElement("div");
+      sheet.className = "set-sheet" + (i < specShare ? " set-spec" : "");
+      const angle = (i / n) * Math.PI * 2 + (Math.random() - .5) * .6;
+      const radius = 150 + Math.random() * 60;
+      const sx = 160 + Math.cos(angle) * radius - 13, sy = 110 + Math.sin(angle) * radius - 17;
+      sheet.style.setProperty("--sx", sx + "px");
+      sheet.style.setProperty("--sy", sy + "px");
+      sheet.style.setProperty("--dx", (160 - 13 - sx) + "px");
+      sheet.style.setProperty("--dy", (110 - 17 - sy) + "px");
+      sheet.style.setProperty("--sr", ((Math.random() - .5) * 50).toFixed(0) + "deg");
+      sheet.style.setProperty("--sd", (i * 70) + "ms");
+      stage.appendChild(sheet);
+    }
+    overlay.appendChild(stage);
+    const lastLanding = (n - 1) * 70 + 750;
+    setTimeout(() => folder.classList.add("set-pop"), lastLanding - 120);
+    setTimeout(() => stage.remove(), lastLanding + 700);
+  }
+
+  const card = document.createElement("div");
+  card.className = "set-card";
+  card.innerHTML =
+    '<div class="set-card-title"><span aria-hidden="true">\u2705</span><span></span></div>' +
+    '<div class="set-card-sub"></div>' +
+    '<div class="set-card-what"></div>';
+  card.querySelector(".set-card-title span:last-child").textContent = title;
+  card.querySelector(".set-card-sub").textContent = sub;
+  card.querySelector(".set-card-what").textContent = what;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  const cardIn = reduce ? 0 : 900;          // after the first sheets have landed
+  const hold = 4200;
+  card.style.animationDelay = cardIn + "ms";
+  setTimeout(() => card.classList.add("set-out"), cardIn + hold);
+  setTimeout(() => overlay.remove(), cardIn + hold + 600);
+
+  // Same words in the status area, for screen readers and for anyone who
+  // looked away: the overlay is aria-hidden and gone in a few seconds.
+  const target = info.distributionKind === "backfill" ? "backfillStatus" : "deliverStatus";
+  const el = document.getElementById(target);
+  if (el && el.textContent) el.textContent += "  \u2705 " + title + (sub ? " (" + sub + ")" : "") + ".";
 }
 
 // The big word on the stamp. AEC transmittals carry real conventions here —
