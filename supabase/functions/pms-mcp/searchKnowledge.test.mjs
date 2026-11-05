@@ -11,15 +11,19 @@ let total = 0, failures = 0;
 const check = (ok, label) => { total++; if (!ok) { failures++; console.error("✗ " + label); } };
 
 // ── copies from index.ts ────────────────────────────────────────────────────
+const knowledgeTrades = (r) => {
+  const set = Array.isArray(r.disciplines) ? r.disciplines.filter(Boolean) : [];
+  return set.length ? set : (r.discipline ? [r.discipline] : []);
+};
 function filterKnowledge(rows, f) {
   const has = (v, needle) => String(v ?? "").toLowerCase().includes(needle);
   let out = rows;
   if (f.agency) { const a = f.agency.toLowerCase().trim(); out = out.filter((r) => has(r.agency, a)); }
-  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r) => has(r.discipline, d)); }
+  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r) => knowledgeTrades(r).some((t) => has(t, d))); }
   if (f.query) {
     const q = f.query.toLowerCase().trim();
     out = out.filter((r) =>
-      [r.lesson_summary, r.agency, r.discipline, r.system, r.issue_type, r.source_reference,
+      [r.lesson_summary, r.agency, ...knowledgeTrades(r), r.system, r.issue_type, r.source_reference,
        Array.isArray(r.tags) ? r.tags.join(" ") : r.tags]
         .some((v) => has(v, q)));
   }
@@ -27,24 +31,27 @@ function filterKnowledge(rows, f) {
 }
 const slimLesson = (r) => ({
   lessonId: r.lesson_id, project: r.project_id || undefined, agency: r.agency || undefined,
-  discipline: r.discipline || undefined, summary: r.lesson_summary,
+  discipline: r.discipline || undefined,
+  disciplines: knowledgeTrades(r).length > 1 ? knowledgeTrades(r) : undefined,
+  summary: r.lesson_summary,
   source: r.source_reference || undefined, date: (r.date_added || "").slice(0, 10) || undefined,
   status: r.status,
 });
 function filterPractices(rows, f) {
   const has = (v, needle) => String(v ?? "").toLowerCase().includes(needle);
   let out = rows;
-  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r) => has(r.discipline, d)); }
+  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r) => knowledgeTrades(r).some((t) => has(t, d))); }
   if (f.query) {
     const q = f.query.toLowerCase().trim();
     out = out.filter((r) =>
-      [r.title, r.practice_text, r.coord_theme, r.system, r.issue_type, r.discipline]
+      [r.title, r.practice_text, r.coord_theme, r.system, r.issue_type, ...knowledgeTrades(r)]
         .some((v) => has(v, q)));
   }
   return out;
 }
 const slimPractice = (r) => ({
   practiceId: r.practice_id, title: r.title, discipline: r.discipline || undefined,
+  disciplines: knowledgeTrades(r).length > 1 ? knowledgeTrades(r) : undefined,
   system: r.system || undefined, theme: r.coord_theme || undefined,
   practice: r.practice_text, confidence: r.confidence || undefined,
   date: (r.date_added || "").slice(0, 10) || undefined, status: r.status,
@@ -108,6 +115,26 @@ const slimP = slimPractice(PRACTICES[1]);
 check(slimP.system === undefined && slimP.theme === "Coordination", "practice nulls become undefined, theme maps from coord_theme");
 check(slimP.date === "2026-10-30" && slimP.practiceId === "p2", "practice id and trimmed date survive");
 
+// ── 4c. Multi-discipline entries (1.24.0) ───────────────────────────────────
+// An entry tagged with several trades is found under EACH of them; rows saved
+// before the disciplines column existed fall back to the single discipline.
+const MULTI = [
+  { lesson_id: "m1", lesson_summary: "Coordinate sleeves through rated slabs", discipline: "Mechanical",
+    disciplines: ["Mechanical", "Plumbing", "Fire Protection"], status: "approved", date_added: "2026-11-05T10:00:00Z" },
+  { lesson_id: "m2", lesson_summary: "Legacy row", discipline: "Electrical", status: "approved", date_added: "2026-11-01T10:00:00Z" },
+];
+check(filterKnowledge(MULTI, { discipline: "plumbing" }).map(r => r.lesson_id).join() === "m1", "lesson found under a NON-primary trade");
+check(filterKnowledge(MULTI, { discipline: "fire" }).length === 1, "lesson found under its third trade");
+check(filterKnowledge(MULTI, { discipline: "electrical" }).map(r => r.lesson_id).join() === "m2", "legacy single-discipline row still matches");
+check(filterKnowledge(MULTI, { query: "fire protection" }).length === 1, "free-text query covers every trade");
+check(JSON.stringify(slimLesson(MULTI[0]).disciplines) === '["Mechanical","Plumbing","Fire Protection"]', "multi-trade lesson exposes its trades");
+check(slimLesson(MULTI[1]).disciplines === undefined, "single-trade lesson output unchanged");
+const MULTI_P = [{ practice_id: "pm", title: "Rated penetrations", practice_text: "x", discipline: "Plumbing",
+  disciplines: ["Plumbing", "Electrical"], status: "approved" }];
+check(filterPractices(MULTI_P, { discipline: "Electrical" }).length === 1, "practice found under a NON-primary trade");
+check(filterPractices([{ ...MULTI_P[0], disciplines: [] }], { discipline: "Electrical" }).length === 0,
+  "empty trade list falls back to the primary only");
+
 // ── 5. Drift checks against the shipped source ─────────────────────────────
 import { readFileSync } from "node:fs";
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
@@ -123,7 +150,9 @@ has("visible = rows.filter((r: any) => !r.project_id || ok.has(r.project_id));",
 // Best practices fold-in (1.23.0): approved-only default, same archived toggle:
 has("function filterPractices(rows: any[]", "filterPractices");
 has("const slimPractice = (r: any) => ({", "slimPractice");
-has('"coord_theme,practice_text,confidence,status,date_added&status=" +\n        (includeArchived ? "in.(approved,archived)" : "eq.approved")', "practices approved-only default");
+has('"pms_best_practices?select=*&status=" +\n        (includeArchived ? "in.(approved,archived)" : "eq.approved")', "practices approved-only default");
+has('"pms_lessons?select=*&status=" + statuses +', "lessons read every column (disciplines) with the approved-only status");
+has("const knowledgeTrades = (r: any): string[] => {", "knowledgeTrades");
 has("bestPractices: practices.slice(0, KNOWLEDGE_RESULT_CAP).map(slimPractice),", "bestPractices in the response");
 // The briefing fold-in stays approved-only and per-project, and it tells the
 // model how many entries exist beyond the slice it shows:

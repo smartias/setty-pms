@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-11-02-intel-v37-heatmap-cache";
+    window.__appVersion = "2026-11-05-intel-v38-knowledge-multi-discipline";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -1192,16 +1192,82 @@ async function loadPractices() {
 }
 // Organized like the Lessons module — search + discipline/theme/type/status filters
 // and a review-count note.
+// Every knowledge entry (lessons, practices, agency preferences, standards) can
+// belong to several trades: `disciplines` (text[]) holds the set, `discipline`
+// stays the primary (first) one (migration 20261105120000_knowledge_disciplines).
+// Rows saved before the column existed, or by writers that only know
+// `discipline`, fall back to it.
+function knowledgeDisciplines(p) {
+  if (Array.isArray(p.disciplines) && p.disciplines.length) return p.disciplines;
+  return p.discipline ? [p.discipline] : [];
+}
+// Checkbox grid used by every knowledge editor. Trades outside the standard
+// list (older free-text values) are kept and shown, never silently dropped.
+function disciplineFieldsetHTML(current) {
+  const extra = current.filter(d => !DISCIPLINES.includes(d));
+  return `<fieldset class="fieldset full" style="border:1px solid var(--border);border-radius:8px;padding:8px 12px 10px;margin:0 0 12px">
+    <legend style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);padding:0 4px">Disciplines <span style="text-transform:none;font-weight:400;color:var(--muted)">(check every trade this applies to)</span></legend>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:4px 12px">
+      ${DISCIPLINES.map(d => `<label style="display:flex;align-items:center;gap:6px;font-size:13px;text-transform:none;letter-spacing:0;font-weight:400;margin:0;cursor:pointer"><input type="checkbox" class="kn-disc" value="${esc(d)}" ${current.includes(d)?"checked":""} style="width:auto;flex:none;margin:0;padding:0"/><span>${esc(d)}</span></label>`).join("")}
+    </div>
+    ${extra.length ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">Also tagged (not in the standard list, kept as is): ${extra.map(esc).join(", ")}</div>` : ""}
+  </fieldset>`;
+}
+// Read the checked trades. The entry's existing primary stays first when it is
+// still checked, so ticking an extra trade does not change which one leads.
+function readDisciplineCheckboxes(current) {
+  const checked = [...document.querySelectorAll("#modalMount .kn-disc:checked")].map(el => el.value);
+  const extra = current.filter(d => !DISCIPLINES.includes(d));
+  const all = [...checked, ...extra];
+  const primary = current[0];
+  return primary && all.includes(primary) ? [primary, ...all.filter(d => d !== primary)] : all;
+}
+// PATCH/POST a knowledge row. Until the disciplines column reaches the
+// database, PostgREST rejects that field: save everything else (primary trade
+// only) and say so, rather than failing the whole edit.
+async function knowledgeWrite(method, url, payload) {
+  try {
+    return await sb(method, url, payload);
+  } catch (e) {
+    if (!("disciplines" in payload) || !/disciplines/.test(String(e.message))) throw e;
+    const rest = Object.assign({}, payload);
+    delete rest.disciplines;
+    const out = await sb(method, url, rest);
+    if ((payload.disciplines || []).length > 1) toast("Saved with the first trade only \u2014 multi-trade storage is not live in the database yet.", "error");
+    return out;
+  }
+}
+const statusSelectHTML = (id, list, cur) =>
+  `<label for="${id}">Status</label><select id="${id}">${list.map(([v, l]) => `<option value="${v}" ${cur===v?"selected":""}>${esc(l)}</option>`).join("")}</select>`;
+const LESSON_STATUSES = [
+  ["suggested", "Suggested (not yet reviewed)"],
+  ["draft", "Needs review"],
+  ["approved", "Approved"],
+  ["rejected", "Rejected"],
+  ["archived", "Archived"],
+];
+const STANDARD_STATUSES = [
+  ["suggested", "Suggested (not yet reviewed)"],
+  ["active", "Approved (active)"],
+  ["superseded", "Superseded / rejected"],
+];
+// Status vocabulary for practices (pms_best_practices_status_check).
+const PRACTICE_STATUSES = [
+  ["suggested", "Suggested (mined, not yet reviewed)"],
+  ["draft", "Needs review"],
+  ["approved", "Approved"],
+  ["archived", "Rejected"],
+];
 function practicesFiltered() {
   const f = state.pfilter || (state.pfilter = {});
   return (state.practices || []).filter(p => {
-    if (f.discipline && (p.discipline || "") !== f.discipline) return false;
+    if (f.discipline && !knowledgeDisciplines(p).includes(f.discipline)) return false;
     if (f.theme && (p.coord_theme || "") !== f.theme) return false;
     if (f.status && (p.status || "") !== f.status) return false;
     if (f.type === "workflow" && p.issue_type !== "workflow") return false;
     if (f.type === "design" && p.issue_type === "workflow") return false;
     if (f.q) {
-      const hay = [p.title, p.practice_text, p.coord_theme, p.system, p.issue_type].join(" ").toLowerCase();
+      const hay = [p.title, p.practice_text, p.coord_theme, p.system, p.issue_type, ...knowledgeDisciplines(p)].join(" ").toLowerCase();
       if (!hay.includes(f.q.toLowerCase())) return false;
     }
     return true;
@@ -1212,7 +1278,7 @@ function renderPractices() {
   state.pfilter = state.pfilter || {};
   const all = state.practices || [];
   const themes = [...new Set(all.map(p => p.coord_theme).filter(Boolean))].sort();
-  const disciplines = [...new Set(all.map(p => p.discipline).filter(Boolean))].sort();
+  const disciplines = [...new Set(all.flatMap(knowledgeDisciplines))].sort();
   const opt = (arr, sel) => arr.map(a => `<option value="${esc(a)}" ${a===sel?"selected":""}>${esc(a)}</option>`).join("");
   $("view").innerHTML = `
     <div class="toolbar">
@@ -1294,7 +1360,7 @@ function renderPracticeCard(p) {
       <div class="lesson-meta">
         ${p.issue_type==="workflow"?`<span class="pill pill-purple">🧭 workflow</span>`:""}
         ${p.coord_theme?`<span class="pill pill-yellow">🎯 ${esc(p.coord_theme)}</span>`:""}
-        ${p.discipline?`<span class="pill pill-blue">${esc(p.discipline)}</span>`:""}
+        ${knowledgeDisciplines(p).map(d => `<span class="pill pill-blue">${esc(d)}</span>`).join(" ")}
         ${p.system?`<span class="pill pill-gray">${esc(p.system)}</span>`:""}
         <span class="pill ${conf}">conf: ${esc(p.confidence||"—")}</span>
         <span class="pill ${statusPill}">${esc(statusLabel)}</span>
@@ -1379,6 +1445,7 @@ function openPracticeForm(id) {
   if (!p) { toast("Practice not found — reload the tab.", "error"); return; }
   const sel = (arr, val) => `<option value=""></option>` + arr.map(a => `<option value="${esc(a)}" ${a===val?"selected":""}>${esc(a)}</option>`).join("");
   const themes = [...new Set((state.practices || []).map(x => x.coord_theme).filter(Boolean))].sort();
+  const curDisc = knowledgeDisciplines(p);
   $("modalMount").innerHTML = `
     <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="practiceModalTitle">
@@ -1388,13 +1455,13 @@ function openPracticeForm(id) {
           <input id="bp_title" value="${esc(p.title||"")}"/>
         </div>
         <div class="fieldset full">
-          <label for="bp_text">Practice text * <span style="text-transform:none;font-weight:400;color:var(--muted)">(the clarification/direction that surfaces on project briefs)</span></label>
+          <label for="bp_text">Practice text * <span style="text-transform:none;font-weight:400;color:var(--muted)">(the clarification/direction QA and submittal reviews apply)</span></label>
           <textarea id="bp_text" rows="4">${esc(p.practice_text||"")}</textarea>
         </div>
+        ${disciplineFieldsetHTML(curDisc)}
         <div class="form-grid">
           <div>
-            <label for="bp_discipline">Discipline</label>
-            <select id="bp_discipline">${sel(DISCIPLINES, p.discipline)}</select>
+            ${statusSelectHTML("bp_status", PRACTICE_STATUSES, p.status || "draft")}
           </div>
           <div>
             <label for="bp_theme">Theme</label>
@@ -1425,26 +1492,35 @@ function openPracticeForm(id) {
   focusModal();
 }
 function savePractice(id, approve) {
+  const p = (state.practices || []).find(x => x.practice_id === id) || {};
   // Capture the fields BEFORE any name modal replaces the form in modalMount.
+  const disciplines = readDisciplineCheckboxes(knowledgeDisciplines(p));
+  const status = approve ? "approved" : $("bp_status").value;
   const payload = {
     title: $("bp_title").value.trim(),
     practice_text: $("bp_text").value.trim(),
-    discipline: $("bp_discipline").value || null,
+    disciplines,
+    discipline: disciplines[0] || null,
     coord_theme: $("bp_theme").value.trim() || null,
     system: $("bp_system").value.trim() || null,
     issue_type: $("bp_issue").value.trim() || null,
     confidence: $("bp_conf").value,
+    status,
     updated_at: new Date().toISOString(),
   };
   if (!payload.title || !payload.practice_text) { toast("Title and practice text are required.", "error"); return; }
-  if (approve && !state.user) { openNameModal(() => writePractice(id, payload, true)); return; }
-  writePractice(id, payload, approve);
+  // Approving (by button or by the Status menu) records who approved, so it needs a name.
+  const approving = status === "approved" && p.status !== "approved";
+  if (approving && !state.user) { openNameModal(() => writePractice(id, payload, approving)); return; }
+  writePractice(id, payload, approving);
 }
-async function writePractice(id, payload, approve) {
-  if (approve) { payload.status = "approved"; payload.approved_by = state.user || null; }
+async function writePractice(id, payload, approving) {
+  if (approving) payload.approved_by = state.user || null;
+  const url = "/rest/v1/pms_best_practices?practice_id=eq." + encodeURIComponent(id);
   try {
-    await sb("PATCH", "/rest/v1/pms_best_practices?practice_id=eq." + encodeURIComponent(id), payload);
-    toast(approve ? "Saved & approved — it now surfaces on matching project briefs." : "Best practice updated.", "success");
+    await knowledgeWrite("PATCH", url, payload);
+    const label = (PRACTICE_STATUSES.find(([v]) => v === payload.status) || [, payload.status])[1];
+    toast(approving ? "Saved & approved — QA and submittal reviews will apply it." : `Best practice saved (${label}).`, "success");
     closeModal();
     await loadPractices();
   } catch (e) { toast("Save failed: " + e.message, "error"); }
@@ -1470,7 +1546,7 @@ function prefsFiltered() {
     if (f.type && (p.preference_type || "") !== f.type) return false;
     if (f.status && (p.status || "") !== f.status) return false;
     if (f.q) {
-      const hay = [p.requirement_or_preference, p.notes, p.source, p.discipline, p.applies_to].join(" ").toLowerCase();
+      const hay = [p.requirement_or_preference, p.notes, p.source, ...knowledgeDisciplines(p), p.applies_to].join(" ").toLowerCase();
       if (!hay.includes(f.q.toLowerCase())) return false;
     }
     return true;
@@ -1547,7 +1623,7 @@ function renderPrefCard(p) {
       <div class="lesson-summary">${esc(p.requirement_or_preference)}</div>
       <div class="lesson-meta">
         ${p.preference_type?`<span class="pill pill-purple">${esc(p.preference_type)}</span>`:""}
-        ${p.discipline && p.discipline!=="General"?`<span class="pill pill-blue">${esc(p.discipline)}</span>`:""}
+        ${knowledgeDisciplines(p).filter(d => d !== "General").map(d => `<span class="pill pill-blue">${esc(d)}</span>`).join(" ")}
         ${p.applies_to?`<span class="pill pill-gray">${esc(p.applies_to)}</span>`:""}
         <span class="pill ${statusPill}">${esc(statusLabel)}</span>
         ${mined?`<span class="pill pill-purple" title="Mined from project emails/RFIs — evidence in the note below">🤖 mined</span>`:""}
@@ -1585,11 +1661,11 @@ async function loadStandards() {
 function standardsFiltered() {
   const f = state.stds.f;
   return state.stds.rows.filter(r => {
-    if (f.discipline && (r.discipline || "") !== f.discipline) return false;
+    if (f.discipline && !knowledgeDisciplines(r).includes(f.discipline)) return false;
     if (f.basis && (r.basis || "") !== f.basis) return false;
     if (f.status && (r.status || "") !== f.status) return false;
     if (f.q) {
-      const hay = [r.standard_text, r.system, r.discipline, r.source_reference].join(" ").toLowerCase();
+      const hay = [r.standard_text, r.system, ...knowledgeDisciplines(r), r.source_reference].join(" ").toLowerCase();
       if (!hay.includes(f.q.toLowerCase())) return false;
     }
     return true;
@@ -1599,7 +1675,7 @@ function renderStandards() {
   if (!state.stds.loaded && !state.stds.loading) loadStandards();
   if (state.stds.loading || !state.stds.loaded) { setBusy(true); $("view").innerHTML = '<div class="empty" role="status">Loading…</div>'; return; }
   const all = state.stds.rows;
-  const disciplines = [...new Set(all.map(r => r.discipline).filter(Boolean))].sort();
+  const disciplines = [...new Set(all.flatMap(knowledgeDisciplines))].sort();
   const opt = (arr, sel) => arr.map(a => '<option value="' + esc(a) + '" ' + (a === sel ? "selected" : "") + '>' + esc(a) + '</option>').join("");
   const f = state.stds.f;
   const pending = all.filter(r => r.status === "suggested").length;
@@ -1630,7 +1706,7 @@ function renderStandardsList() {
   const rows = standardsFiltered();
   if (!rows.length) { el.innerHTML = '<div id="bulkBarS">' + bulkBar("S") + '</div><div class="empty">' + (state.stds.rows.length ? "No standards match these filters." : "No engineering standards yet.") + '</div>'; return; }
   const byDisc = {};
-  rows.forEach(r => (byDisc[r.discipline || "General"] = byDisc[r.discipline || "General"] || []).push(r));
+  rows.forEach(r => { const ds = knowledgeDisciplines(r); (ds.length ? ds : ["General"]).forEach(d => (byDisc[d] = byDisc[d] || []).push(r)); });
   el.innerHTML = '<div id="bulkBarS">' + bulkBar("S") + '</div>' + Object.keys(byDisc).sort().map(d => {
     const suggested = byDisc[d].filter(r => r.status === "suggested");
     const allSel = suggested.length && suggested.every(r => state.selS.has(r.standard_id));
@@ -1641,7 +1717,7 @@ function renderStandardsList() {
   }).join("");
 }
 function toggleStdDisciplineSel(disc) {
-  const suggested = standardsFiltered().filter(r => (r.discipline || "General") === disc && r.status === "suggested");
+  const suggested = standardsFiltered().filter(r => { const ds = knowledgeDisciplines(r); return (ds.length ? ds : ["General"]).includes(disc) && r.status === "suggested"; });
   const allSel = suggested.length && suggested.every(r => state.selS.has(r.standard_id));
   suggested.forEach(r => allSel ? state.selS.delete(r.standard_id) : state.selS.add(r.standard_id));
   renderStandardsList();
@@ -1666,6 +1742,7 @@ function renderStandardCard(r) {
       '<div class="lesson-meta">' +
         '<span class="pill ' + basisPill + '" title="What the position rests on">' + esc(STD_BASIS[r.basis] || r.basis || "Firm practice") + '</span>' +
         '<span class="pill ' + statusPill + '">' + esc(statusLabel) + '</span>' +
+        (knowledgeDisciplines(r).length > 1 ? knowledgeDisciplines(r).map(d => '<span class="pill pill-blue">' + esc(d) + '</span>').join(" ") : "") +
         (r.date_verified ? '<span class="pill pill-gray">verified ' + esc(r.date_verified) + '</span>' : "") +
       '</div></div><div class="lesson-actions">' + actions + '</div></div>' +
     (r.source_reference ? '<div class="lesson-sub" style="white-space:pre-wrap"><b>Source:</b> ' + esc(r.source_reference) + '</div>' : "") +
@@ -1683,16 +1760,15 @@ async function setStdStatus(id, status) {
 // Edit-only (no create): tighten wording, fix the source, or re-key a mined row.
 function openStandardForm(id) {
   const r = state.stds.rows.find(x => x.standard_id === id); if (!r) return;
-  const discs = [...new Set([...DISCIPLINES, r.discipline].filter(Boolean))];
   $("modalMount").innerHTML =
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
       '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="stdModalTitle">' +
         '<h3 id="stdModalTitle">Edit engineering standard</h3>' +
         '<div class="fieldset full"><label for="sf_text">Standard *</label>' +
           '<textarea id="sf_text" rows="5">' + esc(r.standard_text || "") + '</textarea></div>' +
+        disciplineFieldsetHTML(knowledgeDisciplines(r)) +
         '<div class="form-grid">' +
-          '<div><label for="sf_disc">Discipline</label><select id="sf_disc"><option value=""></option>' +
-            discs.map(d => '<option value="' + esc(d) + '" ' + (d === r.discipline ? "selected" : "") + '>' + esc(d) + '</option>').join("") + '</select></div>' +
+          '<div>' + statusSelectHTML("sf_status", STANDARD_STATUSES, r.status || "suggested") + '</div>' +
           '<div><label for="sf_basis">Basis</label><select id="sf_basis">' +
             Object.keys(STD_BASIS).map(k => '<option value="' + k + '" ' + ((r.basis || "firm") === k ? "selected" : "") + '>' + STD_BASIS[k] + '</option>').join("") + '</select></div>' +
           '<div class="full"><label for="sf_system">System</label><input id="sf_system" value="' + esc(r.system || "") + '" placeholder="e.g. Chilled water, Emergency power"/></div>' +
@@ -1706,19 +1782,25 @@ function openStandardForm(id) {
 async function saveStandard(id) {
   const text = $("sf_text").value.trim();
   if (!text) { toast("The standard text can't be empty.", "error"); return; }
+  const r = state.stds.rows.find(x => x.standard_id === id) || {};
+  const disciplines = readDisciplineCheckboxes(knowledgeDisciplines(r));
+  const status = $("sf_status").value;
   const payload = {
     standard_text: text,
-    discipline: $("sf_disc").value || null,
+    disciplines,
+    discipline: disciplines[0] || null,
+    status,
+    ...(status === "active" && r.status !== "active" ? { date_verified: new Date().toISOString().slice(0, 10) } : {}),
     system: $("sf_system").value.trim() || null,
     basis: $("sf_basis").value,
     source_reference: $("sf_source").value.trim() || null,
     updated_at: new Date().toISOString(),
   };
   try {
-    const done = await sb("PATCH", "/rest/v1/pms_engineering_standards?standard_id=eq." + encodeURIComponent(id), payload);
+    const done = await knowledgeWrite("PATCH", "/rest/v1/pms_engineering_standards?standard_id=eq." + encodeURIComponent(id), payload);
     if (!done || !done.length) { toast("No rows changed. You may lack the knowledge.review permission (ask an admin).", "error"); return; }
     closeModal();
-    toast("Standard saved.", "success");
+    toast("Standard saved (" + ((STANDARD_STATUSES.find(([v]) => v === status) || [, status])[1]) + ").", "success");
     await loadStandards();
   } catch (e) { toast("Save failed: " + e.message, "error"); }
 }
@@ -2067,14 +2149,14 @@ function lessonsFiltered() {
   const f = state.filter;
   return state.lessons.filter(l => {
     if (f.agency && (l.agency || "") !== f.agency) return false;
-    if (f.discipline && (l.discipline || "") !== f.discipline) return false;
+    if (f.discipline && !knowledgeDisciplines(l).includes(f.discipline)) return false;
     // "pending" is a combined view: mined lessons arrive as 'suggested', manual
     // ones as 'draft' — both are awaiting review.
     if (f.status === "pending") { if ((l.status || "") !== "draft" && (l.status || "") !== "suggested") return false; }
     else if (f.status && (l.status || "") !== f.status) return false;
     if (f.origin && (l.origin || "manual") !== f.origin) return false;
     if (f.q) {
-      const hay = [l.lesson_summary, l.system, l.issue_type, l.project_id, l.so_person, l.source_reference, (l.tags||[]).join(" ")].join(" ").toLowerCase();
+      const hay = [l.lesson_summary, l.system, l.issue_type, l.project_id, l.so_person, l.source_reference, (l.tags||[]).join(" "), ...knowledgeDisciplines(l)].join(" ").toLowerCase();
       if (!hay.includes(f.q.toLowerCase())) return false;
     }
     return true;
@@ -2172,7 +2254,7 @@ function renderLessonCard(l) {
   const srcType = l.source_type ? `<span class="pill pill-blue">${esc(l.source_type)}</span>` : "";
   const pills = [
     originBadge, authorPill, srcType,
-    l.discipline ? `<span class="pill pill-blue">${esc(l.discipline)}</span>` : "",
+    ...knowledgeDisciplines(l).map(d => `<span class="pill pill-blue">${esc(d)}</span>`),
     l.system ? `<span class="pill pill-purple">${esc(l.system)}</span>` : "",
     l.issue_type ? `<span class="pill pill-gray">${esc(l.issue_type)}</span>` : "",
     `<span class="pill ${confPill}">conf: ${esc(l.confidence||"—")}</span>`,
@@ -2230,6 +2312,7 @@ function openLessonForm(id) {
           <label for="f_summary">Lesson summary *</label>
           <textarea id="f_summary" rows="3" placeholder="What happened and what we learned…">${esc(l.lesson_summary||"")}</textarea>
         </div>
+        ${disciplineFieldsetHTML(knowledgeDisciplines(l))}
         <div class="form-grid">
           <div>
             <label for="f_project">Project</label>
@@ -2241,8 +2324,7 @@ function openLessonForm(id) {
             <input id="f_agency" value="${esc(l.agency||"")}" placeholder="e.g. DASNY, CUNY, SUNY, EDC"/>
           </div>
           <div>
-            <label for="f_discipline">Discipline</label>
-            <select id="f_discipline">${sel(DISCIPLINES, l.discipline)}</select>
+            ${statusSelectHTML("f_status", LESSON_STATUSES, l.status || "draft")}
           </div>
           <div>
             <label for="f_system">System</label>
@@ -2454,15 +2536,20 @@ function openMineModal() {
   focusModal();
 }
 
-async function saveLesson(id) {
+function saveLesson(id) {
   const summary = $("f_summary").value.trim();
   if (!summary) { toast("Lesson summary is required.", "error"); return; }
+  const prev = id ? (state.lessons.find(x => x.lesson_id === id) || {}) : {};
   const tags = $("f_tags").value.split(",").map(t => t.trim()).filter(Boolean);
+  const disciplines = readDisciplineCheckboxes(knowledgeDisciplines(prev));
+  const status = $("f_status").value;
   const payload = {
     lesson_summary: summary,
     project_id: $("f_project").value.trim() || null,
     agency: $("f_agency").value.trim() || null,
-    discipline: $("f_discipline").value || null,
+    disciplines,
+    discipline: disciplines[0] || null,
+    status,
     system: $("f_system").value.trim() || null,
     issue_type: $("f_issue").value || null,
     confidence: $("f_conf").value,
@@ -2472,14 +2559,25 @@ async function saveLesson(id) {
     tags,
     updated_at: new Date().toISOString(),
   };
+  // Approving through the Status menu records who approved, like the Approve button.
+  const approving = status === "approved" && prev.status !== "approved";
+  if (approving && !state.user) { openNameModal(() => writeLesson(id, payload, prev)); return; }
+  writeLesson(id, payload, prev);
+}
+async function writeLesson(id, payload, prev) {
+  const now = new Date().toISOString();
+  if (payload.status !== prev.status) {
+    if (payload.status === "approved") payload.approved_by = state.user || null;
+    if (payload.status === "approved" || payload.status === "rejected") payload.reviewed_at = now;
+  }
+  const label = (LESSON_STATUSES.find(([v]) => v === payload.status) || [, payload.status])[1];
   try {
     if (id) {
-      await sb("PATCH", "/rest/v1/pms_lessons?lesson_id=eq." + encodeURIComponent(id), payload);
-      toast("Lesson updated.", "success");
+      await knowledgeWrite("PATCH", "/rest/v1/pms_lessons?lesson_id=eq." + encodeURIComponent(id), payload);
+      toast(`Lesson saved (${label}).`, "success");
     } else {
-      payload.status = "draft";
-      await sb("POST", "/rest/v1/pms_lessons", payload);
-      toast("Lesson added as a draft.", "success");
+      await knowledgeWrite("POST", "/rest/v1/pms_lessons", payload);
+      toast(`Lesson added (${label}).`, "success");
     }
     closeModal();
     await reloadLessons();
