@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-05-pms-v188-current-set-specs";
+    window.__appVersion = "2026-11-05-pms-v189-review-status";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2884,7 +2884,7 @@ function DropMenu({ label, items, title }) {
             );
             return it.href
               ? <a key={i} role="menuitem" href={it.href} target="_blank" rel="noreferrer" title={it.title} style={itemStyle(false)}
-                  onMouseEnter={hover} onMouseLeave={unhover} onClick={() => setOpen(false)}>{body}</a>
+                  onMouseEnter={hover} onMouseLeave={unhover} onClick={() => { setOpen(false); if (it.onClick) it.onClick(); }}>{body}</a>
               : <button key={i} type="button" role="menuitem" title={it.title} disabled={!!it.disabled} style={itemStyle(!!it.disabled)}
                   onMouseEnter={hover} onMouseLeave={unhover} onClick={() => { setOpen(false); if (it.onClick) it.onClick(); }}>{body}</button>;
           })}
@@ -11134,6 +11134,53 @@ function isOverdue(item) {
 // Items the connector's scheduled intake appended from a Procore email carry
 // intakeReviewed:false until a person confirms them in the item modal.
 function isUnreviewedIntake(item) { return !!item && item.intakeReviewed === false; }
+// ── Claude review request state ───────────────────────────────────────────────
+// "Send to Claude for review" only opens a Claude tab, so the click records
+// aiReviewRequested {at, by} on the item (the Tracker and the add-in write the
+// same field) and the state is derived from it: none → waiting (sent, nothing
+// back) → stale (nothing back after CA_AI_STALE_MIN; usually the Claude tab
+// was closed before Enter, or the chat stalled) → ready (aiReview.at is newer
+// than the request).
+const CA_AI_STALE_MIN = 30;
+function caAiState(item) {
+  const req = item && item.aiReviewRequested, ai = item && item.aiReview;
+  const reqAt = req ? (Date.parse(req.at || "") || 0) : 0, aiAt = ai ? (Date.parse(ai.at || "") || 0) : 0;
+  if (reqAt && reqAt > aiAt) {
+    const mins = Math.max(0, Math.round((Date.now() - reqAt) / 60000));
+    return { state: mins >= CA_AI_STALE_MIN ? "stale" : "waiting", mins, by: String(req.by || "") };
+  }
+  return { state: ai ? "ready" : "none" };
+}
+function caAiWaiting(item) { const st = caAiState(item).state; return st === "waiting" || st === "stale"; }
+function caAgoLabel(m) { return m < 1 ? "just now" : m < 60 ? m + " min ago" : Math.round(m / 60) + " h ago"; }
+function caWhoName() {
+  try {
+    if (!window.settyAuth || !settyAuth.isSignedIn()) return "";
+    return String((settyAuth.displayName && settyAuth.displayName()) || (settyAuth.email && settyAuth.email()) || "").trim();
+  } catch (_) { return ""; }
+}
+// Row marker: ⏳ while a review is awaited, 🤖 once one is on the item.
+function AiReviewMark({ item }) {
+  const st = caAiState(item);
+  if (st.state === "none") return null;
+  const title = st.state === "ready" ? "Claude review waiting for sign-off — open to review"
+    : st.state === "stale" ? "Sent to Claude " + caAgoLabel(st.mins) + " and nothing came back — open to re-send"
+    : "Sent to Claude " + caAgoLabel(st.mins) + " — waiting for the review";
+  return (
+    <span title={title} role="img" aria-label={st.state === "ready" ? "Claude review pending" : "Waiting for Claude review"}
+      style={{ marginLeft: 6, fontSize: 11, verticalAlign: "middle" }}>{st.state === "ready" ? "🤖" : "⏳"}</span>
+  );
+}
+// Quiet notice toast (same element as the celebration toast, no confetti, not
+// gated by the celebrations preference): "Claude review ready for RFI-012".
+function pmsNotice(message) {
+  const el = document.getElementById("pmsCelebrationToast");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.remove("show"); void el.offsetWidth; el.classList.add("show");
+  clearTimeout(pmsNotice._t);
+  pmsNotice._t = setTimeout(() => el.classList.remove("show"), 6000);
+}
 function IntakeBadge({ item }) {
   if (!isUnreviewedIntake(item)) return null;
   const vendor = (item.intake && item.intake.vendor) || "a portal email";
@@ -11472,6 +11519,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   // pieces of the suggestion into the real fields, or dismisses it. Accepting
   // APPENDS to any existing text so a half-written response is never clobbered.
   const ai = form.aiReview || null;
+  const aiSt = caAiState(form);
   const projLabel = (project.name || "Project") + (project.projectNumber ? " (" + project.projectNumber + ")" : "");
   const aiSubject = isRFI ? (form.title || "") : (form.description || "");
   const reviewSeatUrl = "https://claude.ai/new?q=" + encodeURIComponent([
@@ -11677,6 +11725,25 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
     iv = setInterval(tick, 20000);
     return () => { alive = false; if (iv) clearInterval(iv); };
   }, [form.id]);
+  // "Waiting for Claude" bar: Check now re-runs the same look-up on demand;
+  // Send / Re-send records the request on the item (saved at once, like
+  // Confirm) so this modal, the list, the Tracker and the add-in all show ⏳.
+  const [aiNote, setAiNote] = React.useState("");
+  async function checkReviewNow() {
+    setAiNote("Checking…");
+    try {
+      const key = isRFI ? "rfis" : "submittals";
+      const rows = await fetchAllAnon("pms_projects?select=items:project->" + key + "&id=eq." + encodeURIComponent(project.id) + "&order=id", "review-ready check");
+      const hit = rows && rows[0] && (rows[0].items || []).find(x => String(x.number) === String(form.number) || String(x.id) === String(form.id));
+      const at = hit && hit.aiReview && hit.aiReview.at;
+      if (at && (!ai || at !== ai.at)) { setFreshReviewAt(at); setAiNote(""); return; }
+      setAiNote("No review yet — Claude may still be working.");
+    } catch (e) { setAiNote("Could not check: " + ((e && e.message) || e)); }
+  }
+  function markReviewRequested() {
+    const next = { ...form, aiReviewRequested: { at: new Date().toISOString(), by: caWhoName() || "(unknown)" } };
+    setForm(next); onSave(next); setAiNote("");
+  }
   function jumpToFreshReview() {
     // Unsaved edits die with the reload — never silently (Codex P1).
     if (!window.confirm("Reload to view the new Claude review?\n\nAny unsaved edits in this form will be DISCARDED. Cancel to save your edits first.")) return;
@@ -11993,6 +12060,20 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           <div style={{ fontSize: 11.5, color: P.textMuted, marginBottom: 10 }}>
             🌐 {isRFI ? "Response" : "Return"} posted to the client portal {String(form.portalReturn.at || "").slice(0, 10)}{form.portalReturn.by ? " by " + form.portalReturn.by : ""}.
             {" "}<a href={form.portalReturn.fileUrl} target="_blank" rel="noreferrer" style={{ color: P.accentLight }}>{form.portalReturn.fileName || "Open document"}</a>
+          </div>
+        )}
+        {/* Waiting-for-Claude bar: the request was recorded and nothing has landed yet */}
+        {(aiSt.state === "waiting" || aiSt.state === "stale") && !freshReviewAt && (
+          <div role="status" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: P.yellowDim, border: "1px solid " + P.yellow, borderRadius: 8, padding: "8px 12px", marginBottom: 14, fontSize: 12.5, color: P.text }}>
+            <span style={{ flex: "1 1 320px" }}>
+              {aiSt.state === "stale"
+                ? "⏳ Sent to Claude " + caAgoLabel(aiSt.mins) + " and nothing has come back. Usually the Claude tab was closed before the request was sent, or the chat stalled part way: re-send it, or type \"continue\" in that chat."
+                : "⏳ Sent to Claude" + (aiSt.by ? " by " + aiSt.by : "") + " " + caAgoLabel(aiSt.mins) + ". Waiting for the review — it usually takes a few minutes. This bar updates on its own when it lands."}
+              {aiNote && <span style={{ display: "block", color: P.textMuted, fontSize: 11.5, marginTop: 2 }}>{aiNote}</span>}
+            </span>
+            <Btn small variant="ghost" onClick={checkReviewNow}>Check now</Btn>
+            <a href={reviewSeatUrl} target="_blank" rel="noreferrer" onClick={markReviewRequested}
+               style={{ fontSize: 11.5, fontWeight: 600, color: P.accent, textDecoration: "none", whiteSpace: "nowrap" }}>Re-send</a>
           </div>
         )}
         {/* Review-ready banner: a fresh Claude review landed while this modal was open */}
@@ -12356,8 +12437,9 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
             {/* Related actions grouped behind two menus (the Tracker's pattern), so the
                 issue actions — Reply in Procore, Return via Portal, Draft Response — stand out. */}
             <DropMenu label="🤖 Claude" title="Review help from your Claude seat" items={[
-              { href: reviewSeatUrl, label: ai ? "Re-review with Claude" : "Send to Claude for review",
-                hint: "Opens your Claude seat with the review prefilled. It checks this " + (isRFI ? "RFI" : "submittal") + " against the current set and specs and saves a suggested " + (isRFI ? "response" : "response and stamp") + " here for your sign-off. Nothing is sent or stamped." },
+              { href: reviewSeatUrl, onClick: markReviewRequested,
+                label: aiSt.state === "ready" ? "Re-review with Claude" : aiSt.state === "none" ? "Send to Claude for review" : "Re-send to Claude",
+                hint: "Opens your Claude seat with the review prefilled. It checks this " + (isRFI ? "RFI" : "submittal") + " against the current set and specs and saves a suggested " + (isRFI ? "response" : "response and stamp") + " here for your sign-off. Nothing is sent or stamped. The item shows ⏳ until the review lands." },
               { href: pullReplySeatUrl, label: "Pull reply from email",
                 hint: "For reviewers who answered by email: finds the emailed reply to this " + (isRFI ? "RFI" : "submittal") + " and files it here as the suggested response, citing the email." },
             ]} />
@@ -13504,6 +13586,34 @@ function RFIsView({ project, onChange, staff, clients }) {
   const [filterStatus, setFilterStatus] = useState("All");
   const [filterDisc, setFilterDisc] = useState("All");
   const [search, setSearch] = useState("");
+  // Waiting-for-Claude watcher: while any item here was sent for review and
+  // nothing has come back, poll once a minute and say so when a review lands.
+  // The landed review is kept locally (freshAi) so the marker and the modal
+  // see it without re-saving the project; the next project load has it anyway.
+  const [freshAi, setFreshAi] = React.useState({});
+  const KEY_LIST = rfis;
+  const waitKey = KEY_LIST.map(x => x.id + ":" + ((x.aiReviewRequested || {}).at || "") + ":" + ((x.aiReview || {}).at || "")).join("|");
+  React.useEffect(() => {
+    const waiting = KEY_LIST.filter(x => caAiWaiting(x) && !freshAi[x.id]);
+    if (!waiting.length || !project.id) return undefined;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const rows = await fetchAllAnon("pms_projects?select=items:project->rfis&id=eq." + encodeURIComponent(project.id) + "&order=id", "review-ready watcher");
+        if (!alive || !rows || !rows[0]) return;
+        const items = rows[0].items || []; const landed = [];
+        for (const w of waiting) { const hit = items.find(x => x.id === w.id); if (hit && caAiState(hit).state === "ready") landed.push(hit); }
+        if (!landed.length) return;
+        setFreshAi(prev => { const n = { ...prev }; for (const h of landed) n[h.id] = h.aiReview; return n; });
+        pmsNotice(landed.length === 1 ? "🤖 Claude review ready for " + (landed[0].number || "an item") + " — open it to see the suggestions."
+                                      : "🤖 " + landed.length + " Claude reviews ready — look for the 🤖 on the rows.");
+      } catch (e) { /* best-effort */ }
+    };
+    const iv = setInterval(tick, 60000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [project.id, waitKey, Object.keys(freshAi).join("|")]);
+  const withFresh = x => (freshAi[x.id] && !(x.aiReview && x.aiReview.at === freshAi[x.id].at)) ? { ...x, aiReview: freshAi[x.id] } : x;
+  const openItem = x => setEditing(withFresh(x));
 
   // Item deep link from an assignment email: open the linked RFI once.
   React.useEffect(() => {
@@ -13615,7 +13725,7 @@ function RFIsView({ project, onChange, staff, clients }) {
               }).filter(Boolean);
               return (
                 <tr key={r.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
-                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}<IntakeBadge item={r} /><IntakeStatusBadge item={r} /></td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}<IntakeBadge item={r} /><IntakeStatusBadge item={r} /><AiReviewMark item={withFresh(r)} /></td>
                   <td>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{r.title || <span style={{ color: P.textDim }}>No title</span>}</div>
                     {r.description && <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>{r.description.slice(0, 80)}{r.description.length > 80 ? "…" : ""}</div>}
@@ -13633,7 +13743,7 @@ function RFIsView({ project, onChange, staff, clients }) {
                   <td><Badge color={sc} text={r.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}<CaBallChip item={r} type="rfi" project={project} /></td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
-                      <Btn small variant="ghost" onClick={() => setEditing(r)}>Open</Btn>
+                      <Btn small variant="ghost" onClick={() => openItem(r)}>Open</Btn>
                       <Btn small variant="danger" aria-label={"Delete " + (r.number || "RFI")} onClick={() => deleteRFI(r.id)}>✕</Btn>
                     </div>
                   </td>
@@ -13668,6 +13778,34 @@ function SubmittalsView({ project, onChange, staff, clients }) {
   const [filterStatus, setFilterStatus] = useState("All");
   const [filterDisc, setFilterDisc] = useState("All");
   const [search, setSearch] = useState("");
+  // Waiting-for-Claude watcher: while any item here was sent for review and
+  // nothing has come back, poll once a minute and say so when a review lands.
+  // The landed review is kept locally (freshAi) so the marker and the modal
+  // see it without re-saving the project; the next project load has it anyway.
+  const [freshAi, setFreshAi] = React.useState({});
+  const KEY_LIST = subs;
+  const waitKey = KEY_LIST.map(x => x.id + ":" + ((x.aiReviewRequested || {}).at || "") + ":" + ((x.aiReview || {}).at || "")).join("|");
+  React.useEffect(() => {
+    const waiting = KEY_LIST.filter(x => caAiWaiting(x) && !freshAi[x.id]);
+    if (!waiting.length || !project.id) return undefined;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const rows = await fetchAllAnon("pms_projects?select=items:project->submittals&id=eq." + encodeURIComponent(project.id) + "&order=id", "review-ready watcher");
+        if (!alive || !rows || !rows[0]) return;
+        const items = rows[0].items || []; const landed = [];
+        for (const w of waiting) { const hit = items.find(x => x.id === w.id); if (hit && caAiState(hit).state === "ready") landed.push(hit); }
+        if (!landed.length) return;
+        setFreshAi(prev => { const n = { ...prev }; for (const h of landed) n[h.id] = h.aiReview; return n; });
+        pmsNotice(landed.length === 1 ? "🤖 Claude review ready for " + (landed[0].number || "an item") + " — open it to see the suggestions."
+                                      : "🤖 " + landed.length + " Claude reviews ready — look for the 🤖 on the rows.");
+      } catch (e) { /* best-effort */ }
+    };
+    const iv = setInterval(tick, 60000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [project.id, waitKey, Object.keys(freshAi).join("|")]);
+  const withFresh = x => (freshAi[x.id] && !(x.aiReview && x.aiReview.at === freshAi[x.id].at)) ? { ...x, aiReview: freshAi[x.id] } : x;
+  const openItem = x => setEditing(withFresh(x));
   const [showRegister, setShowRegister] = useState(false);
 
   // Item deep link from an assignment email: open the linked submittal once.
@@ -13843,7 +13981,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
               }).filter(Boolean);
               return (
                 <tr key={s.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
-                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{s.number}<IntakeBadge item={s} /><IntakeStatusBadge item={s} /></td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{s.number}<IntakeBadge item={s} /><IntakeStatusBadge item={s} /><AiReviewMark item={withFresh(s)} /></td>
                   <td>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{s.description || <span style={{ color: P.textDim }}>No description</span>}</div>
                     {s.registerItemId && <div style={{ fontSize: 10, color: P.green, marginTop: 2 }}>✓ From register</div>}
@@ -13862,7 +14000,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
                   <td><Badge color={sc} text={s.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}<CaBallChip item={s} type="submittal" project={project} /></td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
-                      <Btn small variant="ghost" onClick={() => setEditing(s)}>Open</Btn>
+                      <Btn small variant="ghost" onClick={() => openItem(s)}>Open</Btn>
                       <Btn small variant="danger" aria-label={"Delete " + (s.number || "submittal")} onClick={() => deleteSubmittal(s.id)}>✕</Btn>
                     </div>
                   </td>
