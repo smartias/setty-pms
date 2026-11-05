@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-05-transmittal-v26-light-dark";
+    window.__appVersion = "2026-11-05-transmittal-v27-log-past-vs-repair-links";
 
     // Theme, applied before the stylesheet paints so there is no flash of the
     // other scheme. Remembered per browser; first visit follows the OS setting.
@@ -705,6 +705,7 @@
     <h2 class="card-title"><span class="step-num" aria-hidden="true">4</span> Deliver</h2>
     <p class="hint">The cover sheet is built from steps 2 and 3 when you click an action, so it always matches what is on screen. Nothing is emailed automatically: the draft opens in Outlook for you to review and send.</p>
     <div class="status" id="deliverAuthNote" role="status"></div>
+    <div class="status" id="deliverPastNote" role="status"></div>
 
     <!-- Delivery-method picker. The person sending chooses how the package
          reaches the client, so a broken/unavailable portal never blocks a
@@ -744,7 +745,7 @@
        collapsed. Shown with the sheet list because it needs the checked rows. -->
   <div class="card" id="backfillCard" style="display:none;border-left:3px solid var(--amber,#d97706)">
     <details class="quiet">
-      <summary><strong style="color:var(--text)">Log a past transmittal (backfill)</strong> — record a set that already went out, without sending anything</summary>
+      <summary id="backfillSummary"><strong style="color:var(--text)">Log a past transmittal</strong> — record a set that already went out, without sending anything</summary>
       <div class="hint" style="margin-top:10px">
         For logging historic submissions so the drawing register covers past issues. This <strong>only writes the log entry</strong>:
         nothing is zipped, uploaded, emailed or sent. Load the submission folder in step 1, check the sheets that went out in step 3, make sure
@@ -753,13 +754,13 @@
       </div>
       <div class="status" id="backfillAuthNote" role="status"></div>
       <div class="action-row">
-        <span style="font-size:12.5px">Logs the checked sheets as issued on <strong id="backfillDateEcho">—</strong></span>
-        <button class="btn" id="backfillBtn" style="background:var(--warn-bg);color:var(--warn-fg);border:1px solid var(--warn-bd)">&#128194; Log past transmittal</button>
-        <label for="backfillMilestone" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--text);margin:0">
-          <input type="checkbox" id="backfillMilestone" checked>
-          Also add to the schedule as a completed milestone
-        </label>
+        <button class="btn" id="backfillBtn" style="background:var(--warn-bg);color:var(--warn-fg);border:1px solid var(--warn-bd)">&#128194; Log this set as issued on <span id="backfillDateEcho">—</span></button>
+        <span class="hint" style="margin:0">Writes the checked sheets to the transmittal register. Nothing is sent or saved.</span>
       </div>
+      <label for="backfillMilestone" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--text);margin:10px 0 0">
+        <input type="checkbox" id="backfillMilestone" checked>
+        Also add to the schedule as a completed milestone
+      </label>
       <div class="status" id="backfillStatus" role="status" style="margin-top:12px;margin-bottom:0"></div>
     </details>
   </div>
@@ -774,10 +775,14 @@
     </h2>
     <div class="status" id="historyStatus" role="status"></div>
     <div id="historyTableWrap" style="overflow-x:auto"></div>
-    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <button class="btn btn-ghost" id="backfillWebUrlsBtn" title="One-time maintenance: fill direct file links (Graph webUrl) on past transmittal rows that lack them, by matching each sheet's filename in its SharePoint folder. Only fills blanks; safe to re-run.">&#128279; Backfill file links</button>
-      <span class="status" id="backfillWebUrlsStatus" role="status" style="margin:0"></span>
-    </div>
+    <details class="quiet" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <summary>Maintenance</summary>
+      <div class="hint" style="margin-top:8px">Repairs old register entries across <strong>all projects</strong> by filling in missing per-file links. It never creates an entry: to record a set that went out, use <strong>Log a past transmittal</strong> above.</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-ghost" id="backfillWebUrlsBtn" title="One-time maintenance: fill direct file links (Graph webUrl) on past transmittal rows that lack them, by matching each sheet's filename in its SharePoint folder. Only fills blanks; safe to re-run.">&#128295; Repair missing file links on old entries</button>
+        <span class="status" id="backfillWebUrlsStatus" role="status" style="margin:0"></span>
+      </div>
+    </details>
   </div>
 
 </main>
@@ -3142,6 +3147,7 @@ function prefillIssueDate() {
 function updateIssueDateHint() {
   const echo = document.getElementById("backfillDateEcho");
   if (echo) echo.textContent = issueDate();
+  updateDeliverPastNote();
   const el = document.getElementById("issueDateHint");
   if (!el) return;
   const uses = "Goes on the cover sheet, into the register, and on any backfill.";
@@ -3151,6 +3157,24 @@ function updateIssueDateHint() {
     el.textContent = "Read from the folder name \u201c" + datedPathSegment(resolvedFolderPath) + "\u201d. " + uses + " Change it if the set went out on another day.";
   } else {
     el.textContent = "Today, because the folder name carries no date. Change it if the set went out on another day. " + uses;
+  }
+}
+
+// A set dated more than a week back has, as a rule, already gone out. The
+// Deliver card is where people land, so say there that the register entry
+// for an already-sent set comes from the panel below, not from sending it
+// again. (The first K128 attempt used the file-link repair tool under the
+// history instead, which never creates an entry.)
+function updateDeliverPastNote() {
+  const el = document.getElementById("deliverPastNote");
+  if (!el) return;
+  const d = issueDate();
+  const ageDays = (Date.now() - new Date(d + "T12:00:00Z").getTime()) / 86400000;
+  if (issueDateSource !== "today" && ageDays > 7) {
+    setStatus("deliverPastNote", "info",
+      "\u2139 This set is dated " + d + ". If it already went out, do not send it again: record it with \u201cLog a past transmittal\u201d below.");
+  } else {
+    setStatus("deliverPastNote", "", "");
   }
 }
 
@@ -4153,7 +4177,7 @@ async function backfillWebUrls() {
   const btn = document.getElementById("backfillWebUrlsBtn");
   const S = "backfillWebUrlsStatus";
   if (!settyAuth || !settyAuth.token()) { setStatus(S, "error", "Sign in first."); return; }
-  if (!window.confirm("Backfill direct file links on past transmittal rows across all projects?\n\nThis lists each set's SharePoint folder and fills in missing per-file links. It only fills blanks and changes no dates. Safe to re-run.")) return;
+  if (!window.confirm("Repair missing file links on past register entries across ALL projects?\n\nThis lists each set's SharePoint folder and fills in missing per-file links. It creates no entries, only fills blanks, and changes no dates. Safe to re-run.\n\n(To record a set that went out, cancel and use \u201cLog a past transmittal\u201d instead.)")) return;
   btn.disabled = true;
   setStatus(S, "info", "⏳ Loading register…");
   const headers = {
