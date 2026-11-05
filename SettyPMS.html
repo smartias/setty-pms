@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-05-pms-v190-assign-email";
+    window.__appVersion = "2026-11-05-pms-v191-issue-handoff";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -11166,6 +11166,33 @@ function caAiLead(st) {
     : "⏳ Sent to Claude" + (st.by ? " by " + st.by : "") + " " + ago + ". Waiting for Claude to pick it up — this updates on its own.";
 }
 function caAgoLabel(m) { return m < 1 ? "just now" : m < 60 ? m + " min ago" : Math.round(m / 60) + " h ago"; }
+// ── Hand-off: "Answer ready" ───────────────────────────────────────────────────
+// Engineers sometimes issue their own responses and sometimes hand them to the
+// CA coordinator. answerReady {at, by} on an OPEN item says "answered, not yet
+// issued"; it clears when the status moves on (Responded / Returned / Closed /
+// Void), which is what issuing does. The Tracker and the add-in read the same field.
+function caIsOpenStatus(isRFI, status) { return (isRFI ? RFI_OPEN_STATUSES : SUB_OPEN_STATUSES).includes(status || ""); }
+function isAnswerReady(item, isRFI) { return !!(item && item.answerReady && item.answerReady.at) && caIsOpenStatus(isRFI, item.status); }
+function AnswerReadyBadge({ item, isRFI }) {
+  if (!isAnswerReady(item, isRFI)) return null;
+  const mins = Math.max(0, Math.round((Date.now() - (Date.parse(item.answerReady.at) || Date.now())) / 60000));
+  return (
+    <span title={"Answered by " + (item.answerReady.by || "the engineer") + " " + caAgoLabel(mins) + " — waiting to be issued to the contractor"}
+      style={{ display: "inline-block", marginLeft: 6, padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, fontFamily: "inherit", background: P.greenDim, color: P.green, verticalAlign: "middle" }}>
+      Ready to issue
+    </span>
+  );
+}
+// How a response leaves the building depends on the job's CA platform.
+function caIssueGuide(platform, isRFI) {
+  const p = String(platform || "").replace(/\?$/, "");
+  if (p === "Procore") return isRFI
+    ? { where: "Procore", how: "Reply in Procore: a reply to the Procore notification email, carrying the response, is logged by Procore as the RFI response." }
+    : { where: "Procore", how: "Procore submittals are returned in Procore: upload the stamped document and record the response there, then set the status here to Returned (or Resubmittal Required)." };
+  if (p === "Client Portal") return { where: "the client portal", how: "Return via Portal writes the " + (isRFI ? "response" : "stamped return") + " into the portal's Deliverables folder and records it." };
+  if (p) return { where: p, how: "Post the " + (isRFI ? "response" : "review and stamp") + " in " + p + " so the contractor's log closes there, then set the status here. An email alone does not close " + p + "." };
+  return { where: "email", how: "Email the formal " + (isRFI ? "response" : "return") + " to the contractor with Draft " + (isRFI ? "Response" : "Return") + "." };
+}
 function caWhoName() {
   try {
     if (!window.settyAuth || !settyAuth.isSignedIn()) return "";
@@ -11585,7 +11612,9 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
     if (ai && ai.suggestedResponse && (form[respKey] || "").trim()) {
       recordAiReviewFeedback(classifyAiReviewOutcome(ai.suggestedResponse, form[respKey]), form);
     }
-    onSave(form); onClose();
+    const out = { ...form };
+    if (out.answerReady && !caIsOpenStatus(isRFI, out.status)) delete out.answerReady; // issued (or closed): the hand-off is done
+    onSave(out); onClose();
   }
   // Scheduled-intake items: the person confirms the discipline/assignee and
   // the item starts counting (overdue, dashboards) like any other.
@@ -11772,6 +11801,15 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
     const next = { ...form, aiReviewRequested: { at: new Date().toISOString(), by: caWhoName() || "(unknown)" } };
     setForm(next); onSave(next); setAiNote("");
   }
+  // Hand-off to the CA coordinator: saved at once (with the form's current
+  // text, so the issuer sees the final answer), cleared by Clear or by issuing.
+  function markAnswerReady(on) {
+    const next = { ...form };
+    if (on) next.answerReady = { at: new Date().toISOString(), by: caWhoName() || "(unknown)" }; else delete next.answerReady;
+    setForm(next); onSave(next);
+  }
+  const issueGuide = caIssueGuide(project.caPortal && project.caPortal.platform, isRFI);
+  const platformLink = ((project.externalLinks || []).find(l => l && l.caPortal && /^https:/i.test(l.url || "")) || {}).url || "";
   function jumpToFreshReview() {
     // Unsaved edits die with the reload — never silently (Codex P1).
     if (!window.confirm("Reload to view the new Claude review?\n\nAny unsaved edits in this form will be DISCARDED. Cancel to save your edits first.")) return;
@@ -11808,8 +11846,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           + (form.spFolderUrl ? "<a href='" + String(form.spFolderUrl).replace(/'/g, "%27") + "'>the SharePoint folder</a>" : "the SharePoint folder (no link on the item yet; ask " + (esc(pmName) || "the sender") + ")") + ".")
       + li(isRFI ? "Write your answer in the <b>Response</b> field. <i>Copy into Response</i> takes the Claude suggestion if it is right; edit it until it is yours. Anything internal goes in <b>Internal notes</b>, which never leave the office."
                  : "Pick the <b>Stamp</b> and write the <b>Review comments</b> that go back to the contractor. The status follows the stamp. Anything internal goes in <b>Internal notes</b>, which never leave the office.")
-      + li(isRFI ? "Set <b>Responded</b> to today, Save, then <b>Email → Draft response email</b>: that opens the formal response for you to check and send. From Outlook, the same is <i>Log Response</i> on any email filed to this RFI."
-                 : "Set <b>Returned</b> to today, Save, then <b>Email → Draft return email</b>: that opens the return for you to check and send. From Outlook, the same is <i>Log Review</i> on any email filed to this submittal.")
+      + li("When your answer is final, either issue it yourself — the item's <b>Issue it</b> panel shows how for this job (" + esc(issueGuide.where) + ") — or press <b>Answer ready — hand to CA</b> and " + (esc(pmName) || "the CA coordinator") + " issues it. Issuing sets the status to " + (isRFI ? "Responded" : "Returned") + ".")
       + li("If this is not yours, or you cannot meet the date, tell " + (esc(pmName) || "the project manager") + " today rather than on the due date.")
       + "</ol>";
     const bodyHtml = "<div style='font-family:Segoe UI,sans-serif;font-size:13px;color:#1a1a1a'>"
@@ -12480,8 +12517,30 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           />
         </div>
 
+        {/* Issue it: how responses leave on this job, and the hand-off to the CA coordinator */}
+        {!item?.__isNew && (
+          <div style={{ marginTop: 20, border: `1px solid ${P.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 12.5, background: P.bg }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", color: P.textDim, marginBottom: 6 }}>Issue it — this job runs on {issueGuide.where}</div>
+            <div style={{ color: P.text }}>{issueGuide.how} Issue it yourself with the buttons below, or mark the answer ready and the CA coordinator will.</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
+              {isAnswerReady(form, isRFI)
+                ? <React.Fragment>
+                    <AnswerReadyBadge item={form} isRFI={isRFI} />
+                    <span style={{ color: P.textMuted, fontSize: 11.5 }}>answered by {form.answerReady.by || ""}</span>
+                    <Btn small variant="ghost" onClick={() => markAnswerReady(false)}>Clear</Btn>
+                  </React.Fragment>
+                : <Btn small onClick={() => markAnswerReady(true)} title="Mark the answer final so the CA coordinator issues it. Your edits in this form are saved with it.">✓ Answer ready — hand to CA</Btn>}
+              {platformLink && !/^(Procore)$/.test(issueGuide.where) && issueGuide.where !== "email" && issueGuide.where !== "the client portal" && (
+                <a href={platformLink} target="_blank" rel="noreferrer" style={{ fontSize: 11.5, fontWeight: 600, color: P.accent, textDecoration: "none" }}>Open {issueGuide.where} ↗</a>
+              )}
+              {!isRFI && issueGuide.where === "Procore" && platformLink && (
+                <a href={platformLink} target="_blank" rel="noreferrer" style={{ fontSize: 11.5, fontWeight: 600, color: P.accent, textDecoration: "none" }}>Open Procore ↗</a>
+              )}
+            </div>
+          </div>
+        )}
         {/* Action buttons */}
-        <div style={{ marginTop: 20, borderTop: `1px solid ${P.border}`, paddingTop: 16, display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ marginTop: 12, borderTop: `1px solid ${P.border}`, paddingTop: 16, display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             {/* Related actions grouped behind two menus (the Tracker's pattern), so the
                 issue actions — Reply in Procore, Return via Portal, Draft Response — stand out. */}
@@ -13774,7 +13833,7 @@ function RFIsView({ project, onChange, staff, clients }) {
               }).filter(Boolean);
               return (
                 <tr key={r.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
-                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}<IntakeBadge item={r} /><IntakeStatusBadge item={r} /><AiReviewMark item={withFresh(r)} /></td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}<IntakeBadge item={r} /><IntakeStatusBadge item={r} /><AiReviewMark item={withFresh(r)} /><AnswerReadyBadge item={r} isRFI={true} /></td>
                   <td>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{r.title || <span style={{ color: P.textDim }}>No title</span>}</div>
                     {r.description && <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>{r.description.slice(0, 80)}{r.description.length > 80 ? "…" : ""}</div>}
@@ -14030,7 +14089,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
               }).filter(Boolean);
               return (
                 <tr key={s.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
-                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{s.number}<IntakeBadge item={s} /><IntakeStatusBadge item={s} /><AiReviewMark item={withFresh(s)} /></td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{s.number}<IntakeBadge item={s} /><IntakeStatusBadge item={s} /><AiReviewMark item={withFresh(s)} /><AnswerReadyBadge item={s} isRFI={false} /></td>
                   <td>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{s.description || <span style={{ color: P.textDim }}>No description</span>}</div>
                     {s.registerItemId && <div style={{ fontSize: 10, color: P.green, marginTop: 2 }}>✓ From register</div>}
