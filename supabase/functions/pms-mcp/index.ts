@@ -1381,9 +1381,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-03-portal-logs";
+const BUILD = "2026-11-05-practice-disciplines";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.23.0",
+  name: "setty-pms", version: "1.24.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -10853,6 +10853,16 @@ const LETTERHEAD_INSTRUCTIONS = {
   filing: FILING_GUIDANCE,
 };
 
+// Knowledge entries can carry several trades (1.24.0, migration
+// 20261105120000_knowledge_disciplines): `disciplines` (text[]) is the set,
+// `discipline` the primary. Every knowledge discipline filter matches ANY of
+// them, so a Mechanical + Plumbing entry reaches both disciplines' reviews.
+// Rows read before the column existed fall back to `discipline`.
+const knowledgeTrades = (r: any): string[] => {
+  const set = Array.isArray(r.disciplines) ? r.disciplines.filter(Boolean) : [];
+  return set.length ? set : (r.discipline ? [r.discipline] : []);
+};
+
 mcp.tool("search_agency_preferences", {
   description:
     "Setty's KNOWLEDGE LAYER on how each client agency actually works: mined, verified process rules and " +
@@ -10870,13 +10880,13 @@ mcp.tool("search_agency_preferences", {
   }),
   handler: async ({ agency, query, discipline, includeArchived }) => {
     const rows = await sbGetAll(
-      "pms_agency_preferences?select=agency,preference_type,discipline,requirement_or_preference," +
-      "source,date_verified,applies_to,notes,status,updated_at&order=agency.asc",
+      // select=*: reads `disciplines` once that column exists, works before it does.
+      "pms_agency_preferences?select=*&order=agency.asc",
     );
     const has = (v: unknown, needle: string) => String(v ?? "").toLowerCase().includes(needle);
     let out = includeArchived ? rows : rows.filter((r: any) => r.status !== "archived");
     if (agency) { const a = agency.toLowerCase().trim(); out = out.filter((r: any) => has(r.agency, a)); }
-    if (discipline) { const d = discipline.toLowerCase().trim(); out = out.filter((r: any) => has(r.discipline, d)); }
+    if (discipline) { const d = discipline.toLowerCase().trim(); out = out.filter((r: any) => knowledgeTrades(r).some((t) => has(t, d))); }
     if (query) {
       const q = query.toLowerCase().trim();
       out = out.filter((r: any) =>
@@ -10889,6 +10899,7 @@ mcp.tool("search_agency_preferences", {
       truncated: out.length > CAP,
       preferences: out.slice(0, CAP).map((r: any) => ({
         agency: r.agency, type: r.preference_type, discipline: r.discipline || undefined,
+        disciplines: knowledgeTrades(r).length > 1 ? knowledgeTrades(r) : undefined,
         requirement: r.requirement_or_preference, appliesTo: r.applies_to || undefined,
         notes: r.notes || undefined, source: r.source || undefined,
         verified: r.date_verified || undefined, status: r.status,
@@ -10908,12 +10919,12 @@ function filterEngineeringStandards(
   // includeArchived adds superseded entries; suggested rows are never returned.
   const served = f.includeArchived ? ["active", "superseded"] : ["active"];
   let out = rows.filter((r: any) => served.includes(r.status));
-  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => has(r.discipline, d)); }
+  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => knowledgeTrades(r).some((t) => has(t, d))); }
   if (f.system) { const s = f.system.toLowerCase().trim(); out = out.filter((r: any) => has(r.system, s)); }
   if (f.query) {
     const q = f.query.toLowerCase().trim();
     out = out.filter((r: any) =>
-      [r.standard_text, r.discipline, r.system, r.basis, r.source_reference]
+      [r.standard_text, ...knowledgeTrades(r), r.system, r.basis, r.source_reference]
         .some((v: unknown) => has(v, q)));
   }
   return out;
@@ -10936,8 +10947,8 @@ mcp.tool("search_engineering_standards", {
   }),
   handler: async ({ query, discipline, system, includeArchived }) => {
     const rows = await sbGetAll(
-      "pms_engineering_standards?select=standard_id,discipline,system,standard_text,basis," +
-      "source_reference,date_verified,status,updated_at&order=discipline.asc,system.asc",
+      // select=*: reads `disciplines` once that column exists, works before it does.
+      "pms_engineering_standards?select=*&order=discipline.asc,system.asc",
     );
     const out = filterEngineeringStandards(rows, { query, discipline, system, includeArchived });
     const CAP = 200;
@@ -10946,6 +10957,7 @@ mcp.tool("search_engineering_standards", {
       truncated: out.length > CAP,
       standards: out.slice(0, CAP).map((r: any) => ({
         discipline: r.discipline || undefined, system: r.system || undefined,
+        disciplines: knowledgeTrades(r).length > 1 ? knowledgeTrades(r) : undefined,
         standard: r.standard_text, basis: r.basis || undefined,
         source: r.source_reference || undefined,
         verified: r.date_verified || undefined, status: r.status,
@@ -10968,11 +10980,11 @@ function filterKnowledge(rows: any[], f: { query?: string; agency?: string; disc
   const has = (v: unknown, needle: string) => String(v ?? "").toLowerCase().includes(needle);
   let out = rows;
   if (f.agency) { const a = f.agency.toLowerCase().trim(); out = out.filter((r: any) => has(r.agency, a)); }
-  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => has(r.discipline, d)); }
+  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => knowledgeTrades(r).some((t) => has(t, d))); }
   if (f.query) {
     const q = f.query.toLowerCase().trim();
     out = out.filter((r: any) =>
-      [r.lesson_summary, r.agency, r.discipline, r.system, r.issue_type, r.source_reference,
+      [r.lesson_summary, r.agency, ...knowledgeTrades(r), r.system, r.issue_type, r.source_reference,
        Array.isArray(r.tags) ? r.tags.join(" ") : r.tags]
         .some((v: unknown) => has(v, q)));
   }
@@ -10981,7 +10993,9 @@ function filterKnowledge(rows: any[], f: { query?: string; agency?: string; disc
 
 const slimLesson = (r: any) => ({
   lessonId: r.lesson_id, project: r.project_id || undefined, agency: r.agency || undefined,
-  discipline: r.discipline || undefined, summary: r.lesson_summary,
+  discipline: r.discipline || undefined,
+  disciplines: knowledgeTrades(r).length > 1 ? knowledgeTrades(r) : undefined,
+  summary: r.lesson_summary,
   source: r.source_reference || undefined, date: (r.date_added || "").slice(0, 10) || undefined,
   status: r.status,
 });
@@ -10995,17 +11009,21 @@ const slimLesson = (r: any) => ({
 function filterPractices(rows: any[], f: { query?: string; discipline?: string }): any[] {
   const has = (v: unknown, needle: string) => String(v ?? "").toLowerCase().includes(needle);
   let out = rows;
-  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => has(r.discipline, d)); }
+  if (f.discipline) {
+    const d = f.discipline.toLowerCase().trim();
+    out = out.filter((r: any) => knowledgeTrades(r).some((t) => has(t, d)));
+  }
   if (f.query) {
     const q = f.query.toLowerCase().trim();
     out = out.filter((r: any) =>
-      [r.title, r.practice_text, r.coord_theme, r.system, r.issue_type, r.discipline]
+      [r.title, r.practice_text, r.coord_theme, r.system, r.issue_type, ...knowledgeTrades(r)]
         .some((v: unknown) => has(v, q)));
   }
   return out;
 }
 const slimPractice = (r: any) => ({
   practiceId: r.practice_id, title: r.title, discipline: r.discipline || undefined,
+  disciplines: knowledgeTrades(r).length > 1 ? knowledgeTrades(r) : undefined,
   system: r.system || undefined, theme: r.coord_theme || undefined,
   practice: r.practice_text, confidence: r.confidence || undefined,
   date: (r.date_added || "").slice(0, 10) || undefined, status: r.status,
@@ -11045,8 +11063,8 @@ mcp.tool("search_knowledge", {
 
     const statuses = includeArchived ? "in.(approved,archived)" : "eq.approved";
     const rows = await sbGetAll(
-      "pms_lessons?select=lesson_id,project_id,agency,discipline,system,issue_type," +
-      "lesson_summary,source_reference,tags,status,date_added&status=" + statuses +
+      // select=*: reads `disciplines` once that column exists, works before it does.
+      "pms_lessons?select=*&status=" + statuses +
       (pn ? "&project_id=eq." + encodeURIComponent(pn) : "") +
       "&order=date_added.desc",
     );
@@ -11071,8 +11089,9 @@ mcp.tool("search_knowledge", {
     let practices: any[] = [];
     if (!agency?.trim()) {
       const pRows = await sbGetAll(
-        "pms_best_practices?select=practice_id,title,discipline,system,issue_type," +
-        "coord_theme,practice_text,confidence,status,date_added&status=" +
+        // select=* rather than a column list: it reads `disciplines` once the
+        // column exists and still works on a database that does not have it yet.
+        "pms_best_practices?select=*&status=" +
         (includeArchived ? "in.(approved,archived)" : "eq.approved") +
         "&order=date_added.desc",
       );

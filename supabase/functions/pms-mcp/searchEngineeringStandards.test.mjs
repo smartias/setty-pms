@@ -7,16 +7,20 @@ import { readFileSync } from "node:fs";
 let total = 0, failures = 0;
 const check = (ok, label) => { total++; if (!ok) { failures++; console.error("✗ " + label); } };
 
+const knowledgeTrades = (r) => {
+  const set = Array.isArray(r.disciplines) ? r.disciplines.filter(Boolean) : [];
+  return set.length ? set : (r.discipline ? [r.discipline] : []);
+};
 function filterEngineeringStandards(rows, f) {
   const has = (v, needle) => String(v ?? "").toLowerCase().includes(needle);
   const served = f.includeArchived ? ["active", "superseded"] : ["active"];
   let out = rows.filter((r) => served.includes(r.status));
-  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r) => has(r.discipline, d)); }
+  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r) => knowledgeTrades(r).some((t) => has(t, d))); }
   if (f.system) { const s = f.system.toLowerCase().trim(); out = out.filter((r) => has(r.system, s)); }
   if (f.query) {
     const q = f.query.toLowerCase().trim();
     out = out.filter((r) =>
-      [r.standard_text, r.discipline, r.system, r.basis, r.source_reference]
+      [r.standard_text, ...knowledgeTrades(r), r.system, r.basis, r.source_reference]
         .some((v) => has(v, q)));
   }
   return out;
@@ -42,7 +46,8 @@ check(filterEngineeringStandards(ROWS, { query: "zzz" }).length === 0, "no match
 const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 check(src.includes('mcp.tool("search_engineering_standards"'), "tool registered in index.ts");
 check(src.includes('const served = f.includeArchived ? ["active", "superseded"] : ["active"];') && src.includes("let out = rows.filter((r: any) => served.includes(r.status));"), "drift: status rule");
-check(src.includes("[r.standard_text, r.discipline, r.system, r.basis, r.source_reference]"), "drift: query fields");
+check(src.includes("[r.standard_text, ...knowledgeTrades(r), r.system, r.basis, r.source_reference]"), "drift: query fields");
+check(src.includes("out = out.filter((r: any) => knowledgeTrades(r).some((t) => has(t, d))); }"), "drift: discipline filter matches any trade");
 
 if (failures) { console.error(`${failures}/${total} failed`); process.exit(1); }
 console.log(`ok ${total}`);
