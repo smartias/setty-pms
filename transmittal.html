@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-05-transmittal-v23-tx-number-prefill";
+    window.__appVersion = "2026-11-05-transmittal-v24-subfolders";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -221,6 +221,9 @@
     .sheet-table tr:hover td { background: #21262d; }
     .sheet-table input[type="text"] { margin-bottom: 0; padding: 4px 8px; font-size: 12px; }
     .sheet-table input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--blue); }
+    .sheet-table:not(.has-folders) .col-folder { display: none; }
+    .sheet-table .col-folder { font-size: 11px; color: var(--muted); white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+    .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); cursor: pointer; text-transform: none; letter-spacing: 0; margin: 0; }
 
     /* Discipline badge */
     .disc-badge {
@@ -430,6 +433,9 @@
 
     <div class="action-row" style="margin-bottom:10px">
       <button class="btn btn-primary" id="loadFolderBtn" title="Re-read the drawings in the folder shown above.">🔍 Load files from this folder</button>
+      <label class="chk" id="includeSubfoldersLabel" title="A submission is often split into subfolders (Drawings, Specs, one per discipline). Tick this to load all of them into one transmittal. Each row shows which subfolder its file came from.">
+        <input type="checkbox" id="includeSubfolders"> Include files from subfolders
+      </label>
       <button type="button" class="btn btn-ghost" id="localUploadBtn"
         title="Pick a folder on your computer or a mapped network drive. Its drawing files are copied into the SharePoint folder above, replacing any files with the same name.">📤 Upload a folder of drawings…</button>
       <button type="button" class="btn btn-ghost" id="localUploadFilesBtn"
@@ -607,6 +613,7 @@
             <th scope="col" style="width:90px">Discipline</th>
             <th scope="col" style="width:110px">Sheet No.</th>
             <th scope="col">Sheet Name / Title</th>
+            <th scope="col" class="col-folder" style="width:140px" title="Subfolder of the set folder the file came from.">Folder</th>
             <th scope="col" style="width:80px">Revision</th>
             <th scope="col" style="width:110px" title="The sheet's own date: its revision date when read from the title block, otherwise the issue date from step 1.">Rev. date</th>
             <th scope="col" style="width:32px"><span class="sr-only">Remove</span></th>
@@ -884,11 +891,16 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
           revision:   sh.revision   || "",
           discipline: sh.discipline || "",
           filename:   sh.filename,
+          // Subfolder of the set folder the file sits in ("" for the folder
+          // itself). Readers that rebuild a path from sp_folder_url + filename
+          // need it once a set spans Drawings / Specs / per-discipline folders.
+          subfolder:  sh.subfolder || "",
           // Phase 2: the file's own Graph webUrl, matched from the folder listing
-          // (folderFiles) by exact name, so the Current Set panel and get_current_set
-          // can link straight to the sheet. Null when unknown (manual row, or a build
-          // with no folder loaded); the reader falls back to the set folder.
-          webUrl:     (folderFiles.find(f => f.name === sh.filename)?.webUrl) || null,
+          // (folderFiles) by its path inside the set, so the Current Set panel and
+          // get_current_set can link straight to the sheet. Null when unknown
+          // (manual row, or a build with no folder loaded); the reader falls back
+          // to the set folder.
+          webUrl:     (folderFiles.find(f => (f.relPath || f.name) === (sh.relPath || sh.filename))?.webUrl) || null,
           // Dropping these was why NO register row on any project carried a
           // revisionDate, even after its title blocks had been read: the reader
           // did the work and the write threw it away.
@@ -1797,6 +1809,7 @@ function enterDriveMode(proj) {
   onDriveFolderInput(input.value);
   // SharePoint-only controls step aside.
   document.getElementById("loadFolderBtn").style.display = "none";
+  document.getElementById("includeSubfoldersLabel").style.display = "none";
   document.getElementById("localUploadBtn").style.display = "none";
   document.getElementById("localUploadFilesBtn").style.display = "none";
   const sp = document.getElementById("saveToSpBtn");
@@ -1809,6 +1822,7 @@ function leaveDriveMode() {
   driveMode = false; driveFolderPath = ""; localBlobs = new Map();
   document.getElementById("driveSetPanel").style.display = "none";
   document.getElementById("loadFolderBtn").style.display = "";
+  document.getElementById("includeSubfoldersLabel").style.display = "";
   document.getElementById("localUploadBtn").style.display = "";
   document.getElementById("localUploadFilesBtn").style.display = "";
   const sp = document.getElementById("saveToSpBtn");
@@ -1829,8 +1843,14 @@ document.getElementById("drivePickBtn").onclick = () => {
 // byte reads to the File objects instead of Graph.
 async function loadLocalSet(picked) {
   const candidates = picked.filter(f => UPLOADABLE_FILE_RE.test(f.name));
+  // Dedupe on the path inside the picked folder, not the bare name: the
+  // picker includes subfolders, and one name can recur across disciplines.
+  const subOf = f => (f.webkitRelativePath || "").split("/").slice(1, -1).join("/");
   const seen = new Set(); const files = [];
-  for (const f of candidates) { const k = f.name.toLowerCase(); if (seen.has(k)) continue; seen.add(k); files.push(f); }
+  for (const f of candidates) {
+    const k = (subOf(f) + "/" + f.name).toLowerCase();
+    if (seen.has(k)) continue; seen.add(k); files.push(f);
+  }
   if (!files.length) {
     setStatus("loadStatus", "warn", "⚠ No drawing or document files in that folder. Only PDF, Word, Excel, DWG, RVT, DGN and DXF files are read.");
     return;
@@ -1843,12 +1863,17 @@ async function loadLocalSet(picked) {
     input.value = input.value.replace(/[\\/]*$/, "") + "\\" + top;
     onDriveFolderInput(input.value);
   }
-  localBlobs = new Map(files.map(f => [f.name, f]));
-  folderFiles = files.map(f => ({
-    id: null, local: true, name: f.name, size: f.size,
-    lastModifiedDateTime: new Date(f.lastModified || Date.now()).toISOString(), webUrl: null,
-  }));
-  sheets = folderFiles.map(f => parseFilename(f.name, f.lastModifiedDateTime)).filter(Boolean);
+  folderFiles = files.map(f => {
+    const sub = subOf(f);
+    return {
+      id: null, local: true, name: f.name, size: f.size,
+      lastModifiedDateTime: new Date(f.lastModified || Date.now()).toISOString(), webUrl: null,
+      subfolder: sub, relPath: sub ? sub + "/" + f.name : f.name,
+    };
+  });
+  localBlobs = new Map(folderFiles.map((ff, i) => [ff.relPath, files[i]]));
+  subfoldersIncluded = folderFiles.some(f => f.subfolder);
+  sheets = folderFiles.map(rowFromFile).filter(Boolean);
   if (!sheets.length) sheets = [emptyRow(), emptyRow(), emptyRow()];
   renderTable();
   showSheetCards();
@@ -1859,7 +1884,7 @@ async function loadLocalSet(picked) {
 // Bytes for one listed file: the picked File on a drive project, Graph otherwise.
 async function fileBytes(f, token) {
   if (f.local) {
-    const blob = localBlobs.get(f.name);
+    const blob = localBlobs.get(f.relPath || f.name);
     if (!blob) throw new Error("the picked file is no longer available — read the folder again");
     return blob;
   }
@@ -1980,24 +2005,36 @@ async function loadFolder() {
 
     setStatus("loadStatus", "info", "⏳ Reading files in folder…");
 
-    const filesRes = await graphFetch("GET",
-      `/drives/${resolvedDriveId}/root:/${encodeURIComponent(folderPath)}:/children?$top=200&$select=id,name,lastModifiedDateTime,size,file,folder,webUrl,@microsoft.graph.downloadUrl`,
-      null, token
-    );
-
-    const files = (filesRes.value || []).filter(f =>
-      !f.folder && /\.(pdf|docx?|xlsx?|xlsm|dwg|rvt|dgn|dxf)$/i.test(f.name)
-    );
+    const subBox = document.getElementById("includeSubfolders");
+    let recurse = !!(subBox && subBox.checked);
+    let listing = await listFolderFiles(token, folderPath, recurse);
+    // A set folder that holds nothing itself but has subfolders (Drawings,
+    // Specs, one per discipline) is the usual shape, so take the subfolders
+    // without making the person find the checkbox.
+    if (!listing.files.length && listing.folders && !recurse) {
+      recurse = true;
+      if (subBox) subBox.checked = true;
+      listing = await listFolderFiles(token, folderPath, true);
+    }
+    subfoldersIncluded = recurse;
+    const files = listing.files;
     folderFiles = files; // keep for ZIP packaging
 
+    const inSub = files.filter(f => f.subfolder).length;
     if (files.length === 0) {
-      setStatus("loadStatus", "warn", "⚠ No drawing or document files found in this folder. Only PDF, Word (.doc/.docx), Excel (.xls/.xlsx), DWG, RVT, DGN, and DXF files are listed. You can add rows manually.");
+      setStatus("loadStatus", "warn", "⚠ No drawing or document files found in this folder" +
+        (listing.folders ? " or its subfolders" : "") +
+        ". Only PDF, Word (.doc/.docx), Excel (.xls/.xlsx), DWG, RVT, DGN, and DXF files are listed. You can add rows manually.");
     } else {
-      setStatus("loadStatus", "success", `✓ Found ${files.length} file${files.length !== 1 ? "s" : ""}.`);
+      setStatus("loadStatus", listing.truncated ? "warn" : "success",
+        (listing.truncated ? "⚠ " : "✓ ") + `Found ${files.length} file${files.length !== 1 ? "s" : ""}` +
+        (inSub ? ` (${files.length - inSub} in this folder, ${inSub} in subfolders)` : "") +
+        (listing.truncated ? `. Stopped at ${SUBFOLDER_MAX_FILES} files / ${SUBFOLDER_MAX_DEPTH} levels deep — open a subfolder to go further.` : ".") +
+        (!recurse && listing.folders ? ` ${listing.folders} subfolder${listing.folders === 1 ? "" : "s"} not included — tick “Include files from subfolders” to add them.` : ""));
     }
 
     // Parse filenames into sheet rows
-    sheets = files.map(f => parseFilename(f.name, f.lastModifiedDateTime)).filter(Boolean);
+    sheets = files.map(rowFromFile).filter(Boolean);
     // Add manual empty rows if nothing found
     if (sheets.length === 0) {
       sheets = [emptyRow(), emptyRow(), emptyRow()];
@@ -2015,6 +2052,67 @@ async function loadFolder() {
   btn.disabled = false;
 }
 
+// ─── FOLDER LISTING ───────────────────────────────────────────────────────────
+// Lists the drawing/document files in a library folder and, when asked, in
+// its subfolders. Each item gets `subfolder` (path under the set folder, ""
+// for the folder itself) and `relPath` (subfolder + name): the row key
+// everywhere, so M-101.pdf in two discipline folders stays two files.
+const UPLOADABLE_FILE_RE = /\.(pdf|docx?|xlsx?|xlsm|dwg|rvt|dgn|dxf)$/i; // the one list of transmittable file types
+const SUBFOLDER_MAX_DEPTH = 3;
+const SUBFOLDER_MAX_FILES = 500;
+let subfoldersIncluded = false;     // last load walked subfolders
+
+async function listFolderFiles(token, rootPath, recurse) {
+  const files = [];
+  let folders = 0, truncated = false;
+  const select = "$select=id,name,lastModifiedDateTime,size,file,folder,webUrl,@microsoft.graph.downloadUrl";
+  async function page(url) {
+    const res = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+    if (!res.ok) throw new Error("Graph " + res.status + ": " + (await res.text()).slice(0, 200));
+    return res.json();
+  }
+  async function walk(path, sub, depth) {
+    let url = `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/root:/${encodeURIComponent(path)}:/children?$top=200&${select}`;
+    while (url) {
+      const res = await page(url);
+      for (const it of (res.value || [])) {
+        if (it.folder) {
+          folders++;
+          if (!recurse) continue;
+          if (depth >= SUBFOLDER_MAX_DEPTH) { truncated = true; continue; }
+          await walk(path + "/" + it.name, sub ? sub + "/" + it.name : it.name, depth + 1);
+          continue;
+        }
+        if (!UPLOADABLE_FILE_RE.test(it.name)) continue;
+        if (files.length >= SUBFOLDER_MAX_FILES) { truncated = true; return; }
+        it.subfolder = sub;
+        it.relPath = sub ? sub + "/" + it.name : it.name;
+        files.push(it);
+      }
+      url = res["@odata.nextLink"] || null;
+    }
+  }
+  await walk(rootPath, "", 0);
+  // Top-level files first, then subfolders in name order, files in name
+  // order within each: the table reads like the folder tree.
+  files.sort((a, b) => (a.subfolder || "").localeCompare(b.subfolder || "", undefined, { numeric: true }) ||
+                       a.name.localeCompare(b.name, undefined, { numeric: true }));
+  return { files, folders, truncated };
+}
+
+// A filename-parsed row for a listed file, carrying the file's location.
+function rowFromFile(f) {
+  const row = parseFilename(f.name, f.lastModifiedDateTime);
+  return row ? tagRow(row, f) : row;
+}
+function tagRow(row, f) {
+  row.subfolder = f.subfolder || "";
+  row.relPath = f.relPath || f.name;
+  return row;
+}
+
+document.getElementById("includeSubfolders").onchange = () => { if (resolvedFolderPath && !driveMode) void loadFolder(); };
+
 // ─── UPLOAD FROM LOCAL FOLDER ─────────────────────────────────────────────────
 // Drawings usually start life somewhere the browser can't reach by path — a
 // local Downloads folder or the network drive — but the OS folder picker can,
@@ -2023,7 +2121,6 @@ async function loadFolder() {
 // the ZIP flow uses, with conflictBehavior "replace" (a re-upload is almost
 // always a corrected plot). loadFolder() then re-reads the folder so the fresh
 // set is immediately transmittable.
-const UPLOADABLE_FILE_RE = /\.(pdf|docx?|xlsx?|xlsm|dwg|rvt|dgn|dxf)$/i; // keep in sync with loadFolder()
 
 // Graph rejects item names containing these characters outright.
 function sanitizeGraphName(name) {
@@ -2368,10 +2465,10 @@ async function maybeAutoReadTitleBlocks() {
   const pdfs = folderPdfs();
   if (!pdfs.length) return;
   const bytes = pdfs.reduce((t, f) => t + (f.size || 0), 0);
-  const leaf = driveMode || !(browseChildFolders || []).length;
+  const leaf = driveMode || subfoldersIncluded || !(browseChildFolders || []).length;
   if (leaf && pdfs.length <= AUTO_TITLE_BLOCK_LIMIT) { await readTitleBlocks(); return; }
   const why = !leaf
-    ? "This folder has subfolders, so reading did not start on its own — open the set folder itself, or read here."
+    ? "This folder has subfolders, so reading did not start on its own — open the set folder itself, tick “Include files from subfolders”, or read here."
     : pdfs.length + " PDFs is more than the " + AUTO_TITLE_BLOCK_LIMIT + " that read on their own.";
   showTbPrompt(
     "Sheet numbers were read from FILENAMES, which is often wrong and shows a combined PDF as one row. " + why,
@@ -2473,6 +2570,7 @@ async function readTitleBlocksInner(pdfs) {
               title: r.sheetTitle,
               discipline: mapDiscipline((/^([A-Z]{1,3})/.exec(r.sheetNo) || [, ""])[1]),
               filename: f.name,
+              file: f,
               date: f.lastModifiedDateTime ? f.lastModifiedDateTime.slice(0, 10) : new Date().toISOString().slice(0, 10),
             });
             fileList++;
@@ -2494,15 +2592,17 @@ async function readTitleBlocksInner(pdfs) {
           revisionDate: isoFromUsDate(tb.revisionDate) || null,
           source: "title-block",
           filename: f.name,
+          subfolder: f.subfolder || "",
+          relPath: f.relPath || f.name,
         });
       }
       // Whether this file's harvested LIST rows can represent it depends on
       // whether the whole FOLDER yielded title blocks, which is unknowable
       // mid-loop — so the filename-fallback decision happens after the loop.
-      fileMeta.push({ name: f.name, lmd: f.lastModifiedDateTime, tb: fileTb, listFirst: fileList });
+      fileMeta.push({ name: f.name, lmd: f.lastModifiedDateTime, tb: fileTb, listFirst: fileList, file: f });
     } catch (e) {
       unreadable.push(f.name + " (" + e.message + ")");
-      rows.push(parseFilename(f.name, f.lastModifiedDateTime));
+      rows.push(rowFromFile(f));
     }
   }
 
@@ -2525,7 +2625,7 @@ async function readTitleBlocksInner(pdfs) {
     if (fm.tb > 0) continue;
     if (!anyTb && fm.listFirst > 0) continue; // the booked-set book itself
     unreadable.push(fm.name);
-    rows.push(parseFilename(fm.name, fm.lmd));
+    rows.push(rowFromFile(fm.file));
   }
 
   // Merge in drawing-list sheets no title block (or fallback row) already
@@ -2549,12 +2649,14 @@ async function readTitleBlocksInner(pdfs) {
       revisionDate: null,
       source: "drawing-list",
       filename: r.filename,
+      subfolder: r.file ? (r.file.subfolder || "") : "",
+      relPath: r.file ? (r.file.relPath || r.file.name) : r.filename,
     });
   }
 
   // Stopped early: the PDFs never opened keep their filename reading, so
   // every file is still represented and the package filter still finds it.
-  for (const f of notRead) rows.push(parseFilename(f.name, f.lastModifiedDateTime));
+  for (const f of notRead) rows.push(rowFromFile(f));
 
   // Merge with what is on screen. Reading REPLACES the unedited PDF rows and
   // nothing else: a row someone has edited is kept as-is and the fresh rows
@@ -2562,13 +2664,14 @@ async function readTitleBlocksInner(pdfs) {
   // unchecked after it; rows for non-PDF files (DWG, DOCX) and hand-added
   // rows stay put. Before this the whole table was rebuilt, so edits made
   // while the read ran, and every non-PDF file, were silently lost.
-  const pdfNames = new Set(pdfs.map(f => f.name));
-  const keptEdited = (sheets || []).filter(sh => sh.filename && pdfNames.has(sh.filename) && sh.edited);
-  const editedFiles = new Set(keptEdited.map(sh => sh.filename));
-  const uncheckedFiles = new Set((sheets || []).filter(sh => sh.filename && pdfNames.has(sh.filename) && !sh.include).map(sh => sh.filename));
-  const others = (sheets || []).filter(sh => !sh.filename || !pdfNames.has(sh.filename));
-  const fresh = rows.filter(Boolean).filter(r => !editedFiles.has(r.filename));
-  fresh.forEach(r => { if (uncheckedFiles.has(r.filename)) r.include = false; });
+  const keyOf = x => x.relPath || x.filename || x.name;
+  const pdfKeys = new Set(pdfs.map(keyOf));
+  const keptEdited = (sheets || []).filter(sh => sh.filename && pdfKeys.has(keyOf(sh)) && sh.edited);
+  const editedFiles = new Set(keptEdited.map(keyOf));
+  const uncheckedFiles = new Set((sheets || []).filter(sh => sh.filename && pdfKeys.has(keyOf(sh)) && !sh.include).map(keyOf));
+  const others = (sheets || []).filter(sh => !sh.filename || !pdfKeys.has(keyOf(sh)));
+  const fresh = rows.filter(Boolean).filter(r => !editedFiles.has(keyOf(r)));
+  fresh.forEach(r => { if (uncheckedFiles.has(keyOf(r))) r.include = false; });
   sheets = fresh.concat(keptEdited, others);
   renderTable();
   applyIssueDateToRows();   // list-only and filename-fallback rows take the issue date
@@ -2777,6 +2880,7 @@ function renderTable() {
   }
 
   tbody.innerHTML = "";
+  document.getElementById("sheetTable").classList.toggle("has-folders", sheets.some(s => s.subfolder));
 
   sheets.forEach((s, i) => {
     const dc = discCode(s.discipline);
@@ -2795,6 +2899,7 @@ function renderTable() {
       </td>
       <td><input type="text" id="sheet-${s.id}-sheetNo" value="${esc(s.sheetNo)}" placeholder="M-501" aria-label="Sheet number for ${rowRef}" onchange="sheets[${i}].sheetNo=this.value;sheets[${i}].edited=true"/></td>
       <td><input type="text" id="sheet-${s.id}-title" value="${esc(s.title)}" placeholder="Sheet title…" aria-label="Title for ${rowRef}" onchange="sheets[${i}].title=this.value;sheets[${i}].edited=true"/></td>
+      <td class="col-folder" title="${esc(s.subfolder || "")}">${esc(s.subfolder || "")}</td>
       <td><input type="text" id="sheet-${s.id}-revision" value="${esc(s.revision)}" placeholder="0" style="width:60px" aria-label="Revision for ${rowRef}" onchange="sheets[${i}].revision=this.value;sheets[${i}].edited=true"/></td>
       <td><input type="text" id="sheet-${s.id}-date" value="${esc(s.date)}" placeholder="YYYY-MM-DD" aria-label="Revision date for ${rowRef}" onchange="sheets[${i}].date=this.value;sheets[${i}].dateSource='user';sheets[${i}].edited=true"/></td>
       <td><button id="sheet-${s.id}-remove" onclick="removeRow(${i})" aria-label="Remove ${rowRef}" style="background:none;border:none;color:#8b949e;cursor:pointer;font-size:13px">✕</button></td>
@@ -3072,6 +3177,27 @@ async function backfillTransmittal() {
 }
 document.getElementById("backfillBtn").onclick = backfillTransmittal;
 
+// ─── PACKAGE SELECTION ────────────────────────────────────────────────────────
+// The files whose sheet row is still checked, matched on the path inside the
+// set folder (relPath) so a name that recurs across subfolders cannot pull in
+// the wrong file or both. A PDF split into many rows is included when any of
+// its rows is checked.
+function includedFiles() {
+  const keys = new Set((sheets || []).filter(sh => sh.include && (sh.relPath || sh.filename)).map(sh => sh.relPath || sh.filename));
+  return (folderFiles || []).filter(f => keys.has(f.relPath || f.name));
+}
+
+// Attachments and the portal folder are flat, so two files that share a bare
+// name across subfolders are told apart by prefixing the subfolder; everything
+// else keeps its own name.
+function packageNamer(files) {
+  const counts = new Map();
+  files.forEach(f => counts.set(f.name, (counts.get(f.name) || 0) + 1));
+  return f => (counts.get(f.name) > 1 && f.subfolder)
+    ? f.subfolder.replace(/\//g, " - ") + " - " + f.name
+    : f.name;
+}
+
 // ─── PACKAGE DRAWINGS AS ZIP ──────────────────────────────────────────────────
 // Bundles the checked drawing/document files plus the cover .docx into a
 // single .zip and triggers a browser download. No SharePoint upload — the
@@ -3104,8 +3230,7 @@ async function packageAsZip() {
     // it in the package — confusing because the checkbox label implies the file
     // is excluded. parseFilename stores `filename` on each sheet, so the map is
     // exact (no fuzzy matching on stem/extension).
-    const includedFilenames = new Set((sheets || []).filter(s => s.include && s.filename).map(s => s.filename));
-    const filesToZip = folderFiles.filter(f => includedFilenames.has(f.name));
+    const filesToZip = includedFiles();
     if (filesToZip.length === 0) {
       setStatus("deliverStatus", "error", "✗ No files selected — check at least one row before downloading the ZIP.");
       btn.disabled = false;
@@ -3114,7 +3239,7 @@ async function packageAsZip() {
     let done = 0;
     for (const f of filesToZip) {
       setStatus("deliverStatus", "info", `⏳ Adding ${f.name} (${done + 1}/${filesToZip.length})…`);
-      zip.file(f.name, await fileBytes(f, downloadToken));
+      zip.file(f.relPath || f.name, await fileBytes(f, downloadToken)); // subfolders survive inside the zip
       done++;
     }
 
@@ -3617,8 +3742,8 @@ async function sendToClient() {
 
     // Same include-filter the download-ZIP path uses — keep the package in
     // sync with the cover docx. See the comment in zipFiles() for the why.
-    const includedFilenames = new Set((sheets || []).filter(s => s.include && s.filename).map(s => s.filename));
-    const filesToSend = folderFiles.filter(f => includedFilenames.has(f.name));
+    const filesToSend = includedFiles();
+    const sendName = packageNamer(filesToSend);
     if (filesToSend.length === 0) {
       throw new Error("No files selected — check at least one row before sending.");
     }
@@ -3629,7 +3754,7 @@ async function sendToClient() {
       setStatus("deliverStatus", "info", `⏳ Reading ${f.name} (${i + 1}/${filesToSend.length})…`);
       const blob = await fileBytes(f, downloadToken);
       totalBytes += blob.size;
-      fileBlobs.push({ name: f.name, blob });
+      fileBlobs.push({ name: sendName(f), relPath: f.relPath || f.name, blob });
     }
     totalBytes += generatedBlob.size;
 
@@ -3671,7 +3796,7 @@ async function sendToClient() {
       // ZIP: bundle + anonymous 30-day link.
       if (typeof JSZip === "undefined") throw new Error("ZIP library failed to load.");
       const zip = new JSZip();
-      fileBlobs.forEach(f => zip.file(f.name, f.blob));
+      fileBlobs.forEach(f => zip.file(f.relPath || f.name, f.blob)); // subfolders survive inside the zip
       zip.file(generatedFileName, generatedBlob);
 
       setStatus("deliverStatus", "info", "⏳ Compressing…");
