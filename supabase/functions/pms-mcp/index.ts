@@ -19,7 +19,7 @@ import Anthropic from "npm:@anthropic-ai/sdk@0.39.0";
 // cannot answer "what is the current set?" differently. See currentSet.ts.
 import {
   registerIssueDate, registerIssueDateSource, sheetsOf, prepareRegisterRows, setDelta,
-  SHEET_NO_RE, canonicalSheet, encodeSpUrl, DISCIPLINE_ORDER, DISCIPLINE_NAME,
+  SHEET_NO_RE, canonicalSheet, canonicalSpec, encodeSpUrl, DISCIPLINE_ORDER, DISCIPLINE_NAME,
   disciplineRank, sheetRank, composeCurrentSet,
 } from "./currentSet.ts";
 // Storage seam, slice B: the Azure Files browse/read provider behind every
@@ -1381,7 +1381,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-05-practice-disciplines";
+const BUILD = "2026-11-05-current-set-specs";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.24.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -4141,6 +4141,11 @@ function sheetDisciplines(sheet: any): string[] {
   const out = new Set<string>();
   const stored = String(sheet?.discipline || "").toLowerCase().trim();
   if (stored) out.add(stored);
+  // Spec rows carry the discipline as its full name ("Electrical"), set by the
+  // transmittal tool from the CSI division; map it to the code the filter uses.
+  for (const [code, name] of Object.entries(DISCIPLINE_NAME)) {
+    if (stored === String(name).toLowerCase()) out.add(code.toLowerCase());
+  }
   const base = String(sheet?.filename || "").replace(/\.[a-z0-9]+$/i, "");
   for (const m of base.matchAll(/[-_]([A-Z]{1,3})(?=[-_.\s]|$)/g)) out.add(m[1].toLowerCase());
   const lead = /^([A-Z]{1,3})[-_]?\d/.exec(base);
@@ -4409,7 +4414,8 @@ mcp.tool("get_current_set", {
   description:
     "Authoritative answer to \"what is the current issued set?\" for a project — the drawing/spec set " +
     "most recently transmitted, with its transmittal number, issue date, sheet register (sheet number, " +
-    "title, revision, discipline) and a clickable folder link. Reads the transmittal register, which " +
+    "title, revision, discipline), its specification sections (CSI section number, title, discipline) " +
+    "listed apart from the sheets, and a clickable folder link. Reads the transmittal register, which " +
     "records every set issued through the Setty transmittal tool. If the project has no transmittal " +
     "record, falls back to the newest dated folder under Outgoing and flags the answer inferred:true. " +
     "AN INFERRED ANSWER IS A STRONG LEAD, NOT A GUARANTEE — when repeating one, say it was inferred " +
@@ -4468,13 +4474,25 @@ mcp.tool("get_current_set", {
         seenSheet.add(k);
         return true;
       });
-      const sheets = disc ? all.filter((s: any) => sheetHasDiscipline(s, disc)) : all;
+      const wanted = disc ? all.filter((s: any) => sheetHasDiscipline(s, disc)) : all;
+      // Specification sections go out with the drawings but are not sheets:
+      // reported apart, with the CSI number normalised, so a caller never
+      // reads "16010" as a sheet number.
+      const specs = wanted.filter((s: any) => canonicalSpec(s)).map((s: any) => {
+        const sp = canonicalSpec(s)!;
+        return {
+          section: sp.section, division: sp.division,
+          title: s?.title ?? null, discipline: s?.discipline ?? null,
+          revision: s?.revision ?? null, filename: s?.filename ?? null, webUrl: s?.webUrl ?? null,
+        };
+      });
+      const sheets = wanted.filter((s: any) => !canonicalSpec(s));
       // Revision delta (linking Stage 3, register-diff half): what did THIS set
       // change? Sets are mostly partial — a bulletin re-issues a handful — so
       // diffing against "the previous set" compares disjoint slices. Diffing
       // against the fold of everything issued BEFORE answers what a PM asks:
       // which sheets are new, which moved revision, which are unchanged.
-      const changes = setDelta(sheets, candidates.filter((r) => setKey(r) !== key));
+      const changes = setDelta(wanted, candidates.filter((r) => setKey(r) !== key));
       // Prior sets are listed once each, not once per discipline row, or the
       // list is five rows of the same addendum.
       const priorSeen = new Set<string>();
@@ -4518,13 +4536,24 @@ mcp.tool("get_current_set", {
           backfilled: f.backfilled === true,
           sheetCount: sheets.length,
           sheets,
-          ...(sheets.length ? {
+          // Specification sections issued with this set, apart from the sheets.
+          specCount: specs.length,
+          ...(specs.length ? { specifications: specs } : {}),
+          ...(sheets.length || specs.length ? {
             changes: {
               newSheets: changes.newSheets,
               revised: changes.revised,
               reissued: changes.reissued,
+              ...(specs.length ? {
+                specifications: {
+                  newSections: changes.specs.newSections,
+                  revised: changes.specs.revised,
+                  reissued: changes.specs.reissued,
+                },
+              } : {}),
               note: "Each sheet vs the fold of everything issued before this set: " +
                 "newSheets never appeared before, revised moved revision label, reissued went out again unchanged." +
+                (specs.length ? " Specification sections are diffed the same way under changes.specifications." : "") +
                 (changes.unkeyable ? ` ${changes.unkeyable} sheet(s) had no parseable number and could not be diffed.` : ""),
             },
           } : {}),
@@ -4534,7 +4563,7 @@ mcp.tool("get_current_set", {
         // the current SET, but it is not the current sheet list for the job.
         fullSetHint: "This is the most recently ISSUED SET, not the whole job. For every sheet on the project " +
           "at its most recent issuance, grouped by discipline, call extract_sheet_index with no subfolder.",
-        ...(sheets.length ? {} : {
+        ...(sheets.length || specs.length ? {} : {
           sheetRegisterNote:
             "This transmittal has no sheet register. Sets issued before the register was added to the " +
             "transmittal tool recorded only the set itself, so the set is authoritative but its sheet " +
@@ -6970,6 +6999,11 @@ mcp.tool("extract_sheet_index", {
         // number order, one row per sheet at its most recent issuance.
         disciplines: composed.disciplines,
         supersededCount: composed.supersededCount,
+        // Specification sections at their most recent issuance, in CSI section
+        // order, apart from the sheets. Empty for a project whose sets carried
+        // no specs, or whose specs predate the transmittal tool recording them.
+        specCount: composed.specCount,
+        ...(composed.specCount ? { specifications: composed.specifications, supersededSpecCount: composed.supersededSpecCount } : {}),
         // Which sets the current sheets actually came from. A healthy job shows a
         // baseline carrying most sheets plus a short tail of recent partials.
         sourceSets: composed.sourceSets,

@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-04-pms-v187-review-before-assign";
+    window.__appVersion = "2026-11-05-pms-v188-current-set-specs";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -20438,16 +20438,17 @@ function CurrentSetPanel({ project }) {
       {open && !pid && <div style={{ color: P.textDim, fontSize: 12 }}>Save the project to see its current set.</div>}
       {open && pid && loading && <div style={{ color: P.textDim, fontSize: 13 }}>Loading current set…</div>}
       {open && pid && error && <div style={{ color: P.red, fontSize: 13 }}>Couldn't load the current set: {error}</div>}
-      {open && pid && !loading && !error && set && set.sheetCount === 0 && (
+      {open && pid && !loading && !error && set && set.sheetCount === 0 && !set.specCount && (
         <div style={{ color: P.textDim, fontSize: 13, lineHeight: 1.5 }}>
           No sheets yet. Sets issued through the transmittal tool appear here automatically, sheet by sheet.
           {set.unusable.length > 0 && ` (${set.unusable.length} register entr${set.unusable.length === 1 ? "y" : "ies"} couldn't be read as a sheet — expand below.)`}
         </div>
       )}
-      {open && pid && !loading && !error && set && set.sheetCount > 0 && (
+      {open && pid && !loading && !error && set && (set.sheetCount > 0 || set.specCount > 0) && (
         <div>
           <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 10 }}>
             {set.sheetCount} sheet{set.sheetCount === 1 ? "" : "s"} · {set.disciplines.length} discipline{set.disciplines.length === 1 ? "" : "s"}
+            {set.specCount > 0 && <> · {set.specCount} spec section{set.specCount === 1 ? "" : "s"}</>}
             {set.sourceSets[0] && <> · newest set <span style={{ color: P.text }}>{set.sourceSets[0].setName || "—"}</span> ({set.sourceSets[0].issueDate})</>}
             {set.supersededCount > 0 && <> · {set.supersededCount} older sighting{set.supersededCount === 1 ? "" : "s"} superseded</>}
             {delta && delta.priorSheetsKnown > 0 && (delta.revised.length + delta.newSheets.length + delta.reissued.length) > 0 && (
@@ -20489,6 +20490,35 @@ function CurrentSetPanel({ project }) {
                   ))}
                 </React.Fragment>
               ))}
+              {/* Specification sections: issued with the set, folded the same way
+                  (newest issuance wins), listed apart because a section is not a
+                  sheet. Same columns, CSI number where the sheet number goes. */}
+              {set.specCount > 0 && (
+                <React.Fragment key="__specs">
+                  <tr>
+                    <td colSpan={5} style={{ padding: "12px 0 4px", fontSize: 13, fontWeight: 700, color: P.accentLight, borderBottom: `1px solid ${P.border}` }}>
+                      Specifications <span style={{ color: P.textDim, fontWeight: 400 }}>· {set.specCount}</span>
+                    </td>
+                  </tr>
+                  {set.specifications.map(s => (
+                    <tr key={"spec-" + s.section} style={{ borderBottom: `1px solid ${P.border}` }}>
+                      <td style={{ padding: "4px 8px 4px 0", fontFamily: "'JetBrains Mono',monospace", color: P.text, whiteSpace: "nowrap", verticalAlign: "top" }}>{s.section}</td>
+                      <td style={{ padding: "4px 8px", color: P.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={(s.discipline ? s.discipline + " · " : "") + (s.title || "")}>
+                        {s.discipline && <span style={{ color: P.textDim }}>{s.discipline} · </span>}{s.title || "—"}
+                      </td>
+                      <td style={{ padding: "4px 8px", color: P.textDim, whiteSpace: "nowrap", verticalAlign: "top" }}>{s.revision != null && s.revision !== "" ? "Rev " + s.revision : "—"}</td>
+                      <td style={{ padding: "4px 8px", color: P.textDim, whiteSpace: "nowrap", verticalAlign: "top" }} title={s.issuedIn ? "Issued in " + s.issuedIn : ""}>{s.issueDate}</td>
+                      <td style={{ padding: "4px 0 4px 8px", textAlign: "right", whiteSpace: "nowrap", verticalAlign: "top" }}>
+                        {s.webUrl
+                          ? <a href={s.webUrl} target="_blank" rel="noreferrer" style={{ color: P.accent, textDecoration: "none", fontSize: 12 }}>Open ↗</a>
+                          : s.folderUrl
+                            ? <a href={s.folderUrl} target="_blank" rel="noreferrer" style={{ color: P.textMuted, textDecoration: "none", fontSize: 12 }} title="Direct file link not captured for this section — opens the set folder">Set folder ↗</a>
+                            : <span style={{ color: P.textDim, fontSize: 12 }}>—</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </React.Fragment>
+              )}
             </tbody>
           </table>
           {set.unusable.length > 0 && (
