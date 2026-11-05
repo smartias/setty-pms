@@ -383,7 +383,7 @@ async function init(){
   document.getElementById("fStatus").value = FILTER.status;
   try{
     const [projRows, actRows] = await Promise.all([
-      fetchJson(`pms_projects?select=id,name:project->>name,number:project->>projectNumber,status:project->>status,caPortal:project->caPortal,links:project->externalLinks&order=id.asc`),
+      fetchJson(`pms_projects?select=id,name:project->>name,number:project->>projectNumber,status:project->>status,pm:project->>projectManager,caPortal:project->caPortal,links:project->externalLinks&order=id.asc`),
       fetchAll(`pms_project_emails?or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*,subject.ilike.*Responded%20to%20and%20Closed*,subject.ilike.*Sent%20and%20Closed*,from_address.ilike.*kahua*,subject.ilike.*PMWeb*)&select=project_id,from_address,subject&order=record_id.asc`),
     ]);
     const detected=(window.CaIntake&&window.CaIntake.detectPlatforms)?window.CaIntake.detectPlatforms(actRows||[]):{};
@@ -406,7 +406,7 @@ function portalLinkOf(links, platform){ const l=(links||[]).filter(x=>x&&x.url);
 function projEntry(row, det){
   const cp=row.caPortal&&typeof row.caPortal==="object"?row.caPortal:{};
   const link=portalLinkOf(row.links, cp.platform||(det&&det.platform));
-  return { id:row.id, name:row.name||"(unnamed)", number:row.number||"", activity:!!det,
+  return { id:row.id, name:row.name||"(unnamed)", number:row.number||"", pm:(row.pm||"").trim(), activity:!!det,
     platform:cp.platform||"", gc:cp.gc||"", setBy:cp.by||"", setAt:cp.at||"",
     detected:det?det.platform:"", detectedCounts:det?det.counts:{}, url:link?link.url:"", links:row.links||[] };
 }
@@ -1055,7 +1055,8 @@ function emailAction(kind, which){
   const g=k=>{const e=document.getElementById("f_"+k);return e?e.value:"";};
   const num=g("number"), title=g("title")||g("description"), desc=g("description"), from=g("from"), due=g("dueDate"), resp=g("response"), spec=g("specSection"), comments=g("comments"), stamp=g("stamp");
   const proj=(EDIT&&EDIT.projName)?` · ${EDIT.projName}`:"";
-  const lbl=(kind==="rfi"?"RFI ":"Submittal ")+num;
+  // "RFI RFI-088" reads badly: prefix only when the number does not already say what it is.
+  const lbl=(kind==="rfi"?(/^rfi/i.test(num)?"":"RFI "):(/^sub/i.test(num)?"":"Submittal "))+num;
   const dl=caItemDeepLink(kind,num); const dlLine=dl?`\nOpen in PMS: ${dl}\n`:"";
   // Separators keep the contractor's text visually distinct from the metadata
   // and from the Claude section that follows in these plain-text drafts.
@@ -1066,7 +1067,20 @@ function emailAction(kind, which){
     if(!(EDIT&&EDIT.ai)&&!(EDIT&&EDIT.assignAnyway)){ showAssignWarn(kind); return; }
     hideAssignWarn();
     const to=[...document.querySelectorAll(".asg:checked")].map(c=>{const m=EDIT_TEAM.find(t=>t.id===c.value);return m&&m.email;}).filter(Boolean).join(",");
-    mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}\n${qBlock}\nDue: ${due||"—"}\nFrom: ${from||"—"}\n${dlLine}${caAiEmailText(true)}`);
+    // The reviewer gets the steps, not just the facts: where the item is, where
+    // the files are, where to write, how to issue it, and who to tell if it is
+    // not theirs. Plain text (mailto), so the structure is numbered lines.
+    const isRFI=kind==="rfi"; const pm=((PROJECTS.find(p=>p.id===(EDIT&&EDIT.projId))||{}).pm||"").trim(); const sp=g("spFolderUrl");
+    const steps=[
+      `1. Open the item in the PMS: ${dl||"(open it from the RFI / Submittal Tracker)"}\n   Start with the Claude review box at the top: red flags first, then the suggested ${isRFI?"answer":"stamp and comments"} and the sheets it checked. Verify against the current set before you trust it.`,
+      `2. The contractor's ${isRFI?"question":"submittal"} and attachments are in the SharePoint folder: ${sp||"(no folder link on the item yet — ask the sender)"}`,
+      isRFI ? `3. Write your answer in the Response field. "Copy into Response" takes the Claude suggestion if it is right; edit it until it is yours. Anything internal goes in Internal notes, which never leave the office.`
+            : `3. Pick the Stamp and write the Review comments that go back to the contractor. The status follows the stamp. Anything internal goes in Internal notes, which never leave the office.`,
+      isRFI ? `4. Set Responded to today, Save, then Email → Draft response email: that opens the formal response for you to check and send. From Outlook, the same is "Log Response" on any email filed to this RFI.`
+            : `4. Set Returned to today, Save, then Email → Draft return email: that opens the return for you to check and send. From Outlook, the same is "Log Review" on any email filed to this submittal.`,
+      `5. If this is not yours, or you cannot meet the date, tell ${pm||"the project manager"} today rather than on the due date.`
+    ].join("\n");
+    mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}${proj}.\nDue back to the contractor: ${due||"—"}. From: ${from||"—"}.\n\nWHAT TO DO\n${steps}\n${qBlock}${caAiEmailText(true)}`);
   } else if(which==="sub"){
     const sv=g("subAssigned"); const so=EDIT_SUBS.find(s=>((s&&s.name)||(s&&s.company)||String(s))===sv);
     mailto((so&&so.email)||"", `[${lbl}] For your input — ${title}${proj}`, `Please review and advise on ${lbl}: ${title}\n${qBlock}${dlLine}`);
