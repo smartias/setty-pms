@@ -1381,7 +1381,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-05-current-set-specs";
+const BUILD = "2026-11-06-knowledge-sensitive-gate";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.24.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -11271,6 +11271,53 @@ function knowledgeOverlap(a: string, b: string): number {
   return inter / Math.min(A.size, B.size);
 }
 
+// Sensitive-terms gate (2026-11-06). On 2026-10-30 and 2026-11-02 two
+// project-scoped, hand-confirmed saves on SAPX256014.00 went live carrying
+// MSA/subagreement terms, liability caps, insurance limits, an internal
+// dispute narrative and the words "do not share internally"; search_knowledge,
+// project_briefing and the QA coordination review all served them. Contract,
+// insurance and legal language is exactly what a reviewer should see before
+// the team does, so a save whose summary or source reads that way is held as
+// 'suggested' even when it is project-scoped. The patterns are word-bounded
+// so "contractor"/"subcontractor" (every CA note) never trip them, and
+// "contract documents/drawings/set/specs" — CA shorthand for the design set,
+// not a commercial term — is carved out. A false positive only costs a
+// reviewer one click in the Intelligence console; a false negative is the
+// incident above, so the list leans wide. Each entry is [label, pattern]; the
+// label goes back to the model so it can tell the user WHY the entry queued.
+const KNOWLEDGE_SENSITIVE_TERMS: ReadonlyArray<readonly [string, RegExp]> = [
+  ["contract", /\bcontracts?\b(?!\s+(?:documents?|drawings?|dwgs?|sets?|specs?|specifications?|plans?)\b)/i],
+  ["contractual", /\bcontractual(?:ly)?\b/i],
+  ["MSA", /\bMSAs?\b/i],
+  ["subagreement", /\bsub-?agreements?\b/i],
+  ["agreement", /\b(?:master|services?|sub-?consultant|prime|teaming|consulting)\s+agreements?\b/i],
+  ["indemnification", /\bindemn/i],
+  ["liability", /\bliabilit(?:y|ies)\b|\bliable\b/i],
+  ["hold harmless", /\bhold\s+harmless\b/i],
+  ["insurance", /\binsur(?:ance|ed|ers?)\b/i],
+  ["subrogation", /\bsubrogation\b/i],
+  ["deductible", /\bdeductibles?\b/i],
+  ["claim notice", /\bclaims?\s+notice|\bnotice\s+of\s+claims?\b/i],
+  ["dispute", /\bdisput(?:e|es|ed|ing)\b/i],
+  ["arbitration", /\barbitrat/i],
+  ["litigation", /\blitigat/i],
+  ["attorney", /\battorneys?\b|\blegal\s+counsel\b/i],
+  ["lien", /\bliens?\b/i],
+  ["NDA", /\bNDAs?\b|\bnon-?disclosure\b/i],
+  ["do not share", /\bdo\s+not\s+share\b|\bdon['\u2019]?t\s+share\b|\bnot\s+for\s+(?:distribution|circulation)\b|\binternal\s+(?:use\s+)?only\b/i],
+  ["confidential", /\bconfidential/i],
+  ["privileged", /\bprivileged\b/i],
+];
+// The label of the first sensitive term found across the given fields, or
+// null when the text is clean. Fields are joined with a space so a term
+// cannot be split across them, and null/undefined fields are ignored.
+function knowledgeSensitiveTerm(...fields: Array<string | null | undefined>): string | null {
+  const text = fields.filter(Boolean).join(" ");
+  if (!text) return null;
+  for (const [label, re] of KNOWLEDGE_SENSITIVE_TERMS) if (re.test(text)) return label;
+  return null;
+}
+
 mcp.tool("save_knowledge", {
   description:
     "Save a durable finding to Setty's SHARED project knowledge record (the knowledge layer) in the PMS. " +
@@ -11294,8 +11341,11 @@ mcp.tool("save_knowledge", {
     "because it shapes every project. EXCEPTION — automated runs: when the entries come from a " +
     "pipeline or batch extraction (a QC memo generator, a script, any run where the user did not " +
     "personally vouch for THIS specific finding in conversation), set automated: true; such " +
-    "entries ALWAYS queue for human review, project-scoped or not. Report which happened from " +
-    "the response.",
+    "entries ALWAYS queue for human review, project-scoped or not. EXCEPTION — sensitive terms: a " +
+    "summary or source carrying contract, MSA/subagreement, indemnity, liability, insurance, " +
+    "deductible, claim-notice, dispute, 'confidential' or 'do not share' language is ALWAYS held as " +
+    "SUGGESTED, project-scoped or not — commercial and legal terms get a human reviewer before the " +
+    "team sees them. Report which happened from the response, exactly: queued is not shared.",
   inputSchema: z.object({
     summary: z.string().min(20).max(4000).describe("The finding itself, self-contained: what a teammate needs to know, in 1-5 sentences."),
     projectNumber: z.string().optional().describe("Project number OR name when the finding is about one job. Omit for agency-wide or firm-wide knowledge."),
@@ -11397,7 +11447,10 @@ mcp.tool("save_knowledge", {
     // individual finding, so a human reviewer's yes replaces the user's yes.
     // They land as origin 'mined', which SettyIntelligence already badges 🤖
     // and filters, keeping the machine stream distinct from hand saves.
-    const status = pn && !isAutomated ? "approved" : "suggested";
+    // Sensitive-terms gate (2026-11-06): contract/insurance/legal language
+    // queues too, project-scoped or not — see KNOWLEDGE_SENSITIVE_TERMS.
+    const sensitiveTerm = knowledgeSensitiveTerm(summary, source);
+    const status = pn && !isAutomated && !sensitiveTerm ? "approved" : "suggested";
     const row = await sbInsert("pms_lessons", {
       project_id: pn,
       agency: agency?.trim() || null,
@@ -11416,10 +11469,16 @@ mcp.tool("save_knowledge", {
         status,
         project: pn, agency: agency?.trim() || null,
         author: caller.email,
+        ...(sensitiveTerm ? { heldForReview: "sensitive-terms", matchedTerm: sensitiveTerm } : {}),
       },
       note: isAutomated
         ? "Queued as a SUGGESTION — automated/pipeline entries always go through human review in the " +
           "Intelligence console (Project Knowledge tab), even project-scoped ones. Report it as pending review."
+        : sensitiveTerm
+        ? "Queued as a SUGGESTION — NOT live. The text reads like contract, insurance or legal content " +
+          "(matched \"" + sensitiveTerm + "\"), which a human reviewer checks in the Intelligence console " +
+          "(Project Knowledge tab) before the team sees it, even on a project-scoped save. Tell the user it is " +
+          "queued for review, not shared; a knowledge reviewer can approve it there."
         : pn
         ? "Added to the project record — LIVE for the whole team now (search_knowledge, project briefings, and " +
           "the Project Knowledge tab, credited to the author). A reviewer can edit or remove it there. Tell the user it is saved and shared."
