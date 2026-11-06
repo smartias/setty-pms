@@ -113,6 +113,7 @@ Reviewed knowledge, agency preferences and engineering standards are all searcha
   Verified process rules per agency.
 - `Save that: DASNY rejected the VFD substitution on this project because of harmonics`  
   "Save that" or "add this to the project record" writes a durable finding others can find.
+  A finding that reads like contract, insurance or legal language (MSA or subagreement terms, liability caps, "confidential", "do not share") is held for a knowledge reviewer instead of going live, and Claude tells you it is queued.
 
 ### Proposals and templates
 
