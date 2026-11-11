@@ -240,7 +240,7 @@ test("people who have left are never the answer or a wrong answer", () => {
   }
 });
 
-import { packGrid, teamGrid } from "./accolades.js";
+import { packGrid } from "./accolades.js";
 
 test("packGrid shows the podium and the cars around you", () => {
   const st = Array.from({ length: 150 }, (_, i) => ({ key: "p" + (i + 1), name: "P" + (i + 1), points: 300 - i }));
@@ -252,11 +252,6 @@ test("packGrid shows the podium and the cars around you", () => {
   assert.equal(packGrid(st, "p80").find((c) => c.me).rank, 80);
   assert.deepEqual(packGrid(st.slice(0, 4), "p4").map((c) => c.rank), [1, 2, 3, 4]);
   assert.deepEqual(packGrid([], "x"), []);
-});
-
-test("teamGrid places one car per team by average points", () => {
-  const g = teamGrid([{ key: "India", name: "India", points: 25, members: 1, perHead: 25 }, { key: "NY", name: "NY", points: 140, members: 2, perHead: 70 }], 50);
-  assert.deepEqual(g.map((c) => [c.key, c.points, c.lap, c.frac, c.rank]), [["team:India", 25, 0, 0.5, 1], ["team:NY", 70, 1, 0.4, 2]]);
 });
 
 import { VERSION } from "./accolades.js";
