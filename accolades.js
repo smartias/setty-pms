@@ -8,6 +8,10 @@
 // Rows come from public.pms_accolades (see the pms_accolades migration).
 // Pure: no DOM, no fetch. Dates are YYYY-MM-DD strings read as local days.
 
+// Bump this, and the ?v= on the import in Accolades.html, on every change to
+// this file. The page compares the two to spot a stale cached copy.
+export const VERSION = "2026-11-11-7";
+
 export function parseDay(str) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(str || ""));
   return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;

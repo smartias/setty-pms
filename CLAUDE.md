@@ -97,3 +97,14 @@ browser (PMS pages) or from the connector (app permissions).
 - `pms_projects` rows use optimistic concurrency (`version` column): any
   direct SQL edit must bump `version` and the user must refresh open PMS
   tabs afterward or they'll hit save conflicts.
+
+## Accolades.html (the Accolade-O-Meter)
+
+- The page imports `accolades.js` with a `?v=` query. **Bump `VERSION` in
+  `accolades.js` and the two matching values in `Accolades.html` (the import
+  URL and `NEEDS_VERSION`) whenever `accolades.js` changes.** Browsers cache the
+  module separately from the page; a stale copy once left the page calling
+  functions the old module lacked and blanked half of it.
+- Counting rules are in `accolades.js` (`accolades.test.mjs`). The page reaches
+  Supabase tables `pms_accolade*`; later migrations are optional for it, and it
+  hides the features whose tables or columns are missing.
