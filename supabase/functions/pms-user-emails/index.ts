@@ -32,6 +32,11 @@
 // became a project.notes[] action item on confirm and flows through the
 // existing action-item rules above.
 //
+// Accolades (2026-11-11): accolades logged in the last 7 days that name the
+// recipient (pms_accolades.recipient_emails) lead the digest in a "Kudos"
+// block. Someone with kudos but nothing due still gets the email. If the
+// pms_accolades table is missing the digest goes out without the block.
+//
 // verify_jwt is OFF (browser CORS preflight can't carry a JWT) — every route
 // enforces its own auth above. No external imports: plain fetch against
 // Supabase REST with the service-role key.
@@ -43,6 +48,8 @@ const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") || "";
 const FROM_EMAIL = Deno.env.get("DIGEST_FROM_EMAIL") || "Setty PMS <digest@pms.setty.com>";
 const PMS_URL = "https://smartias.github.io/setty-pms/SettyPMS.html";
 const LOOKAHEAD_DAYS = 21;
+const ACCOLADES_URL = PMS_URL.replace(/[^/]*$/, "Accolades.html");
+const KUDOS_DAYS = 7;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -318,7 +325,33 @@ function itemLine(i: FlatItem, isLast: boolean, dueTag?: string): string {
     </div>`;
 }
 
-function digestHtml(digests: ProjDigest[], today: Date): string {
+type Kudo = { quote: string; kind: string; from_name?: string; from_company?: string; created_by_name?: string; project_number?: string; project_name?: string };
+
+// The recipient's own accolades from the past week, quoted in full up to a
+// sensible length, with who said it and on which project.
+function kudosBlock(kudos: Kudo[]): string {
+  if (!kudos.length) return "";
+  const line = (k: Kudo) => {
+    const q = String(k.quote || "").trim();
+    const who = k.kind === "internal"
+      ? (k.created_by_name || "A teammate")
+      : [k.from_name, k.from_company].filter(Boolean).join(", ") || "A client";
+    const proj = [k.project_number, k.project_name].filter(Boolean).join(" ");
+    return `
+      <div style="padding:6px 0;font-size:10pt;color:#222">
+        <span style="font-family:Georgia,'Times New Roman',serif;font-style:italic">“${esc(q.length > 320 ? q.slice(0, 317).trimEnd() + "…" : q)}”</span>
+        <div style="color:#888;font-size:8.5pt;margin-top:2px">— ${esc(who)}${proj ? ` · ${esc(proj)}` : ""}</div>
+      </div>`;
+  };
+  return `
+    <div style="margin-top:20px;padding:10px 14px;background:#f0f7f4;border-left:3px solid #047857;border-radius:3px">
+      <div style="font-size:9pt;color:#047857;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px">🏆 Kudos — you were recognized last week (${kudos.length})</div>
+      ${kudos.map(line).join("")}
+      <div style="font-size:9pt;margin-top:6px"><a href="${ACCOLADES_URL}" style="color:#047857;font-weight:700">See the wall and the race on the Accolade-O-Meter →</a></div>
+    </div>`;
+}
+
+function digestHtml(digests: ProjDigest[], today: Date, kudos: Kudo[] = []): string {
   const dated: FlatItem[] = [];
   const undated: FlatItem[] = [];
   const overdueFlat: FlatItem[] = [];
@@ -398,6 +431,7 @@ function digestHtml(digests: ProjDigest[], today: Date): string {
   return shell("Your week ahead", `
     <div style="font-size:20pt;color:#1F3864;font-weight:700;line-height:1.1">Your week ahead</div>
     <div style="font-size:11pt;color:#666;margin-top:6px">${total} item${total !== 1 ? "s" : ""} across ${projCount} project${projCount !== 1 ? "s" : ""} · ${range}${overdueFlat.length ? ` · <span style="color:#C00000;font-weight:700">${overdueFlat.length} overdue</span>` : ""}</div>
+    ${kudosBlock(kudos)}
     ${overdueBlock}
     ${body}
     ${undatedBlock}
@@ -452,10 +486,30 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
     perProject.push({ digest, memberEmails });
   }
 
+  // Last week's accolades, grouped by the people they name. Optional: a
+  // missing table (or any read error) just means no Kudos block.
+  const kudosByEmail = new Map<string, Kudo[]>();
+  try {
+    const since = new Date(today.getTime() - KUDOS_DAYS * 86400000).toISOString();
+    const rows = await svcAll(
+      "/pms_accolades?removed_at=is.null&created_at=gte." + encodeURIComponent(since) +
+      "&select=quote,kind,from_name,from_company,created_by_name,project_number,project_name,recipient_emails&order=created_at.asc",
+    );
+    for (const a of rows) {
+      for (const e of new Set<string>((a.recipient_emails || []).map((x: string) => String(x || "").toLowerCase().trim()))) {
+        if (!e) continue;
+        if (!kudosByEmail.has(e)) kudosByEmail.set(e, []);
+        kudosByEmail.get(e)!.push(a);
+      }
+    }
+  } catch (e: any) {
+    console.warn("digest: accolades not read, sending without kudos:", e?.message || e);
+  }
+
   const sent: string[] = [];
   const skipped: string[] = [];
   const failed: { email: string; error: string }[] = [];
-  const preview: Record<string, { projects: number; items: number }> = {};
+  const preview: Record<string, { projects: number; items: number; kudos: number }> = {};
 
   // Action items are personal: one with an owner we can resolve to a staff
   // email goes only to that person's digest. Unowned (or unresolvable-owner)
@@ -475,15 +529,17 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
       .filter(p => r.scope === "all" || p.memberEmails.has(r.email))
       .map(p => forRecipient(p.digest, r.email))
       .filter((d): d is ProjDigest => d !== null);
-    if (digests.length === 0) { skipped.push(r.email); continue; }
+    const kudos = kudosByEmail.get(r.email) || [];
+    if (digests.length === 0 && kudos.length === 0) { skipped.push(r.email); continue; }
     preview[r.email] = {
+      kudos: kudos.length,
       projects: digests.length,
       items: digests.reduce((a, d) => a + d.items.length + d.undatedActions.length + d.overdue.length, 0),
     };
     if (opts.dryRun) continue;
     const subject = `Your week ahead — ${today.toLocaleDateString("en-US", { month: "long", day: "numeric" })}`;
     try {
-      await sendEmail(r.email, subject, digestHtml(digests, today));
+      await sendEmail(r.email, subject, digestHtml(digests, today, kudos));
       sent.push(r.email);
     } catch (e: any) {
       failed.push({ email: r.email, error: e?.message || String(e) });
@@ -491,7 +547,7 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
   }
   return {
     runAt: today.toISOString(), dryRun: opts.dryRun, recipients: recipients.length,
-    preview, sent, skipped, skippedReason: "no items in window", failed,
+    preview, sent, skipped, skippedReason: "no items in window and no kudos", failed,
   };
 }
 
