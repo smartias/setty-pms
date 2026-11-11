@@ -18,7 +18,7 @@ browser (PMS pages) or from the connector (app permissions).
 2. **The file is CRLF.** Read and write it in binary mode and keep `\r\n`; a
    text-mode rewrite turns a 20-line change into a 33,000-line diff. Other
    CRLF files: `SettyFieldPhotos.html`, `SiteReport.html`, `transmittal.html`.
-   `SettyAdmin.html`, `taskpane.html`, the `.js` modules and everything under
+   `SettyAdmin.html`, `Accolades.html`, `taskpane.html`, the `.js` modules and everything under
    `supabase/` are LF.
 3. **Two `text/x-pms-jsx` script blocks share one global scope.** Top-level
    `function` declarations in block 1 are visible in block 2. Do NOT use
