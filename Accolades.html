@@ -232,6 +232,9 @@ body.tv blockquote { font-size: 1.45rem; }
   #tube .body-g { animation: tube .7s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: 50% 100%; }
   #tube .arm { animation: arm .33s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: 50% 100%; }
   #tube .arm.r { animation-delay: -.17s; }
+  #tube.wild { animation: tubejump .3s ease-in-out infinite alternate, tubehue 1s linear infinite; transform-box: fill-box; transform-origin: 50% 100%; }
+  #tube.wild .body-g { animation: tubewild .16s ease-in-out infinite alternate; }
+  #tube.wild .arm { animation-duration: .09s; }
   #flag .cloth { animation: flag .6s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: 0 50%; }
   .answer.right.fresh, .zone-name.hit { animation: tada .8s; }
   .answer.wrong.fresh { animation: shake .5s; }
@@ -247,6 +250,9 @@ body.tv blockquote { font-size: 1.45rem; }
 @keyframes beep { 0% { opacity: 0; transform: scale(.3); } 20% { opacity: 1; transform: scale(1.2); } 80% { opacity: 1; } 100% { opacity: 0; transform: translateY(-8px); } }
 @keyframes steam { 0% { opacity: 0; transform: translateY(0) scale(.6); } 30% { opacity: .8; } 100% { opacity: 0; transform: translateY(-26px) scale(1.6); } }
 @keyframes tube { from { transform: skewX(-16deg) scaleY(.82); } to { transform: skewX(16deg) scaleY(1.06); } }
+@keyframes tubewild { from { transform: skewX(-34deg) scaleY(.6); } to { transform: skewX(34deg) scaleY(1.45); } }
+@keyframes tubejump { from { transform: translateY(0) scale(1); } to { transform: translateY(-9px) scale(1.25); } }
+@keyframes tubehue { to { filter: hue-rotate(360deg); } }
 @keyframes arm { from { transform: rotate(-55deg); } to { transform: rotate(45deg); } }
 @keyframes flag { from { transform: skewY(-9deg); } to { transform: skewY(9deg); } }
 @keyframes tada { 20% { transform: scale(.92) rotate(-3deg); } 50% { transform: scale(1.08) rotate(3deg); } 70% { transform: scale(1.08) rotate(-3deg); } 100% { transform: none; } }
@@ -678,7 +684,15 @@ function duckNews() {
   const pool = rows.slice(0, 6), r = pool[Math.floor(Math.random() * pool.length)];
   duck("QUACK! Kudos to " + (r.recipients || ["the team"])[0]);
 }
-const celebrate = () => { kick(); confetti(); trophy(); sfx.tada(); };
+// The tube man loses it for a few seconds whenever an accolade is logged.
+let wildTimer = 0;
+function tubeWild() {
+  if (reduced) return;
+  $("tube").classList.add("wild");
+  clearTimeout(wildTimer);
+  wildTimer = setTimeout(() => $("tube").classList.remove("wild"), 5000);
+}
+const celebrate = () => { kick(); confetti(); trophy(); tubeWild(); sfx.tada(); };
 on($("testBtn"), celebrate);
 
 // ── Derived data ────────────────────────────────────────────────────────────
@@ -1338,7 +1352,11 @@ function markNew() {
 }
 async function refresh() {
   if (document.hidden) return;
-  try { await Promise.all([loadRows(), loadCheers(), loadPlays(), loadSettings(), loadCars()]); renderAll(); } catch (_) {}
+  const seen = new Set(rows.map((r) => r.id));
+  try { await Promise.all([loadRows(), loadCheers(), loadPlays(), loadSettings(), loadCars()]); renderAll(); } catch (_) { return; }
+  // someone else logged one while this page was open
+  const fresh = rows.filter((r) => !seen.has(r.id));
+  if (fresh.length) { for (const r of fresh) newIds.add(r.id); renderAll(); tubeWild(); kick(); duck("QUACK! Kudos to " + (fresh[0].recipients || ["the team"])[0]); }
 }
 
 let booted = false;
