@@ -651,8 +651,8 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
 // VERSION in that file). Browsers cache the module separately from this page;
 // a stale copy once left the page calling functions the old module lacked,
 // which blanked everything drawn after the first failure.
-import * as A from "./accolades.js?v=2026-11-11-9";
-const NEEDS_VERSION = "2026-11-11-9";
+import * as A from "./accolades.js?v=2026-11-11-10";
+const NEEDS_VERSION = "2026-11-11-10";
 // ?review=1 is the admin review screen the Admin Console embeds: only the
 // filed-email suggestions and the form that approves one onto the wall.
 const REVIEW = new URLSearchParams(location.search).get("review") === "1";
@@ -951,7 +951,7 @@ function renderGame() {
   const pz = A.dailyPuzzle(rows, names, today(), "", gone);
   if (!pz) {
     $("gameTag").textContent = "Locked";
-    body.appendChild(h("p", { class: "note", text: "The daily round unlocks once the wall has an accolade from before today and at least four different names to choose from. Log a few to get it started." }));
+    body.appendChild(h("p", { class: "note", text: "The daily round needs one accolade on the wall and at least four different names to choose from, counting the staff list. Log one to get it started." }));
     return;
   }
   const mine = plays.find((p) => String(p.email).toLowerCase() === me && String(p.play_date).slice(0, 10) === pz.day);

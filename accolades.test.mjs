@@ -113,12 +113,19 @@ test("the daily puzzle is the same for everyone and holds the answer once", () =
   for (const r of a.accolade.recipients.slice(1)) assert.ok(!a.choices.includes(r));
 });
 
-test("no puzzle without enough names, and today's entries wait a day", () => {
+test("no puzzle without enough names; today's entries wait a day unless nothing is older", () => {
   assert.equal(dailyPuzzle(wall, [], "2026-11-11"), null);            // too few decoys
   assert.equal(dailyPuzzle([], ["A", "B", "C", "D"], "2026-11-11"), null);
-  const fresh = [row({ id: 9, recipients: ["Ana Diaz"], received_on: "2026-11-11", created_at: "2026-11-11T08:00:00Z" })];
-  assert.equal(dailyPuzzle(fresh, ["A", "B", "C"], "2026-11-11"), null);
-  assert.equal(dailyPuzzle(fresh, ["A", "B", "C"], "2026-11-12").answer, "Ana Diaz");
+  // day one: only today's entries exist, so the first one logged is the puzzle, and it stays the puzzle
+  const first = row({ id: 9, recipients: ["Ana Diaz"], received_on: "2026-11-11", created_at: "2026-11-11T08:00:00Z" });
+  const later = row({ id: 12, recipients: ["Bo Chen"], received_on: "2026-11-11", created_at: "2026-11-11T15:00:00Z" });
+  assert.equal(dailyPuzzle([first], ["A", "B", "C"], "2026-11-11").answer, "Ana Diaz");
+  assert.equal(dailyPuzzle([later, first], ["A", "B", "C"], "2026-11-11").answer, "Ana Diaz");
+  assert.deepEqual(dailyPuzzle([later, first], ["A", "B", "C"], "2026-11-11").choices, dailyPuzzle([first, later], ["A", "B", "C"], "2026-11-11").choices);
+  // once something older exists, today's entries are left out again
+  const older = row({ id: 3, recipients: ["Cy Roe"], received_on: "2026-11-09", created_at: "2026-11-09T08:00:00Z" });
+  for (let i = 0; i < 8; i++) assert.equal(dailyPuzzle([first, later, older], ["A", "B", "C"], "2026-11-11", "s" + i).answer, "Cy Roe");
+  assert.equal(dailyPuzzle([first], ["A", "B", "C"], "2026-11-12").answer, "Ana Diaz");
 });
 
 test("play streak counts working days back from today or the last working day", () => {
