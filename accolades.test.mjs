@@ -338,3 +338,33 @@ test("customizing your car pays once, in the season it was first done", () => {
   assert.equal(ch[0].key, "2026-Q4");
   assert.equal(ch[0].podium[0].points, POINTS.car);
 });
+
+import { splitPace } from "./accolades.js";
+test("pace cars score but are never ranked or on a podium", () => {
+  const rows = [
+    { recipients: ["Boss"], recipient_emails: ["boss@setty.com"], received_on: "2026-08-03", created_by: "x@setty.com" },
+    { recipients: ["Boss"], recipient_emails: ["boss@setty.com"], received_on: "2026-08-04", created_by: "x@setty.com" },
+    { recipients: ["Ana"], recipient_emails: ["ana@setty.com"], received_on: "2026-08-05", created_by: "x@setty.com" },
+  ];
+  const st = seasonPoints(rows, [], [], (k) => k);
+  assert.equal(st[0].key, "boss@setty.com");
+  const sp = splitPace(st, ["Boss@Setty.com "]);
+  assert.deepEqual(sp.pace.map((e) => e.key), ["boss@setty.com"]);
+  assert.ok(sp.pace[0].points > 0);                                  // still scores
+  assert.ok(!sp.ranked.some((e) => e.key === "boss@setty.com"));
+  assert.deepEqual(sp.ranked.map((e) => e.key), ["x@setty.com", "ana@setty.com"]);   // everyone else moves up, order kept
+  assert.equal(splitPace(st, []).ranked.length, st.length);
+  const ch = champions(rows, [], [], (k) => k, "2026-11-11", [], [], ["boss@setty.com"]);
+  assert.ok(!ch[0].podium.some((e) => e.key === "boss@setty.com"));
+  assert.equal(ch[0].podium.length, 2);
+});
+
+import { scoreDay } from "./accolades.js";
+test("an accolade scores in the season it was logged, whatever the email's date", () => {
+  const old = { recipients: ["Brett"], recipient_emails: ["brett@setty.com"], received_on: "2026-06-02", created_at: "2026-11-11T15:00:00Z", source: "email", created_by: "admin@setty.com" };
+  assert.equal(scoreDay(old), "2026-11-11");
+  assert.equal(scoreDay({ received_on: "2026-06-02" }), "2026-06-02");     // no logged time: fall back to the date
+  // logged in Q4 from a Q2 email: no Q2 podium appears for it, and it is not in a finished quarter
+  assert.deepEqual(champions([old], [], [], (k) => k, "2026-11-11"), []);
+  assert.equal(champions([old], [], [], (k) => k, "2027-01-05")[0].key, "2026-Q4");
+});

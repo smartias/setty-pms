@@ -274,6 +274,12 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
 .optbtn[aria-pressed="true"] { border-color: var(--ink); background: var(--ink); color: var(--bg); }
 .preview { background: var(--track); border-radius: 10px; width: 100%; max-width: 260px; height: auto; display: block; }
 .car .deco { fill: var(--panel); opacity: .9; } .car .hot { fill: var(--brass); } .car .dark { fill: var(--ink); opacity: .55; }
+.car .pacehalo { fill: none; stroke: var(--brass); stroke-width: 2; stroke-dasharray: 5 4; }
+@media (prefers-reduced-motion: no-preference) { .car .pacehalo { animation: pacespin 6s linear infinite; transform-box: fill-box; transform-origin: center; } }
+@keyframes pacespin { to { transform: rotate(360deg); } }
+.board li.pacerow .rank { font-size: .7rem; letter-spacing: .04em; }
+.pacelist { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.pacelist button { font: inherit; font-size: .82rem; border: 1px solid var(--line); background: none; color: var(--ink); border-radius: 999px; padding: 3px 10px; cursor: pointer; }
 .car .siren { fill: var(--needle); } .car .taxi { fill: var(--brass); stroke: var(--ink); stroke-width: .6; }
 @media (prefers-reduced-motion: no-preference) { .car .siren { animation: siren .5s steps(2) infinite; } }
 @keyframes siren { 50% { fill: var(--car4); } }
@@ -357,7 +363,7 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
         <div class="row">
           <h2 id="gaugeTitle">This month</h2>
           <span>
-            <button class="ghost" id="goalBtn" type="button" hidden>Set goal</button>
+            <button class="ghost" id="goalBtn" type="button" hidden>Settings</button>
             <button class="ghost" id="testBtn" type="button">Test the needle</button>
           </span>
         </div>
@@ -377,6 +383,11 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
         <form class="goal-form" id="goalForm" hidden>
           <div class="field"><label class="label" for="gGoal">Monthly goal</label><input type="number" id="gGoal" min="1" max="500"></div>
           <div class="field" style="flex:3 1 220px"><label class="label" for="gReward">What happens when we hit it (optional)</label><input type="text" id="gReward" maxlength="160"></div>
+          <div class="field" id="paceField" hidden style="flex:1 1 100%">
+            <label class="label" for="paceAdd">Pace cars: people who take part but are not ranked (for example, firm leadership)</label>
+            <input type="text" id="paceAdd" list="staffList" maxlength="80" placeholder="Type a name and press Enter" autocomplete="off">
+            <div class="pacelist" id="paceList"></div>
+          </div>
           <button class="ghost" type="submit">Save</button>
           <span class="msg" id="goalMsg" role="status"></span>
         </form>
@@ -699,8 +710,8 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
 // VERSION in that file). Browsers cache the module separately from this page;
 // a stale copy once left the page calling functions the old module lacked,
 // which blanked everything drawn after the first failure.
-import * as A from "./accolades.js?v=2026-11-11-13";
-const NEEDS_VERSION = "2026-11-11-13";
+import * as A from "./accolades.js?v=2026-11-11-14";
+const NEEDS_VERSION = "2026-11-11-14";
 // ?review=1 is the admin review screen the Admin Console embeds: only the
 // filed-email suggestions and the form that approves one onto the wall.
 const REVIEW = new URLSearchParams(location.search).get("review") === "1";
@@ -758,7 +769,8 @@ async function sbAll(path) {
 // ── State ───────────────────────────────────────────────────────────────────
 let me = "", myName = "", isAdmin = false;
 let rows = [], cheers = [], plays = [], cands = [], staff = [], projects = [];
-let settings = { monthly_goal: 20, reward: "" };
+let settings = { monthly_goal: 20, reward: "", pace: [] };
+let paceOn = false, paceDraft = [];   // paceOn: the pace_emails column exists (migration 20261111280000)
 let filter = "all", board = "race", period = "quarter";
 let confirming = null, pendingEmail = null, people = [];
 let practice = null, practicePick = null, practiceN = 0;
@@ -932,7 +944,9 @@ function season() {
   const t = new Date(), q = Math.floor(t.getMonth() / 3) + 1;
   return {
     label: "Q" + q + " " + t.getFullYear(), from,
-    rows: A.inPeriod(rows, "quarter", t),
+    // An accolade scores in the season it was put on the wall, not the date on
+    // the email it came from: approving an older email still earns its points now.
+    rows: rows.filter((r) => A.scoreDay(r) >= from),
     cheers: cheers.filter((c) => String(c.created_at || "").slice(0, 10) >= from),
     plays: plays.filter((p) => String(p.play_date).slice(0, 10) >= from),
     stops: stops.filter((st) => String(st.stop_date).slice(0, 10) >= from),
@@ -942,7 +956,11 @@ function season() {
 const gone = new Set();   // emails and lower-cased names of inactive staff
 // Everyone whose saved ride is not the stock car, with the day they first saved one.
 const carBonus = () => Object.entries(carPrefs).filter(([, p]) => A.isCustomRide(p)).map(([email, p]) => ({ email, at: String(p.at || "").slice(0, 10) || today() }));
-const standings = () => { const se = season(); return A.seasonPoints(se.rows, se.cheers, se.plays, nameOf, se.stops, se.cars).filter((e) => !gone.has(e.key)); };
+const allStandings = () => { const se = season(); return A.seasonPoints(se.rows, se.cheers, se.plays, nameOf, se.stops, se.cars).filter((e) => !gone.has(e.key)); };
+// Pace cars (settings.pace) take part but are not ranked: standings() is the field without them.
+const standings = () => A.splitPace(allStandings(), settings.pace).ranked;
+const paceCars = () => A.splitPace(allStandings(), settings.pace).pace;
+const isPace = (key) => settings.pace.includes(key);
 const niceDate = (str) => { const d = A.parseDay(str); return d ? d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : ""; };
 
 // ── Render: gauge + header ──────────────────────────────────────────────────
@@ -974,6 +992,7 @@ function renderMe() {
   const st = standings(), i = st.findIndex((e) => e.key === me);
   const parts = [mine ? mine + " on the wall" : "Not on the wall yet"];
   if (i >= 0) parts.push(st[i].points + " pts, P" + (i + 1));
+  else if (isPace(me)) { const p = paceCars().find((e) => e.key === me); parts.push((p ? p.points : 0) + " pts, pace car (not ranked)"); }
   $("meLine").textContent = parts.join(" · ");
 }
 
@@ -1101,7 +1120,7 @@ function drawRide(g, rideStr, fill, number) {
   return spec;
 }
 const colorVar = (key, i) => { const c = prefFor(key).color; return "var(" + CAR_COLORS[(Number.isInteger(c) ? c : i) % CAR_COLORS.length] + ")"; };
-const carSig = (c, i) => rideOf(c.key) + "|" + colorVar(c.key, i) + "|" + (prefFor(c.key).number || "");
+const carSig = (c, i) => rideOf(c.key) + "|" + colorVar(c.key, i) + "|" + (prefFor(c.key).number || "") + (c.pace ? "|pace" : "");
 
 // What goes on the track. On your own screen: the podium plus the cars around
 // you, so there is always someone close to chase. On the lobby screen: the top
@@ -1116,13 +1135,20 @@ function renderRace() {
   $("seasonName").textContent = "Season " + se.label;
   $("seasonLead").textContent = !lead ? "Grid is empty" : lead.name.split(/\s+/)[0] + " leads";
   $("seasonSub").textContent = lead ? lead.points + " pts \u00B7 " + A.LAP_POINTS + " pts a lap" : "First points take the lead";
-  syncRace(field.grid);
-  renderBoard(field.grid, st);
+  // Pace cars drive with the field, by their own points, but hold no place in it.
+  const everyone = allStandings();
+  const pace = settings.pace.filter((k) => !gone.has(k) && nameOf[k]).map((k) => {
+    const e = everyone.find((x) => x.key === k), points = e ? e.points : 0;
+    return { key: k, name: nameOf[k], points, rank: 0, pace: true, lap: Math.floor(points / A.LAP_POINTS), frac: (points % A.LAP_POINTS) / A.LAP_POINTS, me: k === me };
+  }).sort((a, b) => b.points - a.points || a.name.localeCompare(b.name));
+  syncRace(field.grid.concat(pace));
+  renderBoard(field.grid, st, pace);
 }
 function buildCar(c, i) {
   const ride = rideOf(c.key);
-  const car = s("g", { class: "car" + (c.me ? " mine" : ""), tabindex: "0", role: "button" });
+  const car = s("g", { class: "car" + (c.me ? " mine" : "") + (c.pace ? " pace" : ""), tabindex: "0", role: "button" });
   const title = s("title"); car.appendChild(title);
+  if (c.pace) car.appendChild(s("circle", { class: "pacehalo", cx: 0, cy: 0, r: 21 }));
   const rot = s("g"), bob = s("g", { class: "bob" });
   bob.style.animationDelay = (-Math.random() * 0.5).toFixed(2) + "s";
   const spec = drawRide(bob, ride, colorVar(c.key, i));
@@ -1173,8 +1199,8 @@ function syncRace(grid) {
     o.lane = grid.length > 1 ? (i / (grid.length - 1) - 0.5) * 22 : 0;
     o.goal = goal;
     o.crown.style.display = c.rank === 1 && c.points > 0 ? "" : "none";
-    o.title.textContent = c.name + ": " + c.points + " pts, lap " + (c.lap + 1);
-    o.car.setAttribute("aria-label", c.name + ", " + c.points + " points, lap " + (c.lap + 1) + ". Press to honk.");
+    o.title.textContent = c.name + (c.pace ? " (pace car, not ranked)" : "") + ": " + c.points + " pts, lap " + (c.lap + 1);
+    o.car.setAttribute("aria-label", c.name + (c.pace ? ", pace car, not ranked" : "") + ", " + c.points + " points, lap " + (c.lap + 1) + ". Press to honk.");
     place(o);
   });
   for (const [k, o] of raceCars) if (!seen.has(k)) { o.car.remove(); raceCars.delete(k); }
@@ -1217,7 +1243,7 @@ function puff(o) {
   const el = s("circle", { class: "puff", cx: (o.x - Math.cos(o.ang) * 17).toFixed(1), cy: (o.y - Math.sin(o.ang) * 17).toFixed(1), r: 2 });
   $("puffs").appendChild(el); puffs.push({ el, life: 0 });
 }
-function renderBoard(grid, st) {
+function renderBoard(grid, st, pace) {
   const ol = $("board"), empty = $("boardEmpty");
   ol.textContent = "";
   $("periodChips").hidden = board === "race";
@@ -1237,6 +1263,7 @@ function renderBoard(grid, st) {
     empty.textContent = "Nobody by that name has points this season.";
   } else if (board === "race") {
     items = grid.map((c, i) => ({ rank: c.rank, color: colorVar(c.key, i), num: prefFor(c.key).number, name: (A.parseRide(rideOf(c.key)).novelty ? rideOf(c.key) + " " : "") + c.name, sub: "Lap " + (c.lap + 1), right: c.points + " pts", mine: c.me }));
+    for (const c of pace || []) items.push({ pace: true, color: colorVar(c.key, grid.length), num: prefFor(c.key).number, name: c.name, sub: "Pace car \u00B7 takes part, not ranked", right: c.points + " pts", mine: c.me });
     empty.textContent = "No points yet this season. Log an accolade, cheer one or play today's round to put a car on the track.";
   } else if (board === "teams") {
     $("periodChips").hidden = true;
@@ -1252,14 +1279,14 @@ function renderBoard(grid, st) {
   let prevRank = 0;
   for (const it of items) {
     // a jump in rank means places were skipped (the podium, then your part of the field)
-    if (board === "race" && !showAll && prevRank && it.rank > prevRank + 1) ol.appendChild(h("li", { class: "gap", "aria-label": "places " + (prevRank + 1) + " to " + (it.rank - 1) + " not shown", text: "\u22EF" }));
-    prevRank = it.rank;
+    if (board === "race" && !showAll && !it.pace && prevRank && it.rank > prevRank + 1) ol.appendChild(h("li", { class: "gap", "aria-label": "places " + (prevRank + 1) + " to " + (it.rank - 1) + " not shown", text: "\u22EF" }));
+    if (!it.pace) prevRank = it.rank;
     const who = h("span", { class: "who", text: it.name });
     if (it.num) who.appendChild(h("span", { class: "carnum", title: "Racing number", text: "#" + it.num }));
     if (it.sub) who.appendChild(h("small", { text: it.sub }));
     const dot = h("span", { class: "dot" });
     if (it.color) dot.style.setProperty("--c", it.color);
-    ol.appendChild(h("li", { class: it.mine ? "mine" : "" }, h("span", { class: "rank", text: String(it.rank) }), dot, who, h("span", { class: "pts", text: it.right })));
+    ol.appendChild(h("li", { class: (it.mine ? "mine" : "") + (it.pace ? " pacerow" : "") }, h("span", { class: "rank", text: it.pace ? "PACE" : String(it.rank) }), dot, who, h("span", { class: "pts", text: it.right })));
   }
 }
 
@@ -1377,7 +1404,7 @@ function addressList(text) {
 // ── Garage, trophy case, champions, news, lobby screen ──────────────────────
 let rideDraft = null;
 function renderPit() {
-  const st = standings(), mineSt = st.find((e) => e.key === me);
+  const mineSt = allStandings().find((e) => e.key === me);
   const list = $("badges"); list.textContent = "";
   for (const b of A.badgesFor(me, rows, cheers, plays, mineSt ? mineSt.points : 0)) {
     list.appendChild(h("li", { class: "badge" + (b.earned ? " earned" : "") }, h("b", { text: (b.earned ? "\u{1F3C5} " : "\u{1F512} ") + b.name }), b.how));
@@ -1391,7 +1418,7 @@ function renderPit() {
     rideDraft = { color: Number.isInteger(p.color) ? p.color : null, body: spec.body || "car", decal: spec.decal || "0", topper: spec.topper || "0", novelty: spec.novelty || "", number: p.number || "" };
     $("carNum").value = rideDraft.number;
   }
-  const mineGrid = A.raceGrid(st, me, 8).findIndex((c) => c.me);
+  const mineGrid = A.raceGrid(standings(), me, 8).findIndex((c) => c.me);
   const fill = "var(" + CAR_COLORS[(rideDraft.color !== null ? rideDraft.color : Math.max(mineGrid, 0)) % CAR_COLORS.length] + ")";
   const pv = $("ridePreview"); pv.textContent = "";
   const inner = s("g", { transform: "scale(2.6)" }); pv.appendChild(inner);
@@ -1435,7 +1462,7 @@ on($("saveRide"), async () => {
   } catch (_) { $("rideMsg").textContent = "Could not save your ride just now."; }
 });
 function renderChamps() {
-  const ch = A.champions(rows, cheers, plays, nameOf, today(), stops, carBonus());
+  const ch = A.champions(rows, cheers, plays, nameOf, today(), stops, carBonus(), settings.pace);
   $("champs").hidden = !ch.length;
   if (!ch.length) return;
   $("champLabel").textContent = ch[0].label + " podium";
@@ -1771,16 +1798,37 @@ $("candInternal").addEventListener("change", () => { candInternal = $("candInter
 on($("goalBtn"), () => {
   const f = $("goalForm"); f.hidden = !f.hidden;
   $("gGoal").value = settings.monthly_goal; $("gReward").value = settings.reward || "";
+  $("paceField").hidden = !paceOn;
+  paceDraft = settings.pace.slice(); renderPaceList();
+});
+function renderPaceList() {
+  const box = $("paceList"); box.textContent = "";
+  for (const k of paceDraft) {
+    const b = h("button", { type: "button", "aria-label": "Remove " + (nameOf[k] || k) + " from the pace cars", text: (nameOf[k] || k) + " \u00D7" });
+    on(b, () => { paceDraft = paceDraft.filter((x) => x !== k); renderPaceList(); });
+    box.appendChild(b);
+  }
+}
+$("paceAdd").addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter") return;
+  ev.preventDefault();                                   // Enter adds a name; it does not submit the form
+  const typed = $("paceAdd").value.trim().toLowerCase();
+  if (!typed) return;
+  const p = staff.find((x) => x.name.toLowerCase() === typed || x.email === typed);
+  if (!p || !p.email) { $("goalMsg").textContent = "Pick someone from the staff list."; return; }
+  $("goalMsg").textContent = "";
+  if (!paceDraft.includes(p.email)) paceDraft.push(p.email);
+  $("paceAdd").value = ""; renderPaceList();
 });
 $("goalForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const goal = Math.round(Number($("gGoal").value));
   if (!(goal >= 1 && goal <= 500)) { $("goalMsg").textContent = "Pick a goal between 1 and 500."; return; }
   try {
-    await sb("PATCH", "/rest/v1/pms_accolade_settings?id=eq.1", { monthly_goal: goal, reward: $("gReward").value.trim() || null, updated_by: me, updated_at: new Date().toISOString() }, "return=minimal");
-    settings = { monthly_goal: goal, reward: $("gReward").value.trim() };
+    await sb("PATCH", "/rest/v1/pms_accolade_settings?id=eq.1", Object.assign({ monthly_goal: goal, reward: $("gReward").value.trim() || null, updated_by: me, updated_at: new Date().toISOString() }, paceOn ? { pace_emails: paceDraft } : {}), "return=minimal");
+    settings = { monthly_goal: goal, reward: $("gReward").value.trim(), pace: paceOn ? paceDraft.slice() : settings.pace };
     $("goalForm").hidden = true; $("goalMsg").textContent = "";
-    drawDial(goal); renderGauge();
+    drawDial(goal); renderAll();
   } catch (e) { $("goalMsg").textContent = "Only PMS admins can change the goal."; }
 });
 
@@ -1839,8 +1887,11 @@ async function loadTeams() {
   $("teamsChip").hidden = !Object.keys(teamOf).length;
 }
 async function loadSettings() {
-  const r = await sb("GET", "/rest/v1/pms_accolade_settings?id=eq.1&select=monthly_goal,reward");
-  if (r && r[0]) settings = { monthly_goal: r[0].monthly_goal || 20, reward: r[0].reward || "" };
+  // pace_emails arrives with migration 20261111280000; without it nobody is a pace car.
+  let r;
+  try { r = await sb("GET", "/rest/v1/pms_accolade_settings?id=eq.1&select=monthly_goal,reward,pace_emails"); paceOn = true; }
+  catch (_) { r = await sb("GET", "/rest/v1/pms_accolade_settings?id=eq.1&select=monthly_goal,reward"); paceOn = false; }
+  if (r && r[0]) settings = { monthly_goal: r[0].monthly_goal || 20, reward: r[0].reward || "", pace: (r[0].pace_emails || []).map((e) => lower(e)).filter(Boolean) };
 }
 // Searches pms_project_emails, the PMS filed email log, through the
 // pms_accolade_email_candidates() function. Runs on its own so a slow search
