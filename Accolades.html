@@ -181,7 +181,7 @@ textarea { resize: vertical; min-height: 92px; }
 .cand { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 6px; }
 .cand:first-of-type { border-top: 0; padding-top: 0; }
 .cand .subj { font-weight: 700; overflow-wrap: anywhere; }
-.cand .snip { font-size: 0.95rem; overflow-wrap: anywhere; }
+.cand .snip { font-size: 0.95rem; overflow-wrap: anywhere; white-space: pre-wrap; }
 mark { background: var(--brass-wash); color: var(--brass-ink); padding: 0 2px; border-radius: 2px; }
 .cand .more summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
 .cand .more .body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.9rem; background: var(--dial); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin-top: 6px; max-height: 320px; overflow-y: auto; }
@@ -1284,8 +1284,9 @@ function renderCands() {
   $("candMore").hidden = cands.length < candLimit || candLimit >= 100;
   const list = $("candList"); list.textContent = "";
   for (const c of cands) {
+    // The snippet is what the sender wrote, without the quoted history beneath it.
     const snip = h("div", { class: "snip" });
-    for (const p of A.snippetParts(c.snippet)) snip.appendChild(p.hit ? h("mark", { text: p.text }) : document.createTextNode(p.text));
+    for (const p of A.snippetParts(String(c.snippet || "").trim())) snip.appendChild(p.hit ? h("mark", { text: p.text }) : document.createTextNode(p.text));
     const proj = [c.project_number, c.project_name].filter(Boolean).join(" \u00B7 ");
     const card = h("div", { class: "cand" },
       h("div", { class: "subj", text: c.subject || "(no subject)" }),
@@ -1300,7 +1301,7 @@ function renderCands() {
     }
     card.appendChild(snip);
     if (c.body_excerpt && c.body_excerpt.trim().length > A.snippetText(c.snippet).length + 40) {
-      card.appendChild(h("details", { class: "more" }, h("summary", { text: "Read more of the email" }), h("div", { class: "body", text: c.body_excerpt.trim() + (c.body_excerpt.length >= 4000 ? "\u2026" : "") })));
+      card.appendChild(h("details", { class: "more" }, h("summary", { text: "Show the full email, with the earlier messages below it" }), h("div", { class: "body", text: c.body_excerpt.trim() + (c.body_excerpt.length >= 4000 ? "\u2026" : "") })));
     }
     card.appendChild(h("div", { class: "row", style: "justify-content:flex-start" },
       on(h("button", { class: "ghost", type: "button", text: "Put it on the wall" }), () => useCandidate(c)),
