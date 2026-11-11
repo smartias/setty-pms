@@ -260,6 +260,10 @@ body.review #pitStop, body.tv #pitStop { display: none !important; }
 body.tv #topRow, body.tv #lowerRow, body.tv #pit, body.tv #champs, body.tv #wallSection, body.tv .tagline, body.tv #meBox,
 body.tv #soundBtn, body.tv #raceTitle, body.tv .panel .chips, body.tv .race > div,
 body.tv #seasonName, body.tv #seasonSub { display: none !important; }
+#tvLogo { display: none; }
+/* the firm's logo sits above the title, on the lobby screen only */
+body.tv #tvLogo { display: block; width: clamp(110px, 14vw, 200px); height: auto; margin: 0 auto 10px; }
+body.tv header > div:first-child { text-align: center; }
 body.tv .wrap { max-width: none; min-height: calc(100vh - 96px); justify-content: center; gap: 0; }
 body.tv header { justify-content: center; }
 body.tv h1 { font-size: clamp(2rem, 5vw, 4rem); }
@@ -338,6 +342,7 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
 <div class="wrap">
   <header>
     <div>
+      <img id="tvLogo" src="setty-logo.png" alt="Setty" width="2716" height="463">
       <h1>Accolade-<span class="o">O</span>-Meter</h1>
       <p class="tagline">Kind words from clients and colleagues. Every one pushes the needle and moves a car.</p>
     </div>
