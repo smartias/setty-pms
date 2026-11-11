@@ -238,6 +238,10 @@ blockquote::before { content: "\201C"; font: 400 2rem/0.6 var(--display); color:
 body.review header, body.review #topRow, body.review section[aria-labelledby="raceTitle"], body.review #wallSection, body.review #spotPanel,
 body.review #duck, body.review #logPanel .chips, body.review #thanksForm { display: none !important; }
 body.review { padding-top: 12px; }
+body.review #pitStop, body.tv #pitStop { display: none !important; }
+.pitstop.done { border-color: var(--teal); }
+.pitstop .nudge { font-weight: 500; }
+.pitstop .fuel { font: 400 1.4rem/1 var(--display); color: var(--teal); white-space: nowrap; }
 /* Lobby screen: the track and nothing else. No lists, labels or buttons to read. */
 body.tv #topRow, body.tv #lowerRow, body.tv #pit, body.tv #champs, body.tv #wallSection, body.tv .tagline, body.tv #meBox,
 body.tv #soundBtn, body.tv #raceTitle, body.tv .panel .chips, body.tv .race > div,
@@ -377,6 +381,20 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
         <div id="gameBody" style="display:flex;flex-direction:column;gap:14px"></div>
       </section>
     </div>
+
+    <section class="panel pitstop" id="pitStop" hidden aria-labelledby="pitStopTitle">
+      <div class="row">
+        <div style="min-width:0">
+          <h2 id="pitStopTitle">Daily pit stop</h2>
+          <p class="meta" id="pitStopLine">Refuel once a day for 1 to 3 points.</p>
+        </div>
+        <button class="btn" type="button" id="refuelBtn">Refuel &#x26FD;</button>
+      </div>
+      <div class="row" id="nudgeRow" hidden style="justify-content:flex-start">
+        <span class="nudge" id="nudgeText"></span>
+        <button class="ghost" type="button" id="nudgeBtn">Thank a teammate</button>
+      </div>
+    </section>
 
     <section class="panel" aria-labelledby="raceTitle">
       <div class="row">
@@ -651,8 +669,8 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
 // VERSION in that file). Browsers cache the module separately from this page;
 // a stale copy once left the page calling functions the old module lacked,
 // which blanked everything drawn after the first failure.
-import * as A from "./accolades.js?v=2026-11-11-10";
-const NEEDS_VERSION = "2026-11-11-10";
+import * as A from "./accolades.js?v=2026-11-11-11";
+const NEEDS_VERSION = "2026-11-11-11";
 // ?review=1 is the admin review screen the Admin Console embeds: only the
 // filed-email suggestions and the form that approves one onto the wall.
 const REVIEW = new URLSearchParams(location.search).get("review") === "1";
@@ -717,6 +735,7 @@ let practice = null, practicePick = null, practiceN = 0;
 let giftsOn = true, giftOpen = null, garageOn = false, carPrefs = {}, teamOf = {};
 let tv = false, tvTimer = 0, goalWasHit = null, lastOdo = "", freshGuess = false;
 const lower = (v) => String(v || "").toLowerCase();
+let stops = [], pitOn = false;
 let candDays = 365, candLimit = 12, candState = "loading", candError = "", candInternal = false;
 const isSetty = (addr) => /@setty\.com$/i.test(String(addr || "").trim());
 let showAll = false, findText = "";
@@ -886,10 +905,11 @@ function season() {
     rows: A.inPeriod(rows, "quarter", t),
     cheers: cheers.filter((c) => String(c.created_at || "").slice(0, 10) >= from),
     plays: plays.filter((p) => String(p.play_date).slice(0, 10) >= from),
+    stops: stops.filter((st) => String(st.stop_date).slice(0, 10) >= from),
   };
 }
 const gone = new Set();   // emails and lower-cased names of inactive staff
-const standings = () => { const se = season(); return A.seasonPoints(se.rows, se.cheers, se.plays, nameOf).filter((e) => !gone.has(e.key)); };
+const standings = () => { const se = season(); return A.seasonPoints(se.rows, se.cheers, se.plays, nameOf, se.stops).filter((e) => !gone.has(e.key)); };
 const niceDate = (str) => { const d = A.parseDay(str); return d ? d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : ""; };
 
 // ── Render: gauge + header ──────────────────────────────────────────────────
@@ -1169,7 +1189,7 @@ function renderBoard(grid, st) {
   ol.textContent = "";
   $("periodChips").hidden = board === "race";
   $("rules").hidden = board !== "race";
-  $("rules").textContent = "+" + A.POINTS.recognized + " each time you are recognized · +" + A.POINTS.spotted + " for logging one about someone else · +" + A.POINTS.guessRight + " for a right daily guess (+" + A.POINTS.guessWrong + " for trying) · +" + A.POINTS.cheer + " per gift you send \u00B7 +" + A.POINTS.streak + " for every " + A.STREAK_LENGTH + " working days of guessing in a row. Resets each quarter.";
+  $("rules").textContent = "+" + A.POINTS.recognized + " each time you are recognized · +" + A.POINTS.spotted + " for logging one about someone else · +" + A.POINTS.guessRight + " for a right daily guess (+" + A.POINTS.guessWrong + " for trying) · +" + A.POINTS.cheer + " per gift you send \u00B7 +" + A.POINTS.streak + " for every " + A.STREAK_LENGTH + " working days of guessing in a row \u00B7 +1 to 3 for the daily pit stop. Resets each quarter.";
   let items = [];
   const more = board === "race" && st.length > grid.length;
   $("boardAll").hidden = !more;
@@ -1379,7 +1399,7 @@ on($("saveRide"), async () => {
   } catch (_) { $("rideMsg").textContent = "Could not save your ride just now."; }
 });
 function renderChamps() {
-  const ch = A.champions(rows, cheers, plays, nameOf, today());
+  const ch = A.champions(rows, cheers, plays, nameOf, today(), stops);
   $("champs").hidden = !ch.length;
   if (!ch.length) return;
   $("champLabel").textContent = ch[0].label + " podium";
@@ -1420,8 +1440,55 @@ on($("tvBtn"), () => setTv(!tv));
 on($("boardAll"), () => { showAll = !showAll; renderRace(); });
 $("boardFind").addEventListener("input", () => { findText = $("boardFind").value; renderRace(); });
 // Each section draws on its own, so a failure in one never blanks the others.
+// ── Daily pit stop ──────────────────────────────────────────────────────────
+// One refuel a day (pms_accolade_pitstops). What it is worth comes from
+// A.pitPoints, not from anything this page sends.
+function renderPitStop() {
+  $("pitStop").hidden = !pitOn;
+  if (!pitOn) return;
+  const day = today();
+  const done = stops.some((st) => lower(st.email) === me && String(st.stop_date).slice(0, 10) === day);
+  $("pitStop").classList.toggle("done", done);
+  const btn = $("refuelBtn"), slot = btn.parentNode;
+  let fuel = $("fuelGot");
+  if (done) {
+    btn.hidden = true;
+    if (!fuel) { fuel = h("span", { class: "fuel", id: "fuelGot" }); slot.appendChild(fuel); }
+    const pts = A.pitPoints(me, day);
+    fuel.textContent = "+" + pts + (pts === 3 ? " jackpot!" : "") + " \u26FD";
+    $("pitStopLine").textContent = "Refuelled for today. Come back tomorrow for another.";
+  } else {
+    btn.hidden = false;
+    if (fuel) fuel.remove();
+    $("pitStopLine").textContent = "Refuel once a day for 1 to 3 points.";
+  }
+  $("nudgeRow").hidden = !done;
+  $("nudgeText").textContent = "Today's nudge: " + A.dailyNudge(day);
+}
+on($("refuelBtn"), async () => {
+  if (busy.has("pit")) return;
+  busy.add("pit");
+  const day = today(), btn = $("refuelBtn");
+  try {
+    await sb("POST", "/rest/v1/pms_accolade_pitstops", { email: me, stop_date: day }, "return=minimal");
+    stops.push({ email: me, stop_date: day });
+  } catch (e) {
+    if (e.status === 409) await loadStops();          // already refuelled today, on another device
+    else { $("pitStopLine").textContent = "Could not refuel just now. Check your connection and try again."; busy.delete("pit"); return; }
+  }
+  busy.delete("pit");
+  const pts = A.pitPoints(me, day);
+  burst(btn, "\u26FD", pts * 3);
+  if (pts === 3) { confetti(); sfx.tada(); } else sfx.pop();
+  renderPitStop(); renderRace(); renderMe(); renderPit();
+});
+on($("nudgeBtn"), () => {
+  setMode("thanks");
+  $("logPanel").scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
+  $("tTo").focus({ preventScroll: true });
+});
 function renderAll() {
-  for (const fn of [renderGauge, renderGame, renderRace, renderWall, renderCands, renderMe, renderPit, renderChamps]) {
+  for (const fn of [renderGauge, renderGame, renderPitStop, renderRace, renderWall, renderCands, renderMe, renderPit, renderChamps]) {
     try { fn(); } catch (e) { console.error("Accolades: " + fn.name + " failed", e); stale(); }
   }
 }
@@ -1673,6 +1740,11 @@ async function loadCheers() {
   cheers = await sbAll("/rest/v1/pms_accolade_cheers?select=accolade_id,email,created_at&order=created_at.asc");
 }
 async function loadPlays() { plays = await sbAll("/rest/v1/pms_accolade_plays?select=email,play_date,accolade_id,correct&order=play_date.asc"); }
+// The pit stop table arrives with migration 20261111260000. Without it the panel stays hidden.
+async function loadStops() {
+  try { stops = await sbAll("/rest/v1/pms_accolade_pitstops?select=email,stop_date&order=stop_date.asc"); pitOn = true; }
+  catch (_) { stops = []; pitOn = false; }
+}
 async function loadCars() {
   try {
     const r = await sbAll("/rest/v1/pms_accolade_cars?select=email,color,ride,number");
@@ -1753,7 +1825,7 @@ function markNew() {
 async function refresh() {
   if (document.hidden) return;
   const seen = new Set(rows.map((r) => r.id));
-  try { await Promise.all([loadRows(), loadCheers(), loadPlays(), loadSettings(), loadCars()]); renderAll(); } catch (_) { return; }
+  try { await Promise.all([loadRows(), loadCheers(), loadPlays(), loadSettings(), loadCars(), loadStops()]); renderAll(); } catch (_) { return; }
   // someone else logged one while this page was open
   const fresh = rows.filter((r) => !seen.has(r.id));
   if (fresh.length) { for (const r of fresh) newIds.add(r.id); renderAll(); tubeWild(); kick(); duck("QUACK! Kudos to " + (fresh[0].recipients || ["the team"])[0]); }
@@ -1783,7 +1855,7 @@ async function boot() {
       : "The wall could not be loaded. Check your connection and reload the page.";
     return;
   }
-  await Promise.all([loadStaff(), loadProjects(), loadCars(), loadTeams()]);
+  await Promise.all([loadStaff(), loadProjects(), loadCars(), loadTeams(), loadStops()]);
   if (nameOf[me]) myName = nameOf[me];
   const perms = await settyAuth.refreshPermissions().catch(() => null);
   isAdmin = !!(perms && perms.role === "admin");

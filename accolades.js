@@ -10,7 +10,7 @@
 
 // Bump this, and the ?v= on the import in Accolades.html, on every change to
 // this file. The page compares the two to spot a stale cached copy.
-export const VERSION = "2026-11-11-10";
+export const VERSION = "2026-11-11-11";
 
 export function parseDay(str) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(str || ""));
@@ -277,13 +277,13 @@ export const POINTS = { recognized: 10, spotted: 5, guessRight: 3, guessWrong: 1
 // ({email, play_date, correct}) are expected to be already cut to the season.
 // names: email -> display name. People named without an email score under
 // their typed name, so they still appear.
-export function seasonPoints(rows, cheers, plays, names) {
+export function seasonPoints(rows, cheers, plays, names, stops) {
   const m = new Map();
   const nameOf = (k, fallback) => (names && names[k]) || fallback || k.split("@")[0];
   const give = (key, label, pts, field) => {
     const k = String(key || "").trim().toLowerCase();
     if (!k) return;
-    const e = m.get(k) || { key: k, name: nameOf(k, label), points: 0, recognized: 0, spotted: 0, guesses: 0, cheers: 0, streaks: 0 };
+    const e = m.get(k) || { key: k, name: nameOf(k, label), points: 0, recognized: 0, spotted: 0, guesses: 0, cheers: 0, streaks: 0, stops: 0 };
     e.points += pts; e[field]++;
     m.set(k, e);
   };
@@ -305,6 +305,7 @@ export function seasonPoints(rows, cheers, plays, names) {
     if (e && b) { e.points += b * POINTS.streak; e.streaks = b; }
   }
   for (const c of cheers || []) give(c.email, "", POINTS.cheer, "cheers");
+  for (const st of stops || []) give(st.email, "", pitPoints(st.email, st.stop_date), "stops");
   return [...m.values()].sort((a, b) => b.points - a.points || a.name.localeCompare(b.name));
 }
 
@@ -403,16 +404,17 @@ export function quarterKey(day) {
 }
 
 // The podium of every finished quarter that had any points, newest first.
-export function champions(rows, cheers, plays, names, today) {
+export function champions(rows, cheers, plays, names, today, stops) {
   const now = quarterKey(typeof today === "string" ? today : dayStr(today));
   const q = new Map();
-  const slot = (k) => { if (!q.has(k)) q.set(k, { rows: [], cheers: [], plays: [] }); return q.get(k); };
+  const slot = (k) => { if (!q.has(k)) q.set(k, { rows: [], cheers: [], plays: [], stops: [] }); return q.get(k); };
   for (const r of rows || []) slot(quarterKey(r.received_on)).rows.push(r);
   for (const c of cheers || []) slot(quarterKey(c.created_at)).cheers.push(c);
   for (const p of plays || []) slot(quarterKey(p.play_date)).plays.push(p);
+  for (const st of stops || []) slot(quarterKey(st.stop_date)).stops.push(st);
   return [...q.keys()].filter((k) => /^\d{4}-Q[1-4]$/.test(k) && k < now).sort().reverse().map((k) => {
     const s = q.get(k);
-    return { key: k, label: k.slice(5) + " " + k.slice(0, 4), podium: seasonPoints(s.rows, s.cheers, s.plays, names).slice(0, 3) };
+    return { key: k, label: k.slice(5) + " " + k.slice(0, 4), podium: seasonPoints(s.rows, s.cheers, s.plays, names, s.stops).slice(0, 3) };
   }).filter((x) => x.podium.length);
 }
 
@@ -484,4 +486,35 @@ export function packGrid(standings, meKey, top, around, lapPoints) {
   // near the front the two groups overlap, so top up to a full grid from the next places down
   for (let k = 0; keep.size < Math.min(all.length, t + 2 * a + 1); k++) keep.add(k);
   return [...keep].sort((x, y) => x - y).map((k) => all[k]);
+}
+
+// ── The daily pit stop ───────────────────────────────────────────────────────
+// A second reason to look in each day: refuel once for a few points. What a
+// stop is worth is worked out from who and when, never stored or sent by the
+// browser, so the amount cannot be chosen. Mostly 1, sometimes 2, a 3 now and
+// then. Small on purpose: being recognized is worth 10.
+export function pitPoints(email, day) {
+  const roll = seedFrom("pit:" + String(email || "").trim().toLowerCase() + ":" + String(day || "").slice(0, 10)) % 10;
+  return roll === 9 ? 3 : roll >= 6 ? 2 : 1;
+}
+
+// After refuelling, a nudge toward the point of the whole thing. One per day,
+// the same for everyone, in rotation.
+export const NUDGES = [
+  "Who saved you time this week? Thank them.",
+  "Who answered a question you were stuck on? Tell them it helped.",
+  "Who caught a mistake before it left the building? That deserves a trophy.",
+  "Who made a client call go better than expected? Send them flowers.",
+  "Who stayed late so a deadline could be met? Coffee is the least you can do.",
+  "Who taught you something this month? Let them know it stuck.",
+  "Who is the quiet one keeping a project on the rails? Say so out loud.",
+  "Who from another office helped you out? A high five travels well.",
+  "Who did great work that nobody has mentioned yet? Be the one who mentions it.",
+  "Who makes your Mondays easier? They would probably like to hear it.",
+];
+export function dailyNudge(day) {
+  const d = parseDay(day);
+  if (!d) return NUDGES[0];
+  const n = Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 864e5);
+  return NUDGES[((n % NUDGES.length) + NUDGES.length) % NUDGES.length];
 }

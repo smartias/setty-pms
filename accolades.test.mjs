@@ -280,3 +280,33 @@ test("approving an email suggestion earns no spotter credit", () => {
   assert.equal(pts["admin@setty.com"], POINTS.spotted);          // one, not two
   assert.equal(pts["bo@setty.com"], 2 * POINTS.recognized);      // the person praised still scores both
 });
+
+import { pitPoints, dailyNudge, NUDGES } from "./accolades.js";
+
+test("a pit stop is worth 1 to 3, fixed for a person and day, and mostly 1", () => {
+  const seen = { 1: 0, 2: 0, 3: 0 };
+  for (let d = 1; d <= 28; d++) for (const who of ["ana@setty.com", "bo@setty.com", "cy@setty.com", "di@setty.com", "ed@setty.com"]) {
+    const day = "2026-11-" + String(d).padStart(2, "0"), v = pitPoints(who, day);
+    assert.ok(v === 1 || v === 2 || v === 3);
+    assert.equal(pitPoints(who.toUpperCase(), day), v);      // same person, same day, same answer
+    seen[v]++;
+  }
+  assert.ok(seen[1] > seen[2] && seen[2] > seen[3] && seen[3] > 0, JSON.stringify(seen));
+});
+
+test("pit stops add to the season and to past podiums", () => {
+  const stops = [{ email: "ana@setty.com", stop_date: "2026-11-10" }, { email: "ana@setty.com", stop_date: "2026-11-11" }];
+  const s = seasonPoints([], [], [], {}, stops);
+  assert.equal(s[0].points, pitPoints("ana@setty.com", "2026-11-10") + pitPoints("ana@setty.com", "2026-11-11"));
+  assert.equal(s[0].stops, 2);
+  assert.equal(seasonPoints([], [], [], {}).length, 0);                                   // optional argument
+  const c = champions([], [], [], {}, "2026-11-11", [{ email: "bo@setty.com", stop_date: "2026-08-03" }]);
+  assert.deepEqual(c.map((q) => [q.label, q.podium[0].key]), [["Q3 2026", "bo@setty.com"]]);
+});
+
+test("the nudge changes daily and cycles", () => {
+  assert.notEqual(dailyNudge("2026-11-11"), dailyNudge("2026-11-12"));
+  assert.equal(dailyNudge("2026-11-11"), dailyNudge("2026-11-21"));
+  assert.ok(NUDGES.includes(dailyNudge("2026-01-01")));
+  assert.ok(NUDGES.includes(dailyNudge("nope")));
+});
