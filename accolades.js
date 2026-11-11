@@ -10,7 +10,7 @@
 
 // Bump this, and the ?v= on the import in Accolades.html, on every change to
 // this file. The page compares the two to spot a stale cached copy.
-export const VERSION = "2026-11-11-13";
+export const VERSION = "2026-11-11-14";
 
 export function parseDay(str) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(str || ""));
@@ -412,18 +412,34 @@ export function quarterKey(day) {
 }
 
 // The podium of every finished quarter that had any points, newest first.
-export function champions(rows, cheers, plays, names, today, stops, cars) {
+// The day an accolade counts for points: when it was put on the wall. The wall
+// shows received_on (for a filed email, the date of the email), which can be
+// months earlier; scoring by that would hand an approved older email no points.
+export function scoreDay(row) {
+  return String((row && (row.created_at || row.received_on)) || "").slice(0, 10);
+}
+
+// Pace cars take part but are not ranked. Splits season standings into the
+// ranked field and the pace cars, each still in points order.
+export function splitPace(standings, paceEmails) {
+  const pace = new Set([...(paceEmails || [])].map((e) => String(e || "").trim().toLowerCase()).filter(Boolean));
+  const out = { ranked: [], pace: [] };
+  for (const e of standings || []) (pace.has(e.key) ? out.pace : out.ranked).push(e);
+  return out;
+}
+
+export function champions(rows, cheers, plays, names, today, stops, cars, paceEmails) {
   const now = quarterKey(typeof today === "string" ? today : dayStr(today));
   const q = new Map();
   const slot = (k) => { if (!q.has(k)) q.set(k, { rows: [], cheers: [], plays: [], stops: [], cars: [] }); return q.get(k); };
-  for (const r of rows || []) slot(quarterKey(r.received_on)).rows.push(r);
+  for (const r of rows || []) slot(quarterKey(scoreDay(r))).rows.push(r);
   for (const c of cheers || []) slot(quarterKey(c.created_at)).cheers.push(c);
   for (const p of plays || []) slot(quarterKey(p.play_date)).plays.push(p);
   for (const st of stops || []) slot(quarterKey(st.stop_date)).stops.push(st);
   for (const c of cars || []) slot(quarterKey(c.at)).cars.push(c);
   return [...q.keys()].filter((k) => /^\d{4}-Q[1-4]$/.test(k) && k < now).sort().reverse().map((k) => {
     const s = q.get(k);
-    return { key: k, label: k.slice(5) + " " + k.slice(0, 4), podium: seasonPoints(s.rows, s.cheers, s.plays, names, s.stops, s.cars).slice(0, 3) };
+    return { key: k, label: k.slice(5) + " " + k.slice(0, 4), podium: splitPace(seasonPoints(s.rows, s.cheers, s.plays, names, s.stops, s.cars), paceEmails).ranked.slice(0, 3) };
   }).filter((x) => x.podium.length);
 }
 
