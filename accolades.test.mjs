@@ -239,3 +239,22 @@ test("people who have left are never the answer or a wrong answer", () => {
     assert.ok(!pz.choices.includes("Dee Fox") && !pz.choices.includes("Ana Diaz"));
   }
 });
+
+import { packGrid, teamGrid } from "./accolades.js";
+
+test("packGrid shows the podium and the cars around you", () => {
+  const st = Array.from({ length: 150 }, (_, i) => ({ key: "p" + (i + 1), name: "P" + (i + 1), points: 300 - i }));
+  assert.deepEqual(packGrid(st, "p80").map((c) => c.rank), [1, 2, 3, 78, 79, 80, 81, 82]);
+  assert.deepEqual(packGrid(st, "p150").map((c) => c.rank), [1, 2, 3, 4, 5, 148, 149, 150]); // last place: nobody behind, so the front fills the grid
+  assert.deepEqual(packGrid(st, "p2").map((c) => c.rank), [1, 2, 3, 4, 5, 6, 7, 8]);          // near the front: a full grid
+  assert.deepEqual(packGrid(st, "p5").map((c) => c.rank), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.deepEqual(packGrid(st, "nobody").map((c) => c.rank), [1, 2, 3, 4, 5, 6, 7, 8]);      // not scored yet
+  assert.equal(packGrid(st, "p80").find((c) => c.me).rank, 80);
+  assert.deepEqual(packGrid(st.slice(0, 4), "p4").map((c) => c.rank), [1, 2, 3, 4]);
+  assert.deepEqual(packGrid([], "x"), []);
+});
+
+test("teamGrid places one car per team by average points", () => {
+  const g = teamGrid([{ key: "India", name: "India", points: 25, members: 1, perHead: 25 }, { key: "NY", name: "NY", points: 140, members: 2, perHead: 70 }], 50);
+  assert.deepEqual(g.map((c) => [c.key, c.points, c.lap, c.frac, c.rank]), [["team:India", 25, 0, 0.5, 1], ["team:NY", 70, 1, 0.4, 2]]);
+});

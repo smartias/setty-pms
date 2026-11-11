@@ -451,3 +451,35 @@ export function guessPeople(toAddresses, ccAddresses, fromAddress, staff) {
   if (!out.length) add(pick(ccAddresses));   // only fall back to cc when nobody on the to line is staff
   return out.slice(0, 8);
 }
+
+// ── Scaling to a big firm ────────────────────────────────────────────────────
+// With 150 people the track cannot show everyone, and watching leaders who are
+// far ahead is no fun. packGrid shows the podium plus the cars right around the
+// viewer: `top` leaders, then `around` places either side of them. Someone who
+// has not scored yet just sees the front of the field.
+export function packGrid(standings, meKey, top, around, lapPoints) {
+  const lap = lapPoints || LAP_POINTS, me = String(meKey || "").toLowerCase();
+  const t = top == null ? 3 : top, a = around == null ? 2 : around;
+  const all = (standings || []).map((e, i) => ({
+    key: e.key, name: e.name, points: e.points, rank: i + 1,
+    lap: Math.floor(e.points / lap), frac: (e.points % lap) / lap, me: e.key === me,
+  }));
+  const i = all.findIndex((c) => c.me);
+  if (i < 0) return all.slice(0, t + 2 * a + 1);
+  const keep = new Set();
+  for (let k = 0; k < Math.min(t, all.length); k++) keep.add(k);
+  for (let k = Math.max(0, i - a); k <= Math.min(all.length - 1, i + a); k++) keep.add(k);
+  // near the front the two groups overlap, so top up to a full grid from the next places down
+  for (let k = 0; keep.size < Math.min(all.length, t + 2 * a + 1); k++) keep.add(k);
+  return [...keep].sort((x, y) => x - y).map((k) => all[k]);
+}
+
+// One car per team for the shared lobby screen, placed by the team's average
+// points so a small office can lead. Takes teamStandings() output.
+export function teamGrid(teams, lapPoints) {
+  const lap = lapPoints || LAP_POINTS;
+  return (teams || []).map((t, i) => ({
+    key: "team:" + t.key, name: t.name, points: t.perHead, rank: i + 1,
+    lap: Math.floor(t.perHead / lap), frac: (t.perHead % lap) / lap, me: false, team: true,
+  }));
+}

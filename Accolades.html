@@ -143,6 +143,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .board .pts { font: 500 0.82rem var(--mono); text-align: right; white-space: nowrap; }
 .board li.mine .who { font-weight: 700; }
 .rules { font: 400 0.76rem/1.5 var(--mono); color: var(--muted); }
+.board.all { max-height: 460px; overflow-y: auto; padding-right: 6px; }
+.board li.gap { display: block; text-align: center; color: var(--muted); padding: 2px 0; letter-spacing: 0.3em; }
+.car .team-tag { font: 400 9px var(--display); fill: var(--track-line); stroke: var(--track); stroke-width: 3; paint-order: stroke; text-anchor: middle; pointer-events: none; }
 
 /* Form */
 form { display: flex; flex-direction: column; gap: 12px; }
@@ -223,6 +226,7 @@ blockquote::before { content: "\201C"; font: 400 2rem/0.6 var(--display); color:
 body.tv #topRow, body.tv #lowerRow, body.tv #pit, body.tv #champs, body.tv #wallSection, body.tv .tagline, body.tv #meBox,
 body.tv #soundBtn, body.tv #raceTitle, body.tv .panel .chips, body.tv .race > div,
 body.tv #seasonName, body.tv #seasonSub { display: none !important; }
+body.tv .car .team-tag { font-size: 8px; }
 body.tv .wrap { max-width: none; min-height: calc(100vh - 96px); justify-content: center; gap: 0; }
 body.tv header { justify-content: center; }
 body.tv h1 { font-size: clamp(2rem, 5vw, 4rem); }
@@ -373,12 +377,17 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
       <div class="race">
         <svg viewBox="0 0 640 350" role="group" aria-label="Race track. Each person's season points move their car. Press a car to honk.">
           <g id="landmarks" aria-hidden="true">
+            <!-- One per office, roughly in map order along the top: New York, Philadelphia, Baltimore, Washington DC, Charlottesville. -->
             <text class="lm" x="38" y="62">&#x1F5FD;</text>
-            <text class="lm" x="330" y="34">&#x1F3DB;&#xFE0F;</text>
+            <text class="lm" x="172" y="36">&#x1F514;</text>
+            <text class="lm" x="312" y="36">&#x1F980;</text>
+            <text class="lm" x="452" y="36">&#x1F3DB;&#xFE0F;</text>
             <text class="lm" x="604" y="52">&#x26F0;&#xFE0F;</text>
+            <!-- Below: Fairfax, Atlanta, California, and Mysore. -->
             <text class="lm" x="498" y="300">&#x2708;&#xFE0F;</text>
             <text class="lm" x="228" y="308">&#x1F351;</text>
             <text class="lm" x="596" y="262">&#x1F334;</text>
+            <text class="lm" x="36" y="330">&#x1F418;</text>
           </g>
           <g transform="translate(20 38)">
           <path class="asphalt" id="track" d="M300 50 C328 50 374 46 400 50 C426 54 438 74 455 74 C472 74 490 48 505 50 C520 52 543 71 548 85 C553 99 546 124 535 135 C524 146 492 142 482 152 C472 162 482 182 472 197 C462 212 444 231 425 240 C406 249 379 254 360 250 C341 246 328 218 310 216 C292 214 271 241 255 238 C239 235 228 204 215 200 C202 196 186 207 175 215 C164 223 163 244 150 250 C137 256 112 256 95 248 C78 240 54 221 50 205 C46 189 73 169 72 152 C71 135 44 121 45 105 C46 89 61 67 80 58 C99 49 135 51 160 50 C185 49 207 50 230 50 C253 50 272 50 300 50 Z"/>
@@ -417,8 +426,10 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
             <button class="chip" type="button" data-period="all" aria-pressed="false">All time</button>
           </div>
           <p class="note" id="raceNews" role="status" hidden></p>
+          <input type="text" id="boardFind" placeholder="Find a name" aria-label="Find a name in the standings" autocomplete="off" hidden>
           <ol class="board" id="board"></ol>
           <p class="note" id="boardEmpty" hidden></p>
+          <div><button class="ghost" type="button" id="boardAll" hidden>Show everyone</button></div>
           <p class="rules" id="rules"></p>
         </div>
       </div>
@@ -593,6 +604,7 @@ let giftsOn = true, giftOpen = null, garageOn = false, carPrefs = {}, teamOf = {
 let tv = false, tvTimer = 0, goalWasHit = null, lastOdo = "", freshGuess = false;
 const lower = (v) => String(v || "").toLowerCase();
 let candDays = 90, candLimit = 12, candsOn = false;
+let showAll = false, findText = "";
 const busy = new Set(), newIds = new Set();
 const today = () => A.dayStr(new Date());
 const nameOf = {};   // email -> staff display name
@@ -921,19 +933,31 @@ function drawRide(g, rideStr, fill, number) {
   return spec;
 }
 const colorVar = (key, i) => { const c = prefFor(key).color; return "var(" + CAR_COLORS[(Number.isInteger(c) ? c : i) % CAR_COLORS.length] + ")"; };
-const carSig = (key, i) => rideOf(key) + "|" + colorVar(key, i) + "|" + (prefFor(key).number || "");
+const carSig = (c, i) => (c.ride || rideOf(c.key)) + "|" + colorVar(c.key, i) + "|" + (prefFor(c.key).number || "") + "|" + (c.tag || "");
 
+// What goes on the track. On your own screen: the podium plus the cars around
+// you, so there is always someone close to chase. On the lobby screen: one bus
+// per team, so everyone in a big firm is represented. No teams on record means
+// the lobby falls back to the front of the individual field.
+function raceField(st) {
+  if (tv) {
+    const teams = A.teamGrid(A.teamStandings(st, teamOf));
+    if (teams.length) return { grid: teams.slice(0, 10).map((c) => ({ ...c, ride: "van.s.0", tag: c.name })), teams: true };
+    return { grid: A.raceGrid(st, "", 8), teams: false };
+  }
+  return { grid: A.packGrid(st, me, 3, 2), teams: false };
+}
 function renderRace() {
   const se = season(), st = standings();
+  const field = raceField(st), lead = field.grid[0];
   $("seasonName").textContent = "Season " + se.label;
-  $("seasonLead").textContent = st.length ? st[0].name.split(/\s+/)[0] + " leads" : "Grid is empty";
-  $("seasonSub").textContent = st.length ? st[0].points + " pts \u00B7 " + A.LAP_POINTS + " pts a lap" : "First points take the lead";
-  const grid = A.raceGrid(st, me, 8);
-  syncRace(grid);
-  renderBoard(grid, st);
+  $("seasonLead").textContent = !lead ? "Grid is empty" : (field.teams ? lead.name : lead.name.split(/\s+/)[0]) + " leads";
+  $("seasonSub").textContent = lead ? lead.points + " pts \u00B7 " + A.LAP_POINTS + " pts a lap" : "First points take the lead";
+  syncRace(field.grid);
+  renderBoard(field.grid, st);
 }
 function buildCar(c, i) {
-  const ride = rideOf(c.key);
+  const ride = c.ride || rideOf(c.key);
   const car = s("g", { class: "car" + (c.me ? " mine" : ""), tabindex: "0", role: "button" });
   const title = s("title"); car.appendChild(title);
   const rot = s("g"), bob = s("g", { class: "bob" });
@@ -943,8 +967,9 @@ function buildCar(c, i) {
   const num = prefFor(c.key).number;
   if (!spec.novelty && num) { const t = s("text", { class: "num", x: 0, y: 0.5 }); t.textContent = num; car.appendChild(t); }
   const crown = s("text", { class: "crown", x: 0, y: -13 }); crown.textContent = "\u{1F451}"; car.appendChild(crown);
+  if (c.tag) { const t = s("text", { class: "team-tag", x: 0, y: 22 }); t.textContent = c.tag; car.appendChild(t); }
   const beep = s("text", { class: "beep", x: 0, y: -24 }); car.appendChild(beep);
-  const o = { key: c.key, car, rot, bob, crown, beep, title, ride, novelty: !!spec.novelty, shout: spec.shout, mine: c.me, sig: carSig(c.key, i), pos: 0, target: 0, goal: 0, lane: 0, x: 0, y: 0, ang: 0 };
+  const o = { key: c.key, car, rot, bob, crown, beep, title, ride, novelty: !!spec.novelty, shout: spec.shout, mine: c.me, sig: carSig(c, i), pos: 0, target: 0, goal: 0, lane: 0, x: 0, y: 0, ang: 0 };
   const honk = () => honkCar(o);
   car.addEventListener("click", honk);
   car.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); honk(); } });
@@ -975,7 +1000,7 @@ function syncRace(grid) {
     seen.add(c.key);
     const goal = c.lap + c.frac;
     let o = raceCars.get(c.key);
-    if (o && o.sig !== carSig(c.key, i)) { const old = o; old.car.remove(); o = buildCar(c, i); o.pos = old.pos; o.target = old.target; raceCars.set(c.key, o); g.appendChild(o.car); }
+    if (o && o.sig !== carSig(c, i)) { const old = o; old.car.remove(); o = buildCar(c, i); o.pos = old.pos; o.target = old.target; raceCars.set(c.key, o); g.appendChild(o.car); }
     if (!o) {
       o = buildCar(c, i);
       // first load: everyone lines up on the start line and races to their place
@@ -1037,8 +1062,19 @@ function renderBoard(grid, st) {
   $("rules").hidden = board !== "race";
   $("rules").textContent = "+" + A.POINTS.recognized + " each time you are recognized · +" + A.POINTS.spotted + " for logging one about someone else · +" + A.POINTS.guessRight + " for a right daily guess (+" + A.POINTS.guessWrong + " for trying) · +" + A.POINTS.cheer + " per gift you send \u00B7 +" + A.POINTS.streak + " for every " + A.STREAK_LENGTH + " working days of guessing in a row. Resets each quarter.";
   let items = [];
-  if (board === "race") {
-    items = grid.map((c, i) => ({ rank: c.rank, color: colorVar(c.key, i), name: (A.parseRide(rideOf(c.key)).novelty ? rideOf(c.key) + " " : "") + c.name, sub: "Lap " + (c.lap + 1), right: c.points + " pts", mine: c.me }));
+  const more = board === "race" && st.length > grid.length;
+  $("boardAll").hidden = !more;
+  $("boardAll").textContent = showAll ? "Show my part of the race" : "Show everyone (" + st.length + ")";
+  $("boardFind").hidden = !(more && showAll);
+  ol.classList.toggle("all", more && showAll);
+  if (board === "race" && more && showAll) {
+    const onTrack = new Map(grid.map((c, i) => [c.key, colorVar(c.key, i)]));
+    const q = findText.trim().toLowerCase();
+    items = st.map((e, i) => ({ rank: i + 1, color: onTrack.get(e.key), name: e.name, right: e.points + " pts", mine: e.key === me }))
+      .filter((it) => !q || it.name.toLowerCase().includes(q));
+    empty.textContent = "Nobody by that name has points this season.";
+  } else if (board === "race") {
+    items = grid.map((c, i) => ({ rank: c.rank, color: colorVar(c.key, i), name: (A.parseRide(c.ride || rideOf(c.key)).novelty ? rideOf(c.key) + " " : "") + c.name, sub: "Lap " + (c.lap + 1), right: c.points + " pts", mine: c.me }));
     empty.textContent = "No points yet this season. Log an accolade, cheer one or play today's round to put a car on the track.";
   } else if (board === "teams") {
     $("periodChips").hidden = true;
@@ -1051,7 +1087,11 @@ function renderBoard(grid, st) {
     empty.textContent = "Nothing in this period yet.";
   }
   empty.hidden = items.length > 0;
+  let prevRank = 0;
   for (const it of items) {
+    // a jump in rank means places were skipped (the podium, then your part of the field)
+    if (board === "race" && !showAll && prevRank && it.rank > prevRank + 1) ol.appendChild(h("li", { class: "gap", "aria-label": "places " + (prevRank + 1) + " to " + (it.rank - 1) + " not shown", text: "\u22EF" }));
+    prevRank = it.rank;
     const who = h("span", { class: "who", text: it.name });
     if (it.sub) who.appendChild(h("small", { text: it.sub }));
     const dot = h("span", { class: "dot" });
@@ -1229,9 +1269,14 @@ function setTv(want) {
     board = "race";
     for (const c of document.querySelectorAll("[data-board]")) c.setAttribute("aria-pressed", String(c.dataset.board === "race"));
     renderRace();
-  } else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  } else {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    renderRace();
+  }
 }
 on($("tvBtn"), () => setTv(!tv));
+on($("boardAll"), () => { showAll = !showAll; renderRace(); });
+$("boardFind").addEventListener("input", () => { findText = $("boardFind").value; renderRace(); });
 function renderAll() { renderGauge(); renderGame(); renderRace(); renderWall(); renderCands(); renderMe(); renderPit(); renderChamps(); }
 
 // ── Actions ─────────────────────────────────────────────────────────────────
