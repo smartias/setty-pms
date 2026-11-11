@@ -1446,6 +1446,7 @@ function addThanksPerson(raw) {
     const entry = hit ? { name: hit.name, email: hit.email } : { name, email: "" };
     if (entry.email && entry.email === me) { tSay("That one is you. Pick a teammate.", true); continue; }
     if (!thanksPeople.some((p) => p.name.toLowerCase() === entry.name.toLowerCase())) thanksPeople.push(entry);
+    tSay("");
   }
   $("tTo").value = ""; renderThanks();
 }
