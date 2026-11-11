@@ -207,3 +207,35 @@ test("champions lists finished quarters only, newest first", () => {
   const c = champions(rows, [], [], {}, "2026-11-11");
   assert.deepEqual(c.map((q) => [q.label, q.podium[0].name]), [["Q3 2026", "Ana"], ["Q2 2026", "Bo"]]);
 });
+
+import { parseRide, encodeRide, guessPeople, STOCK_RIDE, NOVELTY } from "./accolades.js";
+
+test("rides round-trip and bad values fall back to the stock car", () => {
+  assert.equal(encodeRide(parseRide("truck.s.l")), "truck.s.l");
+  assert.equal(encodeRide(parseRide("car")), STOCK_RIDE);                  // what the first version saved
+  assert.equal(encodeRide(parseRide("")), STOCK_RIDE);
+  assert.equal(encodeRide(parseRide("spaceship.z.q")), STOCK_RIDE);
+  assert.equal(encodeRide(parseRide("racer.x.w")), "racer.0.w");
+  assert.equal(parseRide(NOVELTY[0][0]).shout, "QUACK!");
+  assert.equal(encodeRide({ novelty: NOVELTY[3][0] }), NOVELTY[3][0]);
+  assert.equal(parseRide("limo.f.0").shout, "AHEM!");
+  for (const n of NOVELTY) assert.ok(n[0].length <= 16);                   // fits the column's length check
+});
+
+test("guessPeople reads the to line, then cc, and skips the sender and outsiders", () => {
+  const staff = [{ name: "Ana Diaz", email: "ana@setty.com" }, { name: "Bo Chen", email: "bo@setty.com" }, { name: "No Email", email: "" }];
+  assert.deepEqual(guessPeople("Ana Diaz <Ana@setty.com>; pat@client.com", "bo@setty.com", "pat@client.com", staff), [{ name: "Ana Diaz", email: "ana@setty.com" }]);
+  assert.deepEqual(guessPeople("pat@client.com", "bo@setty.com, ana@setty.com", "x@client.com", staff).map((p) => p.name), ["Bo Chen", "Ana Diaz"]);
+  assert.deepEqual(guessPeople("ana@setty.com, bo@setty.com", "", "ana@setty.com", staff).map((p) => p.name), ["Bo Chen"]);
+  assert.deepEqual(guessPeople(null, undefined, "", staff), []);
+});
+
+test("people who have left are never the answer or a wrong answer", () => {
+  const staff = ["Dee Fox", "Eli Park", "Fay Lin", "Gus Orr"];
+  const gone = new Set(["ana diaz", "dee fox"]);
+  for (let i = 0; i < 12; i++) {
+    const pz = dailyPuzzle(wall, staff, "2026-11-11", "s" + i, gone);
+    assert.equal(pz.answer, "Bo Chen");                      // the Ana accolade is skipped
+    assert.ok(!pz.choices.includes("Dee Fox") && !pz.choices.includes("Ana Diaz"));
+  }
+});
