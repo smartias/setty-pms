@@ -14,6 +14,10 @@
 -- thread and every message id those emails belong to. This applies to past
 -- dismissals too, so nothing has to be dismissed again.
 --
+-- Also tightened, on the reviewer's rule of thumb: by default a suggestion must
+-- be from a non-Setty sender AND have a Setty address on the To line. Being
+-- cc'd is not enough. p_include_internal = true lifts both conditions.
+--
 -- Also removed: 20261111200000 always included mail addressed to
 -- awards@setty.com on the guess that praise is forwarded there. That mailbox is
 -- for new project awards, so those emails are now treated like any other mail
@@ -98,8 +102,12 @@ as $$
     from public.pms_project_emails e, q
     where e.email_date >= now() - make_interval(days => greatest(1, least(coalesce(p_days, 365), 1825)))
       and e.search_tsv @@ q.tsq
-      -- praise worth posting usually comes from outside the firm
-      and (coalesce(p_include_internal, false) or lower(e.from_address) not like '%@setty.com')
+      -- An accolade is generally an email from someone outside the firm written
+      -- TO someone at Setty. Mail from a Setty sender, or with Setty people only
+      -- on the cc line, is left out unless the reviewer asks for everything.
+      and (coalesce(p_include_internal, false)
+           or (lower(e.from_address) not like '%@setty.com'
+               and lower(coalesce(e.to_addresses, '')) like '%@setty.com%'))
   ),
   keyed as (
     select m.*, 'subject:' || m.project_id || ':' || m.subj as thread_key from matched m
