@@ -144,14 +144,15 @@ button { font: inherit; color: inherit; cursor: pointer; }
 #flag .pole { stroke: var(--muted); stroke-width: 2; } #flag .cloth { stroke: var(--muted); stroke-width: .5; }
 #steam circle { fill: var(--cold); opacity: 0; transform-box: fill-box; transform-origin: center; }
 .board { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.board li { display: grid; grid-template-columns: 1.6em 14px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.board li { display: grid; grid-template-columns: 2.6em 14px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); }
 .board li:last-child { border-bottom: 0; }
-.board .rank { font: 500 0.82rem var(--mono); color: var(--muted); }
+.board .rank { font: 400 0.9rem var(--display); color: var(--muted); }
 .board .dot { width: 12px; height: 12px; border-radius: 3px; background: var(--c, var(--line)); }
-.board .who { font-weight: 500; overflow-wrap: anywhere; }
-.board .who small { display: block; font-weight: 400; color: var(--muted); font-size: 0.78rem; }
-.board .pts { font: 500 0.82rem var(--mono); text-align: right; white-space: nowrap; }
-.board li.mine .who { font-weight: 700; }
+/* The board is set in the same display face as the page's headings. */
+.board .who { font: 400 0.95rem/1.25 var(--display); letter-spacing: 0.02em; overflow-wrap: anywhere; }
+.board .who small { display: block; font: 500 0.72rem/1.4 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-top: 2px; }
+.board .pts { font: 400 0.9rem var(--display); text-align: right; white-space: nowrap; }
+.board li.mine .who, .board li.mine .pts { color: var(--needle); }
 .rules { font: 400 0.76rem/1.5 var(--mono); color: var(--muted); }
 .board.all { max-height: 460px; overflow-y: auto; padding-right: 6px; }
 .board li.gap { display: block; text-align: center; color: var(--muted); padding: 2px 0; letter-spacing: 0.3em; }
