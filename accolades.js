@@ -10,7 +10,7 @@
 
 // Bump this, and the ?v= on the import in Accolades.html, on every change to
 // this file. The page compares the two to spot a stale cached copy.
-export const VERSION = "2026-11-11-9";
+export const VERSION = "2026-11-11-10";
 
 export function parseDay(str) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(str || ""));
@@ -203,7 +203,8 @@ function decoyPool(row, rows, staffNames, gone) {
 
 // The day's puzzle, or null when the wall is too thin to make one. Prefers
 // accolades from the last 60 days so the game stays about recent work. Today's
-// own entries are left out so a new one cannot change a puzzle mid-day. A salt
+// own entries are left out so a new one cannot change a puzzle mid-day, except
+// on the very first day, when the first accolade logged is the puzzle. A salt
 // gives a different (practice) puzzle for the same day. `gone` is a set of
 // lower-cased names of people who have left: they are never the answer and
 // never offered as a wrong one.
@@ -211,8 +212,13 @@ export function dailyPuzzle(rows, staffNames, today, salt, gone) {
   const day = typeof today === "string" ? today.slice(0, 10) : dayStr(today);
   const t = parseDay(day);
   const left = gone || new Set();
-  const all = (rows || []).filter((r) => (r.recipients || []).length && String(r.created_at || "").slice(0, 10) < day && !left.has(String(r.recipients[0]).trim().toLowerCase()))
+  const usable = (rows || []).filter((r) => (r.recipients || []).length && !left.has(String(r.recipients[0]).trim().toLowerCase()))
     .sort((a, b) => Number(a.id) - Number(b.id));
+  let all = usable.filter((r) => String(r.created_at || "").slice(0, 10) < day);
+  // Day one: nothing on the wall is older than today. Rather than lock the game,
+  // use the first accolade logged. One fixed entry, so later ones cannot change
+  // the puzzle for people who have already played.
+  if (!all.length) all = usable.slice(0, 1);
   if (!all.length) return null;
   const from = dayStr(new Date(t.getFullYear(), t.getMonth(), t.getDate() - 60));
   const recent = all.filter((r) => String(r.received_on || "") >= from);
