@@ -32,3 +32,24 @@ create policy pms_accolade_pitstops_insert on public.pms_accolade_pitstops
 
 revoke all on public.pms_accolade_pitstops from anon;
 revoke update, delete, truncate, references, trigger on public.pms_accolade_pitstops from authenticated;
+
+-- A one-time bonus for customizing your car. The page pays it in the season the
+-- ride was first saved, so that moment has to be kept: created_at is set once
+-- and a trigger stops later saves (or a direct API call) from moving it.
+alter table public.pms_accolade_cars add column if not exists created_at timestamptz not null default now();
+
+create or replace function public.pms_accolade_cars_keep_created()
+returns trigger
+language plpgsql
+set search_path to 'public', 'pg_catalog'
+as $$
+begin
+  new.created_at := old.created_at;
+  return new;
+end;
+$$;
+
+drop trigger if exists pms_accolade_cars_keep_created on public.pms_accolade_cars;
+create trigger pms_accolade_cars_keep_created
+  before update on public.pms_accolade_cars
+  for each row execute function public.pms_accolade_cars_keep_created();

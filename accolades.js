@@ -10,7 +10,7 @@
 
 // Bump this, and the ?v= on the import in Accolades.html, on every change to
 // this file. The page compares the two to spot a stale cached copy.
-export const VERSION = "2026-11-11-11";
+export const VERSION = "2026-11-11-13";
 
 export function parseDay(str) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(str || ""));
@@ -271,19 +271,19 @@ export function streakBonuses(playDates) {
   return bonuses;
 }
 
-export const POINTS = { recognized: 10, spotted: 5, guessRight: 3, guessWrong: 1, cheer: 1, streak: 5 };
+export const POINTS = { recognized: 10, spotted: 5, guessRight: 3, guessWrong: 1, cheer: 1, streak: 5, car: 5 };
 
 // Season standings. rows, cheers ({accolade_id, email, created_at}) and plays
 // ({email, play_date, correct}) are expected to be already cut to the season.
 // names: email -> display name. People named without an email score under
 // their typed name, so they still appear.
-export function seasonPoints(rows, cheers, plays, names, stops) {
+export function seasonPoints(rows, cheers, plays, names, stops, cars) {
   const m = new Map();
   const nameOf = (k, fallback) => (names && names[k]) || fallback || k.split("@")[0];
   const give = (key, label, pts, field) => {
     const k = String(key || "").trim().toLowerCase();
     if (!k) return;
-    const e = m.get(k) || { key: k, name: nameOf(k, label), points: 0, recognized: 0, spotted: 0, guesses: 0, cheers: 0, streaks: 0, stops: 0 };
+    const e = m.get(k) || { key: k, name: nameOf(k, label), points: 0, recognized: 0, spotted: 0, guesses: 0, cheers: 0, streaks: 0, stops: 0, car: 0 };
     e.points += pts; e[field]++;
     m.set(k, e);
   };
@@ -306,6 +306,14 @@ export function seasonPoints(rows, cheers, plays, names, stops) {
   }
   for (const c of cheers || []) give(c.email, "", POINTS.cheer, "cheers");
   for (const st of stops || []) give(st.email, "", pitPoints(st.email, st.stop_date), "stops");
+  // One bonus, once, for making your car your own. `cars` is one entry per
+  // person who has; the caller passes only those first customized this season.
+  const painted = new Set();
+  for (const c of cars || []) {
+    const k = String(c.email || "").trim().toLowerCase();
+    if (!k || painted.has(k)) continue;
+    painted.add(k); give(k, "", POINTS.car, "car");
+  }
   return [...m.values()].sort((a, b) => b.points - a.points || a.name.localeCompare(b.name));
 }
 
@@ -404,17 +412,18 @@ export function quarterKey(day) {
 }
 
 // The podium of every finished quarter that had any points, newest first.
-export function champions(rows, cheers, plays, names, today, stops) {
+export function champions(rows, cheers, plays, names, today, stops, cars) {
   const now = quarterKey(typeof today === "string" ? today : dayStr(today));
   const q = new Map();
-  const slot = (k) => { if (!q.has(k)) q.set(k, { rows: [], cheers: [], plays: [], stops: [] }); return q.get(k); };
+  const slot = (k) => { if (!q.has(k)) q.set(k, { rows: [], cheers: [], plays: [], stops: [], cars: [] }); return q.get(k); };
   for (const r of rows || []) slot(quarterKey(r.received_on)).rows.push(r);
   for (const c of cheers || []) slot(quarterKey(c.created_at)).cheers.push(c);
   for (const p of plays || []) slot(quarterKey(p.play_date)).plays.push(p);
   for (const st of stops || []) slot(quarterKey(st.stop_date)).stops.push(st);
+  for (const c of cars || []) slot(quarterKey(c.at)).cars.push(c);
   return [...q.keys()].filter((k) => /^\d{4}-Q[1-4]$/.test(k) && k < now).sort().reverse().map((k) => {
     const s = q.get(k);
-    return { key: k, label: k.slice(5) + " " + k.slice(0, 4), podium: seasonPoints(s.rows, s.cheers, s.plays, names, s.stops).slice(0, 3) };
+    return { key: k, label: k.slice(5) + " " + k.slice(0, 4), podium: seasonPoints(s.rows, s.cheers, s.plays, names, s.stops, s.cars).slice(0, 3) };
   }).filter((x) => x.podium.length);
 }
 
@@ -435,6 +444,12 @@ export const NOVELTY = [
 ];
 const BODY_SHOUT = { car: "BEEP!", racer: "VROOM!", truck: "HONK!", van: "TOOT!", bug: "MEEP!", limo: "AHEM!" };
 export const STOCK_RIDE = "car.0.0";
+// Has this saved ride been changed from the stock car at all?
+export function isCustomRide(pref) {
+  if (!pref) return false;
+  const ride = String(pref.ride || "");
+  return (pref.color !== null && pref.color !== undefined) || !!pref.number || (ride !== "" && ride !== "car" && ride !== STOCK_RIDE);
+}
 
 export function parseRide(str) {
   const v = String(str || "").trim();
@@ -488,17 +503,42 @@ export function packGrid(standings, meKey, top, around, lapPoints) {
   return [...keep].sort((x, y) => x - y).map((k) => all[k]);
 }
 
-// ── The daily pit stop ───────────────────────────────────────────────────────
-// A second reason to look in each day: refuel once for a few points. What a
-// stop is worth is worked out from who and when, never stored or sent by the
-// browser, so the amount cannot be chosen. Mostly 1, sometimes 2, a 3 now and
-// then. Small on purpose: being recognized is worth 10.
+// ── The daily spin ───────────────────────────────────────────────────────────
+// A second reason to look in each day: one pull of a fruit machine. What a pull
+// pays is worked out from who and when, never stored or sent by the browser, so
+// the amount cannot be chosen. About one day in four is a lemon and pays
+// nothing; a jackpot is about one in ten. Small on purpose: being recognized
+// is worth 10.
 export function pitPoints(email, day) {
-  const roll = seedFrom("pit:" + String(email || "").trim().toLowerCase() + ":" + String(day || "").slice(0, 10)) % 10;
-  return roll === 9 ? 3 : roll >= 6 ? 2 : 1;
+  const roll = seedFrom("pit:" + String(email || "").trim().toLowerCase() + ":" + String(day || "").slice(0, 10)) % 20;
+  return roll >= 18 ? 3 : roll >= 12 ? 2 : roll >= 5 ? 1 : 0;
 }
 
-// After refuelling, a nudge toward the point of the whole thing. One per day,
+// Where the three reels land for that person and day, as indexes into
+// SLOT_SYMBOLS. The reels always agree with pitPoints, by the machine's rules:
+//   any lemon          0   (and every 0 shows at least one lemon)
+//   three of a kind    3
+//   a pair             2
+//   a cherry           1   (no pair, no lemon)
+export const SLOT_SYMBOLS = ["\u{1F352}", "\u{1F34B}", "\u{1F514}", "\u{1F48E}", "\u{1F340}", "\u2B50"];
+export const SLOT_CHERRY = 0, SLOT_LEMON = 1;
+export function slotPays(reels) {
+  if (reels.includes(SLOT_LEMON)) return 0;
+  const kinds = new Set(reels).size;
+  return kinds === 1 ? 3 : kinds === 2 ? 2 : reels.includes(SLOT_CHERRY) ? 1 : 0;
+}
+export function slotReels(email, day) {
+  const pts = pitPoints(email, day), n = SLOT_SYMBOLS.length;
+  const rand = rng(seedFrom("reels:" + String(email || "").trim().toLowerCase() + ":" + String(day || "").slice(0, 10)));
+  const pick = (skip) => { const pool = [...Array(n).keys()].filter((i) => !skip.includes(i)); return pool[Math.floor(rand() * pool.length)]; };
+  const place = (vals) => { const at = Math.floor(rand() * 3); return [0, 1, 2].map((i) => vals[(i + at) % 3]); };
+  if (pts === 3) { const a = pick([SLOT_LEMON]); return [a, a, a]; }
+  if (pts === 2) { const a = pick([SLOT_LEMON]); return place([a, a, pick([SLOT_LEMON, a])]); }
+  if (pts === 1) { const a = pick([SLOT_LEMON, SLOT_CHERRY]); return place([SLOT_CHERRY, a, pick([SLOT_LEMON, SLOT_CHERRY, a])]); }
+  return place([SLOT_LEMON, pick([]), pick([])]);                       // lemons may turn up more than once
+}
+
+// After the spin, a nudge toward the point of the whole thing. One per day,
 // the same for everyone, in rotation.
 export const NUDGES = [
   "Who saved you time this week? Thank them.",
