@@ -385,7 +385,10 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
           <div class="field" style="flex:3 1 220px"><label class="label" for="gReward">What happens when we hit it (optional)</label><input type="text" id="gReward" maxlength="160"></div>
           <div class="field" id="paceField" hidden style="flex:1 1 100%">
             <label class="label" for="paceAdd">Pace cars: people who take part but are not ranked (for example, firm leadership)</label>
-            <input type="text" id="paceAdd" list="staffList" maxlength="80" placeholder="Type a name and press Enter" autocomplete="off">
+            <div style="display:flex;gap:8px">
+              <input type="text" id="paceAdd" list="staffList" maxlength="80" placeholder="Type a name, then Add" autocomplete="off" style="flex:1 1 auto;min-width:0">
+              <button class="ghost" type="button" id="paceAddBtn">Add</button>
+            </div>
             <div class="pacelist" id="paceList"></div>
           </div>
           <button class="ghost" type="submit">Save</button>
@@ -1809,27 +1812,35 @@ function renderPaceList() {
     box.appendChild(b);
   }
 }
-$("paceAdd").addEventListener("keydown", (ev) => {
-  if (ev.key !== "Enter") return;
-  ev.preventDefault();                                   // Enter adds a name; it does not submit the form
+// Moves the typed name into the list. True when the box ends up empty (added, or nothing typed).
+function addPaceTyped() {
   const typed = $("paceAdd").value.trim().toLowerCase();
-  if (!typed) return;
+  if (!typed) return true;
   const p = staff.find((x) => x.name.toLowerCase() === typed || x.email === typed);
-  if (!p || !p.email) { $("goalMsg").textContent = "Pick someone from the staff list."; return; }
+  if (!p || !p.email) { $("goalMsg").textContent = "\u201C" + $("paceAdd").value.trim() + "\u201D is not on the staff list. Pick a name from the suggestions."; return false; }
   $("goalMsg").textContent = "";
   if (!paceDraft.includes(p.email)) paceDraft.push(p.email);
   $("paceAdd").value = ""; renderPaceList();
+  return true;
+}
+$("paceAdd").addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter") return;
+  ev.preventDefault();                                   // Enter adds a name; it does not submit the form
+  addPaceTyped();
 });
+on($("paceAddBtn"), addPaceTyped);
 $("goalForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const goal = Math.round(Number($("gGoal").value));
   if (!(goal >= 1 && goal <= 500)) { $("goalMsg").textContent = "Pick a goal between 1 and 500."; return; }
+  // A name still sitting in the box counts: Save must not quietly drop it.
+  if (paceOn && !addPaceTyped()) return;
   try {
     await sb("PATCH", "/rest/v1/pms_accolade_settings?id=eq.1", Object.assign({ monthly_goal: goal, reward: $("gReward").value.trim() || null, updated_by: me, updated_at: new Date().toISOString() }, paceOn ? { pace_emails: paceDraft } : {}), "return=minimal");
     settings = { monthly_goal: goal, reward: $("gReward").value.trim(), pace: paceOn ? paceDraft.slice() : settings.pace };
     $("goalForm").hidden = true; $("goalMsg").textContent = "";
     drawDial(goal); renderAll();
-  } catch (e) { $("goalMsg").textContent = "Only PMS admins can change the goal."; }
+  } catch (e) { $("goalMsg").textContent = "Could not save. Only PMS admins can change these settings."; }
 });
 
 // ── Loading ─────────────────────────────────────────────────────────────────
