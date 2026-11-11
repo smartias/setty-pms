@@ -620,8 +620,8 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
             <button class="chip" type="button" data-days="365" aria-pressed="true">Last year</button>
             <button class="chip" type="button" data-days="1825" aria-pressed="false">Last 5 years</button>
           </div>
-          <label class="meta" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="candInternal"> Also show emails sent by Setty people</label>
-          <p class="meta">These filed emails from outside the firm read like praise. Nothing is posted until you put it on the wall. Setty staff on the To and Cc lines are in bold: they are usually who earned it.</p>
+          <label class="meta" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="candInternal"> Show everything, including emails sent by Setty people or only cc'd to them</label>
+          <p class="meta">These filed emails read like praise, came from outside the firm and were sent to someone at Setty. Nothing is posted until you put it on the wall. Setty staff on the To and Cc lines are in bold: the people on the To line are usually who earned it.</p>
           <div id="candList" style="display:flex;flex-direction:column;gap:12px"></div>
           <p class="note" id="candEmpty" hidden>Nothing that reads like praise in this period. Try looking further back.</p>
           <div><button class="ghost" type="button" id="candMore" hidden>Show more</button></div>
@@ -1705,7 +1705,7 @@ async function loadCands() {
       // knows nothing about senders: ask the old way and filter here instead.
       if (!((e.detail && e.detail.code === "PGRST202") || e.status === 404)) throw e;
       cands = (await sb("POST", "/rest/v1/rpc/pms_accolade_email_candidates", { p_days: candDays, p_limit: candLimit })) || [];
-      if (!candInternal) cands = cands.filter((c) => !isSetty(c.from_address));
+      if (!candInternal) cands = cands.filter((c) => !isSetty(c.from_address) && (c.to_addresses == null || /@setty\.com/i.test(c.to_addresses)));
     }
     candState = "ok";
   } catch (e) {
