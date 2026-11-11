@@ -44,7 +44,7 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 400 16px/1.5 var(--body); padding: 24px 16px 72px; }
-.wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; }
+.wrap { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; }
 h1, h2, h3, p { margin: 0; }
 header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
 h1 { font: 400 clamp(1.6rem, 5.6vw, 2.8rem)/1.05 var(--display); letter-spacing: 0.01em; }
@@ -110,7 +110,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .verdict.good { color: var(--teal); } .verdict.bad { color: var(--needle); }
 
 /* Race */
-.race { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.race { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 @media (max-width: 820px) { .race { grid-template-columns: minmax(0, 1fr); } }
 .race svg { width: 100%; height: auto; display: block; }
 .asphalt { fill: none; stroke: var(--track); stroke-width: 40; stroke-linejoin: round; }
@@ -238,6 +238,24 @@ blockquote::before { content: "\201C"; font: 400 2rem/0.6 var(--display); color:
 body.review header, body.review #topRow, body.review section[aria-labelledby="raceTitle"], body.review #wallSection, body.review #spotPanel,
 body.review #duck, body.review #logPanel .chips, body.review #thanksForm { display: none !important; }
 body.review { padding-top: 12px; }
+body.review #pitStop, body.tv #pitStop { display: none !important; }
+.pitstop.done { border-color: var(--teal); }
+.pitstop .nudge { font-weight: 500; }
+.pitstop .fuel { font: 400 1.4rem/1 var(--display); color: var(--teal); white-space: nowrap; }
+.slot { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+.machine { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; background: var(--dial); border: 2px solid var(--ink); border-radius: 14px; padding: 12px 14px; }
+.reels { display: flex; gap: 8px; }
+.carnum { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1.5px solid var(--ink); border-radius: 999px; font: 400 .72rem/1.5 var(--display); vertical-align: middle; }
+.paytable { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0 0; font-size: .85rem; color: var(--muted); }
+.paytable span { white-space: nowrap; }
+.paytable b { color: var(--ink); }
+.reel.sour { border-color: var(--line); filter: grayscale(.6); }
+.reel { width: 64px; height: 64px; display: grid; place-items: center; font-size: 2.2rem; line-height: 1; background: var(--panel); border: 2px solid var(--line); border-radius: 10px; }
+.reel.spinning { filter: blur(1.2px); border-color: var(--brass); }
+.reel.win { border-color: var(--teal); background: var(--teal-wash); }
+.pull { display: flex; flex-direction: column; gap: 8px; align-items: center; min-width: 96px; }
+@media (max-width: 440px) { .reel { width: 52px; height: 52px; font-size: 1.8rem; } }
+@media (prefers-reduced-motion: no-preference) { .reel.landed { animation: tada .5s; } }
 /* Lobby screen: the track and nothing else. No lists, labels or buttons to read. */
 body.tv #topRow, body.tv #lowerRow, body.tv #pit, body.tv #champs, body.tv #wallSection, body.tv .tagline, body.tv #meBox,
 body.tv #soundBtn, body.tv #raceTitle, body.tv .panel .chips, body.tv .race > div,
@@ -377,6 +395,36 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
         <div id="gameBody" style="display:flex;flex-direction:column;gap:14px"></div>
       </section>
     </div>
+
+    <section class="panel pitstop" id="pitStop" hidden aria-labelledby="pitStopTitle">
+      <div class="slot">
+        <div style="min-width:0;flex:1 1 220px">
+          <h2 id="pitStopTitle">Daily spin</h2>
+          <p class="meta" id="pitStopLine"></p>
+          <p class="paytable" aria-label="What the machine pays">
+            <span>&#x1F514;&#x1F514;&#x1F514; three of a kind <b>3</b></span>
+            <span>&#x1F48E;&#x1F48E; a pair <b>2</b></span>
+            <span>&#x1F352; a cherry <b>1</b></span>
+            <span>&#x1F34B; any lemon <b>0</b></span>
+          </p>
+          <div class="row" id="nudgeRow" hidden style="justify-content:flex-start;margin-top:10px">
+            <span class="nudge" id="nudgeText"></span>
+            <button class="ghost" type="button" id="nudgeBtn">Thank a teammate</button>
+          </div>
+        </div>
+        <div class="machine" role="group" aria-label="Fruit machine">
+          <div class="reels" aria-hidden="true">
+            <div class="reel" id="reel0">&#x1F352;</div>
+            <div class="reel" id="reel1">&#x1F514;</div>
+            <div class="reel" id="reel2">&#x2B50;</div>
+          </div>
+          <div class="pull">
+            <button class="btn" type="button" id="refuelBtn">Pull the lever</button>
+            <span class="fuel" id="fuelGot" role="status"></span>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <section class="panel" aria-labelledby="raceTitle">
       <div class="row">
@@ -519,8 +567,8 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
           <p class="note" id="stockNote" hidden>You are driving the stock car. Everyone starts in one. Make it yours:</p>
           <ol class="steps">
             <li>Pick a car body and color, then add a decal or a roof topper. Or skip the car and pick a novelty ride.</li>
-            <li>Add a racing number if you like. It is painted on your car and is just for show.</li>
-            <li>Press Save my ride. Your car appears on the track once you have points this season.</li>
+            <li>Add a racing number if you like. It is painted on your car and shown next to your name on the race board. It is just for show.</li>
+            <li>Press Save my ride. The first time you customize it, you get a one-time 5 point bonus, which also puts your car on the track.</li>
           </ol>
           <svg class="preview" viewBox="-60 -30 120 60" role="img" aria-label="Preview of your ride"><g class="car" id="ridePreview"></g></svg>
           <div class="opt"><span class="label">Car body</span><div class="rides" id="optBody" role="group" aria-label="Car body"></div></div>
@@ -651,8 +699,8 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
 // VERSION in that file). Browsers cache the module separately from this page;
 // a stale copy once left the page calling functions the old module lacked,
 // which blanked everything drawn after the first failure.
-import * as A from "./accolades.js?v=2026-11-11-10";
-const NEEDS_VERSION = "2026-11-11-10";
+import * as A from "./accolades.js?v=2026-11-11-13";
+const NEEDS_VERSION = "2026-11-11-13";
 // ?review=1 is the admin review screen the Admin Console embeds: only the
 // filed-email suggestions and the form that approves one onto the wall.
 const REVIEW = new URLSearchParams(location.search).get("review") === "1";
@@ -717,6 +765,7 @@ let practice = null, practicePick = null, practiceN = 0;
 let giftsOn = true, giftOpen = null, garageOn = false, carPrefs = {}, teamOf = {};
 let tv = false, tvTimer = 0, goalWasHit = null, lastOdo = "", freshGuess = false;
 const lower = (v) => String(v || "").toLowerCase();
+let stops = [], pitOn = false;
 let candDays = 365, candLimit = 12, candState = "loading", candError = "", candInternal = false;
 const isSetty = (addr) => /@setty\.com$/i.test(String(addr || "").trim());
 let showAll = false, findText = "";
@@ -886,10 +935,14 @@ function season() {
     rows: A.inPeriod(rows, "quarter", t),
     cheers: cheers.filter((c) => String(c.created_at || "").slice(0, 10) >= from),
     plays: plays.filter((p) => String(p.play_date).slice(0, 10) >= from),
+    stops: stops.filter((st) => String(st.stop_date).slice(0, 10) >= from),
+    cars: carBonus().filter((c) => c.at >= from),
   };
 }
 const gone = new Set();   // emails and lower-cased names of inactive staff
-const standings = () => { const se = season(); return A.seasonPoints(se.rows, se.cheers, se.plays, nameOf).filter((e) => !gone.has(e.key)); };
+// Everyone whose saved ride is not the stock car, with the day they first saved one.
+const carBonus = () => Object.entries(carPrefs).filter(([, p]) => A.isCustomRide(p)).map(([email, p]) => ({ email, at: String(p.at || "").slice(0, 10) || today() }));
+const standings = () => { const se = season(); return A.seasonPoints(se.rows, se.cheers, se.plays, nameOf, se.stops, se.cars).filter((e) => !gone.has(e.key)); };
 const niceDate = (str) => { const d = A.parseDay(str); return d ? d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : ""; };
 
 // ── Render: gauge + header ──────────────────────────────────────────────────
@@ -1169,7 +1222,7 @@ function renderBoard(grid, st) {
   ol.textContent = "";
   $("periodChips").hidden = board === "race";
   $("rules").hidden = board !== "race";
-  $("rules").textContent = "+" + A.POINTS.recognized + " each time you are recognized · +" + A.POINTS.spotted + " for logging one about someone else · +" + A.POINTS.guessRight + " for a right daily guess (+" + A.POINTS.guessWrong + " for trying) · +" + A.POINTS.cheer + " per gift you send \u00B7 +" + A.POINTS.streak + " for every " + A.STREAK_LENGTH + " working days of guessing in a row. Resets each quarter.";
+  $("rules").textContent = "+" + A.POINTS.recognized + " each time you are recognized · +" + A.POINTS.spotted + " for logging one about someone else · +" + A.POINTS.guessRight + " for a right daily guess (+" + A.POINTS.guessWrong + " for trying) · +" + A.POINTS.cheer + " per gift you send \u00B7 +" + A.POINTS.streak + " for every " + A.STREAK_LENGTH + " working days of guessing in a row \u00B7 up to 3 from the daily fruit machine \u00B7 +" + A.POINTS.car + " once for customizing your car. Resets each quarter.";
   let items = [];
   const more = board === "race" && st.length > grid.length;
   $("boardAll").hidden = !more;
@@ -1179,11 +1232,11 @@ function renderBoard(grid, st) {
   if (board === "race" && more && showAll) {
     const onTrack = new Map(grid.map((c, i) => [c.key, colorVar(c.key, i)]));
     const q = findText.trim().toLowerCase();
-    items = st.map((e, i) => ({ rank: i + 1, color: onTrack.get(e.key), name: e.name, right: e.points + " pts", mine: e.key === me }))
+    items = st.map((e, i) => ({ rank: i + 1, color: onTrack.get(e.key), num: prefFor(e.key).number, name: e.name, right: e.points + " pts", mine: e.key === me }))
       .filter((it) => !q || it.name.toLowerCase().includes(q));
     empty.textContent = "Nobody by that name has points this season.";
   } else if (board === "race") {
-    items = grid.map((c, i) => ({ rank: c.rank, color: colorVar(c.key, i), name: (A.parseRide(rideOf(c.key)).novelty ? rideOf(c.key) + " " : "") + c.name, sub: "Lap " + (c.lap + 1), right: c.points + " pts", mine: c.me }));
+    items = grid.map((c, i) => ({ rank: c.rank, color: colorVar(c.key, i), num: prefFor(c.key).number, name: (A.parseRide(rideOf(c.key)).novelty ? rideOf(c.key) + " " : "") + c.name, sub: "Lap " + (c.lap + 1), right: c.points + " pts", mine: c.me }));
     empty.textContent = "No points yet this season. Log an accolade, cheer one or play today's round to put a car on the track.";
   } else if (board === "teams") {
     $("periodChips").hidden = true;
@@ -1202,6 +1255,7 @@ function renderBoard(grid, st) {
     if (board === "race" && !showAll && prevRank && it.rank > prevRank + 1) ol.appendChild(h("li", { class: "gap", "aria-label": "places " + (prevRank + 1) + " to " + (it.rank - 1) + " not shown", text: "\u22EF" }));
     prevRank = it.rank;
     const who = h("span", { class: "who", text: it.name });
+    if (it.num) who.appendChild(h("span", { class: "carnum", title: "Racing number", text: "#" + it.num }));
     if (it.sub) who.appendChild(h("small", { text: it.sub }));
     const dot = h("span", { class: "dot" });
     if (it.color) dot.style.setProperty("--c", it.color);
@@ -1370,16 +1424,18 @@ on($("saveRide"), async () => {
   try {
     const ride = A.encodeRide(rideDraft);
     await sb("POST", "/rest/v1/pms_accolade_cars?on_conflict=email", { email: me, color: rideDraft.color, ride, number: number || null, updated_at: new Date().toISOString() }, "resolution=merge-duplicates,return=minimal");
-    carPrefs[me] = { color: rideDraft.color, ride, number };
+    const first = !A.isCustomRide(carPrefs[me]);
+    carPrefs[me] = { color: rideDraft.color, ride, number, at: (carPrefs[me] && carPrefs[me].at) || new Date().toISOString() };
     $("stockNote").hidden = true;
-    $("rideMsg").textContent = "Saved. Looking sharp.";
-    renderRace();
+    $("rideMsg").textContent = first && A.isCustomRide(carPrefs[me]) ? "Saved. +" + A.POINTS.car + " for making it yours." : "Saved. Looking sharp.";
+    if (first && A.isCustomRide(carPrefs[me])) confetti();
+    renderRace(); renderMe();
     const o = raceCars.get(me);
     if (o) honkCar(o); else $("rideMsg").textContent = "Saved. Score a point to get it on the track.";
   } catch (_) { $("rideMsg").textContent = "Could not save your ride just now."; }
 });
 function renderChamps() {
-  const ch = A.champions(rows, cheers, plays, nameOf, today());
+  const ch = A.champions(rows, cheers, plays, nameOf, today(), stops, carBonus());
   $("champs").hidden = !ch.length;
   if (!ch.length) return;
   $("champLabel").textContent = ch[0].label + " podium";
@@ -1420,8 +1476,93 @@ on($("tvBtn"), () => setTv(!tv));
 on($("boardAll"), () => { showAll = !showAll; renderRace(); });
 $("boardFind").addEventListener("input", () => { findText = $("boardFind").value; renderRace(); });
 // Each section draws on its own, so a failure in one never blanks the others.
+// ── Daily spin ──────────────────────────────────────────────────────────────
+// One pull of the slot machine a day (pms_accolade_pitstops). What it pays and
+// where the reels land come from A.pitPoints and A.slotReels, not from anything
+// this page sends.
+const reelEls = [0, 1, 2].map((i) => $("reel" + i));
+const PULL_LINE = "One pull a day. Line up the fruit for points. Watch out for lemons.";
+let spin = null;   // { day, final: [i, i, i], timers: [], left: reels still turning }
+const spunToday = () => stops.some((st) => lower(st.email) === me && String(st.stop_date).slice(0, 10) === today());
+function showReels(final) {
+  const pts = A.slotPays(final);
+  reelEls.forEach((el, i) => {
+    el.textContent = A.SLOT_SYMBOLS[final[i]];
+    el.classList.remove("spinning");
+    // light up what paid: the matching reels, or the lone cherry
+    el.classList.toggle("win", pts >= 2 ? final.filter((v) => v === final[i]).length > 1 : pts === 1 && final[i] === A.SLOT_CHERRY);
+    el.classList.toggle("sour", pts === 0 && final[i] === A.SLOT_LEMON);
+  });
+}
+const spinResult = (pts) => pts === 3 ? "+3 jackpot!" : pts === 0 ? "Lemon. +0" : "+" + pts;
+function renderPitStop() {
+  $("pitStop").hidden = !pitOn;
+  if (!pitOn || spin) return;                      // never redraw over reels that are turning
+  const day = today(), done = spunToday();
+  $("pitStop").classList.toggle("done", done);
+  $("refuelBtn").hidden = done;
+  if (done) {
+    const pts = A.pitPoints(me, day);
+    showReels(A.slotReels(me, day));
+    $("fuelGot").textContent = spinResult(pts);
+    $("pitStopLine").textContent = pts === 0 ? "Sour luck today. The machine resets tomorrow." : "That was today's pull. Come back tomorrow for another.";
+  } else {
+    for (const el of reelEls) el.classList.remove("win", "sour", "spinning");
+    $("fuelGot").textContent = "";
+    $("pitStopLine").textContent = PULL_LINE;
+  }
+  $("nudgeRow").hidden = !done;
+  $("nudgeText").textContent = "Today's nudge: " + A.dailyNudge(day);
+}
+function landReel(i) {
+  if (!spin) return;
+  clearInterval(spin.timers[i]);
+  const el = reelEls[i];
+  el.textContent = A.SLOT_SYMBOLS[spin.final[i]];
+  el.classList.remove("spinning");
+  restart(el, "landed");
+  sfx.pop();
+  if (--spin.left === 0) finishSpin();
+}
+async function finishSpin() {
+  const day = spin.day;
+  spin = null;
+  try {
+    await sb("POST", "/rest/v1/pms_accolade_pitstops", { email: me, stop_date: day }, "return=minimal");
+    stops.push({ email: me, stop_date: day });
+  } catch (e) {
+    if (e.status === 409) await loadStops();          // already pulled today, on another device
+    else { renderPitStop(); $("pitStopLine").textContent = "The pull could not be saved. Check your connection and try again."; return; }
+  }
+  const pts = A.pitPoints(me, day);
+  burst($("reel1"), pts === 3 ? "\u{1F3B0}" : pts === 0 ? "\u{1F34B}" : "\u2728", pts === 0 ? 4 : pts * 3);
+  if (pts === 3) { confetti(); sfx.tada(); } else if (pts > 0) sfx.ding(); else sfx.quack();
+  renderPitStop(); renderRace(); renderMe(); renderPit();
+}
+// One button. The reels turn and land on their own, left to right.
+on($("refuelBtn"), () => {
+  if (spin || spunToday()) return;
+  const day = today();
+  spin = { day, final: A.slotReels(me, day), timers: [], left: 3 };
+  $("refuelBtn").hidden = true;
+  $("pitStopLine").textContent = "Round and round...";
+  sfx.vroom();
+  if (reduced) { [0, 1, 2].forEach(landReel); return; }    // no spinning: show where they land
+  reelEls.forEach((el, i) => {
+    el.classList.remove("win", "sour");
+    el.classList.add("spinning");
+    let k = Math.floor(Math.random() * A.SLOT_SYMBOLS.length);
+    spin.timers[i] = setInterval(() => { k = (k + 1) % A.SLOT_SYMBOLS.length; el.textContent = A.SLOT_SYMBOLS[k]; }, 70 + i * 15);
+    setTimeout(() => landReel(i), 1100 + i * 700);
+  });
+});
+on($("nudgeBtn"), () => {
+  setMode("thanks");
+  $("logPanel").scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
+  $("tTo").focus({ preventScroll: true });
+});
 function renderAll() {
-  for (const fn of [renderGauge, renderGame, renderRace, renderWall, renderCands, renderMe, renderPit, renderChamps]) {
+  for (const fn of [renderGauge, renderGame, renderPitStop, renderRace, renderWall, renderCands, renderMe, renderPit, renderChamps]) {
     try { fn(); } catch (e) { console.error("Accolades: " + fn.name + " failed", e); stale(); }
   }
 }
@@ -1673,11 +1814,19 @@ async function loadCheers() {
   cheers = await sbAll("/rest/v1/pms_accolade_cheers?select=accolade_id,email,created_at&order=created_at.asc");
 }
 async function loadPlays() { plays = await sbAll("/rest/v1/pms_accolade_plays?select=email,play_date,accolade_id,correct&order=play_date.asc"); }
+// The daily spin's table arrives with migration 20261111260000. Without it the panel stays hidden.
+async function loadStops() {
+  try { stops = await sbAll("/rest/v1/pms_accolade_pitstops?select=email,stop_date&order=stop_date.asc"); pitOn = true; }
+  catch (_) { stops = []; pitOn = false; }
+}
 async function loadCars() {
   try {
-    const r = await sbAll("/rest/v1/pms_accolade_cars?select=email,color,ride,number");
+    // created_at (first save) arrives with migration 20261111260000; until then the last save stands in.
+    let r;
+    try { r = await sbAll("/rest/v1/pms_accolade_cars?select=email,color,ride,number,created_at"); }
+    catch (_) { r = await sbAll("/rest/v1/pms_accolade_cars?select=email,color,ride,number,updated_at"); }
     carPrefs = {};
-    for (const c of r) carPrefs[lower(c.email)] = { color: c.color, ride: c.ride, number: c.number || "" };
+    for (const c of r) carPrefs[lower(c.email)] = { color: c.color, ride: c.ride, number: c.number || "", at: c.created_at || c.updated_at || "" };
     garageOn = true;
   } catch (_) { garageOn = false; }
 }
@@ -1753,7 +1902,7 @@ function markNew() {
 async function refresh() {
   if (document.hidden) return;
   const seen = new Set(rows.map((r) => r.id));
-  try { await Promise.all([loadRows(), loadCheers(), loadPlays(), loadSettings(), loadCars()]); renderAll(); } catch (_) { return; }
+  try { await Promise.all([loadRows(), loadCheers(), loadPlays(), loadSettings(), loadCars(), loadStops()]); renderAll(); } catch (_) { return; }
   // someone else logged one while this page was open
   const fresh = rows.filter((r) => !seen.has(r.id));
   if (fresh.length) { for (const r of fresh) newIds.add(r.id); renderAll(); tubeWild(); kick(); duck("QUACK! Kudos to " + (fresh[0].recipients || ["the team"])[0]); }
@@ -1783,7 +1932,7 @@ async function boot() {
       : "The wall could not be loaded. Check your connection and reload the page.";
     return;
   }
-  await Promise.all([loadStaff(), loadProjects(), loadCars(), loadTeams()]);
+  await Promise.all([loadStaff(), loadProjects(), loadCars(), loadTeams(), loadStops()]);
   if (nameOf[me]) myName = nameOf[me];
   const perms = await settyAuth.refreshPermissions().catch(() => null);
   isAdmin = !!(perms && perms.role === "admin");

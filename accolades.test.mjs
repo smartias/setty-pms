@@ -280,3 +280,61 @@ test("approving an email suggestion earns no spotter credit", () => {
   assert.equal(pts["admin@setty.com"], POINTS.spotted);          // one, not two
   assert.equal(pts["bo@setty.com"], 2 * POINTS.recognized);      // the person praised still scores both
 });
+
+import { pitPoints, dailyNudge, NUDGES, slotReels, slotPays, SLOT_SYMBOLS, SLOT_LEMON, isCustomRide, STOCK_RIDE as STOCK } from "./accolades.js";
+
+test("a daily spin pays 0 to 3, fixed for a person and day, and some days are lemons", () => {
+  const seen = { 0: 0, 1: 0, 2: 0, 3: 0 };
+  for (let d = 1; d <= 28; d++) for (const who of ["ana@setty.com", "bo@setty.com", "cy@setty.com", "di@setty.com", "ed@setty.com"]) {
+    const day = "2026-11-" + String(d).padStart(2, "0"), v = pitPoints(who, day);
+    assert.ok([0, 1, 2, 3].includes(v));
+    assert.equal(pitPoints(who.toUpperCase(), day), v);      // same person, same day, same answer
+    seen[v]++;
+  }
+  assert.ok(seen[0] > 0 && seen[1] > 0 && seen[2] > 0 && seen[3] > 0 && seen[3] < seen[1], JSON.stringify(seen));
+});
+
+test("pit stops add to the season and to past podiums", () => {
+  const stops = [{ email: "ana@setty.com", stop_date: "2026-11-10" }, { email: "ana@setty.com", stop_date: "2026-11-11" }];
+  const s = seasonPoints([], [], [], {}, stops);
+  assert.equal(s[0].points, pitPoints("ana@setty.com", "2026-11-10") + pitPoints("ana@setty.com", "2026-11-11"));
+  assert.equal(s[0].stops, 2);
+  assert.equal(seasonPoints([], [], [], {}).length, 0);                                   // optional argument
+  const c = champions([], [], [], {}, "2026-11-11", [{ email: "bo@setty.com", stop_date: "2026-08-03" }]);
+  assert.deepEqual(c.map((q) => [q.label, q.podium[0].key]), [["Q3 2026", "bo@setty.com"]]);
+});
+
+test("the nudge changes daily and cycles", () => {
+  assert.notEqual(dailyNudge("2026-11-11"), dailyNudge("2026-11-12"));
+  assert.equal(dailyNudge("2026-11-11"), dailyNudge("2026-11-21"));
+  assert.ok(NUDGES.includes(dailyNudge("2026-01-01")));
+  assert.ok(NUDGES.includes(dailyNudge("nope")));
+});
+
+test("the reels always show what the spin is worth, by the machine's own rules", () => {
+  for (let d = 1; d <= 28; d++) for (const who of ["ana@setty.com", "bo@setty.com", "cy@setty.com", "di@setty.com", "ed@setty.com"]) {
+    const day = "2026-11-" + String(d).padStart(2, "0"), reels = slotReels(who, day), pts = pitPoints(who, day);
+    assert.equal(reels.length, 3);
+    for (const r of reels) assert.ok(Number.isInteger(r) && r >= 0 && r < SLOT_SYMBOLS.length);
+    assert.equal(slotPays(reels), pts, who + " " + day + " " + reels);
+    if (pts === 0) assert.ok(reels.includes(SLOT_LEMON), "a losing spin shows a lemon");
+    assert.deepEqual(slotReels(who.toUpperCase(), day), reels);
+  }
+  assert.equal(slotPays([2, 2, 2]), 3); assert.equal(slotPays([2, 2, 4]), 2); assert.equal(slotPays([0, 2, 4]), 1);
+  assert.equal(slotPays([2, 3, 4]), 0); assert.equal(slotPays([1, 1, 1]), 0); assert.equal(slotPays([2, 2, 1]), 0);
+});
+
+test("customizing your car pays once, in the season it was first done", () => {
+  assert.equal(isCustomRide(null), false);
+  assert.equal(isCustomRide({ color: null, ride: STOCK, number: "" }), false);
+  assert.equal(isCustomRide({ color: null, ride: "car", number: null }), false);
+  assert.equal(isCustomRide({ color: 3, ride: STOCK }), true);
+  assert.equal(isCustomRide({ color: null, ride: STOCK, number: "7" }), true);
+  const cars = [{ email: "Ana@setty.com", at: "2026-11-02" }, { email: "ana@setty.com", at: "2026-11-03" }];
+  const s = seasonPoints([], [], [], (k) => k, [], cars);
+  assert.equal(s.length, 1);
+  assert.equal(s[0].points, POINTS.car);                    // listed twice, paid once
+  const ch = champions([], [], [], (k) => k, "2027-01-05", [], cars);
+  assert.equal(ch[0].key, "2026-Q4");
+  assert.equal(ch[0].podium[0].points, POINTS.car);
+});
