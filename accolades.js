@@ -216,20 +216,46 @@ export function dailyPuzzle(rows, staffNames, today, salt) {
   return { day, accolade: row, answer, choices, others: row.recipients.length - 1 };
 }
 
-// Consecutive days played, counting back from today (or yesterday when today
-// has not been played yet).
+// The working day before a given day: weekends are skipped, so playing Friday
+// and then Monday keeps a streak alive.
+function prevWorkday(d) {
+  const p = new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+  while (p.getDay() === 0 || p.getDay() === 6) p.setDate(p.getDate() - 1);
+  return p;
+}
+
+// Consecutive working days played, counting back from today (or from the last
+// working day when today has not been played yet).
 export function playStreak(plays, email, today) {
   const me = String(email || "").toLowerCase();
   const days = new Set((plays || []).filter((p) => String(p.email || "").toLowerCase() === me).map((p) => String(p.play_date).slice(0, 10)));
-  const cur = today instanceof Date ? new Date(today.getFullYear(), today.getMonth(), today.getDate()) : parseDay(today);
+  let cur = today instanceof Date ? new Date(today.getFullYear(), today.getMonth(), today.getDate()) : parseDay(today);
   if (!cur) return 0;
-  if (!days.has(dayStr(cur))) cur.setDate(cur.getDate() - 1);
+  if (!days.has(dayStr(cur))) cur = prevWorkday(cur);
   let n = 0;
-  while (days.has(dayStr(cur))) { n++; cur.setDate(cur.getDate() - 1); }
+  while (days.has(dayStr(cur))) { n++; cur = prevWorkday(cur); }
   return n;
 }
 
-export const POINTS = { recognized: 10, spotted: 5, guessRight: 3, guessWrong: 1, cheer: 1 };
+// Bonus for sticking with the daily round: STREAK_BONUS points for every
+// STREAK_LENGTH working days played in a row. Returns the number of bonuses
+// one person's play dates have earned.
+export const STREAK_LENGTH = 5;
+export function streakBonuses(playDates) {
+  const days = [...new Set((playDates || []).map((d) => String(d).slice(0, 10)))].sort();
+  let run = 0, bonuses = 0, prev = null;
+  for (const d of days) {
+    const day = parseDay(d);
+    if (!day) continue;
+    run = prev && dayStr(prevWorkday(day)) === prev ? run + 1 : 1;
+    if (run % STREAK_LENGTH === 0) bonuses++;
+    // a weekend play neither extends nor breaks the run that Friday started
+    if (day.getDay() !== 0 && day.getDay() !== 6) prev = d; else run--;
+  }
+  return bonuses;
+}
+
+export const POINTS = { recognized: 10, spotted: 5, guessRight: 3, guessWrong: 1, cheer: 1, streak: 5 };
 
 // Season standings. rows, cheers ({accolade_id, email, created_at}) and plays
 // ({email, play_date, correct}) are expected to be already cut to the season.
@@ -241,7 +267,7 @@ export function seasonPoints(rows, cheers, plays, names) {
   const give = (key, label, pts, field) => {
     const k = String(key || "").trim().toLowerCase();
     if (!k) return;
-    const e = m.get(k) || { key: k, name: nameOf(k, label), points: 0, recognized: 0, spotted: 0, guesses: 0, cheers: 0 };
+    const e = m.get(k) || { key: k, name: nameOf(k, label), points: 0, recognized: 0, spotted: 0, guesses: 0, cheers: 0, streaks: 0 };
     e.points += pts; e[field]++;
     m.set(k, e);
   };
@@ -252,7 +278,16 @@ export function seasonPoints(rows, cheers, plays, names) {
   for (const s of topSpotters(rows, Infinity)) {
     for (let i = 0; i < s.n; i++) give(s.key, s.name, POINTS.spotted, "spotted");
   }
-  for (const p of plays || []) give(p.email, "", p.correct ? POINTS.guessRight : POINTS.guessWrong, "guesses");
+  const playDays = new Map();
+  for (const p of plays || []) {
+    give(p.email, "", p.correct ? POINTS.guessRight : POINTS.guessWrong, "guesses");
+    const k = String(p.email || "").trim().toLowerCase();
+    if (k) playDays.set(k, [...(playDays.get(k) || []), p.play_date]);
+  }
+  for (const [k, days] of playDays) {
+    const e = m.get(k), b = streakBonuses(days);
+    if (e && b) { e.points += b * POINTS.streak; e.streaks = b; }
+  }
   for (const c of cheers || []) give(c.email, "", POINTS.cheer, "cheers");
   return [...m.values()].sort((a, b) => b.points - a.points || a.name.localeCompare(b.name));
 }
@@ -287,4 +322,80 @@ export function redactNames(quote, recipients) {
   const list = [...words].sort((a, b) => b.length - a.length).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   if (!list.length) return String(quote || "");
   return String(quote || "").replace(new RegExp("(^|[^\\p{L}])(" + list.join("|") + ")(?![\\p{L}])", "giu"), "$1\u2588\u2588\u2588\u2588");
+}
+
+// Team standings: season points summed by team. teamOf: email -> team name.
+// People with no team on record are left out. `perHead` is the average over
+// the team's members who scored, so a small office is not buried by a big one.
+export function teamStandings(standings, teamOf) {
+  const m = new Map();
+  for (const e of standings || []) {
+    const team = teamOf && teamOf[e.key];
+    if (!team) continue;
+    const t = m.get(team) || { key: team, name: team, points: 0, members: 0 };
+    t.points += e.points; t.members++;
+    m.set(team, t);
+  }
+  return [...m.values()].map((t) => ({ ...t, perHead: Math.round(t.points / t.members) }))
+    .sort((a, b) => b.perHead - a.perHead || b.points - a.points || a.name.localeCompare(b.name));
+}
+
+// What changed for one person since their last visit. prev is what the page
+// stored last time: { rank, ahead: [keys] }. Returns { moved, passedBy: [names] }
+// where moved > 0 means places gained.
+export function sinceLastVisit(standings, meKey, prev) {
+  const me = String(meKey || "").toLowerCase();
+  const i = (standings || []).findIndex((e) => e.key === me);
+  if (i < 0) return { rank: 0, ahead: [], moved: 0, passedBy: [] };
+  const ahead = standings.slice(0, i).map((e) => e.key);
+  const out = { rank: i + 1, ahead, moved: 0, passedBy: [] };
+  if (prev && prev.rank) {
+    out.moved = prev.rank - out.rank;
+    const was = new Set(prev.ahead || []);
+    if (out.moved < 0) out.passedBy = standings.slice(0, i).filter((e) => !was.has(e.key)).map((e) => e.name);
+  }
+  return out;
+}
+
+// ── Trophy case and hall of champions ────────────────────────────────────────
+// Badges are worked out from the record each time, so nothing extra is stored.
+// seasonPts is the person's points in the current season (for the lap badge).
+export function badgesFor(email, rows, cheers, plays, seasonPts) {
+  const me = String(email || "").toLowerCase();
+  const mine = (rows || []).filter((r) => isRecipient(r, me));
+  const perMonth = new Map();
+  for (const r of mine) { const k = String(r.received_on || "").slice(0, 7); perMonth.set(k, (perMonth.get(k) || 0) + 1); }
+  const spotted = (topSpotters(rows, Infinity).find((s) => s.key === me) || { n: 0 }).n;
+  const myPlays = (plays || []).filter((p) => String(p.email || "").toLowerCase() === me);
+  const given = (cheers || []).filter((c) => String(c.email || "").toLowerCase() === me).length;
+  const def = [
+    ["wall", "On the wall", "Be named on your first accolade", mine.length >= 1],
+    ["client3", "Client favorite", "Be named on 3 client accolades", mine.filter((r) => r.kind !== "internal").length >= 3],
+    ["hattrick", "Hat trick", "Be named on 3 accolades in one month", [...perMonth.values()].some((n) => n >= 3)],
+    ["scout", "Talent scout", "Log 5 accolades about other people", spotted >= 5],
+    ["cheer25", "Cheerleader", "Give 25 cheers", given >= 25],
+    ["eye10", "Sharp eye", "Get 10 daily guesses right", myPlays.filter((p) => p.correct).length >= 10],
+    ["streak", "Iron streak", "Play " + STREAK_LENGTH + " working days in a row", streakBonuses(myPlays.map((p) => p.play_date)) >= 1],
+    ["lap", "Full lap", "Score " + LAP_POINTS + " points in one season", (seasonPts || 0) >= LAP_POINTS],
+  ];
+  return def.map(([id, name, how, earned]) => ({ id, name, how, earned: !!earned }));
+}
+
+export function quarterKey(day) {
+  const d = String(day || "").slice(0, 10), m = Number(d.slice(5, 7));
+  return d.slice(0, 4) + "-Q" + (Math.floor((m - 1) / 3) + 1);
+}
+
+// The podium of every finished quarter that had any points, newest first.
+export function champions(rows, cheers, plays, names, today) {
+  const now = quarterKey(typeof today === "string" ? today : dayStr(today));
+  const q = new Map();
+  const slot = (k) => { if (!q.has(k)) q.set(k, { rows: [], cheers: [], plays: [] }); return q.get(k); };
+  for (const r of rows || []) slot(quarterKey(r.received_on)).rows.push(r);
+  for (const c of cheers || []) slot(quarterKey(c.created_at)).cheers.push(c);
+  for (const p of plays || []) slot(quarterKey(p.play_date)).plays.push(p);
+  return [...q.keys()].filter((k) => /^\d{4}-Q[1-4]$/.test(k) && k < now).sort().reverse().map((k) => {
+    const s = q.get(k);
+    return { key: k, label: k.slice(5) + " " + k.slice(0, 4), podium: seasonPoints(s.rows, s.cheers, s.plays, names).slice(0, 3) };
+  }).filter((x) => x.podium.length);
 }

@@ -93,6 +93,7 @@ test("isRecipient matches email case-insensitively", () => {
   assert.equal(isRecipient(row({ recipient_emails: [""] }), ""), false);
 });
 
+import { streakBonuses, teamStandings, sinceLastVisit, badgesFor, champions, quarterKey, STREAK_LENGTH } from "./accolades.js";
 import { redactNames, dailyPuzzle, playStreak, seasonPoints, raceGrid, POINTS, GAME_CHOICES } from "./accolades.js";
 
 const wall = [
@@ -120,12 +121,15 @@ test("no puzzle without enough names, and today's entries wait a day", () => {
   assert.equal(dailyPuzzle(fresh, ["A", "B", "C"], "2026-11-12").answer, "Ana Diaz");
 });
 
-test("play streak counts back from today or yesterday", () => {
+test("play streak counts working days back from today or the last working day", () => {
   const plays = ["2026-11-11", "2026-11-10", "2026-11-09", "2026-11-06"].map((d) => ({ email: "Ana@setty.com", play_date: d }));
-  assert.equal(playStreak(plays, "ana@setty.com", "2026-11-11"), 3);
-  assert.equal(playStreak(plays, "ana@setty.com", "2026-11-12"), 3);
+  assert.equal(playStreak(plays, "ana@setty.com", "2026-11-11"), 4);   // Fri 6th to Wed 11th, weekend skipped
+  assert.equal(playStreak(plays, "ana@setty.com", "2026-11-12"), 4);
   assert.equal(playStreak(plays, "ana@setty.com", "2026-11-13"), 0);
-  assert.equal(playStreak(plays, "bo@setty.com", "2026-11-11"), 0);
+  // Fri 6 Nov then Mon 9 Nov is unbroken: weekends do not count against you
+  const wk = ["2026-11-09", "2026-11-06", "2026-11-05"].map((d) => ({ email: "bo@setty.com", play_date: d }));
+  assert.equal(playStreak(wk, "bo@setty.com", "2026-11-09"), 3);
+  assert.equal(playStreak(wk, "bo@setty.com", "2026-11-10"), 3);
 });
 
 test("season points add up across the four ways to score", () => {
@@ -152,4 +156,54 @@ test("a salt gives a practice puzzle without changing the daily one", () => {
   const staff = ["Dee Fox", "Eli Park", "Fay Lin"];
   assert.deepEqual(dailyPuzzle(wall, staff, "2026-11-11").choices, dailyPuzzle(wall, staff, "2026-11-11").choices);
   assert.ok(dailyPuzzle(wall, staff, "2026-11-11", "p1"));
+});
+
+test("a streak bonus lands every fifth working day in a row", () => {
+  assert.equal(STREAK_LENGTH, 5);
+  const week = ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06"];           // Mon-Fri
+  assert.equal(streakBonuses(week), 1);
+  assert.equal(streakBonuses(week.slice(0, 4)), 0);
+  assert.equal(streakBonuses([...week, "2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"]), 2); // two full weeks across a weekend
+  assert.equal(streakBonuses(["2026-11-02", "2026-11-03", "2026-11-05", "2026-11-06", "2026-11-09"]), 0);          // Wednesday missed
+  assert.equal(streakBonuses([...week, "2026-11-07"]), 1);                                                          // a Saturday play adds nothing
+  const s = seasonPoints([], [], week.map((d) => ({ email: "ana@setty.com", play_date: d, correct: true })), {});
+  assert.equal(s[0].points, 5 * POINTS.guessRight + POINTS.streak);
+});
+
+test("teams rank by average points of the members who scored", () => {
+  const st = [{ key: "a", points: 30 }, { key: "b", points: 10 }, { key: "c", points: 25 }, { key: "d", points: 99 }];
+  const t = teamStandings(st, { a: "NY", b: "NY", c: "India" });
+  assert.deepEqual(t.map((x) => [x.name, x.points, x.members, x.perHead]), [["India", 25, 1, 25], ["NY", 40, 2, 20]]);
+});
+
+test("since last visit reports places moved and who passed you", () => {
+  const st = [{ key: "a", name: "Ana" }, { key: "b", name: "Bo" }, { key: "c", name: "Cy" }];
+  assert.deepEqual(sinceLastVisit(st, "c", { rank: 2, ahead: ["a"] }), { rank: 3, ahead: ["a", "b"], moved: -1, passedBy: ["Bo"] });
+  assert.equal(sinceLastVisit(st, "a", { rank: 3, ahead: ["b", "c"] }).moved, 2);
+  assert.equal(sinceLastVisit(st, "b", null).moved, 0);
+  assert.equal(sinceLastVisit(st, "zz", { rank: 1 }).rank, 0);
+});
+
+test("badges are earned from the record", () => {
+  const rows = [
+    row({ kind: "client", recipients: ["Ana"], recipient_emails: ["ana@setty.com"], received_on: "2026-11-02", created_by: "bo@setty.com" }),
+    row({ kind: "client", recipients: ["Ana"], recipient_emails: ["ana@setty.com"], received_on: "2026-11-05", created_by: "bo@setty.com" }),
+    row({ kind: "client", recipients: ["Ana"], recipient_emails: ["ana@setty.com"], received_on: "2026-11-09", created_by: "bo@setty.com" }),
+  ];
+  const earned = (email) => badgesFor(email, rows, [], [], 0).filter((b) => b.earned).map((b) => b.id);
+  assert.deepEqual(earned("ana@setty.com"), ["wall", "client3", "hattrick"]);
+  assert.deepEqual(earned("bo@setty.com"), []);                       // 3 spotted, needs 5
+  assert.ok(badgesFor("bo@setty.com", rows, [], [], 60).find((b) => b.id === "lap").earned);
+  assert.ok(badgesFor("x", [], [], [], 0).every((b) => b.name && b.how && !b.earned));
+});
+
+test("champions lists finished quarters only, newest first", () => {
+  assert.equal(quarterKey("2026-11-11"), "2026-Q4");
+  const rows = [
+    row({ recipients: ["Ana"], recipient_emails: ["ana@setty.com"], received_on: "2026-08-02", created_by: "bo@setty.com" }),
+    row({ recipients: ["Bo"], recipient_emails: ["bo@setty.com"], received_on: "2026-05-02", created_by: "bo@setty.com" }),
+    row({ recipients: ["Cy"], recipient_emails: ["cy@setty.com"], received_on: "2026-11-02", created_by: "bo@setty.com" }),
+  ];
+  const c = champions(rows, [], [], {}, "2026-11-11");
+  assert.deepEqual(c.map((q) => [q.label, q.podium[0].name]), [["Q3 2026", "Ana"], ["Q2 2026", "Bo"]]);
 });
