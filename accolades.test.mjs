@@ -258,3 +258,12 @@ test("teamGrid places one car per team by average points", () => {
   const g = teamGrid([{ key: "India", name: "India", points: 25, members: 1, perHead: 25 }, { key: "NY", name: "NY", points: 140, members: 2, perHead: 70 }], 50);
   assert.deepEqual(g.map((c) => [c.key, c.points, c.lap, c.frac, c.rank]), [["team:India", 25, 0, 0.5, 1], ["team:NY", 70, 1, 0.4, 2]]);
 });
+
+import { VERSION } from "./accolades.js";
+import { readFileSync } from "node:fs";
+
+test("the page asks for the same module version this file declares", () => {
+  const html = readFileSync(new URL("./Accolades.html", import.meta.url), "utf8");
+  assert.ok(html.includes('"./accolades.js?v=' + VERSION + '"'), "import ?v= must equal VERSION");
+  assert.ok(html.includes('NEEDS_VERSION = "' + VERSION + '"'), "NEEDS_VERSION must equal VERSION");
+});
