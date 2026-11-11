@@ -183,6 +183,8 @@ textarea { resize: vertical; min-height: 92px; }
 .cand .subj { font-weight: 700; overflow-wrap: anywhere; }
 .cand .snip { font-size: 0.95rem; overflow-wrap: anywhere; }
 mark { background: var(--brass-wash); color: var(--brass-ink); padding: 0 2px; border-radius: 2px; }
+.cand .more summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
+.cand .more .body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.9rem; background: var(--dial); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin-top: 6px; max-height: 320px; overflow-y: auto; }
 .meta { font-size: 0.85rem; color: var(--muted); overflow-wrap: anywhere; }
 .wall { columns: 300px 3; column-gap: 16px; }
 .card { break-inside: avoid; margin: 0 0 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
@@ -618,7 +620,8 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
             <button class="chip" type="button" data-days="365" aria-pressed="true">Last year</button>
             <button class="chip" type="button" data-days="1825" aria-pressed="false">Last 5 years</button>
           </div>
-          <p class="meta">These filed emails read like praise. Nothing is posted until you put it on the wall. The person praised gets the points; approving one earns none.</p>
+          <label class="meta" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="candInternal"> Also show emails sent by Setty people</label>
+          <p class="meta">These filed emails from outside the firm read like praise. Nothing is posted until you put it on the wall. Setty staff on the To and Cc lines are in bold: they are usually who earned it.</p>
           <div id="candList" style="display:flex;flex-direction:column;gap:12px"></div>
           <p class="note" id="candEmpty" hidden>Nothing that reads like praise in this period. Try looking further back.</p>
           <div><button class="ghost" type="button" id="candMore" hidden>Show more</button></div>
@@ -714,7 +717,8 @@ let practice = null, practicePick = null, practiceN = 0;
 let giftsOn = true, giftOpen = null, garageOn = false, carPrefs = {}, teamOf = {};
 let tv = false, tvTimer = 0, goalWasHit = null, lastOdo = "", freshGuess = false;
 const lower = (v) => String(v || "").toLowerCase();
-let candDays = 365, candLimit = 12, candState = "loading", candError = "";
+let candDays = 365, candLimit = 12, candState = "loading", candError = "", candInternal = false;
+const isSetty = (addr) => /@setty\.com$/i.test(String(addr || "").trim());
 let showAll = false, findText = "";
 const busy = new Set(), newIds = new Set();
 const today = () => A.dayStr(new Date());
@@ -1282,15 +1286,38 @@ function renderCands() {
   for (const c of cands) {
     const snip = h("div", { class: "snip" });
     for (const p of A.snippetParts(c.snippet)) snip.appendChild(p.hit ? h("mark", { text: p.text }) : document.createTextNode(p.text));
-    const proj = [c.project_number, c.project_name].filter(Boolean).join(" · ");
-    list.appendChild(h("div", { class: "cand" },
+    const proj = [c.project_number, c.project_name].filter(Boolean).join(" \u00B7 ");
+    const card = h("div", { class: "cand" },
       h("div", { class: "subj", text: c.subject || "(no subject)" }),
-      h("div", { class: "meta", text: (c.from_name || c.from_address) + " · " + new Date(c.email_date).toLocaleDateString() + (proj ? " · " + proj : "") }),
-      snip,
-      h("div", { class: "row", style: "justify-content:flex-start" },
-        on(h("button", { class: "ghost", type: "button", text: "Put it on the wall" }), () => useCandidate(c)),
-        on(h("button", { class: "link", type: "button", text: "Not an accolade" }), () => dismissCandidate(c)))));
+      h("div", { class: "meta", text: "From " + [c.from_name, c.from_address && "<" + c.from_address + ">"].filter(Boolean).join(" ") + " \u00B7 " + new Date(c.email_date).toLocaleDateString() + (proj ? " \u00B7 " + proj : "") }));
+    // Who it was addressed to is the best clue to who earned it: Setty staff by name, in bold.
+    for (const [label, text] of [["To", c.to_addresses], ["Cc", c.cc_addresses]]) {
+      const people = addressList(text);
+      if (!people.length) continue;
+      const line = h("div", { class: "meta" }, label + ": ");
+      people.forEach((p, i) => { if (i) line.appendChild(document.createTextNode(", ")); line.appendChild(p.staff ? h("b", { text: p.label }) : document.createTextNode(p.label)); });
+      card.appendChild(line);
+    }
+    card.appendChild(snip);
+    if (c.body_excerpt && c.body_excerpt.trim().length > A.snippetText(c.snippet).length + 40) {
+      card.appendChild(h("details", { class: "more" }, h("summary", { text: "Read more of the email" }), h("div", { class: "body", text: c.body_excerpt.trim() + (c.body_excerpt.length >= 4000 ? "\u2026" : "") })));
+    }
+    card.appendChild(h("div", { class: "row", style: "justify-content:flex-start" },
+      on(h("button", { class: "ghost", type: "button", text: "Put it on the wall" }), () => useCandidate(c)),
+      on(h("button", { class: "link", type: "button", text: "Not an accolade" }), () => dismissCandidate(c))));
+    list.appendChild(card);
   }
+}
+// The addresses on a To or Cc line, Setty staff shown by name. At most a dozen, to keep the card readable.
+function addressList(text) {
+  const seen = new Set(), out = [];
+  for (const addr of (String(text || "").toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g) || [])) {
+    if (seen.has(addr)) continue;
+    seen.add(addr);
+    out.push({ label: nameOf[addr] || addr, staff: !!nameOf[addr] });
+  }
+  if (out.length > 12) return [...out.slice(0, 12), { label: "and " + (out.length - 12) + " more", staff: false }];
+  return out;
 }
 // ── Garage, trophy case, champions, news, lobby screen ──────────────────────
 let rideDraft = null;
@@ -1597,6 +1624,7 @@ wireChips("board", (v) => { board = v; renderRace(); });
 wireChips("period", (v) => { period = v; renderRace(); });
 wireChips("days", (v) => { candDays = Number(v); candLimit = 12; loadCands(); });
 on($("candMore"), () => { candLimit = Math.min(100, candLimit + 24); loadCands(); });
+$("candInternal").addEventListener("change", () => { candInternal = $("candInternal").checked; candLimit = 12; loadCands(); });
 
 on($("goalBtn"), () => {
   const f = $("goalForm"); f.hidden = !f.hidden;
@@ -1670,7 +1698,15 @@ async function loadSettings() {
 async function loadCands() {
   candState = "loading"; candError = ""; renderCands();
   try {
-    cands = (await sb("POST", "/rest/v1/rpc/pms_accolade_email_candidates", { p_days: candDays, p_limit: candLimit })) || [];
+    try {
+      cands = (await sb("POST", "/rest/v1/rpc/pms_accolade_email_candidates", { p_days: candDays, p_limit: candLimit, p_include_internal: candInternal })) || [];
+    } catch (e) {
+      // Before migration 20261111200000 the function takes two arguments and
+      // knows nothing about senders: ask the old way and filter here instead.
+      if (!((e.detail && e.detail.code === "PGRST202") || e.status === 404)) throw e;
+      cands = (await sb("POST", "/rest/v1/rpc/pms_accolade_email_candidates", { p_days: candDays, p_limit: candLimit })) || [];
+      if (!candInternal) cands = cands.filter((c) => !isSetty(c.from_address));
+    }
     candState = "ok";
   } catch (e) {
     cands = []; candState = "error";
