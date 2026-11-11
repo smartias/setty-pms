@@ -707,7 +707,7 @@ let practice = null, practicePick = null, practiceN = 0;
 let giftsOn = true, giftOpen = null, garageOn = false, carPrefs = {}, teamOf = {};
 let tv = false, tvTimer = 0, goalWasHit = null, lastOdo = "", freshGuess = false;
 const lower = (v) => String(v || "").toLowerCase();
-let candDays = 365, candLimit = 12, candsOn = false;
+let candDays = 365, candLimit = 12, candState = "loading", candError = "";
 let showAll = false, findText = "";
 const busy = new Set(), newIds = new Set();
 const today = () => A.dayStr(new Date());
@@ -1264,9 +1264,16 @@ function renderWall() {
   }
 }
 function renderCands() {
-  $("candPanel").hidden = !candsOn;
-  $("candCount").textContent = cands.length + " to review";
-  $("candEmpty").hidden = cands.length > 0;
+  // The panel always shows, and says plainly whether it is still searching,
+  // found nothing, or failed. A silent failure here once looked like "no praise".
+  $("candPanel").hidden = false;
+  $("candCount").textContent = candState === "ok" ? cands.length + " to review" : "";
+  const note = $("candEmpty");
+  note.classList.toggle("err", candState === "error");
+  note.hidden = candState === "ok" && cands.length > 0;
+  note.textContent = candState === "loading" ? "Searching the filed email log\u2026"
+    : candState === "error" ? "The email search did not finish, so nothing is listed. " + candError
+    : "Nothing that reads like praise in this period. Try looking further back.";
   $("candMore").hidden = cands.length < candLimit || candLimit >= 100;
   const list = $("candList"); list.textContent = "";
   for (const c of cands) {
@@ -1585,8 +1592,8 @@ wireChips("mode", (v) => setMode(v));
 renderThanks();
 wireChips("board", (v) => { board = v; renderRace(); });
 wireChips("period", (v) => { period = v; renderRace(); });
-wireChips("days", async (v) => { candDays = Number(v); candLimit = 12; await loadCands(); renderCands(); });
-on($("candMore"), async () => { candLimit = Math.min(100, candLimit + 24); await loadCands(); renderCands(); });
+wireChips("days", (v) => { candDays = Number(v); candLimit = 12; loadCands(); });
+on($("candMore"), () => { candLimit = Math.min(100, candLimit + 24); loadCands(); });
 
 on($("goalBtn"), () => {
   const f = $("goalForm"); f.hidden = !f.hidden;
@@ -1654,9 +1661,22 @@ async function loadSettings() {
   const r = await sb("GET", "/rest/v1/pms_accolade_settings?id=eq.1&select=monthly_goal,reward");
   if (r && r[0]) settings = { monthly_goal: r[0].monthly_goal || 20, reward: r[0].reward || "" };
 }
+// Searches pms_project_emails, the PMS filed email log, through the
+// pms_accolade_email_candidates() function. Runs on its own so a slow search
+// never holds up the rest of the page.
 async function loadCands() {
-  try { cands = (await sb("POST", "/rest/v1/rpc/pms_accolade_email_candidates", { p_days: candDays, p_limit: candLimit })) || []; candsOn = true; }
-  catch (_) { cands = []; candsOn = false; }   // the wall works without suggestions
+  candState = "loading"; candError = ""; renderCands();
+  try {
+    cands = (await sb("POST", "/rest/v1/rpc/pms_accolade_email_candidates", { p_days: candDays, p_limit: candLimit })) || [];
+    candState = "ok";
+  } catch (e) {
+    cands = []; candState = "error";
+    const d = e.detail || {};
+    candError = d.code === "57014" ? "It ran out of time on the database. Applying the email search migration (20261111180000) fixes this."
+      : (d.code === "PGRST202" || e.status === 404) ? "The search function is missing from the database. Apply the pms_accolades migrations."
+      : "Details for whoever looks after the PMS: " + [d.code, d.message || ("HTTP " + (e.status || "error"))].filter(Boolean).join(" \u2014 ");
+  }
+  renderCands();
 }
 async function loadStaff() {
   try {
@@ -1723,7 +1743,8 @@ async function boot() {
       : "The wall could not be loaded. Check your connection and reload the page.";
     return;
   }
-  await Promise.all([loadStaff(), loadProjects(), loadCands(), loadCars(), loadTeams()]);
+  await Promise.all([loadStaff(), loadProjects(), loadCars(), loadTeams()]);
+  loadCands();   // not awaited: it reports into its own panel when it finishes
   if (nameOf[me]) myName = nameOf[me];
   const perms = await settyAuth.refreshPermissions().catch(() => null);
   isAdmin = !!(perms && perms.role === "admin");
