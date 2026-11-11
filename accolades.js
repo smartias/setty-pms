@@ -182,8 +182,9 @@ export const GAME_CHOICES = 4;
 
 // Names that can stand in as wrong answers: everyone ever named on the wall
 // plus the staff list, minus the people the accolade actually names.
-function decoyPool(row, rows, staffNames) {
+function decoyPool(row, rows, staffNames, gone) {
   const taken = new Set((row.recipients || []).map((n) => String(n).trim().toLowerCase()));
+  for (const g of gone || []) taken.add(g);
   const seen = new Map();
   const add = (n) => {
     const name = String(n || "").trim(), k = name.toLowerCase();
@@ -197,11 +198,14 @@ function decoyPool(row, rows, staffNames) {
 // The day's puzzle, or null when the wall is too thin to make one. Prefers
 // accolades from the last 60 days so the game stays about recent work. Today's
 // own entries are left out so a new one cannot change a puzzle mid-day. A salt
-// gives a different (practice) puzzle for the same day.
-export function dailyPuzzle(rows, staffNames, today, salt) {
+// gives a different (practice) puzzle for the same day. `gone` is a set of
+// lower-cased names of people who have left: they are never the answer and
+// never offered as a wrong one.
+export function dailyPuzzle(rows, staffNames, today, salt, gone) {
   const day = typeof today === "string" ? today.slice(0, 10) : dayStr(today);
   const t = parseDay(day);
-  const all = (rows || []).filter((r) => (r.recipients || []).length && String(r.created_at || "").slice(0, 10) < day)
+  const left = gone || new Set();
+  const all = (rows || []).filter((r) => (r.recipients || []).length && String(r.created_at || "").slice(0, 10) < day && !left.has(String(r.recipients[0]).trim().toLowerCase()))
     .sort((a, b) => Number(a.id) - Number(b.id));
   if (!all.length) return null;
   const from = dayStr(new Date(t.getFullYear(), t.getMonth(), t.getDate() - 60));
@@ -209,7 +213,7 @@ export function dailyPuzzle(rows, staffNames, today, salt) {
   const pool = recent.length >= 5 ? recent : all;
   const rand = rng(seedFrom("accolade-game:" + day + (salt ? ":" + salt : "")));
   const row = pool[Math.floor(rand() * pool.length)];
-  const decoys = decoyPool(row, rows, staffNames);
+  const decoys = decoyPool(row, rows, staffNames, left);
   if (decoys.length < GAME_CHOICES - 1) return null;
   const answer = String(row.recipients[0]).trim();
   const choices = shuffled([answer, ...shuffled(decoys, rand).slice(0, GAME_CHOICES - 1)], rand);
@@ -398,4 +402,52 @@ export function champions(rows, cheers, plays, names, today) {
     const s = q.get(k);
     return { key: k, label: k.slice(5) + " " + k.slice(0, 4), podium: seasonPoints(s.rows, s.cheers, s.plays, names).slice(0, 3) };
   }).filter((x) => x.podium.length);
+}
+
+// ── Rides ────────────────────────────────────────────────────────────────────
+// A person's ride is stored as one short string in pms_accolade_cars.ride:
+//   "<body>.<decal>.<topper>"   a car, e.g. "truck.s.l" (pickup, stripes, siren)
+//   "<emoji>"                   a novelty ride, e.g. the duck
+// "car" (what the first version saved) reads as the plain coupe. Anything
+// unrecognised falls back to the stock car, so a bad value never breaks the track.
+export const BODIES = [["car", "Coupe"], ["racer", "Race car"], ["truck", "Pickup"], ["van", "Van"], ["bug", "Bug"], ["limo", "Limo"]];
+export const DECALS = [["0", "None"], ["s", "Racing stripes"], ["f", "Flames"], ["d", "Polka dots"], ["c", "Checkers"]];
+export const TOPPERS = [["0", "None"], ["l", "Siren"], ["t", "Taxi sign"], ["w", "Spoiler"], ["a", "Antenna flag"]];
+export const NOVELTY = [
+  ["\u{1F986}", "Duck", "QUACK!"], ["\u{1F6D2}", "Shopping cart", "CLATTER!"], ["\u{1F6FC}", "Roller skate", "WHEEE!"],
+  ["\u{1F996}", "Dinosaur", "RAWR!"], ["\u{1F680}", "Rocket", "PEW!"], ["\u{1F6CB}️", "Sofa", "COMFY!"],
+  ["\u{1F6F8}", "Flying saucer", "ZAP!"], ["\u{1F69C}", "Tractor", "CHUG!"], ["\u{1F422}", "Turtle", "SLOW DOWN!"],
+  ["\u{1F984}", "Unicorn", "NEIGH!"], ["\u{1F6C1}", "Bathtub", "SPLASH!"], ["\u{1F6F6}", "Canoe", "PADDLE!"],
+];
+const BODY_SHOUT = { car: "BEEP!", racer: "VROOM!", truck: "HONK!", van: "TOOT!", bug: "MEEP!", limo: "AHEM!" };
+export const STOCK_RIDE = "car.0.0";
+
+export function parseRide(str) {
+  const v = String(str || "").trim();
+  const nov = NOVELTY.find((n) => n[0] === v);
+  if (nov) return { novelty: nov[0], label: nov[1], shout: nov[2] };
+  const [b, d, t] = v.split(".");
+  const body = (BODIES.find((x) => x[0] === b) || BODIES[0])[0];
+  const decal = (DECALS.find((x) => x[0] === d) || DECALS[0])[0];
+  const topper = (TOPPERS.find((x) => x[0] === t) || TOPPERS[0])[0];
+  return { body, decal, topper, label: BODIES.find((x) => x[0] === body)[1], shout: BODY_SHOUT[body] };
+}
+export function encodeRide(spec) {
+  if (spec && spec.novelty) return parseRide(spec.novelty).novelty || STOCK_RIDE;
+  const p = parseRide([spec && spec.body, spec && spec.decal, spec && spec.topper].join("."));
+  return [p.body, p.decal, p.topper].join(".");
+}
+
+// ── Email backfill ───────────────────────────────────────────────────────────
+// Who an email's praise was probably for: the staff it was addressed to. A
+// starting guess for the person approving it, never posted without them.
+export function guessPeople(toAddresses, ccAddresses, fromAddress, staff) {
+  const byEmail = new Map((staff || []).filter((p) => p.email).map((p) => [String(p.email).toLowerCase(), p]));
+  const from = String(fromAddress || "").toLowerCase();
+  const pick = (text) => (String(text || "").toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g) || []);
+  const out = [], seen = new Set();
+  const add = (list) => { for (const e of list) { const p = byEmail.get(e); if (p && e !== from && !seen.has(e)) { seen.add(e); out.push({ name: p.name, email: e }); } } };
+  add(pick(toAddresses));
+  if (!out.length) add(pick(ccAddresses));   // only fall back to cc when nobody on the to line is staff
+  return out.slice(0, 8);
 }
