@@ -262,3 +262,14 @@ test("the page asks for the same module version this file declares", () => {
   assert.ok(html.includes('"./accolades.js?v=' + VERSION + '"'), "import ?v= must equal VERSION");
   assert.ok(html.includes('NEEDS_VERSION = "' + VERSION + '"'), "NEEDS_VERSION must equal VERSION");
 });
+
+test("approving an email suggestion earns no spotter credit", () => {
+  const rows = [
+    row({ source: "email", created_by: "admin@setty.com", recipients: ["Bo"], recipient_emails: ["bo@setty.com"] }),
+    row({ source: "manual", created_by: "admin@setty.com", recipients: ["Bo"], recipient_emails: ["bo@setty.com"] }),
+  ];
+  assert.deepEqual(topSpotters(rows).map((s) => [s.key, s.n]), [["admin@setty.com", 1]]);
+  const pts = Object.fromEntries(seasonPoints(rows, [], [], {}).map((e) => [e.key, e.points]));
+  assert.equal(pts["admin@setty.com"], POINTS.spotted);          // one, not two
+  assert.equal(pts["bo@setty.com"], 2 * POINTS.recognized);      // the person praised still scores both
+});
