@@ -260,6 +260,8 @@ body.review #pitStop, body.tv #pitStop { display: none !important; }
 body.tv #topRow, body.tv #lowerRow, body.tv #pit, body.tv #champs, body.tv #wallSection, body.tv .tagline, body.tv #meBox,
 body.tv #soundBtn, body.tv #raceTitle, body.tv .panel .chips, body.tv .race > div,
 body.tv #seasonName, body.tv #seasonSub { display: none !important; }
+#tvLogo { display: none; }
+body.tv #tvLogo { display: inline; }   /* the firm's logo sits in the infield on the lobby screen only */
 body.tv .wrap { max-width: none; min-height: calc(100vh - 96px); justify-content: center; gap: 0; }
 body.tv header { justify-content: center; }
 body.tv h1 { font-size: clamp(2rem, 5vw, 4rem); }
@@ -535,6 +537,7 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
           <path class="asphalt" id="track" d="M300 50 C328 50 374 46 400 50 C426 54 438 74 455 74 C472 74 490 48 505 50 C520 52 543 71 548 85 C553 99 546 124 535 135 C524 146 492 142 482 152 C472 162 482 182 472 197 C462 212 444 231 425 240 C406 249 379 254 360 250 C341 246 328 218 310 216 C292 214 271 241 255 238 C239 235 228 204 215 200 C202 196 186 207 175 215 C164 223 163 244 150 250 C137 256 112 256 95 248 C78 240 54 221 50 205 C46 189 73 169 72 152 C71 135 44 121 45 105 C46 89 61 67 80 58 C99 49 135 51 160 50 C185 49 207 50 230 50 C253 50 272 50 300 50 Z"/>
           <path class="lane" d="M300 50 C328 50 374 46 400 50 C426 54 438 74 455 74 C472 74 490 48 505 50 C520 52 543 71 548 85 C553 99 546 124 535 135 C524 146 492 142 482 152 C472 162 482 182 472 197 C462 212 444 231 425 240 C406 249 379 254 360 250 C341 246 328 218 310 216 C292 214 271 241 255 238 C239 235 228 204 215 200 C202 196 186 207 175 215 C164 223 163 244 150 250 C137 256 112 256 95 248 C78 240 54 221 50 205 C46 189 73 169 72 152 C71 135 44 121 45 105 C46 89 61 67 80 58 C99 49 135 51 160 50 C185 49 207 50 230 50 C253 50 272 50 300 50 Z"/>
           <line class="finish" x1="300" y1="28" x2="300" y2="72"/>
+          <image id="tvLogo" href="setty-logo.png" x="255" y="92" width="90" height="15.3" preserveAspectRatio="xMidYMid meet" aria-label="Setty"/>
           <text class="infield" id="seasonName" x="300" y="108">Season</text>
           <text class="infield big" id="seasonLead" x="300" y="132"></text>
           <text class="infield" id="seasonSub" x="300" y="150"></text>
