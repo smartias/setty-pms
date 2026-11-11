@@ -10,7 +10,7 @@
 
 // Bump this, and the ?v= on the import in Accolades.html, on every change to
 // this file. The page compares the two to spot a stale cached copy.
-export const VERSION = "2026-11-11-7";
+export const VERSION = "2026-11-11-8";
 
 export function parseDay(str) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(str || ""));
@@ -476,14 +476,4 @@ export function packGrid(standings, meKey, top, around, lapPoints) {
   // near the front the two groups overlap, so top up to a full grid from the next places down
   for (let k = 0; keep.size < Math.min(all.length, t + 2 * a + 1); k++) keep.add(k);
   return [...keep].sort((x, y) => x - y).map((k) => all[k]);
-}
-
-// One car per team for the shared lobby screen, placed by the team's average
-// points so a small office can lead. Takes teamStandings() output.
-export function teamGrid(teams, lapPoints) {
-  const lap = lapPoints || LAP_POINTS;
-  return (teams || []).map((t, i) => ({
-    key: "team:" + t.key, name: t.name, points: t.perHead, rank: i + 1,
-    lap: Math.floor(t.perHead / lap), frac: (t.perHead % lap) / lap, me: false, team: true,
-  }));
 }

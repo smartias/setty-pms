@@ -155,7 +155,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .rules { font: 400 0.76rem/1.5 var(--mono); color: var(--muted); }
 .board.all { max-height: 460px; overflow-y: auto; padding-right: 6px; }
 .board li.gap { display: block; text-align: center; color: var(--muted); padding: 2px 0; letter-spacing: 0.3em; }
-.car .team-tag { font: 400 9px var(--display); fill: var(--track-line); stroke: var(--track); stroke-width: 3; paint-order: stroke; text-anchor: middle; pointer-events: none; }
+
 
 /* Form */
 form { display: flex; flex-direction: column; gap: 12px; }
@@ -236,7 +236,6 @@ blockquote::before { content: "\201C"; font: 400 2rem/0.6 var(--display); color:
 body.tv #topRow, body.tv #lowerRow, body.tv #pit, body.tv #champs, body.tv #wallSection, body.tv .tagline, body.tv #meBox,
 body.tv #soundBtn, body.tv #raceTitle, body.tv .panel .chips, body.tv .race > div,
 body.tv #seasonName, body.tv #seasonSub { display: none !important; }
-body.tv .car .team-tag { font-size: 8px; }
 body.tv .wrap { max-width: none; min-height: calc(100vh - 96px); justify-content: center; gap: 0; }
 body.tv header { justify-content: center; }
 body.tv h1 { font-size: clamp(2rem, 5vw, 4rem); }
@@ -645,8 +644,8 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
 // VERSION in that file). Browsers cache the module separately from this page;
 // a stale copy once left the page calling functions the old module lacked,
 // which blanked everything drawn after the first failure.
-import * as A from "./accolades.js?v=2026-11-11-7";
-const NEEDS_VERSION = "2026-11-11-7";
+import * as A from "./accolades.js?v=2026-11-11-8";
+const NEEDS_VERSION = "2026-11-11-8";
 
 const $ = (id) => document.getElementById(id);
 const SVG = "http://www.w3.org/2000/svg";
@@ -1037,31 +1036,26 @@ function drawRide(g, rideStr, fill, number) {
   return spec;
 }
 const colorVar = (key, i) => { const c = prefFor(key).color; return "var(" + CAR_COLORS[(Number.isInteger(c) ? c : i) % CAR_COLORS.length] + ")"; };
-const carSig = (c, i) => (c.ride || rideOf(c.key)) + "|" + colorVar(c.key, i) + "|" + (prefFor(c.key).number || "") + "|" + (c.tag || "");
+const carSig = (c, i) => rideOf(c.key) + "|" + colorVar(c.key, i) + "|" + (prefFor(c.key).number || "");
 
 // What goes on the track. On your own screen: the podium plus the cars around
-// you, so there is always someone close to chase. On the lobby screen: one bus
-// per team, so everyone in a big firm is represented. No teams on record means
-// the lobby falls back to the front of the individual field.
+// you, so there is always someone close to chase. On the lobby screen: the top
+// eight cars in the firm.
 function raceField(st) {
-  if (tv) {
-    const teams = A.teamGrid(A.teamStandings(st, teamOf));
-    if (teams.length) return { grid: teams.slice(0, 10).map((c) => ({ ...c, ride: "van.s.0", tag: c.name })), teams: true };
-    return { grid: A.raceGrid(st, "", 8), teams: false };
-  }
-  return { grid: A.packGrid(st, me, 3, 2), teams: false };
+  if (tv) return { grid: A.raceGrid(st, "", 8) };
+  return { grid: A.packGrid(st, me, 3, 2) };
 }
 function renderRace() {
   const se = season(), st = standings();
   const field = raceField(st), lead = field.grid[0];
   $("seasonName").textContent = "Season " + se.label;
-  $("seasonLead").textContent = !lead ? "Grid is empty" : (field.teams ? lead.name : lead.name.split(/\s+/)[0]) + " leads";
+  $("seasonLead").textContent = !lead ? "Grid is empty" : lead.name.split(/\s+/)[0] + " leads";
   $("seasonSub").textContent = lead ? lead.points + " pts \u00B7 " + A.LAP_POINTS + " pts a lap" : "First points take the lead";
   syncRace(field.grid);
   renderBoard(field.grid, st);
 }
 function buildCar(c, i) {
-  const ride = c.ride || rideOf(c.key);
+  const ride = rideOf(c.key);
   const car = s("g", { class: "car" + (c.me ? " mine" : ""), tabindex: "0", role: "button" });
   const title = s("title"); car.appendChild(title);
   const rot = s("g"), bob = s("g", { class: "bob" });
@@ -1071,7 +1065,6 @@ function buildCar(c, i) {
   const num = prefFor(c.key).number;
   if (!spec.novelty && num) { const t = s("text", { class: "num", x: 0, y: 0.5 }); t.textContent = num; car.appendChild(t); }
   const crown = s("text", { class: "crown", x: 0, y: -13 }); crown.textContent = "\u{1F451}"; car.appendChild(crown);
-  if (c.tag) { const t = s("text", { class: "team-tag", x: 0, y: 22 }); t.textContent = c.tag; car.appendChild(t); }
   const beep = s("text", { class: "beep", x: 0, y: -24 }); car.appendChild(beep);
   const o = { key: c.key, car, rot, bob, crown, beep, title, ride, novelty: !!spec.novelty, shout: spec.shout, mine: c.me, sig: carSig(c, i), pos: 0, target: 0, goal: 0, lane: 0, x: 0, y: 0, ang: 0 };
   const honk = () => honkCar(o);
@@ -1178,7 +1171,7 @@ function renderBoard(grid, st) {
       .filter((it) => !q || it.name.toLowerCase().includes(q));
     empty.textContent = "Nobody by that name has points this season.";
   } else if (board === "race") {
-    items = grid.map((c, i) => ({ rank: c.rank, color: colorVar(c.key, i), name: (A.parseRide(c.ride || rideOf(c.key)).novelty ? rideOf(c.key) + " " : "") + c.name, sub: "Lap " + (c.lap + 1), right: c.points + " pts", mine: c.me }));
+    items = grid.map((c, i) => ({ rank: c.rank, color: colorVar(c.key, i), name: (A.parseRide(rideOf(c.key)).novelty ? rideOf(c.key) + " " : "") + c.name, sub: "Lap " + (c.lap + 1), right: c.points + " pts", mine: c.me }));
     empty.textContent = "No points yet this season. Log an accolade, cheer one or play today's round to put a car on the track.";
   } else if (board === "teams") {
     $("periodChips").hidden = true;
