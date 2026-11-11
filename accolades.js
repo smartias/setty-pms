@@ -10,7 +10,7 @@
 
 // Bump this, and the ?v= on the import in Accolades.html, on every change to
 // this file. The page compares the two to spot a stale cached copy.
-export const VERSION = "2026-11-11-8";
+export const VERSION = "2026-11-11-9";
 
 export function parseDay(str) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(str || ""));
@@ -82,12 +82,14 @@ export function topRecipients(rows, limit) {
 }
 
 // People who logged accolades for someone else. Logging one that names only
-// yourself earns no spotter credit.
+// yourself earns no spotter credit, and neither does approving one from the
+// filed-email review: that is an admin duty, and would otherwise put whoever
+// works the review queue at the front of the race.
 export function topSpotters(rows, limit) {
   const m = new Map();
   for (const r of rows || []) {
     const by = String(r.created_by || "").toLowerCase();
-    if (!by) continue;
+    if (!by || r.source === "email") continue;
     const emails = (r.recipient_emails || []).map((e) => String(e || "").toLowerCase());
     const onlySelf = (r.recipients || []).length > 0 && emails.length === (r.recipients || []).length && emails.every((e) => e === by);
     if (onlySelf) continue;

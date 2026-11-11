@@ -384,6 +384,7 @@ const TABS = [
   { key: "regions", label: "🌎 Regions" },
   { key: "discovery", label: "📥 Drive discovery" },
   { key: "library", label: "📚 Proposal Library" },
+  { key: "accolades", label: "🏆 Accolades" },
   { key: "guide", label: "📖 System Guide" },
   { key: "mcp",   label: "🤖 Claude / MCP" },
 ];
@@ -594,7 +595,7 @@ function render() {
   $("tabs").innerHTML = TABS.map(t =>
     `<button type="button" class="tab ${state.tab === t.key ? "active" : ""}" onclick="setTab('${t.key}')">${t.label}</button>`).join("");
   ({ signins: renderSignins, roles: renderRoles, backups: renderBackups, filing: renderFiling, integration: renderIntegration,
-     regions: renderRegions, discovery: renderDiscovery, library: renderLibrary, guide: renderGuide, mcp: renderMcp })[state.tab]();
+     regions: renderRegions, discovery: renderDiscovery, library: renderLibrary, accolades: renderAccolades, guide: renderGuide, mcp: renderMcp })[state.tab]();
   // Restore focus/caret if the focused element was rebuilt (cached renderers
   // set #view synchronously, so the replacement element exists by now).
   if (_focusId) {
@@ -2498,6 +2499,23 @@ async function renderLibrary() {
             <span style="color:var(--muted);font-size:12px">Delete every row and save to clear the schedule.</span>
           </div>
         </div>` : ""}
+    </div>`;
+}
+
+// ── Accolades (review praise spotted in filed email) ────────────────────────
+// The review screen is Accolades.html in its admin-only review mode, embedded
+// here the way the PMS embeds SettyIntelligence.html. render() runs on every
+// state change, so leave an existing frame alone rather than reloading it.
+function renderAccolades() {
+  if ($("accFrame")) return;
+  $("view").innerHTML = `
+    <div class="card">
+      <div class="sechead">Accolades — praise spotted in filed email</div>
+      <p style="color:var(--dim);margin:0 0 10px">Filed emails that read like praise wait here. Nothing reaches the
+         Accolade-O-Meter until you approve it: check the quote and who earned it, then put it on the wall, or mark it
+         as not an accolade. <a href="Accolades.html" target="_blank" rel="noreferrer">Open the Accolade-O-Meter ↗</a></p>
+      <iframe id="accFrame" title="Review praise spotted in filed email" src="Accolades.html?review=1"
+              style="width:100%;height:78vh;border:1px solid var(--line, #334155);border-radius:10px;background:#fff"></iframe>
     </div>`;
 }
 

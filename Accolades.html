@@ -232,6 +232,10 @@ blockquote::before { content: "\201C"; font: 400 2rem/0.6 var(--display); color:
 #duck .banner { background: var(--ink); color: var(--bg); font: 400 0.8rem var(--display); padding: 6px 10px; border-radius: 6px; white-space: nowrap; max-width: 70vw; overflow: hidden; text-overflow: ellipsis; }
 #trophy { position: fixed; left: 50%; top: 0; font-size: 5rem; z-index: 21; pointer-events: none; transform: translate(-50%, -120%); }
 .fly { position: fixed; z-index: 22; pointer-events: none; font-size: 1.5rem; }
+/* Admin review screen (?review=1): the email suggestions and the approval form, nothing else. */
+body.review header, body.review #topRow, body.review section[aria-labelledby="raceTitle"], body.review #wallSection, body.review #spotPanel,
+body.review #duck, body.review #logPanel .chips, body.review #thanksForm { display: none !important; }
+body.review { padding-top: 12px; }
 /* Lobby screen: the track and nothing else. No lists, labels or buttons to read. */
 body.tv #topRow, body.tv #lowerRow, body.tv #pit, body.tv #champs, body.tv #wallSection, body.tv .tagline, body.tv #meBox,
 body.tv #soundBtn, body.tv #raceTitle, body.tv .panel .chips, body.tv .race > div,
@@ -614,7 +618,7 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
             <button class="chip" type="button" data-days="365" aria-pressed="true">Last year</button>
             <button class="chip" type="button" data-days="1825" aria-pressed="false">Last 5 years</button>
           </div>
-          <p class="meta">These filed emails read like praise. Nothing is posted until someone puts it on the wall. Logging one for a teammate earns you spotter points.</p>
+          <p class="meta">These filed emails read like praise. Nothing is posted until you put it on the wall. The person praised gets the points; approving one earns none.</p>
           <div id="candList" style="display:flex;flex-direction:column;gap:12px"></div>
           <p class="note" id="candEmpty" hidden>Nothing that reads like praise in this period. Try looking further back.</p>
           <div><button class="ghost" type="button" id="candMore" hidden>Show more</button></div>
@@ -644,8 +648,12 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
 // VERSION in that file). Browsers cache the module separately from this page;
 // a stale copy once left the page calling functions the old module lacked,
 // which blanked everything drawn after the first failure.
-import * as A from "./accolades.js?v=2026-11-11-8";
-const NEEDS_VERSION = "2026-11-11-8";
+import * as A from "./accolades.js?v=2026-11-11-9";
+const NEEDS_VERSION = "2026-11-11-9";
+// ?review=1 is the admin review screen the Admin Console embeds: only the
+// filed-email suggestions and the form that approves one onto the wall.
+const REVIEW = new URLSearchParams(location.search).get("review") === "1";
+if (REVIEW) document.body.classList.add("review");
 
 const $ = (id) => document.getElementById(id);
 const SVG = "http://www.w3.org/2000/svg";
@@ -1257,9 +1265,11 @@ function renderWall() {
   }
 }
 function renderCands() {
-  // The panel always shows, and says plainly whether it is still searching,
-  // found nothing, or failed. A silent failure here once looked like "no praise".
-  $("candPanel").hidden = false;
+  // Suggestions are reviewed by admins in the Admin Console (?review=1), not on
+  // the wall page. There the panel always shows, and says plainly whether it is
+  // still searching, found nothing, or failed.
+  $("candPanel").hidden = !(REVIEW && isAdmin);
+  if (!REVIEW) return;
   $("candCount").textContent = candState === "ok" ? cands.length + " to review" : "";
   const note = $("candEmpty");
   note.classList.toggle("err", candState === "error");
@@ -1737,7 +1747,6 @@ async function boot() {
     return;
   }
   await Promise.all([loadStaff(), loadProjects(), loadCars(), loadTeams()]);
-  loadCands();   // not awaited: it reports into its own panel when it finishes
   if (nameOf[me]) myName = nameOf[me];
   const perms = await settyAuth.refreshPermissions().catch(() => null);
   isAdmin = !!(perms && perms.role === "admin");
@@ -1746,9 +1755,15 @@ async function boot() {
   drawDial(settings.monthly_goal);
   renderAll();
   raceNews();
+  if (REVIEW) {
+    setMode("client");
+    $("logTitle").textContent = "Approve onto the wall";
+    $("clientHint").textContent = "Pick a suggestion on the right. Check the quote and who earned it, then ring it in.";
+    if (isAdmin) loadCands();   // not awaited: it reports into its own panel when it finishes
+    else { $("lowerRow").hidden = true; const f = $("fatal"); f.hidden = false; f.textContent = "Reviewing praise from filed email is for PMS admins."; }
+  }
   if (new URLSearchParams(location.search).get("tv") === "1") setTv(true);
-  setTimeout(duckNews, 7000);
-  setInterval(duckNews, 150000);
+  if (!REVIEW) { setTimeout(duckNews, 7000); setInterval(duckNews, 150000); }
   setInterval(refresh, 90000);
   document.addEventListener("visibilitychange", refresh);
 }
