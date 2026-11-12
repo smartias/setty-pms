@@ -56,6 +56,9 @@ browser (PMS pages) or from the connector (app permissions).
   the client is still running the old cached build (rule 1 above).
 - Supabase edge logs show the browser's PostgREST calls; the connector logs
   are under `function_edge_logs`.
+- "The Outlook pane is slow / hung": read `pms_addin_telemetry` (one row per
+  pane save: `total_ms`, `steps`, per-request `calls`). The migration that
+  creates it carries the two queries worth running first.
 
 ## Git / PR conventions
 
