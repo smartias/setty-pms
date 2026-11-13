@@ -37,7 +37,17 @@ eq(filenameSheetNo("P701.01.pdf")?.sheetNo, "P701.01", "a later filing suffix is
 eq(filenameSheetNo("M-507.pdf")?.sheetNo, "M507", "a hyphenated name without a suffix");
 eq(filenameSheetNo("FP301A.pdf")?.sheetNo, "FP301A", "a letter-suffixed number");
 eq(filenameSheetNo("E101.00.pdf")?.discipline, "E", "discipline is the prefix");
-eq(filenameSheetNo("E211 - GROUND FLOOR PLAN.pdf"), null, "a name with more than the number is not trusted");
+eq(filenameSheetNo("E211 - GROUND FLOOR PLAN.pdf")?.sheetNo, "E211", "a number followed by a spaced hyphen and a title");
+eq(filenameSheetNo("E211 - GROUND FLOOR PLAN.pdf")?.title, "GROUND FLOOR PLAN", "the title the name states is kept");
+eq(filenameSheetNo("P-501.01 - Plumbing Riser Diagram and Schedule.pdf"),
+  { sheetNo: "P501.01", discipline: "P", prefix: "P", number: "501", suffix: ".01", title: "PLUMBING RISER DIAGRAM AND SCHEDULE" },
+  "Q126's 2026-07-06 naming: hyphenated number, filing suffix, title");
+eq(filenameSheetNo("M507_MECHANICAL DETAILS.pdf")?.sheetNo, "M507", "an underscore separator");
+eq(filenameSheetNo("E101.00.pdf")?.title, null, "a bare number states no title");
+eq(filenameSheetNo("E101-2.pdf"), null, "an unspaced hyphen is not a title separator");
+eq(filenameSheetNo("E101 rev.pdf"), null, "nor is a bare space");
+eq(filenameSheetNo("E101 - 2.pdf"), null, "a separator with no words after it is not a title");
+eq(filenameSheetNo("E101 - .pdf"), null, "nor with nothing after it");
 eq(filenameSheetNo("2026-05-12_IS126 - D021837.D021933 Arch Update.pdf"), null, "a combined book");
 eq(filenameSheetNo("S01010.pdf"), null, "a spec section file (S + five digits) is not a sheet");
 eq(filenameSheetNo("AI1 Form_Setty.pdf"), null, "a form");
@@ -72,13 +82,28 @@ eq(sheetFromFilename("P701.01.pdf", P701.replaceAll("P701.00", "P702.00"), 1), n
 eq(sheetFromFilename("P701.pdf", P701, 1)?.sheetNo, "P701", "an unsuffixed name is confirmed by the suffixed sheet, as before");
 eq(sheetFromFilename("P701.01.pdf", P701.replaceAll("P701.00", "P701"), 1), null, "a suffixed name needs a suffixed number on the sheet");
 
+// ── 2c. Titled file names (the CURRENT Q126 plumbing sheets) ───────────────
+// "P-501.01 - Plumbing Riser Diagram and Schedule.pdf" prints P501.00 on its
+// detail bubbles, like the April 2025 file it supersedes.
+eq(sheetFromFilename("P-501.01 - Plumbing Riser Diagram and Schedule.pdf", P501, 1),
+  { sheetNo: "P501.01", discipline: "P", sheetTitle: "PLUMBING RISER DIAGRAM AND SCHEDULE" },
+  "the page's own title wins when it states one");
+eq(sheetFromFilename("P-701.01 - Plumbing Details.pdf", P701, 1),
+  { sheetNo: "P701.01", discipline: "P", sheetTitle: "PLUMBING DETAILS" },
+  "and the file name's title is used when the page states none");
+eq(sheetFromFilename("E101.00 - Power Plan.pdf", E101, 1)?.sheetTitle, "ELECTRICAL CLASSROOM PLANS",
+  "a file-name title never overrides the sheet's");
+eq(sheetFromFilename("P-501.01 - Plumbing Riser Diagram and Schedule.pdf", P701, 1), null,
+  "a titled name on a page that prints a different sheet is nothing");
+
 // ── 3. Both halves are required ─────────────────────────────────────────────
 eq(sheetFromFilename("E101.00.pdf", ED101, 1), null, "the name says E101.00 but the page is ED101.00: nothing, not a wrong number");
 eq(sheetFromFilename("E101.00.pdf", E101.replaceAll("E101.00", "FE101.00"), 1), null, "the number inside a longer token is not a match");
 eq(sheetFromFilename("E101.00.pdf", E101.replaceAll("E101.00", "E101.001"), 1), null, "nor with more digits after it");
 eq(sheetFromFilename("E101.00.pdf", E101, 2), null, "a multi-page file is never named for one sheet");
 eq(sheetFromFilename("E101.00.pdf", E101, 0), null, "an unknown page count is not one page");
-eq(sheetFromFilename("E101 - POWER.pdf", E101, 1), null, "a descriptive file name is not trusted");
+eq(sheetFromFilename("E101.00 - POWER.pdf", ED101, 1), null, "a titled name the page does not confirm is still nothing");
+eq(sheetFromFilename("E101.00 - POWER.pdf", E101, 2), null, "and a titled name on a multi-page file is still nothing");
 eq(sheetFromFilename("E101.00.pdf", "", 1), null, "no text layer, no confirmation");
 eq(sheetFromFilename("E101.00.pdf", "E101.00", 1), null, "a near-empty page is not a drawing");
 eq(sheetFromFilename("ED101.00.pdf", ED101.replace("ED101.00 ELECTRICAL", "XX ELECTRICAL"), 1)?.sheetNo, "ED101.00",
