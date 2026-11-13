@@ -6,14 +6,21 @@
 //   project.phases[].manualFee  a phase fee typed over its percentage share
 //   project.milestones[].fee    the Schedule tab's Fee column, filled ONLY when a
 //                               person clicks "Finalize & Lock Fee Schedule"
-// This module writes the first two and nothing else. It never locks, never
+// It also keeps the three inputs the calculator derives a fee from:
+//   project.squareFootage, project.buildingCategory (sets the cost per SF) and
+//   project.manualConstructionCost (typed over square footage x cost per SF)
+// This module writes the first two layers and those three inputs, nothing else. It never locks, never
 // touches milestones, and refuses a locked schedule: locked fees feed invoices,
 // so changing them is a person's decision made in the app (Unlock & Edit).
 //
 // Pure TypeScript with no Deno imports so feeCalculator.test.mjs can drive it.
 
 export type FeePhaseInput = { phase: string; fee: number };
-export type FeeWriteInput = { settyFee?: number; phaseFees?: FeePhaseInput[]; note?: string };
+export type FeeWriteInput = {
+  settyFee?: number; phaseFees?: FeePhaseInput[]; note?: string;
+  squareFootage?: number; constructionCost?: number; buildingCategory?: string;
+};
+export type FeeInputChange = { field: "squareFootage" | "constructionCost" | "buildingCategory"; from: number | string | null; to: number | string };
 export type FeeWriteStamp = { user: string; date: string; id: string };
 
 export type FeePhaseView = {
@@ -28,10 +35,12 @@ export type FeeWriteSummary = {
   phasesChanged: Array<{ code: string | null; name: string | null; from: number | null; to: number }>;
   totalPhaseFee: number | null;
   variance: number | null;
+  inputs: { squareFootage: number | null; constructionCost: number | null; buildingCategory: string | null };
+  inputsChanged: FeeInputChange[];
   warning?: string;
 };
 export type FeeWritePlan =
-  | { ok: false; error: string; nextStep?: string; phases?: Array<{ code: string | null; name: string | null; billable: boolean }> }
+  | { ok: false; error: string; nextStep?: string; phases?: Array<{ code: string | null; name: string | null; billable: boolean }>; buildingCategories?: string[] }
   | { ok: true; project: any; changed: boolean; summary: FeeWriteSummary };
 
 // The app flags a phase total that is off from the Setty fee by 50 cents or
@@ -43,11 +52,23 @@ export const FEE_MAX = 1_000_000_000;
 // mistaken for a lock.
 export const FEE_AUDIT_ACTION = "connector-set";
 
+// Mirrors the keys of RS_MEANS_COST_PER_SF in SettyPMS.html (the Building
+// Category dropdown). The app looks the cost per SF up by this exact string, so
+// anything else would silently fall back to a default rate.
+export const BUILDING_CATEGORIES = [
+  "Office", "Healthcare/Clinic", "Laboratory", "K-12 School", "University",
+  "Warehouse/Industrial", "Retail", "Multifamily", "Hotel", "Museum/Cultural",
+  "Data Center", "Recreation/Gym", "Parking Structure", "Religious", "Government",
+];
+export const SQUARE_FOOTAGE_MAX = 50_000_000;
+
+const INPUT_LABEL = { squareFootage: "Square footage", constructionCost: "Construction cost", buildingCategory: "Building category" };
+
 export const roundCents = (n: number): number => Math.round(n * 100) / 100;
 
 function moneyError(label: string, v: unknown): string | null {
   if (typeof v !== "number" || !Number.isFinite(v)) return `${label} must be a number.`;
-  if (v <= 0) return `${label} must be greater than 0. This tool sets a fee; clearing one back to the calculated value is done in the Fee Calculator (the reset arrow beside the field).`;
+  if (v <= 0) return `${label} must be greater than 0. Clearing a typed value back to the calculated one is done in the Fee Calculator (the reset arrow beside the field).`;
   if (v > FEE_MAX) return `${label} is larger than this tool accepts.`;
   return null;
 }
@@ -92,8 +113,32 @@ export function planFeeWrite(proj: any, input: FeeWriteInput, stamp: FeeWriteSta
       nextStep: "A person unlocks it in the PMS: Fee Calculator, 'Unlock & Edit'. Then run this again. Fees added after signing usually belong on the Change Orders tab instead.",
     };
   }
-  if (!wantTotal && !wantPhases) {
-    return { ok: false, error: "Nothing to write: pass settyFee, phaseFees, or both." };
+  const wantSf = input.squareFootage !== undefined && input.squareFootage !== null;
+  const wantCost = input.constructionCost !== undefined && input.constructionCost !== null;
+  const wantCat = input.buildingCategory !== undefined && input.buildingCategory !== null;
+  if (!wantTotal && !wantPhases && !wantSf && !wantCost && !wantCat) {
+    return { ok: false, error: "Nothing to write: pass at least one of settyFee, phaseFees, squareFootage, constructionCost, buildingCategory." };
+  }
+  if (wantSf) {
+    const bad = moneyError("squareFootage", input.squareFootage);
+    if (bad) return { ok: false, error: bad };
+    if (input.squareFootage! > SQUARE_FOOTAGE_MAX) return { ok: false, error: "squareFootage is larger than this tool accepts." };
+  }
+  if (wantCost) {
+    const bad = moneyError("constructionCost", input.constructionCost);
+    if (bad) return { ok: false, error: bad };
+  }
+  let nextCat: string | null = null;
+  if (wantCat) {
+    nextCat = BUILDING_CATEGORIES.find((c) => norm(c) === norm(input.buildingCategory)) ?? null;
+    if (!nextCat) {
+      return {
+        ok: false,
+        error: `Nothing was written: "${input.buildingCategory}" is not a building category in the Fee Calculator.`,
+        nextStep: "Pick the closest one from buildingCategories (a college or university building is 'University'). If none clearly fits, ask the user.",
+        buildingCategories: BUILDING_CATEGORIES,
+      };
+    }
   }
   if (wantTotal) {
     const bad = moneyError("settyFee", input.settyFee);
@@ -133,7 +178,20 @@ export function planFeeWrite(proj: any, input: FeeWriteInput, stamp: FeeWriteSta
     return { ...p, manualFee: to };
   });
   const totalChanged = wantTotal && nextTotal !== prevTotal;
-  const changed = totalChanged || phasesChanged.length > 0;
+
+  // The calculator inputs. A whole number of square feet; dollars to the cent.
+  const prevSf = +proj?.squareFootage > 0 ? +proj.squareFootage : null;
+  const prevCost = +proj?.manualConstructionCost > 0 ? +proj.manualConstructionCost : null;
+  const prevCat = typeof proj?.buildingCategory === "string" && proj.buildingCategory ? proj.buildingCategory : null;
+  const nextSf = wantSf ? Math.round(input.squareFootage!) : prevSf;
+  const nextCost = wantCost ? roundCents(input.constructionCost!) : prevCost;
+  const finalCat = wantCat ? nextCat : prevCat;
+  const inputsChanged: FeeInputChange[] = [];
+  if (wantSf && nextSf !== prevSf) inputsChanged.push({ field: "squareFootage", from: prevSf, to: nextSf! });
+  if (wantCost && nextCost !== prevCost) inputsChanged.push({ field: "constructionCost", from: prevCost, to: nextCost! });
+  if (wantCat && finalCat !== prevCat) inputsChanged.push({ field: "buildingCategory", from: prevCat, to: finalCat! });
+
+  const changed = totalChanged || phasesChanged.length > 0 || inputsChanged.length > 0;
 
   // What the Fee Calculator will show. With no typed total the Setty fee is
   // computed in the app from construction cost and discipline percentages,
@@ -161,6 +219,8 @@ export function planFeeWrite(proj: any, input: FeeWriteInput, stamp: FeeWriteSta
     phasesChanged,
     totalPhaseFee,
     variance,
+    inputs: { squareFootage: nextSf, constructionCost: nextCost, buildingCategory: finalCat },
+    inputsChanged,
   };
   if (variance !== null && Math.abs(variance) >= FEE_VARIANCE_TOLERANCE) {
     summary.warning =
@@ -172,6 +232,12 @@ export function planFeeWrite(proj: any, input: FeeWriteInput, stamp: FeeWriteSta
       "The phase fees were written, but they may not add up to that calculated total. Pass settyFee too if the user gave one.";
   }
 
+  if (inputsChanged.length && nextTotal === null) {
+    summary.warning = (summary.warning ? summary.warning + " " : "") +
+      "No Setty fee total is typed on this project, so the fee the app calculates has changed with these inputs. " +
+      "The connector cannot reproduce that calculation: the user sees the new fee in the Fee Calculator.";
+  }
+
   if (!changed) return { ok: true, project: proj, changed: false, summary };
 
   const entry = {
@@ -180,18 +246,24 @@ export function planFeeWrite(proj: any, input: FeeWriteInput, stamp: FeeWriteSta
     user: stamp.user,
     date: stamp.date,
     via: "pms-mcp",
-    note: String(input.note ?? "").trim(),
+    // The audit table shows fee columns and this note, so input changes are
+    // spelled out here or nobody reading the log would see them.
+    note: [String(input.note ?? "").trim(), ...inputsChanged.map((c) => `${INPUT_LABEL[c.field]} ${c.from ?? "(blank)"} → ${c.to}`)].filter(Boolean).join(" · "),
     ...(nextTotal !== null ? { settyFee: nextTotal } : {}),
     ...(totalPhaseFee !== null ? { totalPhaseFee } : {}),
     changes: {
       ...(totalChanged ? { settyFee: { from: prevTotal, to: nextTotal } } : {}),
       ...(phasesChanged.length ? { phases: phasesChanged } : {}),
+      ...(inputsChanged.length ? { inputs: inputsChanged } : {}),
     },
   };
   const project = {
     ...proj,
     ...(totalChanged ? { manualSettyFee: nextTotal } : {}),
     ...(phasesChanged.length ? { phases: nextPhases } : {}),
+    ...(inputsChanged.some((c) => c.field === "squareFootage") ? { squareFootage: nextSf } : {}),
+    ...(inputsChanged.some((c) => c.field === "constructionCost") ? { manualConstructionCost: nextCost } : {}),
+    ...(inputsChanged.some((c) => c.field === "buildingCategory") ? { buildingCategory: finalCat } : {}),
     feeAuditLog: [...(Array.isArray(proj?.feeAuditLog) ? proj.feeAuditLog : []), entry],
   };
   return { ok: true, project, changed: true, summary };

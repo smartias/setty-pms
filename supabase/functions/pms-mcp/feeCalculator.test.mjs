@@ -187,3 +187,52 @@ test("the app labels the connector's audit entry instead of calling it an unlock
   assert.ok(page.includes('"' + FEE_AUDIT_ACTION + '"'), "the app does not know the connector's audit action");
   assert.ok(!page.includes('e.action === "locked" ? "🔒 Locked" : "🔓 Unlocked"'), "an audit table still labels every non-lock entry as Unlocked");
 });
+
+// ── calculator inputs (1.26.0): square footage, construction cost, category ──
+
+test("inputs alone are written, rounded, and spelled out in the audit note", async () => {
+  const p = project({ squareFootage: 0, buildingCategory: "Office", manualConstructionCost: 0 });
+  const r = planFeeWrite(p, { squareFootage: 45000.4, constructionCost: 18000000, buildingCategory: "university", note: "per client" }, stamp);
+  assert.equal(r.ok, true);
+  assert.equal(r.project.squareFootage, 45000);
+  assert.equal(r.project.manualConstructionCost, 18000000);
+  assert.equal(r.project.buildingCategory, "University");
+  assert.equal(r.project.manualSettyFee, undefined);
+  assert.equal(r.project.phases, p.phases);
+  assert.deepEqual(r.summary.inputsChanged.map((c) => c.field), ["squareFootage", "constructionCost", "buildingCategory"]);
+  const e = r.project.feeAuditLog.at(-1);
+  assert.match(e.note, /^per client · Square footage \(blank\) → 45000 · Construction cost \(blank\) → 18000000 · Building category Office → University$/);
+  assert.match(r.summary.warning, /fee the app calculates has changed/);
+});
+
+test("with a typed total, changing inputs carries no calculated-fee warning", () => {
+  const r = planFeeWrite(project({ manualSettyFee: 100000 }), { squareFootage: 45000 }, stamp);
+  assert.equal(r.summary.warning, undefined);
+  assert.equal(r.project.manualSettyFee, 100000);
+});
+
+test("an unknown category writes nothing and returns the list", async () => {
+  const { BUILDING_CATEGORIES } = await import("./feeCalculator.ts");
+  const r = planFeeWrite(project(), { settyFee: 100000, buildingCategory: "Higher Ed" }, stamp);
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.buildingCategories, BUILDING_CATEGORIES);
+});
+
+test("bad input values are refused; unchanged inputs are a no-op; a locked schedule still refuses", () => {
+  assert.equal(planFeeWrite(project(), { squareFootage: 0 }, stamp).ok, false);
+  assert.equal(planFeeWrite(project(), { squareFootage: 6e7 }, stamp).ok, false);
+  assert.equal(planFeeWrite(project(), { constructionCost: -1 }, stamp).ok, false);
+  const p = project({ squareFootage: 45000, buildingCategory: "University" });
+  const same = planFeeWrite(p, { squareFootage: 45000, buildingCategory: "University" }, stamp);
+  assert.equal(same.changed, false);
+  assert.equal(same.project, p);
+  assert.equal(planFeeWrite(project({ feeScheduleFinalized: true }), { squareFootage: 45000 }, stamp).ok, false);
+});
+
+test("the category list matches the app's cost-per-SF table", async () => {
+  const { BUILDING_CATEGORIES } = await import("./feeCalculator.ts");
+  const page = readFileSync(join(root, "SettyPMS.html"), "utf8");
+  const m = page.match(/const RS_MEANS_COST_PER_SF = \{([\s\S]*?)\};/);
+  assert.ok(m, "RS_MEANS_COST_PER_SF not found");
+  assert.deepEqual(BUILDING_CATEGORIES, [...m[1].matchAll(/"([^"]+)":/g)].map((x) => x[1]));
+});
