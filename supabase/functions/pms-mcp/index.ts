@@ -53,6 +53,9 @@ import {
 // A folder created under a different number than the project carries now is
 // found through the record's projectFolderUrl. Pure; see recordedFolder.test.mjs.
 import { pickRecordedFolderName, matchRecordedFolder } from "./recordedFolder.ts";
+// set_project_fee: what may be written into the Fee Calculator and what is
+// refused. Pure; see feeCalculator.test.mjs.
+import { planFeeWrite, type FeeWritePlan } from "./feeCalculator.ts";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
 // classifier, RPC arguments and row mapping are pure. See caItems.ts.
@@ -1417,9 +1420,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-13-recorded-folder-fallback";
+const BUILD = "2026-11-13-set-project-fee";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.24.1",
+  name: "setty-pms", version: "1.25.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -3353,6 +3356,7 @@ const HOW_TO_USE_TOPICS: Record<string, { title: string; summary: string; prompt
   templates: { title: "Proposals and templates", summary: "Formal documents start from the firm's templates.", prompts: [
     { ask: "Draft an additional services letter on SAPX256014.00 for the added commissioning scope", note: "The add-service template with project details filled in." },
     { ask: "Draft a letter to the owner on letterhead about the schedule change", note: "Letterhead format with placeholders to complete." },
+    { ask: "Set the fee on the Tabler project to $120,000: SD 18k, DD 30k, CD 42k, Bid 6k, CA 24k", note: "Puts the numbers you give in the Fee Calculator. You still finalize and lock it in the PMS. Needs the fees and edit permissions." },
   ]},
   photos: { title: "Field photos", summary: "Photos from the Field Photos app, by project, phase and date.", prompts: [
     { ask: "Show me the rough-in photos from the last site visit on SAPX229002.00", note: "Claude can look at them and describe equipment, nameplates and conditions." },
@@ -10097,8 +10101,9 @@ mcp.tool("save_comment_responses", {
 
 // ─── SUBMITTAL / RFI REVIEW ─────────────────────────────────────────────────
 // Two write tools behind the submittal-rfi-review skill and the CA-item modal's
-// "Send to Claude for review" button (per Sara, 2026-09-09). They are the
-// connector's ONLY writes into the project blob, and both go through the same
+// "Send to Claude for review" button (per Sara, 2026-09-09). With
+// set_project_fee (below) they are the connector's only tool writes into the
+// project blob, and all of them go through the same
 // OPTIMISTIC-CONCURRENCY guard the PMS app uses (saveProjectV2 / the RFI-
 // Submittal sync's writeArray): read {id, project, version}, mutate the array,
 // PATCH filtered on the version we read. A concurrent app save bumps the
@@ -10604,6 +10609,87 @@ mcp.tool("backload_ca_item", {
       note: outcome === "exists"
         ? "Already logged — left untouched (pass update:true to merge new fields). Now run the review with save_ca_review."
         : "Logged. Now review it against the current set and specs, then persist with save_ca_review.",
+    });
+  },
+});
+
+// ─── FEE CALCULATOR WRITE: set_project_fee (1.25.0) ─────────────────────────
+// When a PM tells Claude the fee, Claude can put it in the PMS instead of the
+// PM retyping it (2026-11-13). The write lands in the FEE CALCULATOR
+// (the typed Setty fee total and typed phase fees), which is the step BEFORE
+// money becomes real: the Schedule tab's Fee column and every invoice read the
+// milestones, and those are filled only when a person clicks "Finalize & Lock
+// Fee Schedule". So this tool can stage a fee, never commit one.
+//
+// Fenced four ways: signed-in callers only; the caller needs fees.view AND
+// projects.edit on the project (what it takes to do the same by hand); a
+// locked schedule is refused, not overwritten; and the write goes through
+// updateProjectRecord, so a PM saving the project at the same moment wins and
+// nothing is clobbered. Every change appends an entry to the Fee Schedule
+// Audit Log naming the caller. The rules are in feeCalculator.ts.
+mcp.tool("set_project_fee", {
+  description:
+    "WRITE a fee into a project's PMS Fee Calculator: the Setty fee total, the fee for individual phases, or both. " +
+    "Use when the user gives you a fee and asks you to put it in the PMS ('set the fee on Tabler to $120,000', " +
+    "'enter the phase fees: SD 18k, DD 30k...'). Use ONLY numbers the user stated in this conversation; never a fee " +
+    "you estimated, calculated or read from a document unless the user confirmed it. This STAGES the fee and does not " +
+    "commit it: the Schedule tab's Fee column and invoicing are filled when a person clicks 'Finalize & Lock Fee " +
+    "Schedule' in the PMS, so always tell the user that step is still theirs. A project whose fee schedule is already " +
+    "locked is refused (a person unlocks it in the app first); a fee added after signing usually belongs on the Change " +
+    "Orders tab, which this tool does not write. Needs a signed-in caller with both the fees and edit-project " +
+    "permissions. Phases are matched by code (SD, DD, CD) or full name; if any phase is not found, nothing is written " +
+    "and the project's phases are returned. Returns the resulting phase split and a warning when the phase fees do not " +
+    "add up to the Setty fee: relay that warning. Every change is recorded in the project's Fee Schedule Audit Log " +
+    "under the caller's name. Other open PMS tabs on the project should be refreshed afterward.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
+    settyFee: z.number().positive().optional().describe("Setty's total fee for the project in dollars, e.g. 120000. Types over the fee the calculator derives from construction cost. Omit to leave the total as it is."),
+    phaseFees: z.array(z.object({
+      phase: z.string().describe("The phase code ('SD', 'DD', 'CD', 'BS', 'CA') or its full name as it appears in the Fee Calculator."),
+      fee: z.number().positive().describe("That phase's fee in dollars."),
+    })).optional().describe("Fees for individual phases. Phases you leave out keep their percentage share of the total. Billable phases only."),
+    note: z.string().optional().describe("Where the number came from, in the user's terms ('per signed proposal dated 11/3', 'client-approved revision'). Stored in the Fee Schedule Audit Log."),
+  }),
+  handler: async ({ projectNumber, settyFee, phaseFees, note }) => {
+    const c = currentCaller();
+    if (c.kind !== "user" || !c.email) {
+      return asText({ error: "Writing a fee needs a signed-in Setty user behind it — the shared-secret lane cannot write fees.", nextStep: "Connect the connector with your Microsoft sign-in and try again." });
+    }
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    if (!p) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const pn = p.projectNumber || null;
+    const caps = await resolveCaps();
+    if (!capFor(caps, "fees.view", pn) || !capFor(caps, "projects.edit", pn)) {
+      return asText({
+        error: "Your PMS role cannot change fees on this project. Nothing was written.",
+        nextStep: "Setting a fee needs both the fees permission and the edit-project permission. Tell the user that; a PMS admin can grant access.",
+      });
+    }
+    let plan: FeeWritePlan | null = null;
+    try {
+      await updateProjectRecord(pid, (proj) => {
+        plan = planFeeWrite(proj, { settyFee, phaseFees, note }, {
+          user: c.name || c.email!, date: new Date().toISOString(), id: crypto.randomUUID().slice(0, 8),
+        });
+        // Returning the same reference tells updateProjectRecord to write nothing.
+        return plan.ok && plan.changed ? plan.project : proj;
+      });
+    } catch (e) {
+      return asText({ error: `Could not write the fee: ${String((e as any)?.message ?? e)}` });
+    }
+    const done = plan as FeeWritePlan | null;
+    if (!done) return asText({ error: "Could not write the fee: the project record could not be read." });
+    const project = pn || p.name || projectNumber;
+    if (!done.ok) {
+      return asText({ project, error: done.error, ...(done.nextStep ? { nextStep: done.nextStep } : {}), ...(done.phases ? { phases: done.phases } : {}) });
+    }
+    return asText({
+      project, written: done.changed, setBy: c.email, ...done.summary,
+      note: done.changed
+        ? "Staged in the Fee Calculator and recorded in the Fee Schedule Audit Log. Not locked: the Schedule tab's Fee column and invoicing fill in when a person clicks 'Finalize & Lock Fee Schedule' in the PMS. Anyone with this project open in the PMS should refresh the tab before editing."
+        : "The Fee Calculator already holds these values; nothing was written.",
     });
   },
 });

@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-11-pms-v193-accolades-link";
+    window.__appVersion = "2026-11-13-pms-v194-fee-audit-connector";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -381,6 +381,16 @@ function buildPhaseFees(settyFee, phases) {
   });
 }
 
+// Fee Schedule Audit Log: the label for one entry. "connector-set" is written by
+// the PMS connector's set_project_fee (a fee typed in through Claude, staged in
+// the calculator, never a lock); anything else unknown is shown as itself
+// rather than passed off as an unlock.
+function feeAuditLabel(action) {
+  if (action === "locked") return "🔒 Locked";
+  if (action === "unlocked") return "🔓 Unlocked";
+  if (action === "connector-set") return "✎ Fee set via Claude";
+  return String(action || "Edited");
+}
 function buildSchedule(startDate, phases) {
   let cursor = startDate ? new Date(startDate + "T00:00:00") : new Date();
   const GAP_DAYS = 10;
@@ -7302,7 +7312,7 @@ function FeeCalculator({ project, onChange }) {
                 <tbody>
                   {[...auditLog].reverse().map(e => (
                     <tr key={e.id}>
-                      <td><span style={{ fontWeight: 600, color: e.action === "locked" ? P.green : P.yellow }}>{e.action === "locked" ? "🔒 Locked" : "🔓 Unlocked"}</span></td>
+                      <td><span style={{ fontWeight: 600, color: e.action === "locked" ? P.green : e.action === "connector-set" ? P.accentLight : P.yellow }}>{feeAuditLabel(e.action)}</span></td>
                       <td style={{ color: P.textMuted }}>{e.user}</td>
                       <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.textDim }}>{new Date(e.date).toLocaleString()}</td>
                       <td style={{ fontFamily: "JetBrains Mono" }}>{e.settyFee ? fmt(e.settyFee) : "—"}</td>
@@ -7822,7 +7832,7 @@ function FeeCalculator({ project, onChange }) {
             <tbody>
               {[...auditLog].reverse().map(e => (
                 <tr key={e.id}>
-                  <td><span style={{ fontWeight: 600, color: e.action === "locked" ? P.green : P.yellow, textTransform: "capitalize" }}>{e.action === "locked" ? "🔒 Locked" : "🔓 Unlocked"}</span></td>
+                  <td><span style={{ fontWeight: 600, color: e.action === "locked" ? P.green : e.action === "connector-set" ? P.accentLight : P.yellow }}>{feeAuditLabel(e.action)}</span></td>
                   <td style={{ color: P.textMuted }}>{e.user}</td>
                   <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.textDim }}>{new Date(e.date).toLocaleString()}</td>
                   <td style={{ fontFamily: "JetBrains Mono" }}>{e.settyFee ? fmt(e.settyFee) : "—"}</td>

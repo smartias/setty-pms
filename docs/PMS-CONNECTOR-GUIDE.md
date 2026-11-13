@@ -123,6 +123,8 @@ Formal documents start from the firm's templates, never from scratch.
   Uses the firm's add-service template with the project details filled in.
 - `Draft a letter to the owner on letterhead about the schedule change`  
   Letterhead format with placeholders you complete.
+- `Set the fee on the Tabler project to $120,000: SD 18k, DD 30k, CD 42k, Bid 6k, CA 24k`  
+  Puts the numbers you give in the Fee Calculator. You still finalize and lock it in the PMS, which is what fills the Fee column on the Schedule. Needs the fees and edit permissions; a locked fee schedule is left alone.
 
 ### Field photos
 
