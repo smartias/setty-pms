@@ -53,6 +53,9 @@ import {
 // A folder created under a different number than the project carries now is
 // found through the record's projectFolderUrl. Pure; see recordedFolder.test.mjs.
 import { pickRecordedFolderName, matchRecordedFolder } from "./recordedFolder.ts";
+// A single-sheet PDF named for its sheet, confirmed by the page text, for
+// title blocks no pattern reads. Pure; see sheetFromFilename.test.mjs.
+import { sheetFromFilename, filenameSheetNo } from "./sheetFromFilename.ts";
 // set_project_fee: what may be written into the Fee Calculator and what is
 // refused. Pure; see feeCalculator.test.mjs.
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
@@ -1420,9 +1423,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-13-set-project-fee-phases";
+const BUILD = "2026-11-13-filename-confirmed-sheets";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.27.0",
+  name: "setty-pms", version: "1.27.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -6607,6 +6610,25 @@ function parseTitleBlock(pageText: string): any | null {
   return null;
 }
 
+// parseTitleBlock, then the file name. A title block a pattern reads always
+// wins: it is the sheet's own statement. When none does, a one-page PDF named
+// for its sheet whose text carries the same number is recorded as that sheet
+// (sheetFromFilename.ts), with the revision still read from the page.
+function titleBlockFor(pageText: string, fileName: string, totalPages: number): any | null {
+  const tb = parseTitleBlock(pageText);
+  if (tb) return tb;
+  const fn = sheetFromFilename(fileName, pageText, totalPages);
+  if (!fn) return null;
+  const rev = parseRevisionBlock(pageText);
+  return {
+    sheetNo: fn.sheetNo, discipline: fn.discipline, sheetTitle: fn.sheetTitle,
+    sheetDate: null, drawnBy: null, checkedBy: null, projectNo: null,
+    phase: null, pageOfSet: null, setTotal: null,
+    revision: rev.revision, revisionDescription: rev.description || null, revisionDate: rev.date,
+    titleBlockLayout: "filename-confirmed",
+  };
+}
+
 // ─── DRAWING LIST ───────────────────────────────────────────────────────────
 // Title blocks do not generalise. A survey of six projects across six owners on
 // 2026-08-02 found only two parsed: every firm lays its title block out
@@ -7262,7 +7284,7 @@ mcp.tool("extract_sheet_index", {
               });
             }
           }
-          const tb = parseTitleBlock(text);
+          const tb = titleBlockFor(text, f.name, total);
           if (!tb) {
             unparsed.push({ file: f.name, page: i, reason: text.length < 50 ? "no extractable text (scanned?)" : "no title block matched" });
             continue;
@@ -7892,6 +7914,46 @@ async function drawingScopeWalk(numPrefix: string, subfolder?: string): Promise<
   return { files, scopePath, truncated, resolved };
 }
 
+// Pages indexed BEFORE the file-name fallback existed carry no sheet number.
+// Their text is already stored, so they are re-read from the index, not from
+// SharePoint: one-page files named for a sheet, rows still without a number.
+// Once per project per isolate, bounded, and advisory: a failure here must
+// never fail the search it rides on.
+const _filenameBackfilled = new Set<string>();
+const FILENAME_BACKFILL_CAP = 60;
+async function backfillFilenameSheets(numPrefix: string, known: any[]): Promise<number> {
+  if (_filenameBackfilled.has(numPrefix)) return 0;
+  _filenameBackfilled.add(numPrefix);
+  const cands = known.filter((k) => k.status === "done" && Number(k.pages) === 1 && filenameSheetNo(k.file_name))
+    .slice(0, FILENAME_BACKFILL_CAP);
+  if (!cands.length) return 0;
+  let fixed = 0;
+  try {
+    for (let i = 0; i < cands.length; i += 20) {
+      const inList = cands.slice(i, i + 20).map((k) => `"${String(k.item_id).replace(/"/g, "")}"`).join(",");
+      const rows: any[] = await sbGet(
+        "pms_drawing_text?select=item_id,page,file_name,text" +
+        "&project_prefix=eq." + encodeURIComponent(numPrefix) +
+        "&page=eq.1&sheet_no=is.null&item_id=in.(" + encodeURIComponent(inList) + ")");
+      await Promise.all((Array.isArray(rows) ? rows : []).map(async (r) => {
+        const tb = titleBlockFor(String(r.text || ""), String(r.file_name || ""), 1);
+        if (!tb?.sheetNo) return;
+        await sbPatch(
+          "pms_drawing_text?item_id=eq." + encodeURIComponent(r.item_id) + "&page=eq.1&sheet_no=is.null",
+          {
+            sheet_no: tb.sheetNo, sheet_title: tb.sheetTitle ?? null,
+            revision: tb.revision ?? null, revision_date: tb.revisionDate ?? null,
+            revision_description: tb.revisionDescription ?? null, title_block_layout: tb.titleBlockLayout ?? null,
+          });
+        fixed++;
+      }));
+    }
+  } catch (e) {
+    console.warn("[drawings] file-name sheet backfill failed:", String((e as any)?.message ?? e));
+  }
+  return fixed;
+}
+
 // The lazy indexer, shared by search_drawings (a few files per call, inside
 // the request's time box) and the background sweep below (the same work with
 // a bigger budget, so a search finds the current sets already indexed).
@@ -7991,7 +8053,7 @@ async function indexDrawingFiles(a: {
         const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/\u0000/g, " ").replace(/ +/g, " ").trim();
         if (typeof pg.cleanup === "function") pg.cleanup();
         if (text.length >= 50) textPages++;
-        const tb = text.length >= 50 ? parseTitleBlock(text) : null;
+        const tb = text.length >= 50 ? titleBlockFor(text, f.name, total) : null;
         if (tb?.sheetNo) sheetsSeen.add(tb.sheetNo);
         batch.push({
           project_prefix: numPrefix, item_id: f.itemId, page: i,
@@ -8103,6 +8165,7 @@ mcp.tool("search_drawings", {
       "&project_prefix=eq." + encodeURIComponent(numPrefix) + "&order=item_id",
     );
     const knownById = new Map(known.map((k) => [k.item_id, k]));
+    const sheetNumbersBackfilled = await backfillFilenameSheets(numPrefix, known);
 
     // Current sets (baseline + everything after it) first, newest set first,
     // then the superseded sets; combined books that duplicate individual sheets
@@ -8172,6 +8235,9 @@ mcp.tool("search_drawings", {
       ...(givenUp.length ? { filesGivenUp: givenUp.map((f) => ({ file: f.name, folderPath: f.folderPath, lastError: knownById.get(f.itemId)?.error })) } : {}),
       ...(textless.length ? { textlessFiles: textless } : {}),
       indexedThisCall: indexedNow,
+      // Pages already in the index that gained a sheet number from their file
+      // name on this call (sheetFromFilename.ts). Reported so the change is visible.
+      ...(sheetNumbersBackfilled ? { sheetNumbersBackfilled } : {}),
       ...(skippedNow.length ? { skippedThisCall: skippedNow.map(({ itemId: _i, ...s }) => s) } : {}),
       ...(failedNow.length ? { failedThisCall: failedNow } : {}),
       ...(scope.truncated ? { crawlWarning: "The SharePoint folder crawl hit its request cap, so some files under this path were not seen and filesInScope is an undercount." } : {}),
@@ -9004,7 +9070,14 @@ async function resolveIndexedSheet(projectNumber: string | undefined, sheet: str
   } catch (e) {
     return fail({ project, error: `Could not read the drawing index: ${String((e as any)?.message ?? e)}` });
   }
-  const matches = rowsAll.filter((r) => normSheetToken(r.sheet_no) === sheetNorm);
+  let matches = rowsAll.filter((r) => normSheetToken(r.sheet_no) === sheetNorm);
+  // "E-101" asks for the sheet stored as "E101.00": the DOB-NOW filing suffix
+  // is part of how the sheet is numbered, not a different sheet (canonicalSheet
+  // folds it the same way). Only when nothing matches exactly.
+  if (!matches.length) {
+    const askedKey = canonicalSheet({ sheetNo: sheet })?.key;
+    if (askedKey) matches = rowsAll.filter((r) => canonicalSheet({ sheetNo: r.sheet_no })?.key === askedKey);
+  }
   if (!matches.length) {
     const closeMatches = [...new Set(rowsAll.map((r) => r.sheet_no).filter(Boolean))].slice(0, 12);
     let indexedFiles = 0, filesPending = 0;
