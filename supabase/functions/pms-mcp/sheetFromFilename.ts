@@ -37,6 +37,14 @@
 // The whole stem must BE a sheet number: discipline prefix, number, optional
 // DOB-NOW filing suffix. Same shape as SHEET_NO_RE in currentSet.ts.
 const STEM_RE = /^([A-Z]{1,3})[-_ ]?(\d{2,4}[A-Z]?)(\.\d{1,2})?$/;
+// …or a sheet number followed by its title, the other way issued sheets are
+// named: "P-501.01 - Plumbing Riser Diagram and Schedule.pdf" (Q126's
+// 2026-07-06 set, the CURRENT issue of those sheets, which the whole-stem rule
+// left unnumbered while the superseded April 2025 files opened by number).
+// The separator must be a spaced hyphen or an underscore and a title must
+// follow, so "E101-2.pdf" and "E101 rev.pdf" stay untrusted. The page text
+// still has to confirm the number: the name alone is never enough.
+const STEM_TITLED_RE = /^([A-Z]{1,3})[-_ ]?(\d{2,4}[A-Z]?)(\.\d{1,2})?(?:\s+-\s+|_)(\S.*)$/;
 
 // What may end a title in the page text. Titles are ALL CAPS on these sheets,
 // and only a TITLE-BLOCK field may end one: the block/lot stamp, the set
@@ -57,12 +65,17 @@ export const FILENAME_LAYOUT_OLD = ["filename-confirmed"];
 export type FilenameSheet = { sheetNo: string; discipline: string; sheetTitle: string | null };
 
 // The sheet number a file name states, or null when the name is anything else.
-export function filenameSheetNo(fileName: string | null | undefined): { sheetNo: string; discipline: string; prefix: string; number: string; suffix: string } | null {
-  const stem = String(fileName || "").replace(/\.pdf$/i, "").toUpperCase().trim();
-  const m = STEM_RE.exec(stem);
+export function filenameSheetNo(fileName: string | null | undefined): { sheetNo: string; discipline: string; prefix: string; number: string; suffix: string; title: string | null } | null {
+  const raw = String(fileName || "").replace(/\.pdf$/i, "").trim();
+  const stem = raw.toUpperCase();
+  const m = STEM_RE.exec(stem) || STEM_TITLED_RE.exec(stem);
   if (!m) return null;
   const suffix = m[3] || "";
-  return { sheetNo: m[1] + m[2] + suffix, discipline: m[1], prefix: m[1], number: m[2], suffix };
+  // The title as the file name writes it, upper-cased like every title read
+  // off a sheet. It must have a word in it: "E101 - 2.pdf" names no title.
+  const title = m[4] ? m[4].replace(/[_\s]+/g, " ").trim() : null;
+  if (m[4] && !/[A-Z]{3,}/.test(title || "")) return null;
+  return { sheetNo: m[1] + m[2] + suffix, discipline: m[1], prefix: m[1], number: m[2], suffix, title };
 }
 
 export function sheetFromFilename(
@@ -95,5 +108,8 @@ export function sheetFromFilename(
     // Nor does it name another sheet: that is a drawing-list row running on.
     if (/[A-Z]{3,}/.test(t) && !/^(SCALE|FOR|AND|TO|PER|SEE|REFER)\b/.test(t) && !/\b[A-Z]{1,3}-?\d{2,4}\b/.test(t)) { sheetTitle = t; break; }
   }
-  return { sheetNo: fn.sheetNo, discipline: fn.discipline, sheetTitle };
+  // The page's own title wins. Failing that, the title the file name states:
+  // it was written by whoever issued the sheet, and the number beside it has
+  // just been confirmed against the page.
+  return { sheetNo: fn.sheetNo, discipline: fn.discipline, sheetTitle: sheetTitle ?? fn.title };
 }
