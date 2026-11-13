@@ -493,15 +493,24 @@ delta (`cutFromSuggestion`, `addedByReviewer`) or, with `full:true`, both texts.
 submittal-rfi-review skill reads it in Step 1 before drafting. Rows follow project
 visibility like knowledge does; the connector never writes this table.
 
-## Fee Calculator write (`set_project_fee`, 1.25.0)
+## Fee Calculator write (`set_project_fee`, 1.25.0; inputs 1.26.0)
 
 When a PM tells Claude a fee, this puts it in the PMS so nobody retypes it. It
-writes the two fields a person types in the **Fee Calculator** and nothing else:
+writes fields a person types in the **Fee Calculator** and nothing else:
 
 | Input | Field written | In the app |
 | --- | --- | --- |
 | `settyFee` | `project.manualSettyFee` | the Setty Fee box (shows "overridden") |
 | `phaseFees[]` | `project.phases[].manualFee` | the Setty Fee column of Phase Fees |
+| `squareFootage` | `project.squareFootage` | Square Footage |
+| `constructionCost` | `project.manualConstructionCost` | the typed construction cost |
+| `buildingCategory` | `project.buildingCategory` | Building Category (sets the cost per SF) |
+
+`buildingCategory` must be one of `BUILDING_CATEGORIES` in `feeCalculator.ts`,
+which mirrors the keys of `RS_MEANS_COST_PER_SF` in `SettyPMS.html` (a test
+fails if they drift); anything else writes nothing and returns the list.
+Project type is not written here. Values Claude reads from an RFP do not come
+through this tool: they ride the proposal draft and the PM ticks them on import.
 
 It **stages** a fee; it does not commit one. The Schedule tab's Fee column,
 `lockedSettyFee` and invoicing all come from "Finalize & Lock Fee Schedule →

@@ -55,7 +55,7 @@ import {
 import { pickRecordedFolderName, matchRecordedFolder } from "./recordedFolder.ts";
 // set_project_fee: what may be written into the Fee Calculator and what is
 // refused. Pure; see feeCalculator.test.mjs.
-import { planFeeWrite, type FeeWritePlan } from "./feeCalculator.ts";
+import { planFeeWrite, BUILDING_CATEGORIES, type FeeWritePlan } from "./feeCalculator.ts";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
 // classifier, RPC arguments and row mapping are pure. See caItems.ts.
@@ -1420,9 +1420,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-13-set-project-fee";
+const BUILD = "2026-11-13-set-project-fee-inputs";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.25.0",
+  name: "setty-pms", version: "1.26.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -3356,7 +3356,7 @@ const HOW_TO_USE_TOPICS: Record<string, { title: string; summary: string; prompt
   templates: { title: "Proposals and templates", summary: "Formal documents start from the firm's templates.", prompts: [
     { ask: "Draft an additional services letter on SAPX256014.00 for the added commissioning scope", note: "The add-service template with project details filled in." },
     { ask: "Draft a letter to the owner on letterhead about the schedule change", note: "Letterhead format with placeholders to complete." },
-    { ask: "Set the fee on the Tabler project to $120,000: SD 18k, DD 30k, CD 42k, Bid 6k, CA 24k", note: "Puts the numbers you give in the Fee Calculator. You still finalize and lock it in the PMS. Needs the fees and edit permissions." },
+    { ask: "Set the fee on the Tabler project to $120,000: SD 18k, DD 30k, CD 42k, Bid 6k, CA 24k", note: "Puts the numbers you give in the Fee Calculator; square footage, construction cost and building category work the same way. You still finalize and lock it in the PMS. Needs the fees and edit permissions." },
   ]},
   photos: { title: "Field photos", summary: "Photos from the Field Photos app, by project, phase and date.", prompts: [
     { ask: "Show me the rough-in photos from the last site visit on SAPX229002.00", note: "Claude can look at them and describe equipment, nameplates and conditions." },
@@ -10629,10 +10629,15 @@ mcp.tool("backload_ca_item", {
 // Audit Log naming the caller. The rules are in feeCalculator.ts.
 mcp.tool("set_project_fee", {
   description:
-    "WRITE a fee into a project's PMS Fee Calculator: the Setty fee total, the fee for individual phases, or both. " +
-    "Use when the user gives you a fee and asks you to put it in the PMS ('set the fee on Tabler to $120,000', " +
-    "'enter the phase fees: SD 18k, DD 30k...'). Use ONLY numbers the user stated in this conversation; never a fee " +
-    "you estimated, calculated or read from a document unless the user confirmed it. This STAGES the fee and does not " +
+    "WRITE into a project's PMS Fee Calculator: the Setty fee total, the fee for individual phases, and the inputs the " +
+    "calculator works from (square footage, construction cost, building category). Any combination in one call. " +
+    "Use when the user gives you these and asks you to put them in the PMS ('set the fee on Tabler to $120,000', " +
+    "'enter the phase fees: SD 18k, DD 30k...', 'it's 45,000 SF, $18M construction, higher ed'). Use ONLY values the " +
+    "user stated in this conversation; never one you estimated, calculated or read from a document unless the user " +
+    "confirmed it (values read from an RFP go through the proposal draft import instead, where the PM ticks them). " +
+    "buildingCategory must be one of the calculator's categories; an unknown one writes nothing and returns the list " +
+    "(a college or university building is 'University'). When no Setty fee total is typed on the project, changing " +
+    "these inputs changes the fee the app calculates: say so. This STAGES the fee and does not " +
     "commit it: the Schedule tab's Fee column and invoicing are filled when a person clicks 'Finalize & Lock Fee " +
     "Schedule' in the PMS, so always tell the user that step is still theirs. A project whose fee schedule is already " +
     "locked is refused (a person unlocks it in the app first); a fee added after signing usually belongs on the Change " +
@@ -10648,9 +10653,12 @@ mcp.tool("set_project_fee", {
       phase: z.string().describe("The phase code ('SD', 'DD', 'CD', 'BS', 'CA') or its full name as it appears in the Fee Calculator."),
       fee: z.number().positive().describe("That phase's fee in dollars."),
     })).optional().describe("Fees for individual phases. Phases you leave out keep their percentage share of the total. Billable phases only."),
+    squareFootage: z.number().positive().optional().describe("Gross square footage of the work, e.g. 45000. Rounded to a whole number."),
+    constructionCost: z.number().positive().optional().describe("Construction cost in dollars, e.g. 18000000 (construction only, not total project cost or the A/E fee). Types over the calculator's square footage x cost per SF."),
+    buildingCategory: z.string().optional().describe("The kind of building, which sets the cost per SF. Exactly one of: " + BUILDING_CATEGORIES.join(", ") + "."),
     note: z.string().optional().describe("Where the number came from, in the user's terms ('per signed proposal dated 11/3', 'client-approved revision'). Stored in the Fee Schedule Audit Log."),
   }),
-  handler: async ({ projectNumber, settyFee, phaseFees, note }) => {
+  handler: async ({ projectNumber, settyFee, phaseFees, squareFootage, constructionCost, buildingCategory, note }) => {
     const c = currentCaller();
     if (c.kind !== "user" || !c.email) {
       return asText({ error: "Writing a fee needs a signed-in Setty user behind it — the shared-secret lane cannot write fees.", nextStep: "Connect the connector with your Microsoft sign-in and try again." });
@@ -10670,7 +10678,7 @@ mcp.tool("set_project_fee", {
     let plan: FeeWritePlan | null = null;
     try {
       await updateProjectRecord(pid, (proj) => {
-        plan = planFeeWrite(proj, { settyFee, phaseFees, note }, {
+        plan = planFeeWrite(proj, { settyFee, phaseFees, squareFootage, constructionCost, buildingCategory, note }, {
           user: c.name || c.email!, date: new Date().toISOString(), id: crypto.randomUUID().slice(0, 8),
         });
         // Returning the same reference tells updateProjectRecord to write nothing.
@@ -10683,7 +10691,7 @@ mcp.tool("set_project_fee", {
     if (!done) return asText({ error: "Could not write the fee: the project record could not be read." });
     const project = pn || p.name || projectNumber;
     if (!done.ok) {
-      return asText({ project, error: done.error, ...(done.nextStep ? { nextStep: done.nextStep } : {}), ...(done.phases ? { phases: done.phases } : {}) });
+      return asText({ project, error: done.error, ...(done.nextStep ? { nextStep: done.nextStep } : {}), ...(done.phases ? { phases: done.phases } : {}), ...(done.buildingCategories ? { buildingCategories: done.buildingCategories } : {}) });
     }
     return asText({
       project, written: done.changed, setBy: c.email, ...done.summary,
