@@ -31,6 +31,13 @@ const PROJECT_TYPES = [
   "Type I", "Type II", "Type III", "Type IV", "Type V", "Type VI",
 ].flatMap((t) => [`${t} New Construction`, `${t} Renovation`]);
 const PROJECT_TYPE_LIST = PROJECT_TYPES.map((t) => `"${t}"`).join(", ");
+// Mirrors the keys of RS_MEANS_COST_PER_SF in SettyPMS.html; the PMS drops any other value.
+const BUILDING_CATEGORIES = [
+  "Office", "Healthcare/Clinic", "Laboratory", "K-12 School", "University",
+  "Warehouse/Industrial", "Retail", "Multifamily", "Hotel", "Museum/Cultural",
+  "Data Center", "Recreation/Gym", "Parking Structure", "Religious", "Government",
+];
+const BUILDING_CATEGORY_LIST = BUILDING_CATEGORIES.map((t) => `"${t}"`).join(", ");
 const MAX_RFP_CHARS = 400_000; // ~100k tokens of RFP text; far under the 1M window
 
 function json(body: unknown, status = 200): Response {
@@ -64,14 +71,14 @@ Hard rules:
 - Language: plain AEC professional English. No em dashes anywhere; use colons, commas, or separate sentences. No marketing superlatives. Spell out agency names on first use.
 - Uncertainty is data. Anything you could not map, verify, or understand goes in flaggedForReview with a one-line reason. An empty flagged list on a complex RFP is a red flag in itself.
 - Fees: never invent a total. You may propose a phase percentage split in suggestedPhases (must sum to 100) and write a basisOfFeeNote describing how the fee could be benchmarked. Dollar amounts only if the RFP itself states budgets, and then only inside understanding.
-- Project record facts (project.address, city, state, squareFootage, projectType, constructionBudget): the PM reviews these and applies them to the project record, so report only what the RFP or teaming email states. Use null (or "" for text) for anything not stated; never estimate, never infer a square footage from a budget or the reverse. address is the street address only, city is the city, state is the two-letter code. squareFootage is a number: the gross area of the work in this proposal's scope (if the RFP gives several buildings or areas, use the one Setty's scope covers, or null and say why in flaggedForReview). constructionBudget is a number in dollars (construction cost only, not total project cost or A/E fee), or null; if the RFP gives a range, use null and note the range in understanding. projectType must be exactly one of: ${PROJECT_TYPE_LIST}, or null. Type I..VI is the firm's fee-curve classification and "New Construction" vs "Renovation" must match the RFP; if the RFP does not make the type clear, use null and say so in internalNotes.
+- Project record facts (project.address, city, state, squareFootage, buildingCategory, projectType, constructionBudget): the PM reviews these and applies them to the project record, so report only what the RFP or teaming email states. Use null (or "" for text) for anything not stated; never estimate, never infer a square footage from a budget or the reverse. address is the street address only, city is the city, state is the two-letter code. squareFootage is a number: the gross area of the work in this proposal's scope (if the RFP gives several buildings or areas, use the one Setty's scope covers, or null and say why in flaggedForReview). constructionBudget is a number in dollars (construction cost only, not total project cost or A/E fee), or null; if the RFP gives a range, use null and note the range in understanding. buildingCategory is the kind of building and sets the cost per square foot; it must be exactly one of: ${BUILDING_CATEGORY_LIST}, or null (a college or university building is "University"; if none fits or the RFP covers several kinds, use null and say so in internalNotes). projectType must be exactly one of: ${PROJECT_TYPE_LIST}, or null. Type I..VI is the firm's fee-curve classification and "New Construction" vs "Renovation" must match the RFP; if the RFP does not make the type clear, use null and say so in internalNotes.
 - HTML fields allow only: p, h3, ul, ol, li, strong, em, u, br. Nothing else.
 
 Output contract (schemaVersion 1) - respond with ONLY this JSON object, no commentary, no code fences:
 {
   "schemaVersion": 1,
   "kind": "proposal-draft",
-  "project": { "name": "", "client": "", "owner": "", "location": "", "rfpReference": "", "constructionBudget": null, "address": "", "city": "", "state": "", "squareFootage": null, "projectType": null },
+  "project": { "name": "", "client": "", "owner": "", "location": "", "rfpReference": "", "constructionBudget": null, "address": "", "city": "", "state": "", "squareFootage": null, "buildingCategory": null, "projectType": null },
   "understanding": "<p>HTML</p>",
   "approach": "<p>HTML</p>",
   "clauses": [ { "key": "inc-predesign-visit", "params": { "VISIT_COUNT": "Two (2)" } } ],
