@@ -12,7 +12,7 @@
 // types). The wiring in index.ts is pinned by the drift checks at the bottom.
 
 import { readFileSync } from "node:fs";
-import { sheetFromFilename, filenameSheetNo } from "./sheetFromFilename.ts";
+import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OLD } from "./sheetFromFilename.ts";
 
 let total = 0, failures = 0;
 const check = (ok, label) => { total++; if (!ok) { failures++; console.error("✗ " + label); } };
@@ -49,11 +49,28 @@ eq(filenameSheetNo(null), null, "null");
 // ── 2. The live Q126 sheets no title-block pattern reads ────────────────────
 eq(sheetFromFilename("E101.00.pdf", E101, 1), { sheetNo: "E101.00", discipline: "E", sheetTitle: "ELECTRICAL CLASSROOM PLANS" }, "E101.00: title ends at the block/lot stamp");
 eq(sheetFromFilename("ED101.00.pdf", ED101, 1), { sheetNo: "ED101.00", discipline: "ED", sheetTitle: "ELECTRICAL DEMOLITION FLOOR PLANS" }, "ED101.00");
-eq(sheetFromFilename("AD101.00.pdf", AD101, 1), { sheetNo: "AD101.00", discipline: "AD", sheetTitle: "DEMOLITION PLANS" }, "AD101.00: title ends at SCALE:");
+eq(sheetFromFilename("AD101.00.pdf", AD101, 1), { sheetNo: "AD101.00", discipline: "AD", sheetTitle: null }, "AD101.00: a title followed only by SCALE: is not bounded by the title block, so none is recorded");
 eq(sheetFromFilename("A400.00.pdf", A400, 1), { sheetNo: "A400.00", discipline: "A", sheetTitle: "FINISH AND DOOR SCHEDULES AND DETAILS" }, "A400.00: title ends at the set position");
 eq(sheetFromFilename("E001.00.pdf", E001, 1), { sheetNo: "E001.00", discipline: "E", sheetTitle: "ELECTRICAL NOTES, SYMBOLS, AND ABBREVIATIONS" }, "E001.00: punctuation in the title");
 eq(sheetFromFilename("T002.00.pdf", T002, 1)?.sheetNo, "T002.00", "the drawing-list sheet is T002.00, not a sheet it lists");
 check(sheetFromFilename("T002.00.pdf", T002, 1)?.sheetTitle !== "NEW WORK PLANS 5", "and never takes a listed sheet's title next to the block/lot stamp");
+
+// ── 2b. Found live on 2026-11-13, after the first deploy ───────────────────
+// P501.00 was titled "FLOOR FLOOR": riser-diagram labels after a detail bubble,
+// ended by the NEXT detail's "SCALE:". Verbatim page text.
+const P501 = "2\" V 2\" V 2\" V SCALE: NEW PARTIAL SANITARY RISER DIAGRAM NOT TO SCALE 4 P501.00 FLOOR FLOOR SCALE: NEW PARTIAL WATER RISER DIAGRAM NOT TO SCALE 3 P501.00 (E) 2-1/2\" CW (E) 2\" HW SCALE: PARTIAL SANITARY RISER DIAGRAM NOT TO SCALE 1 P501.00 SCALE: PARTIAL WATER RISER DIAGRAM NOT TO SCALE 2 P501.00 THIRD FLOOR (D)SINK EXISTING RISER 3\" FD P501.00 PLUMBING RISER DIAGRAM AND SCHEDULE 04 of 05 PLUMBING FIXTURE SCHEDULE TYPE REMARKS" + TAIL;
+eq(sheetFromFilename("P501.00.pdf", P501, 1), { sheetNo: "P501.00", discipline: "P", sheetTitle: "PLUMBING RISER DIAGRAM AND SCHEDULE" },
+  "P501.00: the title is the run bounded by the set position, not the labels before a SCALE:");
+check(sheetFromFilename("P501.00.pdf", P501.replace("P501.00 PLUMBING RISER DIAGRAM AND SCHEDULE 04 of 05", "PLUMBING FIXTURE"), 1)?.sheetTitle === null,
+  "and without that run the title is blank, never FLOOR FLOOR");
+// P701.01.pdf prints P701.00 on every detail bubble and in its title block:
+// the .01 is the filing, not a different sheet.
+const P701 = "SCALE: PIPE PENETRATION IN INTERIOR WALL / FLOOR / CEILING DETAIL NOT TO SCALE 6 P701.00 SCALE: ADJUSTABLE SWIVEL PIPE SUPPORT DETAIL NOT TO SCALE 4 P701.00 HANGER ROD BY THE DEPARTMENT OF ENVIRONMENTAL PROTECTION, DEP. P701.00 05 of 05 FITTING SIZE ID STD FITTING CENTRELINE ACID NEUTRALISATION TANK NT-15 12\" PLUMBING DETAILS" + TAIL;
+eq(sheetFromFilename("P701.01.pdf", P701, 1), { sheetNo: "P701.01", discipline: "P", sheetTitle: null },
+  "P701.01: confirmed by the same sheet under another filing suffix; the file's own suffix is recorded");
+eq(sheetFromFilename("P701.01.pdf", P701.replaceAll("P701.00", "P702.00"), 1), null, "a different sheet number is still not a confirmation");
+eq(sheetFromFilename("P701.pdf", P701, 1)?.sheetNo, "P701", "an unsuffixed name is confirmed by the suffixed sheet, as before");
+eq(sheetFromFilename("P701.01.pdf", P701.replaceAll("P701.00", "P701"), 1), null, "a suffixed name needs a suffixed number on the sheet");
 
 // ── 3. Both halves are required ─────────────────────────────────────────────
 eq(sheetFromFilename("E101.00.pdf", ED101, 1), null, "the name says E101.00 but the page is ED101.00: nothing, not a wrong number");
@@ -79,15 +96,19 @@ eq(sheetFromFilename("T002.00.pdf", T002, 1)?.sheetTitle, null, "the real T002.0
 // ── 5. Drift checks against the shipped wiring ──────────────────────────────
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const has = (needle, label) => check(shipped.includes(needle), `${label} has DRIFTED`);
-has('import { sheetFromFilename, filenameSheetNo } from "./sheetFromFilename.ts";', "the module is imported");
+has('import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OLD } from "./sheetFromFilename.ts";', "the module is imported");
 has("const tb = parseTitleBlock(pageText);\n  if (tb) return tb;\n  const fn = sheetFromFilename(fileName, pageText, totalPages);",
   "a parsed title block wins; the file name is only the fallback");
-has('titleBlockLayout: "filename-confirmed",', "fallback rows say how they were read");
+has("titleBlockLayout: FILENAME_LAYOUT,", "fallback rows say how, and under which rule set, they were read");
+check(FILENAME_LAYOUT.startsWith("filename-confirmed") && !FILENAME_LAYOUT_OLD.includes(FILENAME_LAYOUT),
+  "the current layout label is not also listed as an old one (rows would be re-read forever)");
+check(FILENAME_LAYOUT_OLD.includes("filename-confirmed"), "rows read under the first rule set are marked for re-reading");
+has('const FILENAME_STALE = "or=(sheet_no.is.null," +', "the backfill re-reads unnumbered rows and rows from an older rule set");
 has("const tb = titleBlockFor(text, f.name, total);", "extract_sheet_index uses the fallback");
 has("const tb = text.length >= 50 ? titleBlockFor(text, f.name, total) : null;", "the drawing indexer uses the fallback");
 has("const sheetNumbersBackfilled = await backfillFilenameSheets(numPrefix, known);", "search_drawings backfills pages indexed before the fallback");
-has('"&page=eq.1&sheet_no=is.null&item_id=in.("', "the backfill only reads pages still without a number");
-has('"&page=eq.1&sheet_no=is.null",', "and only writes pages still without a number");
+has('"&page=eq.1&" + FILENAME_STALE + "&item_id=in.("', "the backfill only reads stale pages");
+has('"&page=eq.1&" + FILENAME_STALE,', "and only writes stale pages, so a title-block row is never overwritten");
 has("if (askedKey) matches = rowsAll.filter((r) => canonicalSheet({ sheetNo: r.sheet_no })?.key === askedKey);",
   "view_drawing finds E101.00 when asked for E-101");
 
