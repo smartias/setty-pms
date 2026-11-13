@@ -547,7 +547,7 @@ Fences:
   `action: "connector-set"`, the caller, the note and the before/after values.
   The app derives the contract fee only from `action === "locked"` entries, so
   this entry cannot be read as a lock; `feeAuditLabel` in `SettyPMS.html` shows
-  it as "Fee set via Claude".
+  it as "Set via Claude".
 
 The result carries the phase split the calculator will show and a `warning` when
 the phase fees miss the Setty fee by 50 cents or more (the app's own threshold).
