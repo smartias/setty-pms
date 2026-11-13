@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-13-pms-v194-fee-audit-connector";
+    window.__appVersion = "2026-11-13-pms-v195-rfp-building-category";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -28242,8 +28242,8 @@ function ScopeView({ project, onChange, clients = [] }) {
   // Validates the pasted JSON against the LIVE approved library, sanitizes all
   // HTML, and assembles the standard-heading scope document. Nothing lands in
   // scopeContent until the PM reviews the preview and clicks apply.
-  // Project-record facts the draft read out of the RFP (address, area, type,
-  // construction budget). Each value is validated here and only offered to the
+  // Project-record facts the draft read out of the RFP (address, area, building
+  // category, type, construction budget). Each value is validated here and only offered to the
   // PM in the preview; nothing reaches the record until they tick it and apply.
   // Blank record fields start ticked, filled ones start unticked.
   function buildRecordFields(dp) {
@@ -28271,6 +28271,9 @@ function ScopeView({ project, onChange, clients = [] }) {
     add("projectState", "State", /^[A-Z]{2}$/.test(st) ? st : "", project.projectState);
     const sf = parseNum(dp.squareFootage);
     if (sf && sf >= 100 && sf <= 50000000) add("squareFootage", "Square footage", Math.round(sf), project.squareFootage);
+    const wantedCat = String(dp.buildingCategory || "").trim().toLowerCase();
+    const cat = Object.keys(RS_MEANS_COST_PER_SF).find(t => t.toLowerCase() === wantedCat);
+    add("buildingCategory", "Building category", cat || "", project.buildingCategory, "Sets the cost per SF in the fee calculator.");
     const wanted = String(dp.projectType || "").trim().toLowerCase();
     const ptype = PROJECT_TYPES.find(t => t.toLowerCase() === wanted);
     add("projectType", "Project type", ptype || "", project.projectType, "Drives the fee curve and discipline percentages.");
@@ -28521,7 +28524,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       "- Name each clause key ONCE in the whole draft. Exclusion clauses go only in exclusions.clauseKeys and assumption clauses only in assumptions.clauseKeys, never repeated in clauses[].",
       "- Plain AEC professional English. No em dashes anywhere. No marketing superlatives. Spell out agency names on first use.",
       "- Never invent a fee total. suggestedPhases must sum to 100; basisOfFeeNote says how the fee could be benchmarked. Dollar amounts only if the RFP states them, and only inside understanding.",
-      "- Project record facts (project.address, city, state, squareFootage, projectType, constructionBudget): I review these and apply them to the project record, so report only what the RFP or teaming email states. Use null (or \"\" for text) for anything not stated; never estimate, never infer a square footage from a budget or the reverse. address is the street address only, city is the city, state is the two-letter code. squareFootage is a number: the gross area of the work in this proposal's scope (if the RFP gives several buildings or areas, use the one Setty's scope covers, or null and say why in flaggedForReview). constructionBudget is a number in dollars (construction cost only, not total project cost or A/E fee), or null; if the RFP gives a range, use null and note the range in understanding. projectType must be exactly one of: " + PROJECT_TYPES.map(t => '"' + t + '"').join(", ") + ", or null. If the RFP does not make the type clear, use null and say so in internalNotes.",
+      "- Project record facts (project.address, city, state, squareFootage, buildingCategory, projectType, constructionBudget): I review these and apply them to the project record, so report only what the RFP or teaming email states. Use null (or \"\" for text) for anything not stated; never estimate, never infer a square footage from a budget or the reverse. address is the street address only, city is the city, state is the two-letter code. squareFootage is a number: the gross area of the work in this proposal's scope (if the RFP gives several buildings or areas, use the one Setty's scope covers, or null and say why in flaggedForReview). constructionBudget is a number in dollars (construction cost only, not total project cost or A/E fee), or null; if the RFP gives a range, use null and note the range in understanding. buildingCategory is the kind of building and sets the cost per square foot; it must be exactly one of: " + Object.keys(RS_MEANS_COST_PER_SF).map(t => '"' + t + '"').join(", ") + ", or null (a college or university building is \"University\"; if none fits or the RFP covers several kinds, use null and say so in internalNotes). projectType must be exactly one of: " + PROJECT_TYPES.map(t => '"' + t + '"').join(", ") + ", or null. If the RFP does not make the type clear, use null and say so in internalNotes.",
       "- Do not set {{DISCIPLINE_LIST}}, {{DISCIPLINE_ABBR}} or {{DISCIPLINE_MEP}}: the PMS fills them from the project.",
       "- HTML fields allow only p, h3, ul, ol, li, strong, em, u, br.",
       "- Uncertainty is data: anything you could not map, verify or understand goes in flaggedForReview with a one-line reason.",
@@ -28531,7 +28534,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       "{",
       "  \"schemaVersion\": 1,",
       "  \"kind\": \"proposal-draft\",",
-      "  \"project\": { \"name\": \"\", \"client\": \"\", \"owner\": \"\", \"location\": \"\", \"rfpReference\": \"\", \"constructionBudget\": null, \"address\": \"\", \"city\": \"\", \"state\": \"\", \"squareFootage\": null, \"projectType\": null },",
+      "  \"project\": { \"name\": \"\", \"client\": \"\", \"owner\": \"\", \"location\": \"\", \"rfpReference\": \"\", \"constructionBudget\": null, \"address\": \"\", \"city\": \"\", \"state\": \"\", \"squareFootage\": null, \"buildingCategory\": null, \"projectType\": null },",
       "  \"understanding\": \"<p>HTML</p>\",",
       "  \"approach\": \"<p>HTML</p>\",",
       "  \"clauses\": [ { \"key\": \"inc-predesign-visit\", \"params\": { \"VISIT_COUNT\": \"Two (2)\" } } ],",
