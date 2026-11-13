@@ -1,0 +1,34 @@
+# Supabase project configuration.
+#
+# This file exists for ONE reason: Supabase's GitHub integration only builds
+# the edge functions that are declared here. Without it every pull request's
+# preview branch skipped them ("Only Functions declared in config.toml will be
+# automatically deployed to branches"), so a function that did not compile was
+# first discovered at production deploy time.
+#
+# Keep it to the function declarations. Anything else added here (auth, api,
+# storage, db) becomes configuration-as-code for the preview branches.
+#
+# verify_jwt below must match how each function is deployed to production:
+# the deploy workflows pass the same setting on the command line, and if the
+# integration's "Deploy to production" option is on, these are the values a
+# merge to main deploys with.
+
+# A local identifier for the CLI (docker names), not the hosted project ref.
+project_id = "setty-pms"
+
+# The PMS connector (MCP). Does its own auth (Microsoft sign-in or the shared
+# secret), so Supabase's JWT gate must stay off or every client breaks.
+# Production deploy: .github/workflows/deploy-pms-mcp.yml (--no-verify-jwt).
+[functions.pms-mcp]
+verify_jwt = false
+
+# In-app proposal drafting. Keeps Supabase's JWT gate: only signed-in suite
+# users reach it. Production deploy: .github/workflows/deploy-proposal-draft.yml.
+[functions.proposal-draft]
+verify_jwt = true
+
+# Welcome and weekly digest email. JWT gate off because a browser CORS
+# preflight cannot carry a JWT; every route checks its caller itself.
+[functions.pms-user-emails]
+verify_jwt = false
