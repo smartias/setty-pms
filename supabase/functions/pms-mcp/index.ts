@@ -55,7 +55,7 @@ import {
 import { pickRecordedFolderName, matchRecordedFolder } from "./recordedFolder.ts";
 // A single-sheet PDF named for its sheet, confirmed by the page text, for
 // title blocks no pattern reads. Pure; see sheetFromFilename.test.mjs.
-import { sheetFromFilename, filenameSheetNo } from "./sheetFromFilename.ts";
+import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OLD } from "./sheetFromFilename.ts";
 // set_project_fee: what may be written into the Fee Calculator and what is
 // refused. Pure; see feeCalculator.test.mjs.
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
@@ -1423,9 +1423,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-13-filename-confirmed-sheets";
+const BUILD = "2026-11-13-filename-sheet-titles";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.27.1",
+  name: "setty-pms", version: "1.27.2",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -6625,7 +6625,7 @@ function titleBlockFor(pageText: string, fileName: string, totalPages: number): 
     sheetDate: null, drawnBy: null, checkedBy: null, projectNo: null,
     phase: null, pageOfSet: null, setTotal: null,
     revision: rev.revision, revisionDescription: rev.description || null, revisionDate: rev.date,
-    titleBlockLayout: "filename-confirmed",
+    titleBlockLayout: FILENAME_LAYOUT,
   };
 }
 
@@ -7919,6 +7919,11 @@ async function drawingScopeWalk(numPrefix: string, subfolder?: string): Promise<
 // SharePoint: one-page files named for a sheet, rows still without a number.
 // Once per project per isolate, bounded, and advisory: a failure here must
 // never fail the search it rides on.
+// Stale = no sheet number yet, OR read under an older file-name rule set (the
+// first one took "FLOOR FLOOR" as P501.00's title). Re-reading stamps the
+// current layout, so a row is only ever re-read once per rule change.
+const FILENAME_STALE = "or=(sheet_no.is.null," +
+  FILENAME_LAYOUT_OLD.map((l) => "title_block_layout.eq." + l).join(",") + ")";
 const _filenameBackfilled = new Set<string>();
 const FILENAME_BACKFILL_CAP = 60;
 async function backfillFilenameSheets(numPrefix: string, known: any[]): Promise<number> {
@@ -7934,12 +7939,12 @@ async function backfillFilenameSheets(numPrefix: string, known: any[]): Promise<
       const rows: any[] = await sbGet(
         "pms_drawing_text?select=item_id,page,file_name,text" +
         "&project_prefix=eq." + encodeURIComponent(numPrefix) +
-        "&page=eq.1&sheet_no=is.null&item_id=in.(" + encodeURIComponent(inList) + ")");
+        "&page=eq.1&" + FILENAME_STALE + "&item_id=in.(" + encodeURIComponent(inList) + ")");
       await Promise.all((Array.isArray(rows) ? rows : []).map(async (r) => {
         const tb = titleBlockFor(String(r.text || ""), String(r.file_name || ""), 1);
         if (!tb?.sheetNo) return;
         await sbPatch(
-          "pms_drawing_text?item_id=eq." + encodeURIComponent(r.item_id) + "&page=eq.1&sheet_no=is.null",
+          "pms_drawing_text?item_id=eq." + encodeURIComponent(r.item_id) + "&page=eq.1&" + FILENAME_STALE,
           {
             sheet_no: tb.sheetNo, sheet_title: tb.sheetTitle ?? null,
             revision: tb.revision ?? null, revision_date: tb.revisionDate ?? null,

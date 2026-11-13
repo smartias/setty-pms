@@ -38,9 +38,21 @@
 // DOB-NOW filing suffix. Same shape as SHEET_NO_RE in currentSet.ts.
 const STEM_RE = /^([A-Z]{1,3})[-_ ]?(\d{2,4}[A-Z]?)(\.\d{1,2})?$/;
 
-// What may end a title in the page text. Titles are ALL CAPS on these sheets;
-// the first of these after one is where the title block moves on.
-const TITLE_END = "(?:Block\\s+\\d|SCALE\\s*:|\\d{1,3}\\s+of\\s+\\d|DOB\\s+NOW|$)";
+// What may end a title in the page text. Titles are ALL CAPS on these sheets,
+// and only a TITLE-BLOCK field may end one: the block/lot stamp, the set
+// position, or the DOB stamp. "SCALE:" used to count and must not: a detail
+// bubble is followed by drawing labels and then the next detail's "SCALE:",
+// which on Q126 P501.00 ("4 P501.00 FLOOR FLOOR SCALE: NEW PARTIAL WATER
+// RISER DIAGRAM") recorded the riser labels "FLOOR FLOOR" as the sheet title.
+// A sheet whose title is only followed by "SCALE:" now gets no title, which
+// is the honest answer.
+const TITLE_END = "(?:Block\\s+\\d|\\d{1,3}\\s+of\\s+\\d|DOB\\s+NOW)";
+
+// Written to title_block_layout. The number changes when the RULES change, so
+// rows read under an older rule can be found and re-read (see the backfill in
+// index.ts); "filename-confirmed" with no number is the first rule set.
+export const FILENAME_LAYOUT = "filename-confirmed.2";
+export const FILENAME_LAYOUT_OLD = ["filename-confirmed"];
 
 export type FilenameSheet = { sheetNo: string; discipline: string; sheetTitle: string | null };
 
@@ -65,7 +77,12 @@ export function sheetFromFilename(
   // hyphen or a space ("ED-101.00"), and it must stand alone, so "E101.00"
   // is not found inside "FE101.00" or "E101.001".
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const token = `(?<![A-Za-z0-9.])${esc(fn.prefix)}[-\\s]?${esc(fn.number)}${esc(fn.suffix)}(?![0-9])`;
+  // A filing suffix names the FILING, not a different sheet (canonicalSheet
+  // folds it the same way): Q126's "P701.01.pdf" prints P701.00 throughout. So
+  // a suffixed name is confirmed by the same sheet under any suffix, and the
+  // file name's own suffix is what gets recorded.
+  const suffix = fn.suffix ? "\\.\\d{1,2}" : "";
+  const token = `(?<![A-Za-z0-9.])${esc(fn.prefix)}[-\\s]?${esc(fn.number)}${suffix}(?![0-9])`;
   if (!new RegExp(token).test(text)) return null;
   // The title is the ALL-CAPS run straight after the number, up to a known
   // title-block boundary. Detail bubbles ("1 E101.00 SCALE: …") and the set
