@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-13-pms-v196-audit-set-via-claude";
+    window.__appVersion = "2026-11-13-pms-v197-rfp-facts-preticked";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -28245,7 +28245,8 @@ function ScopeView({ project, onChange, clients = [] }) {
   // Project-record facts the draft read out of the RFP (address, area, building
   // category, type, construction budget). Each value is validated here and only offered to the
   // PM in the preview; nothing reaches the record until they tick it and apply.
-  // Blank record fields start ticked, filled ones start unticked.
+  // Blank record fields, and ones still on the new-project default, start
+  // ticked; fields someone has filled in start unticked.
   function buildRecordFields(dp) {
     dp = dp || {};
     const out = [];
@@ -28259,9 +28260,13 @@ function ScopeView({ project, onChange, clients = [] }) {
       const mult = /^(million|mm|m)$/.test(m[2] || "") ? 1e6 : /^(thousand|k)$/.test(m[2] || "") ? 1e3 : 1;
       return parseFloat(m[1]) * mult;
     };
-    const add = (key, label, proposed, current, note) => {
-      if (blank(proposed)) return;
-      out.push({ key, label, proposed, current, note: note || "", apply: blank(current) });
+    // dflt is the value a new project is created with (createProject). A field
+    // still sitting on it was never chosen by anyone, so the RFP's value starts
+    // ticked just like a blank one. A value that already matches is not listed.
+    const add = (key, label, proposed, current, note, dflt) => {
+      if (blank(proposed) || proposed === current) return;
+      const untouched = blank(current) || (dflt !== undefined && current === dflt);
+      out.push({ key, label, proposed, current, note: note || "", apply: untouched });
     };
     const addr = String(dp.address || "").trim();
     const city = String(dp.city || "").trim();
@@ -28273,10 +28278,10 @@ function ScopeView({ project, onChange, clients = [] }) {
     if (sf && sf >= 100 && sf <= 50000000) add("squareFootage", "Square footage", Math.round(sf), project.squareFootage);
     const wantedCat = String(dp.buildingCategory || "").trim().toLowerCase();
     const cat = Object.keys(RS_MEANS_COST_PER_SF).find(t => t.toLowerCase() === wantedCat);
-    add("buildingCategory", "Building category", cat || "", project.buildingCategory, "Sets the cost per SF in the fee calculator.");
+    add("buildingCategory", "Building category", cat || "", project.buildingCategory, "Sets the cost per SF in the fee calculator.", "Office");
     const wanted = String(dp.projectType || "").trim().toLowerCase();
     const ptype = PROJECT_TYPES.find(t => t.toLowerCase() === wanted);
-    add("projectType", "Project type", ptype || "", project.projectType, "Drives the fee curve and discipline percentages.");
+    add("projectType", "Project type", ptype || "", project.projectType, "Drives the fee curve and discipline percentages.", "Type II New Construction");
     const cost = parseNum(dp.constructionBudget);
     if (cost && cost >= 10000) add("manualConstructionCost", "Construction cost", Math.round(cost), project.manualConstructionCost, "Overrides SF × Cost/SF in the fee calculator.");
     return out;
@@ -29576,7 +29581,7 @@ function ScopeView({ project, onChange, clients = [] }) {
                 {(importParsed.recordFields || []).length > 0 && (
                   <div style={{ border: "1px solid " + P.border, borderRadius: 6, padding: "8px 12px", marginBottom: 8 }}>
                     <div style={{ fontWeight: 700, marginBottom: 4 }}>Project record: facts read from the RFP</div>
-                    <div style={{ color: P.textDim, marginBottom: 4 }}>Ticked fields are written to the project when you apply the draft. Fields that already have a value start unticked.</div>
+                    <div style={{ color: P.textDim, marginBottom: 4 }}>Ticked fields are written to the project when you apply the draft. Fields that are blank or still on the new-project default start ticked; fields someone already filled in start unticked.</div>
                     {importParsed.recordFields.map(f => (
                       <label key={f.key} style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "2px 0", cursor: "pointer" }}>
                         <input type="checkbox" checked={!!f.apply} disabled={scopeLocked}
