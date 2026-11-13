@@ -124,7 +124,7 @@ Formal documents start from the firm's templates, never from scratch.
 - `Draft a letter to the owner on letterhead about the schedule change`  
   Letterhead format with placeholders you complete.
 - `Set the fee on the Tabler project to $120,000: SD 18k, DD 30k, CD 42k, Bid 6k, CA 24k`  
-  Puts the numbers you give in the Fee Calculator. Square footage, construction cost and building category can be set the same way (`It's 45,000 SF, $18M construction, higher ed`). You still finalize and lock it in the PMS, which is what fills the Fee column on the Schedule. Needs the fees and edit permissions; a locked fee schedule is left alone.
+  Puts the numbers you give in the Fee Calculator. Square footage, construction cost, building category and project type can be set the same way (`It's 45,000 SF, $18M construction, higher ed, Type II renovation`). If your phases differ from the project's, Claude adds the missing ones and removes the ones you left out, and tells you which (a phase with invoices or progress is never removed). You still finalize and lock it in the PMS, which is what fills the Fee column on the Schedule. Needs the fees and edit permissions; a locked fee schedule is left alone.
 
 ### Field photos
 
