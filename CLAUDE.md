@@ -88,9 +88,7 @@ browser (PMS pages) or from the connector (app permissions).
   import still adjusts the document.
 - The drafting rules live in TWO places that must stay in sync:
   `buildClaudeDraftPrompt` (SettyPMS.html) and
-  `supabase/functions/proposal-draft/index.ts`. The edge function only
-  updates on `deploy_edge_function` / `supabase functions deploy` — a repo
-  merge alone does not ship it.
+  `supabase/functions/proposal-draft/index.ts`.
 - Clause library = `pms_proposal_clauses` (Supabase). UPDATEs auto-archive
   and bump `version` via trigger; the Admin Console PATCHes rows directly,
   so targeted SQL edits are equivalent. Per-phase deliverables clauses are
@@ -100,6 +98,21 @@ browser (PMS pages) or from the connector (app permissions).
 - `pms_projects` rows use optimistic concurrency (`version` column): any
   direct SQL edit must bump `version` and the user must refresh open PMS
   tabs afterward or they'll hit save conflicts.
+
+## Edge function deploys
+
+- `supabase/config.toml` lists `pms-mcp` and `proposal-draft`. Supabase's
+  GitHub integration builds listed functions on every PR preview and
+  **deploys them to production on every merge to `main`** ("Deploy to
+  production" is on; the same option applies migrations). There is no health
+  check on that path: for `pms-mcp`, confirm `/health` reports the new
+  `BUILD`, or run the "Deploy pms-mcp" / "Deploy proposal-draft" workflow,
+  which redeploys and verifies.
+- `pms-user-emails` is deliberately NOT listed, so a merge never touches it;
+  it deploys only by hand. Do not add it without confirming the repo copy
+  matches production.
+- Still bump `BUILD` in `pms-mcp/index.ts` with every change to it: it is the
+  only way to tell which copy is live.
 
 ## Accolades.html (the Accolade-O-Meter)
 

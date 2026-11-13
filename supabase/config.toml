@@ -1,0 +1,39 @@
+# Supabase project configuration.
+#
+# Supabase's GitHub integration only handles the edge functions declared here,
+# and declaring one does TWO things:
+#
+#   1. Every pull request's preview branch builds it, so a function that does
+#      not compile fails the PR instead of being found at deploy time.
+#   2. Every merge to main DEPLOYS IT TO PRODUCTION. The integration's "Deploy
+#      to production" option is on (it is also what applies migrations), and it
+#      deploys every function listed in this file.
+#
+# So: list a function only when main is what should be running. A function that
+# is NOT listed (pms-user-emails, the welcome and weekly digest email) is
+# untouched by merges and deploys only by hand; add it once someone has
+# confirmed the copy in the repo matches the one in production.
+#
+# The automatic deploy has no health check. The "Deploy pms-mcp" and "Deploy
+# proposal-draft" workflows still work and still verify the result; run one
+# when a change needs confirming.
+#
+# Keep this file to the function declarations. Anything else added here (auth,
+# api, storage, db) becomes configuration-as-code for the preview branches.
+#
+# verify_jwt must match how each function is meant to run: these are the
+# values a merge to main deploys with.
+
+# A local identifier for the CLI (docker names), not the hosted project ref.
+project_id = "setty-pms"
+
+# The PMS connector (MCP). Does its own auth (Microsoft sign-in or the shared
+# secret), so Supabase's JWT gate must stay off or every client breaks.
+# Production deploy: .github/workflows/deploy-pms-mcp.yml (--no-verify-jwt).
+[functions.pms-mcp]
+verify_jwt = false
+
+# In-app proposal drafting. Keeps Supabase's JWT gate: only signed-in suite
+# users reach it. Production deploy: .github/workflows/deploy-proposal-draft.yml.
+[functions.proposal-draft]
+verify_jwt = true
