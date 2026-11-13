@@ -101,16 +101,18 @@ browser (PMS pages) or from the connector (app permissions).
 
 ## Edge function deploys
 
-- `supabase/config.toml` lists `pms-mcp` and `proposal-draft`. Supabase's
+- `supabase/config.toml` lists all three functions (`pms-mcp`,
+  `proposal-draft`, `pms-user-emails`). Supabase's
   GitHub integration builds listed functions on every PR preview and
   **deploys them to production on every merge to `main`** ("Deploy to
   production" is on; the same option applies migrations). There is no health
   check on that path: for `pms-mcp`, confirm `/health` reports the new
   `BUILD`, or run the "Deploy pms-mcp" / "Deploy proposal-draft" workflow,
   which redeploys and verifies.
-- `pms-user-emails` is deliberately NOT listed, so a merge never touches it;
-  it deploys only by hand. Do not add it without confirming the repo copy
-  matches production.
+- `pms-user-emails` sends real email (welcome, and the Monday digest from
+  pg_cron) and has no deploy workflow or health check: a merge is how it
+  ships. After changing it, test with an admin call to `/digest?dryRun=1`
+  before Monday.
 - Still bump `BUILD` in `pms-mcp/index.ts` with every change to it: it is the
   only way to tell which copy is live.
 
