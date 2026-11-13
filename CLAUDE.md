@@ -107,12 +107,12 @@ browser (PMS pages) or from the connector (app permissions).
   **deploys them to production on every merge to `main`** ("Deploy to
   production" is on; the same option applies migrations). There is no health
   check on that path: for `pms-mcp`, confirm `/health` reports the new
-  `BUILD`, or run the "Deploy pms-mcp" / "Deploy proposal-draft" workflow,
+  `BUILD`, or run the matching "Deploy ..." workflow (one per function),
   which redeploys and verifies.
 - `pms-user-emails` sends real email (welcome, and the Monday digest from
-  pg_cron) and has no deploy workflow or health check: a merge is how it
-  ships. After changing it, test with an admin call to `/digest?dryRun=1`
-  before Monday.
+  pg_cron). The "Deploy pms-user-emails" workflow redeploys it and checks it
+  answers, but cannot check the email itself: after changing it, test with an
+  admin call to `/digest?dryRun=1` before Monday.
 - Still bump `BUILD` in `pms-mcp/index.ts` with every change to it: it is the
   only way to tell which copy is live.
 
