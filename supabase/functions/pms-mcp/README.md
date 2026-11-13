@@ -505,11 +505,25 @@ writes fields a person types in the **Fee Calculator** and nothing else:
 | `squareFootage` | `project.squareFootage` | Square Footage |
 | `constructionCost` | `project.manualConstructionCost` | the typed construction cost |
 | `buildingCategory` | `project.buildingCategory` | Building Category (sets the cost per SF) |
+| `projectType` | `project.projectType` | Project Type (fee curve and discipline percentages) |
+
+**Phase list (1.27.0).** `addPhases[]` (`code`, `name`, `fee`, optional
+`before`) creates a billable phase in the shape the app's "+ Add Phase" makes
+(`pct: 0`, stored `fee: 0`, no dates until lock) with the fee as `manualFee`.
+`removePhases[]` drops phases by code or name, and their `phaseSubFees` entry.
+`phaseRemovalBlock` refuses a phase with a `pctComplete`, an invoice whose
+`phase` is its code, or a billable milestone with progress; the code `CO` is
+reserved for change-order invoices. Removals apply first, then additions, then
+`phaseFees`, and one problem anywhere writes nothing. Milestones are still
+never touched: a milestone left from an earlier lock is rebuilt by the next
+lock, as with a phase deleted by hand.
 
 `buildingCategory` must be one of `BUILDING_CATEGORIES` in `feeCalculator.ts`,
 which mirrors the keys of `RS_MEANS_COST_PER_SF` in `SettyPMS.html` (a test
 fails if they drift); anything else writes nothing and returns the list.
-Project type is not written here. Values Claude reads from an RFP do not come
+`projectType` works the same way against `PROJECT_TYPES` (1.26.1); the tool is
+told to set it only when the user names the Type, never to infer the tier.
+Values Claude reads from an RFP do not come
 through this tool: they ride the proposal draft and the PM ticks them on import.
 
 It **stages** a fee; it does not commit one. The Schedule tab's Fee column,
