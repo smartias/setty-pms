@@ -36,3 +36,13 @@ test("the import preview offers the category and drops unknown values", () => {
   assert.ok(page.includes('add("buildingCategory", "Building category", cat || ""'), "buildRecordFields does not offer buildingCategory");
   assert.ok(page.includes("Object.keys(RS_MEANS_COST_PER_SF).find(t => t.toLowerCase() === wantedCat)"), "category must be matched against the known list");
 });
+
+test("facts for fields still on the new-project default start ticked", () => {
+  // The defaults named in buildRecordFields must be the ones a new project gets.
+  assert.ok(page.includes('buildingCategory: "Office",'), "new-project default building category changed");
+  assert.ok(page.includes('projectType: "Type II New Construction",'), "new-project default project type changed");
+  assert.ok(page.includes('"Sets the cost per SF in the fee calculator.", "Office");'), "building category default not passed to add()");
+  assert.ok(page.includes('"Drives the fee curve and discipline percentages.", "Type II New Construction");'), "project type default not passed to add()");
+  assert.ok(page.includes("const untouched = blank(current) || (dflt !== undefined && current === dflt);"), "pre-tick rule changed");
+  assert.ok(page.includes("if (blank(proposed) || proposed === current) return;"), "a fact that already matches the record should not be listed");
+});
