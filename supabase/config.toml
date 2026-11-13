@@ -10,9 +10,7 @@
 #      deploys every function listed in this file.
 #
 # So: list a function only when main is what should be running. A function that
-# is NOT listed (pms-user-emails, the welcome and weekly digest email) is
-# untouched by merges and deploys only by hand; add it once someone has
-# confirmed the copy in the repo matches the one in production.
+# is not listed is untouched by merges and deploys only by hand.
 #
 # The automatic deploy has no health check. The "Deploy pms-mcp" and "Deploy
 # proposal-draft" workflows still work and still verify the result; run one
@@ -37,3 +35,10 @@ verify_jwt = false
 # users reach it. Production deploy: .github/workflows/deploy-proposal-draft.yml.
 [functions.proposal-draft]
 verify_jwt = true
+
+# Welcome and weekly digest email (the digest runs Monday mornings from
+# pg_cron). JWT gate off because a browser CORS preflight cannot carry a JWT;
+# every route checks its caller itself. Has no deploy workflow of its own: a
+# merge to main is how it ships.
+[functions.pms-user-emails]
+verify_jwt = false
