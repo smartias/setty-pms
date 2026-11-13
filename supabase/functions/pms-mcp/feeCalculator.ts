@@ -6,10 +6,12 @@
 //   project.phases[].manualFee  a phase fee typed over its percentage share
 //   project.milestones[].fee    the Schedule tab's Fee column, filled ONLY when a
 //                               person clicks "Finalize & Lock Fee Schedule"
-// It also keeps the three inputs the calculator derives a fee from:
-//   project.squareFootage, project.buildingCategory (sets the cost per SF) and
-//   project.manualConstructionCost (typed over square footage x cost per SF)
-// This module writes the first two layers and those three inputs, nothing else. It never locks, never
+// It also keeps the four inputs the calculator derives a fee from:
+//   project.squareFootage, project.buildingCategory (sets the cost per SF),
+//   project.manualConstructionCost (typed over square footage x cost per SF) and
+//   project.projectType (Type I..VI, new construction or renovation: the fee
+//   curve and the discipline percentages)
+// This module writes the first two layers and those four inputs, nothing else. It never locks, never
 // touches milestones, and refuses a locked schedule: locked fees feed invoices,
 // so changing them is a person's decision made in the app (Unlock & Edit).
 //
@@ -18,9 +20,9 @@
 export type FeePhaseInput = { phase: string; fee: number };
 export type FeeWriteInput = {
   settyFee?: number; phaseFees?: FeePhaseInput[]; note?: string;
-  squareFootage?: number; constructionCost?: number; buildingCategory?: string;
+  squareFootage?: number; constructionCost?: number; buildingCategory?: string; projectType?: string;
 };
-export type FeeInputChange = { field: "squareFootage" | "constructionCost" | "buildingCategory"; from: number | string | null; to: number | string };
+export type FeeInputChange = { field: "squareFootage" | "constructionCost" | "buildingCategory" | "projectType"; from: number | string | null; to: number | string };
 export type FeeWriteStamp = { user: string; date: string; id: string };
 
 export type FeePhaseView = {
@@ -35,12 +37,12 @@ export type FeeWriteSummary = {
   phasesChanged: Array<{ code: string | null; name: string | null; from: number | null; to: number }>;
   totalPhaseFee: number | null;
   variance: number | null;
-  inputs: { squareFootage: number | null; constructionCost: number | null; buildingCategory: string | null };
+  inputs: { squareFootage: number | null; constructionCost: number | null; buildingCategory: string | null; projectType: string | null };
   inputsChanged: FeeInputChange[];
   warning?: string;
 };
 export type FeeWritePlan =
-  | { ok: false; error: string; nextStep?: string; phases?: Array<{ code: string | null; name: string | null; billable: boolean }>; buildingCategories?: string[] }
+  | { ok: false; error: string; nextStep?: string; phases?: Array<{ code: string | null; name: string | null; billable: boolean }>; buildingCategories?: string[]; projectTypes?: string[] }
   | { ok: true; project: any; changed: boolean; summary: FeeWriteSummary };
 
 // The app flags a phase total that is off from the Setty fee by 50 cents or
@@ -60,9 +62,13 @@ export const BUILDING_CATEGORIES = [
   "Warehouse/Industrial", "Retail", "Multifamily", "Hotel", "Museum/Cultural",
   "Data Center", "Recreation/Gym", "Parking Structure", "Religious", "Government",
 ];
+// Mirrors PROJECT_TYPES in SettyPMS.html (the Project Type dropdown). The app
+// looks the discipline percentages up by this exact string.
+export const PROJECT_TYPES = ["Type I", "Type II", "Type III", "Type IV", "Type V", "Type VI"]
+  .flatMap((t) => [`${t} New Construction`, `${t} Renovation`]);
 export const SQUARE_FOOTAGE_MAX = 50_000_000;
 
-const INPUT_LABEL = { squareFootage: "Square footage", constructionCost: "Construction cost", buildingCategory: "Building category" };
+const INPUT_LABEL = { squareFootage: "Square footage", constructionCost: "Construction cost", buildingCategory: "Building category", projectType: "Project type" };
 
 export const roundCents = (n: number): number => Math.round(n * 100) / 100;
 
@@ -116,8 +122,21 @@ export function planFeeWrite(proj: any, input: FeeWriteInput, stamp: FeeWriteSta
   const wantSf = input.squareFootage !== undefined && input.squareFootage !== null;
   const wantCost = input.constructionCost !== undefined && input.constructionCost !== null;
   const wantCat = input.buildingCategory !== undefined && input.buildingCategory !== null;
-  if (!wantTotal && !wantPhases && !wantSf && !wantCost && !wantCat) {
-    return { ok: false, error: "Nothing to write: pass at least one of settyFee, phaseFees, squareFootage, constructionCost, buildingCategory." };
+  const wantType = input.projectType !== undefined && input.projectType !== null;
+  if (!wantTotal && !wantPhases && !wantSf && !wantCost && !wantCat && !wantType) {
+    return { ok: false, error: "Nothing to write: pass at least one of settyFee, phaseFees, squareFootage, constructionCost, buildingCategory, projectType." };
+  }
+  let nextType: string | null = null;
+  if (wantType) {
+    nextType = PROJECT_TYPES.find((t) => norm(t) === norm(input.projectType)) ?? null;
+    if (!nextType) {
+      return {
+        ok: false,
+        error: `Nothing was written: "${input.projectType}" is not a project type in the Fee Calculator.`,
+        nextStep: "Project type is the firm's fee classification (Type I to Type VI) plus New Construction or Renovation, e.g. 'Type II Renovation'. It is not the kind of building (that is buildingCategory). If the user has not said which Type applies, ask them; do not guess the tier.",
+        projectTypes: PROJECT_TYPES,
+      };
+    }
   }
   if (wantSf) {
     const bad = moneyError("squareFootage", input.squareFootage);
@@ -186,10 +205,13 @@ export function planFeeWrite(proj: any, input: FeeWriteInput, stamp: FeeWriteSta
   const nextSf = wantSf ? Math.round(input.squareFootage!) : prevSf;
   const nextCost = wantCost ? roundCents(input.constructionCost!) : prevCost;
   const finalCat = wantCat ? nextCat : prevCat;
+  const prevType = typeof proj?.projectType === "string" && proj.projectType ? proj.projectType : null;
+  const finalType = wantType ? nextType : prevType;
   const inputsChanged: FeeInputChange[] = [];
   if (wantSf && nextSf !== prevSf) inputsChanged.push({ field: "squareFootage", from: prevSf, to: nextSf! });
   if (wantCost && nextCost !== prevCost) inputsChanged.push({ field: "constructionCost", from: prevCost, to: nextCost! });
   if (wantCat && finalCat !== prevCat) inputsChanged.push({ field: "buildingCategory", from: prevCat, to: finalCat! });
+  if (wantType && finalType !== prevType) inputsChanged.push({ field: "projectType", from: prevType, to: finalType! });
 
   const changed = totalChanged || phasesChanged.length > 0 || inputsChanged.length > 0;
 
@@ -219,7 +241,7 @@ export function planFeeWrite(proj: any, input: FeeWriteInput, stamp: FeeWriteSta
     phasesChanged,
     totalPhaseFee,
     variance,
-    inputs: { squareFootage: nextSf, constructionCost: nextCost, buildingCategory: finalCat },
+    inputs: { squareFootage: nextSf, constructionCost: nextCost, buildingCategory: finalCat, projectType: finalType },
     inputsChanged,
   };
   if (variance !== null && Math.abs(variance) >= FEE_VARIANCE_TOLERANCE) {
@@ -264,6 +286,7 @@ export function planFeeWrite(proj: any, input: FeeWriteInput, stamp: FeeWriteSta
     ...(inputsChanged.some((c) => c.field === "squareFootage") ? { squareFootage: nextSf } : {}),
     ...(inputsChanged.some((c) => c.field === "constructionCost") ? { manualConstructionCost: nextCost } : {}),
     ...(inputsChanged.some((c) => c.field === "buildingCategory") ? { buildingCategory: finalCat } : {}),
+    ...(inputsChanged.some((c) => c.field === "projectType") ? { projectType: finalType } : {}),
     feeAuditLog: [...(Array.isArray(proj?.feeAuditLog) ? proj.feeAuditLog : []), entry],
   };
   return { ok: true, project, changed: true, summary };

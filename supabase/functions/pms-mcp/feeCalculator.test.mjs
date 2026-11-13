@@ -236,3 +236,24 @@ test("the category list matches the app's cost-per-SF table", async () => {
   assert.ok(m, "RS_MEANS_COST_PER_SF not found");
   assert.deepEqual(BUILDING_CATEGORIES, [...m[1].matchAll(/"([^"]+)":/g)].map((x) => x[1]));
 });
+
+// ── project type (1.26.1) ───────────────────────────────────────────────────
+
+test("project type is matched against the app's list and written exactly", async () => {
+  const { PROJECT_TYPES } = await import("./feeCalculator.ts");
+  const page = readFileSync(join(root, "SettyPMS.html"), "utf8");
+  const m = page.match(/const PROJECT_TYPES = \[([\s\S]*?)\];/);
+  assert.ok(m, "PROJECT_TYPES not found in SettyPMS.html");
+  assert.deepEqual(PROJECT_TYPES, [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]));
+
+  const p = project({ projectType: "Type II New Construction" });
+  const r = planFeeWrite(p, { projectType: "type iii renovation" }, stamp);
+  assert.equal(r.ok, true);
+  assert.equal(r.project.projectType, "Type III Renovation");
+  assert.match(r.project.feeAuditLog.at(-1).note, /Project type Type II New Construction → Type III Renovation/);
+  assert.equal(planFeeWrite(p, { projectType: "Type II New Construction" }, stamp).changed, false);
+
+  const bad = planFeeWrite(p, { squareFootage: 45000, projectType: "Higher Ed" }, stamp);
+  assert.equal(bad.ok, false);
+  assert.deepEqual(bad.projectTypes, PROJECT_TYPES);
+});
