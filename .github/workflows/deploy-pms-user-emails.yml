@@ -1,0 +1,67 @@
+# Manual deploy of the pms-user-emails edge function (the welcome email and the
+# Monday weekly digest).
+#
+# A merge to main already deploys this function (it is declared in
+# supabase/config.toml), but that path checks nothing. Run this when a change
+# needs confirming, or to redeploy by hand.
+#
+# Uses the same repo secret as the other deploy workflows:
+# SUPABASE_ACCESS_TOKEN. Run it from the Actions tab: "Deploy pms-user-emails"
+# -> Run workflow, with main selected.
+#
+# --no-verify-jwt: the function checks its callers itself (a browser CORS
+# preflight cannot carry a JWT). It has no /health route, so the last step
+# checks two things that send no email: an unknown route gets the function's
+# own 404, and an unauthenticated /welcome is refused. It never calls /digest.
+name: Deploy pms-user-emails
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-pms-user-emails
+  cancel-in-progress: false
+
+env:
+  PROJECT_REF: khxmgjilwhdguuepbhne
+
+jobs:
+  deploy:
+    # A deploy is whatever main holds; never ship an unreviewed branch.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then echo "Repo secret SUPABASE_ACCESS_TOKEN is not set" >&2; exit 1; fi
+          # Repo root. --yes: newer CLIs ask to confirm and, with no terminal to
+          # answer, exit 1 having changed nothing.
+          supabase functions deploy pms-user-emails --project-ref "$PROJECT_REF" --no-verify-jwt --yes
+
+      - name: Confirm the function answers and refuses an unauthenticated caller
+        run: |
+          base="https://${PROJECT_REF}.supabase.co/functions/v1/pms-user-emails"
+          for i in $(seq 1 6); do
+            route=$(curl -s --max-time 30 -X POST "$base/__check" -H 'content-type: application/json' -d '{}' || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST "$base/welcome" -H 'content-type: application/json' -d '{}' || true)
+            echo "attempt $i: unknown route -> $route ; unauthenticated /welcome -> HTTP $code"
+            if echo "$route" | grep -q "Unknown route" && [ "$code" = "403" ]; then
+              echo "Up: routing works and an unauthenticated /welcome is refused"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "The function did not answer as expected" >&2
+          exit 1
