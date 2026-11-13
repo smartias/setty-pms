@@ -89,6 +89,15 @@ browser (PMS pages) or from the connector (app permissions).
 - The drafting rules live in TWO places that must stay in sync:
   `buildClaudeDraftPrompt` (SettyPMS.html) and
   `supabase/functions/proposal-draft/index.ts`.
+- Clause library = `pms_proposal_clauses` (Supabase). UPDATEs auto-archive
+  and bump `version` via trigger; the Admin Console PATCHes rows directly,
+  so targeted SQL edits are equivalent. Per-phase deliverables clauses are
+  `inc-deliv-*`; the combined `inc-deliverables` bullets filter by phase
+  codes from `project.phases` (PMs rename/reuse codes, so selection-by-key
+  is the intent signal, tags are only guards).
+- `pms_projects` rows use optimistic concurrency (`version` column): any
+  direct SQL edit must bump `version` and the user must refresh open PMS
+  tabs afterward or they'll hit save conflicts.
 
 ## Edge function deploys
 
@@ -104,15 +113,6 @@ browser (PMS pages) or from the connector (app permissions).
   matches production.
 - Still bump `BUILD` in `pms-mcp/index.ts` with every change to it: it is the
   only way to tell which copy is live.
-- Clause library = `pms_proposal_clauses` (Supabase). UPDATEs auto-archive
-  and bump `version` via trigger; the Admin Console PATCHes rows directly,
-  so targeted SQL edits are equivalent. Per-phase deliverables clauses are
-  `inc-deliv-*`; the combined `inc-deliverables` bullets filter by phase
-  codes from `project.phases` (PMs rename/reuse codes, so selection-by-key
-  is the intent signal, tags are only guards).
-- `pms_projects` rows use optimistic concurrency (`version` column): any
-  direct SQL edit must bump `version` and the user must refresh open PMS
-  tabs afterward or they'll hit save conflicts.
 
 ## Accolades.html (the Accolade-O-Meter)
 
