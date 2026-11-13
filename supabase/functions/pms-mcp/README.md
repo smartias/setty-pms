@@ -1274,6 +1274,13 @@ responsible trade, review comments and a dated history.
 
 ## Deploying
 
+**Since 2026-11-13 a merge to `main` deploys this function.** It is declared
+in `supabase/config.toml`, and Supabase's GitHub integration deploys declared
+functions when `main` changes (and builds them on every PR preview). That path
+has no health check, so after a merge that matters, check `/health` for the new
+`BUILD` or run the workflow below, which redeploys and verifies. Everything
+that follows still works and is the way to deploy by hand.
+
 One-command version: `deploy.ps1` in this folder pulls main, reads the BUILD
 constant, deploys, and polls `/health` until that build answers (see the header
 of the script). A pending deploy, when there is one, is described in

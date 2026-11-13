@@ -1,18 +1,28 @@
 # Supabase project configuration.
 #
-# This file exists for ONE reason: Supabase's GitHub integration only builds
-# the edge functions that are declared here. Without it every pull request's
-# preview branch skipped them ("Only Functions declared in config.toml will be
-# automatically deployed to branches"), so a function that did not compile was
-# first discovered at production deploy time.
+# Supabase's GitHub integration only handles the edge functions declared here,
+# and declaring one does TWO things:
 #
-# Keep it to the function declarations. Anything else added here (auth, api,
-# storage, db) becomes configuration-as-code for the preview branches.
+#   1. Every pull request's preview branch builds it, so a function that does
+#      not compile fails the PR instead of being found at deploy time.
+#   2. Every merge to main DEPLOYS IT TO PRODUCTION. The integration's "Deploy
+#      to production" option is on (it is also what applies migrations), and it
+#      deploys every function listed in this file.
 #
-# verify_jwt below must match how each function is deployed to production:
-# the deploy workflows pass the same setting on the command line, and if the
-# integration's "Deploy to production" option is on, these are the values a
-# merge to main deploys with.
+# So: list a function only when main is what should be running. A function that
+# is NOT listed (pms-user-emails, the welcome and weekly digest email) is
+# untouched by merges and deploys only by hand; add it once someone has
+# confirmed the copy in the repo matches the one in production.
+#
+# The automatic deploy has no health check. The "Deploy pms-mcp" and "Deploy
+# proposal-draft" workflows still work and still verify the result; run one
+# when a change needs confirming.
+#
+# Keep this file to the function declarations. Anything else added here (auth,
+# api, storage, db) becomes configuration-as-code for the preview branches.
+#
+# verify_jwt must match how each function is meant to run: these are the
+# values a merge to main deploys with.
 
 # A local identifier for the CLI (docker names), not the hosted project ref.
 project_id = "setty-pms"
@@ -27,8 +37,3 @@ verify_jwt = false
 # users reach it. Production deploy: .github/workflows/deploy-proposal-draft.yml.
 [functions.proposal-draft]
 verify_jwt = true
-
-# Welcome and weekly digest email. JWT gate off because a browser CORS
-# preflight cannot carry a JWT; every route checks its caller itself.
-[functions.pms-user-emails]
-verify_jwt = false
