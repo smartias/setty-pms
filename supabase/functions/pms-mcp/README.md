@@ -440,8 +440,9 @@ node supabase/functions/pms-mcp/commentResponses.test.mjs
 ## Submittal / RFI review (`save_ca_review` / `backload_ca_item`)
 
 The write side of the submittal-rfi-review skill and the CA-item modal's "Send to
-Claude for review" button. These are the connector's ONLY writes into the project
-blob, and both go through the SAME optimistic-concurrency guard the PMS app uses
+Claude for review" button. With `set_project_fee` (next section) these are the
+connector's only tool writes into the project
+blob, and all of them go through the SAME optimistic-concurrency guard the PMS app uses
 (`updateProjectRecord`: read `{id, project, version}`, PATCH filtered on that
 version — a concurrent app save bumps the version, the filter matches nothing, and
 the write aborts cleanly with nothing clobbered). `save_ca_review` writes an
@@ -491,6 +492,52 @@ rows by project / type / discipline / outcome / reviewer, each with a sentence-l
 delta (`cutFromSuggestion`, `addedByReviewer`) or, with `full:true`, both texts. The
 submittal-rfi-review skill reads it in Step 1 before drafting. Rows follow project
 visibility like knowledge does; the connector never writes this table.
+
+## Fee Calculator write (`set_project_fee`, 1.25.0)
+
+When a PM tells Claude a fee, this puts it in the PMS so nobody retypes it. It
+writes the two fields a person types in the **Fee Calculator** and nothing else:
+
+| Input | Field written | In the app |
+| --- | --- | --- |
+| `settyFee` | `project.manualSettyFee` | the Setty Fee box (shows "overridden") |
+| `phaseFees[]` | `project.phases[].manualFee` | the Setty Fee column of Phase Fees |
+
+It **stages** a fee; it does not commit one. The Schedule tab's Fee column,
+`lockedSettyFee` and invoicing all come from "Finalize & Lock Fee Schedule →
+Populate Milestones", which stays a person's click in the app. The tool never
+writes `milestones`, `feeScheduleFinalized` or `lockedSettyFee`.
+
+Fences:
+
+- **Signed-in callers only**; the shared-secret lane is refused.
+- **`fees.view` AND `projects.edit`** on the project (per-project overrides
+  apply through `capFor`), which is what doing the same by hand takes.
+- **A locked schedule is refused.** Unlocking is done in the app (Unlock & Edit).
+  Fees added after signing belong on the Change Orders tab, which this does not write.
+- **Version-guarded** through `updateProjectRecord`; a concurrent app save wins
+  and the caller re-runs.
+- **All or nothing.** Phases match by code or full name (exact, case ignored).
+  One unknown, ambiguous, duplicate or non-billable phase refuses the whole call
+  and returns the project's phases.
+- **Audited.** Each change appends a `feeAuditLog` entry with
+  `action: "connector-set"`, the caller, the note and the before/after values.
+  The app derives the contract fee only from `action === "locked"` entries, so
+  this entry cannot be read as a lock; `feeAuditLabel` in `SettyPMS.html` shows
+  it as "Fee set via Claude".
+
+The result carries the phase split the calculator will show and a `warning` when
+the phase fees miss the Setty fee by 50 cents or more (the app's own threshold).
+With no typed total, the total is still calculated in the app from construction
+cost, which the connector does not reproduce, so only typed phase fees are
+reported. Amounts must be greater than zero; clearing a typed fee back to the
+calculated value is done in the app.
+
+The rules are in `feeCalculator.ts`:
+
+```bash
+node --test supabase/functions/pms-mcp/feeCalculator.test.mjs
+```
 
 ## Regions and the network-drive annex (`azureFiles.ts`)
 
