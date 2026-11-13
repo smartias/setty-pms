@@ -50,6 +50,9 @@ import {
 import {
   RegionAccessError, regionAccessError, regionAccessResult, siteMismatchHint, graphStatusOf, graphErrorCodeOf,
 } from "./regionAccess.ts";
+// A folder created under a different number than the project carries now is
+// found through the record's projectFolderUrl. Pure; see recordedFolder.test.mjs.
+import { pickRecordedFolderName, matchRecordedFolder } from "./recordedFolder.ts";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
 // classifier, RPC arguments and row mapping are pure. See caItems.ts.
@@ -1205,16 +1208,43 @@ function numberPrefixMatches(value: string, numPrefix: string): boolean {
 async function projectFolder(projectNumber: string): Promise<any | null> {
   const drive = await docDriveId(await teamForProject(projectNumber));
   const num = projectNumber.toLowerCase().trim();
+  const seen: any[] = [];
   let url: string = `/drives/${drive}/root/children?$select=id,name,folder&$top=200`;
   while (url) {
     const page = await graphGet(url);
     for (const it of (page.value || [])) {
       if (it.folder && numberPrefixMatches(it.name, num)) return it;
+      if (it.folder) seen.push(it);
     }
     const next = page["@odata.nextLink"];
     url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
   }
-  return null;
+  return matchRecordedFolder(seen, await recordedFolderName(num));
+}
+// The folder name the PMS record points at (last segment of projectFolderUrl),
+// for a project whose folder is not named by its current number. One row by
+// number, memoized on the projects clock: list_project_documents asks once per
+// library (~37), and only after a scan has already missed.
+const _recordedFolder = new Map<string, { at: number; name: Promise<string | null> }>();
+function recordedFolderName(numPrefix: string): Promise<string | null> {
+  const num = String(numPrefix || "").toLowerCase().trim();
+  if (!num) return Promise.resolve(null);
+  const hit = _recordedFolder.get(num);
+  if (hit && (Date.now() - hit.at) < 300000) return hit.name;
+  const name = (async () => {
+    try {
+      const pat = encodeURIComponent(num.replace(/[%_*]/g, "") + "*");
+      const rows = await sbGet(
+        "pms_projects?select=projectNumber:project->>projectNumber,projectFolderUrl:project->>projectFolderUrl" +
+        "&project->>projectNumber=ilike." + pat + "&order=id.asc&limit=25");
+      return pickRecordedFolderName(Array.isArray(rows) ? rows : [], num);
+    } catch (e) {
+      console.warn("[folder] record lookup failed:", String((e as any)?.message ?? e));
+      return null;
+    }
+  })();
+  _recordedFolder.set(num, { at: Date.now(), name });
+  return name;
 }
 
 // All document libraries (drives) on a region's site, cached per site.
@@ -1286,6 +1316,7 @@ async function findProjectFolderInDrive(driveId: string, numPrefix: string): Pro
   const hit = _projFolder.get(key);
   if (hit && (hit.item || (Date.now() - hit.at) < PROJ_FOLDER_MISS_TTL)) return hit.item;
 
+  const seen: any[] = [];
   let url: string = `/drives/${driveId}/root/children?$select=id,name,folder&$top=200`;
   while (url) {
     const page = await graphGet(url);
@@ -1294,12 +1325,17 @@ async function findProjectFolderInDrive(driveId: string, numPrefix: string): Pro
         _projFolder.set(key, { item: it, at: Date.now() });
         return it;
       }
+      if (it.folder) seen.push(it);
     }
     const next = page["@odata.nextLink"];
     url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
   }
-  _projFolder.set(key, { item: null, at: Date.now() });
-  return null;
+  // No folder starts with the number. Before calling it missing, look for the
+  // folder the PMS record itself names (see recordedFolder.ts): a folder made
+  // under an earlier number is still this project's folder.
+  const recorded = matchRecordedFolder(seen, await recordedFolderName(numPrefix));
+  _projFolder.set(key, { item: recorded, at: Date.now() });
+  return recorded;
 }
 // Graph caps a children listing at 200 entries and hands back a nextLink. Reading
 // only the first page passes a truncated slice off as the whole folder, which is
@@ -1381,9 +1417,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-06-knowledge-sensitive-gate";
+const BUILD = "2026-11-13-recorded-folder-fallback";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.24.0",
+  name: "setty-pms", version: "1.24.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
