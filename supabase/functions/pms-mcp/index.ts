@@ -1420,9 +1420,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-13-set-project-fee-type";
+const BUILD = "2026-11-13-set-project-fee-phases";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.26.1",
+  name: "setty-pms", version: "1.27.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -10645,7 +10645,11 @@ mcp.tool("set_project_fee", {
     "locked is refused (a person unlocks it in the app first); a fee added after signing usually belongs on the Change " +
     "Orders tab, which this tool does not write. Needs a signed-in caller with both the fees and edit-project " +
     "permissions. Phases are matched by code (SD, DD, CD) or full name; if any phase is not found, nothing is written " +
-    "and the project's phases are returned. Returns the resulting phase split and a warning when the phase fees do not " +
+    "and the project's phases are returned. To make the phase list MATCH the fee the user gave: addPhases creates a " +
+    "phase that is not on the project yet (code, name, fee, optionally which phase it goes before), and removePhases " +
+    "drops one the fee does not include. Remove a phase only when the user's phase list clearly leaves it out or they " +
+    "ask; name every added and removed phase back to the user. A phase with invoices, progress or a % complete " +
+    "against it is refused, as is the code 'CO' (reserved for change orders). Returns the resulting phase split and a warning when the phase fees do not " +
     "add up to the Setty fee: relay that warning. Every change is recorded in the project's Fee Schedule Audit Log " +
     "under the caller's name. Other open PMS tabs on the project should be refreshed afterward.",
   inputSchema: z.object({
@@ -10655,13 +10659,20 @@ mcp.tool("set_project_fee", {
       phase: z.string().describe("The phase code ('SD', 'DD', 'CD', 'BS', 'CA') or its full name as it appears in the Fee Calculator."),
       fee: z.number().positive().describe("That phase's fee in dollars."),
     })).optional().describe("Fees for individual phases. Phases you leave out keep their percentage share of the total. Billable phases only."),
+    addPhases: z.array(z.object({
+      code: z.string().describe("Short phase code, 1 to 12 characters, no spaces, e.g. 'PRE', 'STUDY', 'CX'. Must not match an existing phase."),
+      name: z.string().describe("Phase name as it should read in the PMS and on the proposal, e.g. 'Feasibility Study'."),
+      fee: z.number().positive().describe("That phase's fee in dollars."),
+      before: z.string().optional().describe("Code or name of the existing phase this one goes in front of. Omit to add it at the end. Order sets the schedule sequence."),
+    })).optional().describe("Phases to CREATE in the Fee Calculator, each with its fee. Billable. Use for a phase the user named that the project does not have."),
+    removePhases: z.array(z.string()).optional().describe("Codes or names of phases to REMOVE from the Fee Calculator because the fee does not include them. Refused for a phase with invoices or progress."),
     squareFootage: z.number().positive().optional().describe("Gross square footage of the work, e.g. 45000. Rounded to a whole number."),
     constructionCost: z.number().positive().optional().describe("Construction cost in dollars, e.g. 18000000 (construction only, not total project cost or the A/E fee). Types over the calculator's square footage x cost per SF."),
     buildingCategory: z.string().optional().describe("The kind of building, which sets the cost per SF. Exactly one of: " + BUILDING_CATEGORIES.join(", ") + "."),
     projectType: z.string().optional().describe("The firm's fee classification, which sets the fee curve and discipline percentages. Exactly one of: " + PROJECT_TYPES.join(", ") + ". Not the kind of building (that is buildingCategory)."),
     note: z.string().optional().describe("Where the number came from, in the user's terms ('per signed proposal dated 11/3', 'client-approved revision'). Stored in the Fee Schedule Audit Log."),
   }),
-  handler: async ({ projectNumber, settyFee, phaseFees, squareFootage, constructionCost, buildingCategory, projectType, note }) => {
+  handler: async ({ projectNumber, settyFee, phaseFees, addPhases, removePhases, squareFootage, constructionCost, buildingCategory, projectType, note }) => {
     const c = currentCaller();
     if (c.kind !== "user" || !c.email) {
       return asText({ error: "Writing a fee needs a signed-in Setty user behind it — the shared-secret lane cannot write fees.", nextStep: "Connect the connector with your Microsoft sign-in and try again." });
@@ -10681,8 +10692,9 @@ mcp.tool("set_project_fee", {
     let plan: FeeWritePlan | null = null;
     try {
       await updateProjectRecord(pid, (proj) => {
-        plan = planFeeWrite(proj, { settyFee, phaseFees, squareFootage, constructionCost, buildingCategory, projectType, note }, {
+        plan = planFeeWrite(proj, { settyFee, phaseFees, addPhases, removePhases, squareFootage, constructionCost, buildingCategory, projectType, note }, {
           user: c.name || c.email!, date: new Date().toISOString(), id: crypto.randomUUID().slice(0, 8),
+          newId: () => crypto.randomUUID().slice(0, 8),
         });
         // Returning the same reference tells updateProjectRecord to write nothing.
         return plan.ok && plan.changed ? plan.project : proj;

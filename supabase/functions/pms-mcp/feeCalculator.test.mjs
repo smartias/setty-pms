@@ -257,3 +257,73 @@ test("project type is matched against the app's list and written exactly", async
   assert.equal(bad.ok, false);
   assert.deepEqual(bad.projectTypes, PROJECT_TYPES);
 });
+
+// ── phase list (1.27.0): addPhases / removePhases ───────────────────────────
+
+const ids = () => { let n = 0; return { ...stamp, newId: () => "new" + (++n) }; };
+
+test("a fee with different phases reshapes the list: add, remove, set", () => {
+  const p = project({ phaseSubFees: { "4": { s1: 500 }, "1": { s1: 100 } } });
+  const r = planFeeWrite(p, {
+    settyFee: 90000,
+    addPhases: [{ code: "PRE", name: "Feasibility Study", fee: 20000, before: "SD" }],
+    removePhases: ["BS", "Construction Administration", "CD"],
+    phaseFees: [{ phase: "SD", fee: 30000 }, { phase: "DD", fee: 40000 }],
+  }, ids());
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.project.phases.map((x) => x.code), ["PRE", "SD", "DD"]);
+  const pre = r.project.phases[0];
+  assert.deepEqual(pre, { id: "new1", code: "PRE", name: "Feasibility Study", pct: 0, billable: true, fee: 0, pctComplete: 0, manualFee: 20000, startDate: null, endDate: null });
+  assert.equal(r.summary.totalPhaseFee, 90000);
+  assert.equal(r.summary.variance, 0);
+  assert.equal(r.summary.warning, undefined);
+  assert.deepEqual(r.summary.phasesRemoved.map((x) => x.code).sort(), ["BS", "CA", "CD"]);
+  assert.deepEqual(r.project.phaseSubFees, { "1": { s1: 100 } });
+  assert.equal(r.project.milestones, p.milestones);
+  assert.match(r.project.feeAuditLog.at(-1).note, /Added phase PRE \(Feasibility Study\) · Removed phase/);
+  assert.equal(p.phases.length, 5, "input mutated");
+});
+
+test("an added phase goes at the end by default", () => {
+  const r = planFeeWrite(project(), { addPhases: [{ code: "CX", name: "Commissioning", fee: 9000 }] }, ids());
+  assert.equal(r.project.phases.at(-1).code, "CX");
+  assert.equal(r.project.phases.length, 6);
+});
+
+test("a phase with invoices, progress or % complete is not removed, and nothing else is written", () => {
+  const inv = project({ invoices: [{ phase: "SD", amount: 5000 }] });
+  const r1 = planFeeWrite(inv, { settyFee: 50000, removePhases: ["SD"] }, ids());
+  assert.equal(r1.ok, false);
+  assert.match(r1.error, /"SD" cannot be removed because an invoice is billed against it/);
+  const ms = project({ milestones: [{ id: "b", type: "billable", phase: "DD", pctComplete: 40 }] });
+  assert.match(planFeeWrite(ms, { removePhases: ["DD"] }, ids()).error, /milestone has progress/);
+  const pc = project();
+  pc.phases[2] = { ...pc.phases[2], pctComplete: 10 };
+  assert.match(planFeeWrite(pc, { removePhases: ["CD"] }, ids()).error, /10% complete/);
+  // a zero-progress milestone left from an earlier lock does not block
+  const idle = project({ milestones: [{ id: "b", type: "billable", phase: "DD", pctComplete: 0 }] });
+  assert.equal(planFeeWrite(idle, { removePhases: ["DD"] }, ids()).ok, true);
+});
+
+test("bad additions are refused", () => {
+  const add = (row, extra = {}) => planFeeWrite(project(), { addPhases: [row], ...extra }, ids());
+  assert.match(add({ code: "SD", name: "Study", fee: 1 }).error, /already exists/);
+  assert.match(add({ code: "ST", name: "schematic design", fee: 1 }).error, /already exists/);
+  assert.match(add({ code: "co", name: "Change", fee: 1 }).error, /reserved/);
+  assert.match(add({ code: "TWO WORDS", name: "X", fee: 1 }).error, /not a usable phase code/);
+  assert.match(add({ code: "ST", name: "", fee: 1 }).error, /needs a name/);
+  assert.equal(add({ code: "ST", name: "Study", fee: 0 }).ok, false);
+  assert.match(add({ code: "ST", name: "Study", fee: 1, before: "Nope" }).error, /cannot place/);
+  assert.match(add({ code: "ST", name: "Study", fee: 1 }, { phaseFees: [{ phase: "ST", fee: 2 }] }).error, /being added in this call/);
+  assert.match(planFeeWrite(project(), { removePhases: ["BS"], phaseFees: [{ phase: "BS", fee: 1 }] }, ids()).error, /no phase "BS"/);
+  // a code freed by a removal in the same call can be reused
+  assert.equal(add({ code: "BS", name: "Bidding", fee: 1 }, { removePhases: ["BS"] }).ok, true);
+  assert.equal(planFeeWrite(project({ feeScheduleFinalized: true }), { removePhases: ["BS"] }, ids()).ok, false);
+});
+
+test("the tool passes the phase list changes through", () => {
+  const src = readFileSync(join(here, "index.ts"), "utf8");
+  const at = src.indexOf('mcp.tool("set_project_fee"');
+  const body = src.slice(at, src.indexOf("\nmcp.tool(", at + 10));
+  assert.ok(body.includes("addPhases, removePhases, squareFootage") && body.includes("newId: () =>"), "handler does not forward addPhases/removePhases");
+});
