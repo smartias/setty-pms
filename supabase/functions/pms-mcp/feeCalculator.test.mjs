@@ -185,6 +185,7 @@ test("the app labels the connector's audit entry instead of calling it an unlock
   const page = readFileSync(join(root, "SettyPMS.html"), "utf8");
   assert.ok(page.includes("function feeAuditLabel("), "feeAuditLabel missing");
   assert.ok(page.includes('"' + FEE_AUDIT_ACTION + '"'), "the app does not know the connector's audit action");
+  assert.ok(page.includes('return "✎ Set via Claude";'), "the connector entry's label changed");
   assert.ok(!page.includes('e.action === "locked" ? "🔒 Locked" : "🔓 Unlocked"'), "an audit table still labels every non-lock entry as Unlocked");
 });
 

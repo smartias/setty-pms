@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-13-pms-v195-rfp-building-category";
+    window.__appVersion = "2026-11-13-pms-v196-audit-set-via-claude";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -382,13 +382,13 @@ function buildPhaseFees(settyFee, phases) {
 }
 
 // Fee Schedule Audit Log: the label for one entry. "connector-set" is written by
-// the PMS connector's set_project_fee (a fee typed in through Claude, staged in
+// the PMS connector's set_project_fee (a fee, input or phase set through Claude, staged in
 // the calculator, never a lock); anything else unknown is shown as itself
 // rather than passed off as an unlock.
 function feeAuditLabel(action) {
   if (action === "locked") return "🔒 Locked";
   if (action === "unlocked") return "🔓 Unlocked";
-  if (action === "connector-set") return "✎ Fee set via Claude";
+  if (action === "connector-set") return "✎ Set via Claude";
   return String(action || "Edited");
 }
 function buildSchedule(startDate, phases) {
