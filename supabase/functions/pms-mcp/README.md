@@ -438,6 +438,15 @@ those `pms_qa_reviews` rows (`report_url`, this project's rows only) so the tab
 links the report. Findings appear only in the project's QA Reviews tab; nothing
 here writes to the knowledge layer.
 
+**Key items (2026-11-16).** `pms_qa_findings.key_item` / `key_reason` mark the
+few findings the team must see first: recurring, a clear miss, or high
+consequence (migration `20261116200000`). `record_qa_findings` takes
+`keyItem` + `keyReason` per finding and still records the row when the columns
+are missing (`keyItemNotStored` in the result); `mark_qa_key_item` marks or
+unmarks an existing row without touching its status. A signed-in person toggles
+it in the tab through the `pms_qa_finding_set_key` RPC. The tab, the Send to
+team email and the export show key items in bold, first in their group.
+
 **Automatic back-check (2026-11-16).** `list_backcheck_candidates` lists the
 projects whose ledger has open rows the newest issued set has not been checked
 against (`backcheckCandidates.ts`). The newest set is the newest dated Outgoing

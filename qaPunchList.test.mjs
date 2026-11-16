@@ -19,7 +19,7 @@ assert.ok(start > 0 && end > start, "punch-list helpers not found in SettyPMS.ht
 const QA_EXTERNAL_SRC_COPY = 'const QA_EXTERNAL_SRC = { drchecks: "Dr.Checks", owner: "Owner", architect: "Architect", agency: "Agency" };\n';
 assert.ok(html.includes(QA_EXTERNAL_SRC_COPY.trim()), "QA_EXTERNAL_SRC changed in SettyPMS.html");
 const api = new Function(QA_EXTERNAL_SRC_COPY + html.slice(start, end) +
-  "\nreturn { QA_DISCIPLINES, QA_DISCIPLINE_NONE, QA_DISCIPLINE_ALIASES, qaNormalizeDiscipline, qaDisciplineFromSheets, qaFindingDiscipline, qaGroupByDiscipline, qaIsSetReview, qaIsCaFinding, qaSheetKey, qaIssueReadiness, qaPunchListEmailHtml };")();
+  "\nreturn { QA_DISCIPLINES, QA_DISCIPLINE_NONE, QA_DISCIPLINE_ALIASES, qaNormalizeDiscipline, qaDisciplineFromSheets, qaFindingDiscipline, qaGroupByDiscipline, qaIsSetReview, qaIsCaFinding, qaSheetKey, qaIssueReadiness, qaPunchListEmailHtml, qaKeyFirst, QA_KEY_REASONS };")();
 
 test("discipline spellings fold to one name", () => {
   assert.equal(api.qaNormalizeDiscipline(" m "), "Mechanical");
@@ -186,4 +186,35 @@ test("the tab has a back-check button that hands only the back-check to Claude",
   assert.match(m[0], /list_backcheck_candidates/);
   assert.match(m[0], /ready_to_backcheck, never closed/);
   assert.match(m[0], /kind:'backcheck'/);
+});
+
+test("key items sort first and keep their order otherwise", () => {
+  const rows = [{ id: 1 }, { id: 2, key_item: true }, { id: 3 }, { id: 4, key_item: true }];
+  assert.deepEqual(rows.slice().sort(api.qaKeyFirst).map(r => r.id), [2, 4, 1, 3]);
+  assert.deepEqual(api.QA_KEY_REASONS, ["recurring", "clear miss", "high consequence"]);
+});
+
+test("the team email puts key items in bold with the reason", () => {
+  const out = api.qaPunchListEmailHtml({
+    projectLabel: "TEST1.00 - Demo", setName: "100% CD", reviewDate: "2026-11-10", tabUrl: "https://x/#project:p1",
+    groups: [{ name: "Electrical", rows: [
+      { id: 7, title: "Breaker <20A> vs MOCP 30", severity: "cost", sheets: ["E-601"], key_item: true, key_reason: "clear miss" },
+      { id: 8, title: "Legend symbol", severity: "polish", sheets: ["E-001"] },
+    ] }],
+  });
+  assert.match(out, /<b>KEY ITEM \(clear miss\): Breaker &lt;20A&gt; vs MOCP 30<\/b>/);
+  assert.ok(!/<b>[^<]*Legend symbol/.test(out), "an ordinary row is not bold");
+});
+
+test("the tab marks key items through the RPC and shows them in bold", () => {
+  const page = readFileSync(new URL("./SettyPMS.html", import.meta.url), "utf8");
+  assert.match(page, /sheetRefRpc\("pms_qa_finding_set_key", \{ p_id: f\.id, p_key: !!key/);
+  assert.match(page, /fontWeight: f\.key_item \? 700 : 400/);
+  assert.match(page, /\.sort\(qaKeyFirst\)/);
+  const mig = readFileSync(new URL("./supabase/migrations/20261116200000_qa_findings_key_item.sql", import.meta.url), "utf8");
+  assert.match(mig, /add column if not exists key_item\s+boolean not null default false/);
+  assert.match(mig, /function public\.pms_qa_finding_set_key\(p_id bigint, p_key boolean, p_reason text\)/);
+  const src = readFileSync(new URL("./supabase/functions/pms-mcp/index.ts", import.meta.url), "utf8");
+  assert.match(src, /mcp\.tool\("mark_qa_key_item"/);
+  assert.match(src, /keyItem: z\.boolean\(\)\.optional\(\)/);
 });

@@ -747,6 +747,26 @@ condition is `rfi-bait`.
 **The punch list is the deliverable.** It is what the team works from, so
 it is organized by who fixes it, not by how it was found:
 
+- **Key items: mark the few the team must see first.** A long list reads
+  flat. Mark a finding as a key item (`keyItem: true` with a `keyReason`
+  when you record it; **bold** in the report) when one of these is true:
+  - `recurring`: the same kind of problem keeps coming up. It appears
+    several times in this set (the same wrong room number on five
+    schedules is ONE key item, not five), it was raised on an earlier
+    submission or by the owner and is still there, it maps to an RFI
+    prevention item (qa-600 series), or a knowledge-layer lesson names it.
+  - `clear miss`: a plain error on the face of the documents that needs no
+    judgment to see and that a check should have caught: 220 V on a 208 V
+    unit, a breaker larger than the scheduled maximum, a keynote with no
+    legend entry, two sheets that state opposite things.
+  - `high consequence`: life safety, a failed inspection or filing, or a
+    change order if it reaches bid.
+  Keep it to about one finding in five, and never more than eight on one
+  punch list: when everything is bold nothing is. A judgment call that
+  still needs a person to confirm is not a clear miss; it can be a key item
+  only for its consequence. Do not mark `For reference` rows. A person can
+  mark or unmark any row in the tab; `mark_qa_key_item` does it for a row
+  that already exists.
 - **One list, numbered once** (P-1, P-2 ...), merging Step 1 carry-overs
   and the findings and flags of all three passes and the
   cross-discipline pass. Carry-overs include every
@@ -843,6 +863,30 @@ and quietly dies.
   find this row when a contractor's item touches the same sheet or
   equipment; a finding with the tag only in its prose is found by text match
   at best.
+- **Write the action as an instruction someone can do and someone else can
+  check.** The team works the list from the Action, so it carries the most
+  weight on the row. One or two sentences, in this shape:
+  *who* (the discipline, first), *do what* (an imperative verb: change,
+  add, delete, move, show, confirm with), *where* (the sheet number, and
+  the schedule row, keynote, detail or spec section and paragraph), and
+  *to what* (the value or wording it should read when done).
+  - Good: "Mechanical: on M-601, change FCU-1-1 and FCU-1-2 from 220/1/60
+    and FCU-3-9 from 280/1/60 to 208/1/60 to match E-601."
+  - Good: "Electrical: on E-603 Panel MG, change the EUH-1-6 breaker from
+    20A-2P to 30A-2P and the wire to #10, per the E-601 schedule row."
+  - Good: "Fire Protection: add a flowmeter to detail 5/SP-701, or delete
+    it from spec 213113 para 2.5. Say which in the response."
+  - Not this: "Coordinate.", "Verify.", "Review and revise as required.",
+    "Reconcile the drawings."
+  When the right answer is not known, say what has to be decided and by
+  whom, then both outcomes with their sheets ("PM to confirm the heater
+  size with the Qmark data. If 3 kW: revise M-602, E-601 and the four
+  panel schedules E-602 to E-605. If 1.5 kW: change the FLA on M-602 and
+  E-601 to 7.2 A."). Name every sheet that has to change, not only the one
+  where the problem was seen. Write it so the back-check is a lookup: a
+  reviewer opening the named sheet can see in one glance whether it was
+  done. No evidence in the action (that is the evidence field), and no
+  severity words.
 - **Every finding carries its `discipline`** — the punch-list group it sits
   in (Mechanical, Electrical, Plumbing, Fire Protection, Fire Alarm,
   Multi-discipline, PM / Project, or the subconsultant's discipline on a
