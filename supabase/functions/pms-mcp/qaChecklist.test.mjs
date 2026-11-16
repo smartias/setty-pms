@@ -76,8 +76,10 @@ for (const hint of autoHints) {
   // A schematic set has no spec book: the spec item is not asked of DD.
   assert.ok(/'qa-602'[\s\S]*?'\["CD","Permit","Bid","Addendum"\]'::jsonb,'rfi-lesson'/.test(rfi));
   // Every details value is valid JSON (a broken array would fail the insert).
-  for (const m of rfi.matchAll(/\n '(\[[\s\S]*?\])'::jsonb,\n 'assisted'/g)) JSON.parse(m[1].replace(/''/g, "'"));
-  assert.equal([...rfi.matchAll(/\n '(\[[\s\S]*?\])'::jsonb,\n 'assisted'/g)].length, 4);
+  // Each sits on one line between the item text and its automation class.
+  const details = [...rfi.matchAll(/\n '(\[.*\])'::jsonb,\n 'assisted'/g)].map((m) => JSON.parse(m[1].replace(/''/g, "'")));
+  assert.equal(details.length, 4);
+  for (const d of details) assert.ok(Array.isArray(d) && d.length >= 3);
   // The skill carries the method for each, and says where QA stops.
   const skill = readFileSync(join(here, "../../../.claude/skills/qa-coordination-review/SKILL.md"), "utf8");
   for (const id of ["qa-600", "qa-601", "qa-602", "qa-603"]) assert.ok(skill.includes(`**${id} `), `skill has no method for ${id}`);
