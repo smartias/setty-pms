@@ -69,6 +69,7 @@ import { buildLedgerMatcher, sheetKey, normalizeTag, scheduleRowsForTag } from "
 import { issuedSets, backcheckStatus } from "./backcheckCandidates.ts";
 // The floor under the QA action standard: flags "Coordinate." and the like. Pure; see its tests.
 import { actionProblem, ACTION_STANDARD } from "./qaAction.ts";
+import { cleanChecklistResults, checklistCountsLine, QA_DISPOSITIONS, QA_CHECKLIST_RESULTS_MAX, QA_NARRATIVE_MAX } from "./qaChecklistResults.ts";
 // Other disciplines' drawings in the index, kept apart from what Setty issued. Pure; see its tests.
 import { isBackgroundPath, BACKGROUND_NOTE } from "./drawingTier.ts";
 // Reading a large PDF in byte ranges instead of downloading it whole. See its tests.
@@ -1447,7 +1448,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-kahua-submitted-title";
+const BUILD = "2026-11-16-qa-checklist-results";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -10070,7 +10071,11 @@ mcp.tool("record_qa_findings", {
     "nothing new still records its review row (findings may be empty) so the run and its coverage are on " +
     "record. Every row is stamped with the signed-in caller. Recording findings does NOT mark anything " +
     "resolved — update_qa_finding moves status, and list_qa_findings reads the ledger. Results show ONLY in " +
-    "this project's QA Reviews tab; they are not added to the firm knowledge layer.",
+    "this project's QA Reviews tab; they are not added to the firm knowledge layer. A full review also passes " +
+    "checklistResults (one entry per checklist item worked: itemId, disposition, and what was examined or why " +
+    "not) and designNarrative (the brief 'Design as read' text): both are stored on the review row and shown " +
+    "in the tab, which is where the team reads them. No report file is needed for either. To add them, or more " +
+    "findings, to a review that already exists, pass its reviewId.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number OR name."),
     setName: z.string().optional().describe("The deliverable/set reviewed, e.g. '2024-10-24_Revised 100% CD Submission + bulletins through 8/19'."),
@@ -10093,8 +10098,15 @@ mcp.tool("record_qa_findings", {
       discipline: z.string().optional().describe("Responsible discipline — who fixes it: Mechanical, Electrical, Plumbing, Fire Protection, Fire Alarm, Multi-discipline (name each in the action), PM / Project, or a subconsultant discipline on prime jobs. The QA tab groups the punch list by this."),
     })).max(QA_FINDINGS_MAX_PER_CALL).describe("Up to 50 per call; send more as further calls with the same setName and phase. May be empty to record a review run that found nothing new."),
     allowDuplicates: z.boolean().optional().describe("Record findings even when an open row with the same title already exists on the project (default false: they are skipped)."),
+    checklistResults: z.array(z.object({
+      itemId: z.string().describe("Checklist item id from get_qa_checklist, e.g. 'qa-060'."),
+      disposition: z.enum(QA_DISPOSITIONS).describe("clean (checked, nothing found), finding, flag (needs a person to confirm), partial, not attempted, or n/a. Never a sign-off."),
+      note: z.string().optional().describe("One or two sentences: what was examined (sheets, schedules, search terms), the finding it produced, or why it was not attempted."),
+    })).max(QA_CHECKLIST_RESULTS_MAX).optional().describe("The item-by-item result of the checklist pass: one entry for EVERY item get_qa_checklist returned for this phase and role. Shown as a table in the QA Reviews tab."),
+    designNarrative: z.string().max(QA_NARRATIVE_MAX).optional().describe("The 'Design as read' narrative (qa-coordination-review Step 5b): about one page, plain text with blank lines between paragraphs, written only from the drawings of the set reviewed. Shown in the QA Reviews tab under a draft label."),
+    reviewId: z.number().optional().describe("Add to an EXISTING review row of this project instead of opening a new one: more findings (a punch list over 50 items), or the checklistResults / designNarrative of a review recorded earlier. Fields given replace what the row holds; fields omitted are left alone."),
   }),
-  handler: async ({ projectNumber, setName, phase, kind, sourceDoc, coverage, findings, allowDuplicates }) => {
+  handler: async ({ projectNumber, setName, phase, kind, sourceDoc, coverage, findings, allowDuplicates, checklistResults, designNarrative, reviewId }) => {
     const who = qaLedgerCaller();
     if (!who.ok) return who.response;
     // Every reviewer comment must trace to the log it was pulled from —
@@ -10107,15 +10119,64 @@ mcp.tool("record_qa_findings", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
+    // The checklist table and the narrative ride on the review row. Only sent
+    // when given, so a database that has not run the migration
+    // (20261117000000) still records the review and its findings.
+    const cleaned = checklistResults ? cleanChecklistResults(checklistResults) : null;
+    const narrative = designNarrative?.trim() ? designNarrative.trim() : null;
+    const extraCols: Record<string, unknown> = {
+      ...(cleaned && cleaned.results.length ? { checklist_results: cleaned.results } : {}),
+      ...(narrative ? { design_narrative: narrative } : {}),
+    };
+    const hasExtras = Object.keys(extraCols).length > 0;
+    let extrasNotStored = false;
+    const missingExtraCols = (e: unknown) => /checklist_results|design_narrative/.test(String((e as any)?.message ?? e));
     let review: any;
-    try {
-      review = await sbInsert("pms_qa_reviews", {
+    if (reviewId !== undefined) {
+      const rid = Math.round(reviewId);
+      let existing: any[] = [];
+      try {
+        existing = await sbGetAll(`pms_qa_reviews?select=id,project&id=eq.${rid}&project=eq.${encodeURIComponent(project)}`);
+      } catch (e) {
+        return asText({ error: `Could not read review ${rid}: ${String((e as any)?.message ?? e).slice(0, 200)}` });
+      }
+      if (!existing.length) {
+        return asText({ error: `No review ${rid} on project ${project}.`, nextStep: "Omit reviewId to open a new review, or check the id returned by the earlier record_qa_findings call." });
+      }
+      review = existing[0];
+      const patch: Record<string, unknown> = {
+        ...(coverage !== undefined ? { coverage } : {}),
+        ...(setName !== undefined ? { set_name: setName } : {}),
+        ...(phase !== undefined ? { phase } : {}),
+        ...extraCols,
+      };
+      if (Object.keys(patch).length) {
+        try {
+          await sbPatch(`pms_qa_reviews?id=eq.${rid}`, patch);
+        } catch (e) {
+          if (!hasExtras || !missingExtraCols(e)) {
+            return asText({ error: `Could not update review ${rid}: ${String((e as any)?.message ?? e).slice(0, 200)}` });
+          }
+          extrasNotStored = true;
+        }
+      }
+    } else {
+      const base = {
         project, set_name: setName ?? null, phase: phase ?? null,
         kind: kind ?? "review", source_doc: sourceDoc ?? null, coverage: coverage ?? null,
         run_by: who.email,
-      });
-    } catch (e) {
-      return asText({ error: `Could not open the review record: ${String((e as any)?.message ?? e)}` });
+      };
+      try {
+        try {
+          review = await sbInsert("pms_qa_reviews", { ...base, ...extraCols });
+        } catch (e) {
+          if (!hasExtras || !missingExtraCols(e)) throw e;
+          review = await sbInsert("pms_qa_reviews", base);
+          extrasNotStored = true;
+        }
+      } catch (e) {
+        return asText({ error: `Could not open the review record: ${String((e as any)?.message ?? e)}` });
+      }
     }
     // Open rows already on the project, keyed by title: a re-run must not
     // put the same item on the punch list twice. Advisory read — if it
@@ -10195,7 +10256,20 @@ mcp.tool("record_qa_findings", {
         skippedDuplicates,
         skippedNote: "These match rows that are still open on the project and were NOT recorded again. Back-check the existing rows (update_qa_finding) instead; pass allowDuplicates:true only if the repeat is deliberate.",
       } : {}),
-      reportLinkNote: "When you file the report, pass reviewIds: [" + review.id + "] to file_qa_report so the QA Reviews tab links it from this review.",
+      ...(cleaned && !extrasNotStored ? {
+        checklistStored: cleaned.results.length,
+        checklistCounts: checklistCountsLine(cleaned.counts),
+        ...(cleaned.dropped.length ? { checklistDropped: cleaned.dropped, checklistDroppedNote: "These entries were NOT stored (no itemId, or a disposition outside clean / finding / flag / partial / not attempted / n/a). Send them again with reviewId: " + review.id + "." } : {}),
+      } : {}),
+      ...(narrative && !extrasNotStored ? { designNarrativeStored: narrative.length + " characters" } : {}),
+      ...(extrasNotStored ? {
+        checklistAndNarrativeNotStored: true,
+        notStoredNote: "The review and its findings ARE recorded, but the checklist results and the design narrative were NOT: the database has not run migration 20261117000000. Tell the user; once it has run, send them again with reviewId: " + review.id + ".",
+      } : {}),
+      ...(reviewId === undefined && kind !== "comment-log" && kind !== "backcheck" && !cleaned && !narrative ? {
+        checklistNote: "No checklistResults or designNarrative were sent. A full review stores both on the review row (the QA Reviews tab is where the team reads them): send them with reviewId: " + review.id + ".",
+      } : {}),
+      reportLinkNote: "A report file is optional. If one is filed, pass reviewIds: [" + review.id + "] to file_qa_report so the QA Reviews tab links it from this review.",
       note: (kind === "comment-log"
         ? "Comment rows are status 'open' with no response yet. Next: draft the responses (review-comment-responses skill, save_comment_responses) so the register can go back; list_qa_findings needsResponse:true lists what is still unanswered. "
         : "Rows are status 'open'. ")

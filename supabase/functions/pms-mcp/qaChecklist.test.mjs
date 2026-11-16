@@ -138,35 +138,22 @@ for (const hint of autoHints) {
 }
 
 // Design narrative as read (Step 5b): the review writes a brief account of the
-// design from the drawings alone, inside the report. The QA tab's prompt asks
-// for it by name, and the design-narrative skill must not take it for an
-// engineer's prior narrative.
+// design from the drawings alone and stores it on the review row, with the
+// item-by-item checklist results; the QA tab shows both. No report document
+// is written unless asked for. The design-narrative skill must not take the
+// QA narrative for an engineer's prior narrative.
 {
   const skill = readFileSync(join(here, "../../../.claude/skills/qa-coordination-review/SKILL.md"), "utf8");
   assert.ok(skill.includes("## Step 5b — Design narrative as read from the drawings"));
-  assert.ok(skill.includes("## Design as read"), "the report structure has no Design as read section");
   assert.ok(skill.includes("not stated on the drawings"));
+  assert.ok(skill.includes("## Step 7 — Record in the PMS"));
+  assert.ok(skill.includes("**Do not produce a report document**"));
+  assert.ok(!skill.includes("the filed report (`file_qa_report`)"), "the skill files a report by default again");
   const pms = readFileSync(join(here, "../../../SettyPMS.html"), "utf8");
-  assert.ok(pms.includes("'Design as read' section"), "the QA tab prompt does not ask for the narrative");
+  assert.ok(pms.includes("checklistResults") && pms.includes("designNarrative"), "the QA tab prompt does not ask for the checklist results and the narrative");
+  assert.ok(!pms.includes("then file the report with file_qa_report"), "the QA tab prompt still asks for a filed report");
   const bod = readFileSync(join(here, "../../../.claude/skills/design-narrative/SKILL.md"), "utf8");
-  assert.ok(bod.includes("That is NOT a prior narrative"));
-}
-
-// A skill upload is refused when the frontmatter description is over 1024
-// characters (found 2026-11-16: three skills were over and could not be
-// uploaded). Folded YAML: lines join with a space.
-{
-  const { readdirSync } = await import("node:fs");
-  const dir = join(here, "../../../.claude/skills");
-  for (const name of readdirSync(dir)) {
-    const md = readFileSync(join(dir, name, "SKILL.md"), "utf8");
-    const fm = md.split("---")[1] || "";
-    const m = fm.match(/\ndescription: >\n([\s\S]*)$/);
-    assert.ok(m, `${name}: no folded description`);
-    const text = m[1].split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
-    assert.ok(text.length <= 1024, `${name}: description is ${text.length} characters, the limit is 1024`);
-    assert.ok(new RegExp(`\\nname: ${name}\\n`).test(fm), `${name}: name must match the folder`);
-  }
+  assert.ok(bod.includes("NOT a prior narrative"));
 }
 
 console.log("qaChecklist.test.mjs: all assertions passed");

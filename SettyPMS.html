@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-16-pms-v206-qa-prompt-design-as-read";
+    window.__appVersion = "2026-11-16-pms-v207-qa-checklist-in-tab";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16242,6 +16242,25 @@ function ProjectQAReviewsView({ project, onChange }) {
   const [fSev, setFSev] = React.useState("");
   const [fWho, setFWho] = React.useState("");
   const [keyErr, setKeyErr] = React.useState(null);        // { id, msg } when marking a key item failed
+  const [openReview, setOpenReview] = React.useState(null); // { id, view: "checklist" | "narrative" } - the review whose record is shown
+  const [itemInfo, setItemInfo] = React.useState(null);    // { itemId: { text, section, sort } } for the checklist table, loaded on first open
+  const [clOnlyOpen, setClOnlyOpen] = React.useState(false); // checklist table: hide clean and n/a rows
+
+  // The checklist table needs each item's wording, which the review row does
+  // not repeat. Loaded once, the first time a checklist is opened.
+  React.useEffect(() => {
+    if (!openReview || openReview.view !== "checklist" || itemInfo) return;
+    let dead = false;
+    sbFetch("GET", "/rest/v1/pms_qa_checklist?select=item_id,text,section,sort&order=sort")
+      .then(rows => {
+        if (dead) return;
+        const m = {};
+        (rows || []).forEach((r, i) => { m[r.item_id] = { text: r.text || "", section: r.section || "", sort: r.sort == null ? i : r.sort }; });
+        setItemInfo(m);
+      })
+      .catch(() => { if (!dead) setItemInfo({}); });
+    return () => { dead = true; };
+  }, [openReview, itemInfo]);
 
   React.useEffect(() => {
     let dead = false;
@@ -16513,7 +16532,7 @@ function ProjectQAReviewsView({ project, onChange }) {
       ? "Run an internal coordination QA review of a SPECIFIC set for " + label + ": review the folder \"" + (issuedSets.some(s => s.set === selSet) ? "Outgoing/" + selSet : selSet) + "\" - pass it as the subfolder to search_drawings and extract_sheet_index exactly as written, and treat it as the deliverable under review. A path under the QAQC folder is a PRE-ISSUANCE internal QA set: findings are fix-before-issue."
       : "Run an internal coordination QA review of the current issued drawing set for " + label + ".",
     "",
-    "Use the Setty PMS connector and the qa-coordination-review skill, in its run order: back-check this project's open ledger findings first (list_qa_findings), then the three passes - the checklist item by item (get_qa_checklist with the phase derived from the set), the knowledge layer, and the engineering review - and give me the punch list grouped by discipline. Include the skill's brief design narrative as read from the drawings (Step 5b) as the report's 'Design as read' section: about one page, written only from the sheets of this set, every value quoted as scheduled with its sheet number, 'not stated on the drawings' wherever the set is silent, and headed as a draft that is not the engineer's Basis of Design and not for issue. Record the new findings with record_qa_findings (each with its discipline) so they show here for my sign-off, then file the report with file_qa_report (pass the reviewIds) into a new dated folder under Design Reports and Narratives and give me the folder link.",
+    "Use the Setty PMS connector and the qa-coordination-review skill, in its run order: back-check this project's open ledger findings first (list_qa_findings), then the three passes - the checklist item by item (get_qa_checklist with the phase derived from the set), the knowledge layer, and the engineering review - and give me the punch list grouped by discipline. Record everything in the PMS with record_qa_findings so it shows here for my sign-off: the new findings (each with its discipline), checklistResults (one entry for every checklist item: its result, and what was examined or why it was not), and designNarrative (the skill's brief 'Design as read' narrative, Step 5b: about one page, written only from the sheets of this set, every value quoted as scheduled with its sheet number, 'not stated on the drawings' wherever the set is silent). Do not write or file a separate report document: the QA Reviews tab is where we read the results.",
   ].join("\n"));
 
   const responsesUrl = "https://claude.ai/new?q=" + encodeURIComponent([
@@ -16880,10 +16899,109 @@ function ProjectQAReviewsView({ project, onChange }) {
                 <a href={r.report_url} target="_blank" rel="noreferrer" style={{ display: "inline-block", marginTop: 4, fontSize: 11, color: P.accentLight }}
                   title="Opens the folder in SharePoint where this review's report was filed">Open the filed report</a>
               )}
+              {(Array.isArray(r.checklist_results) && r.checklist_results.length > 0 || r.design_narrative) && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                  {Array.isArray(r.checklist_results) && r.checklist_results.length > 0 && (
+                    <Btn small variant={openReview && openReview.id === r.id && openReview.view === "checklist" ? "primary" : "ghost"}
+                      onClick={() => setOpenReview(openReview && openReview.id === r.id && openReview.view === "checklist" ? null : { id: r.id, view: "checklist" })}>
+                      Checklist ({r.checklist_results.length})
+                    </Btn>
+                  )}
+                  {r.design_narrative && (
+                    <Btn small variant={openReview && openReview.id === r.id && openReview.view === "narrative" ? "primary" : "ghost"}
+                      onClick={() => setOpenReview(openReview && openReview.id === r.id && openReview.view === "narrative" ? null : { id: r.id, view: "narrative" })}>
+                      Design as read
+                    </Btn>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>
       )}
+
+      {openReview && (() => {
+        const r = (reviews || []).find(x => x.id === openReview.id);
+        if (!r) return null;
+        const head = (QA_REVIEW_KIND_LABEL[r.kind] || "Review") + " #" + r.id + (r.set_name ? " \u00b7 " + r.set_name : "") + " \u00b7 " + String(r.run_at || "").slice(0, 10);
+        const box = { border: "1px solid " + P.border, borderRadius: 10, padding: 14, marginBottom: 18, background: P.card };
+        if (openReview.view === "narrative") {
+          return (
+            <div style={box}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>Design as read</div>
+                <span style={{ color: P.textMuted, fontSize: 11 }}>{head}</span>
+                <span style={{ flex: 1 }} />
+                <Btn small variant="ghost" onClick={() => setOpenReview(null)}>Close</Btn>
+              </div>
+              <div style={{ fontSize: 11.5, fontStyle: "italic", color: P.textDim, marginBottom: 10 }}>
+                Draft, read from the drawings by the QA review. It is not the engineer&rsquo;s Basis of Design and is not for issue.
+              </div>
+              <div style={{ fontSize: 12.5, lineHeight: 1.6, whiteSpace: "pre-wrap", maxWidth: 860 }}>{String(r.design_narrative || "")}</div>
+            </div>
+          );
+        }
+        const info = itemInfo || {};
+        const all = (Array.isArray(r.checklist_results) ? r.checklist_results : []).filter(x => x && x.itemId);
+        const count = d => all.filter(x => x.disposition === d).length;
+        const rows = (clOnlyOpen ? all.filter(x => x.disposition !== "clean" && x.disposition !== "n/a") : all)
+          .map((x, i) => ({ x, i, meta: info[x.itemId] || { text: "", section: "", sort: 100000 + i } }))
+          .sort((a, b) => (a.meta.sort - b.meta.sort) || (a.i - b.i));
+        const sections = [];
+        rows.forEach(row => {
+          const name = row.meta.section || "Other items";
+          let sec = sections.find(s => s.name === name);
+          if (!sec) { sec = { name, rows: [] }; sections.push(sec); }
+          sec.rows.push(row);
+        });
+        const tone = d => d === "finding" || d === "flag" ? { color: "var(--c-e5534b)", fontWeight: 700 }
+          : d === "not attempted" || d === "partial" ? { color: P.text, fontWeight: 600 }
+          : { color: P.textMuted, fontWeight: 400 };
+        const th = { textAlign: "left", padding: "4px 8px", fontSize: 10.5, color: P.textMuted, fontWeight: 600, borderBottom: "1px solid " + P.border };
+        const td = { padding: "5px 8px", fontSize: 11.5, verticalAlign: "top", borderBottom: "1px solid " + P.border };
+        return (
+          <div style={box}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>Checklist results</div>
+              <span style={{ color: P.textMuted, fontSize: 11 }}>{head}</span>
+              <span style={{ flex: 1 }} />
+              <label style={{ fontSize: 11, color: P.textDim, display: "inline-flex", gap: 4, alignItems: "center", cursor: "pointer" }}>
+                <input type="checkbox" checked={clOnlyOpen} onChange={e => setClOnlyOpen(e.target.checked)} />
+                Hide clean and n/a
+              </label>
+              <Btn small variant="ghost" onClick={() => setOpenReview(null)}>Close</Btn>
+            </div>
+            <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 4 }}>
+              {count("clean")} clean &middot; {count("finding") + count("flag")} finding / flag &middot; {count("partial")} partial &middot; {count("not attempted")} not attempted &middot; {count("n/a")} n/a (of {all.length})
+            </div>
+            <div style={{ fontSize: 11, fontStyle: "italic", color: P.textMuted, marginBottom: 10 }}>
+              What the review looked at, item by item. &ldquo;Clean&rdquo; means nothing was found in what was examined; it is not a sign-off. &ldquo;Not attempted&rdquo; items still need a person.
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr><th style={th}>Item</th><th style={th}>Check</th><th style={th}>Result</th><th style={th}>What was examined, or why not</th></tr>
+                </thead>
+                <tbody>
+                  {sections.map(sec => (
+                    <React.Fragment key={sec.name}>
+                      <tr><td colSpan={4} style={{ padding: "8px 8px 3px", fontSize: 11, fontWeight: 700, color: P.textDim }}>{sec.name}</td></tr>
+                      {sec.rows.map(row => (
+                        <tr key={row.x.itemId}>
+                          <td style={{ ...td, whiteSpace: "nowrap", color: P.textDim }}>{row.x.itemId}</td>
+                          <td style={{ ...td, minWidth: 220 }}>{row.meta.text || <span style={{ color: P.textMuted }}>{itemInfo ? "(item no longer on the checklist)" : "\u2026"}</span>}</td>
+                          <td style={{ ...td, whiteSpace: "nowrap", ...tone(row.x.disposition) }}>{row.x.disposition}</td>
+                          <td style={{ ...td, minWidth: 260 }}>{row.x.note || ""}</td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       {openRows.length > 0 && (
         <div style={{ marginBottom: 18 }}>
