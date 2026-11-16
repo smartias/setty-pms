@@ -1442,7 +1442,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-index-large-pdfs";
+const BUILD = "2026-11-16-ranged-pacing";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -7503,8 +7503,15 @@ const DRAWING_INDEX_MAX_BYTES = MAX_DOC_BYTES; // up to here a file is downloade
 // 2026-11-16 on a 124MB architectural set: 12 pages cost 16 to 32MB; one sheet
 // of a 47MB sprinkler set cost 33MB by itself.
 const DRAWING_INDEX_RANGED_MAX_BYTES = 400 * 1024 * 1024; // over this, still skipped
-const DRAWING_INDEX_RANGED_PAGE_WINDOW = 8;               // pages per call for a ranged file
-const DRAWING_INDEX_RANGED_BYTE_BUDGET = 48 * 1024 * 1024; // stop the window once this much has been fetched
+// The first live run (BPL's 1,815-page spec book) showed that opening a ranged
+// file costs most of the bytes up front (28MB of 38MB for the first 8 pages:
+// the shared object streams) and pages after that are cheap. So the window is
+// bounded by bytes and time, not by a small page count: 8 pages a call would
+// have been 227 calls for that one book, with every file behind it waiting.
+const DRAWING_INDEX_RANGED_PAGE_WINDOW = 400;             // upper bound; bytes and the deadline stop it sooner
+const RANGED_RETRY_NOTE = "reading in ranges after a whole-file read died";
+const DRAWING_INDEX_RANGED_FLUSH_EVERY = 5;               // pages per progress write for a ranged file
+const DRAWING_INDEX_RANGED_BYTE_BUDGET = 64 * 1024 * 1024; // stop the window once this much has been fetched
 
 // Query → POSIX regexes for Postgres `~*`. Every whitespace-separated term must
 // match (AND); a double-quoted phrase is one term. Everything is escaped so user
@@ -8093,7 +8100,17 @@ async function indexDrawingFiles(a: {
       item_id: f.itemId, project_prefix: numPrefix, file_name: f.name, folder_path: f.folderPath,
       web_url: f.webUrl, size_bytes: Number(f.size) || null, updated_at: new Date().toISOString(),
     };
-    const ranged = Number(f.size) > DRAWING_INDEX_MAX_BYTES;
+    // Over the whole-download cap: ranged. Also ranged: a retry of a file whose
+    // last attempt left no error, which means the request died mid-file (the
+    // attempt is marked before the read, the error after). Two 10 to 20MB
+    // consultant sets on BPL killed the worker that way three times each;
+    // reading in ranges holds less at once and stops on a byte budget.
+    // The choice sticks for the rest of the file through RANGED_RETRY_NOTE in
+    // the row's error column (progress writes would otherwise reset it).
+    const bySize = Number(f.size) > DRAWING_INDEX_MAX_BYTES;
+    const diedLastTime = prev?.status === "pending" && Number(prev?.attempts) >= 1 && !prev?.error;
+    const ranged = bySize || diedLastTime || prev?.error === RANGED_RETRY_NOTE;
+    const progressNote = ranged && !bySize ? RANGED_RETRY_NOTE : null;
     if (Number(f.size) > DRAWING_INDEX_RANGED_MAX_BYTES) {
       const sizeMB = Math.round(Number(f.size) / 104857.6) / 10;
       await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
@@ -8140,7 +8157,7 @@ async function indexDrawingFiles(a: {
       // every page step races that failure, so it ends the file, not the request.
       const step = <T>(work: Promise<T>): Promise<T> => rp ? Promise.race([work, rp.failed]) : work;
       const pageWindow = rp ? DRAWING_INDEX_RANGED_PAGE_WINDOW : DRAWING_INDEX_PAGE_WINDOW;
-      const flushEvery = rp ? 1 : DRAWING_INDEX_FLUSH_EVERY;
+      const flushEvery = rp ? DRAWING_INDEX_RANGED_FLUSH_EVERY : DRAWING_INDEX_FLUSH_EVERY;
       const total: number = pdf.numPages;
       // Page-windowed resume (see DRAWING_INDEX_PAGE_WINDOW). Start where the
       // last attempt stopped; pms_drawing_text rows upsert on (item_id,page)
@@ -8166,7 +8183,7 @@ async function indexDrawingFiles(a: {
         // and the book re-parsed from page 1 every call until given up.
         if (upTo >= startPage) {
           await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
-            { ...base, status: "pending", attempts: 0, pages: total, pages_done: upTo, text_pages: tp, error: null },
+            { ...base, status: "pending", attempts: 0, pages: total, pages_done: upTo, text_pages: tp, error: progressNote },
             "resolution=merge-duplicates,return=minimal").catch(() => {});
         }
       };
@@ -8209,7 +8226,7 @@ async function indexDrawingFiles(a: {
           // Progress RESETS the attempt clock: only a book that crashes
           // without advancing pages_done can ever reach MAX_ATTEMPTS.
           attempts: lastFlushed > Number(prev?.pages_done || 0) ? 0 : attempts,
-          pages: total, pages_done: lastFlushed, text_pages: flushedTextPages, error: null,
+          pages: total, pages_done: lastFlushed, text_pages: flushedTextPages, error: progressNote,
           ...(finished ? { indexed_at: new Date().toISOString() } : {}),
         },
         "resolution=merge-duplicates,return=minimal");
