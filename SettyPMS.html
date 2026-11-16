@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-16-pms-v207-qa-checklist-in-tab";
+    window.__appVersion = "2026-11-16-pms-v208-qa-review-status";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16100,6 +16100,25 @@ function qaGroupByDiscipline(rows) {
 // submittal/RFI review also writes a pms_qa_reviews row, and neither is a
 // review of the drawing set.
 const qaIsSetReview = r => !!r && r.kind !== "comment-log" && r.kind !== "ca-review";
+// Where a review stands, for its card. A review reports its step as it runs
+// (set_qa_review_progress) and is marked complete when recorded. A "running"
+// row that has not reported for a long while is shown as probably ended: the
+// chat session can die without ever saying so, and "running" must not lie.
+const QA_REVIEW_STALE_MS = 90 * 60 * 1000;
+function qaReviewStatus(r, now) {
+  if (!r || !r.status || r.status === "complete") return null;
+  const at = r.progress_at ? new Date(r.progress_at).getTime() : NaN;
+  const mins = isNaN(at) ? null : Math.max(0, Math.round(((now || Date.now()) - at) / 60000));
+  const ago = mins === null ? "" : mins < 1 ? "just now" : mins < 60 ? mins + " min ago" : Math.floor(mins / 60) + " h " + (mins % 60) + " min ago";
+  if (r.status === "stopped") return { kind: "stopped", label: "Stopped early", step: r.progress_step || "", note: r.progress_note || "", ago };
+  const stale = mins !== null && mins * 60000 > QA_REVIEW_STALE_MS;
+  return {
+    kind: stale ? "stale" : "running",
+    label: stale ? "No update for a while" : "Running",
+    step: r.progress_step || "", ago,
+    note: stale ? "This review last reported " + ago + ". Its Claude session has probably ended without recording. Check that chat, or run the review again." : (r.progress_note || ""),
+  };
+}
 // QA is a DESIGN-phase activity: it exists to catch things before the set goes
 // out, and after bid it is too late to be proactive (Sara, 2026-11-16). A flag
 // raised while reviewing an RFI or a submittal is construction administration.
@@ -16245,6 +16264,27 @@ function ProjectQAReviewsView({ project, onChange }) {
   const [openReview, setOpenReview] = React.useState(null); // { id, view: "checklist" | "narrative" } - the review whose record is shown
   const [itemInfo, setItemInfo] = React.useState(null);    // { itemId: { text, section, sort } } for the checklist table, loaded on first open
   const [clOnlyOpen, setClOnlyOpen] = React.useState(false); // checklist table: hide clean and n/a rows
+
+  // While a review is running, re-read the review rows every minute so its
+  // step moves without a page reload. Stops once nothing is running.
+  const anyRunning = (reviews || []).some(r => { const s = qaReviewStatus(r); return !!s && s.kind === "running"; });
+  const [, setStatusTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!anyRunning || !projNum) return;
+    let dead = false;
+    const t = setInterval(() => {
+      Promise.all([
+        sbFetch("GET", "/rest/v1/pms_qa_reviews?project=eq." + encodeURIComponent(projNum) + "&select=*&order=run_at.desc"),
+        sbFetch("GET", "/rest/v1/pms_qa_findings?project=eq." + encodeURIComponent(projNum) + "&select=*&order=created_at.desc"),
+      ]).then(res => {
+        if (dead) return;
+        if (res[0]) setReviews(res[0]);
+        if (res[1]) setFindings(res[1]);
+        setStatusTick(n => n + 1);
+      }).catch(() => { /* the next tick tries again */ });
+    }, 60000);
+    return () => { dead = true; clearInterval(t); };
+  }, [anyRunning, projNum]);
 
   // The checklist table needs each item's wording, which the review row does
   // not repeat. Loaded once, the first time a checklist is opened.
@@ -16444,7 +16484,9 @@ function ProjectQAReviewsView({ project, onChange }) {
   (reviews || []).forEach(r => { reviewById[r.id] = r; });
   // Keyed to the newest review OF THE SET: ingesting a comment log (which
   // also writes a review row) must not blank the reviewer's ticks.
-  const latest = (reviews || []).find(qaIsSetReview) || null;
+  // The summary describes the last review that was recorded, not one that is
+  // still running (it has no findings yet) or that stopped early.
+  const latest = (reviews || []).filter(qaIsSetReview).find(r => !r.status || r.status === "complete") || (reviews || []).find(qaIsSetReview) || null;
   const manualState = latest ? ((project.qaManualChecks || {})[latest.id] || {}) : {};
 
   // The punch list: open rows, filtered, grouped by responsible discipline.
@@ -16532,7 +16574,7 @@ function ProjectQAReviewsView({ project, onChange }) {
       ? "Run an internal coordination QA review of a SPECIFIC set for " + label + ": review the folder \"" + (issuedSets.some(s => s.set === selSet) ? "Outgoing/" + selSet : selSet) + "\" - pass it as the subfolder to search_drawings and extract_sheet_index exactly as written, and treat it as the deliverable under review. A path under the QAQC folder is a PRE-ISSUANCE internal QA set: findings are fix-before-issue."
       : "Run an internal coordination QA review of the current issued drawing set for " + label + ".",
     "",
-    "Use the Setty PMS connector and the qa-coordination-review skill, in its run order: back-check this project's open ledger findings first (list_qa_findings), then the three passes - the checklist item by item (get_qa_checklist with the phase derived from the set), the knowledge layer, and the engineering review - and give me the punch list grouped by discipline. Record everything in the PMS with record_qa_findings so it shows here for my sign-off: the new findings (each with its discipline), checklistResults (one entry for every checklist item: its result, and what was examined or why it was not), and designNarrative (the skill's brief 'Design as read' narrative, Step 5b: about one page, written only from the sheets of this set, every value quoted as scheduled with its sheet number, 'not stated on the drawings' wherever the set is silent). Do not write or file a separate report document: the QA Reviews tab is where we read the results.",
+    "Use the Setty PMS connector and the qa-coordination-review skill, in its run order. Open the review in the PMS first with set_qa_review_progress and update it at each step, so this tab shows where the review stands; record with the reviewId it returns. Then: back-check this project's open ledger findings first (list_qa_findings), then the three passes - the checklist item by item (get_qa_checklist with the phase derived from the set), the knowledge layer, and the engineering review - and give me the punch list grouped by discipline. Record everything in the PMS with record_qa_findings so it shows here for my sign-off: the new findings (each with its discipline), checklistResults (one entry for every checklist item: its result, and what was examined or why it was not), and designNarrative (the skill's brief 'Design as read' narrative, Step 5b: about one page, written only from the sheets of this set, every value quoted as scheduled with its sheet number, 'not stated on the drawings' wherever the set is silent). Do not write or file a separate report document: the QA Reviews tab is where we read the results.",
   ].join("\n"));
 
   const responsesUrl = "https://claude.ai/new?q=" + encodeURIComponent([
@@ -16893,6 +16935,20 @@ function ProjectQAReviewsView({ project, onChange }) {
               <div style={{ fontWeight: 600, marginBottom: 2 }}>{QA_REVIEW_KIND_LABEL[r.kind] || "Review"} #{r.id}{r.phase ? " · " + r.phase : ""}</div>
               {(r.set_name || r.source_doc) && <div style={{ color: P.textDim, marginBottom: 2 }}>{r.set_name || r.source_doc}</div>}
               <div style={{ color: P.textMuted }}>{String(r.run_at || "").slice(0, 10)} · {r.run_by}</div>
+              {(() => {
+                const st = qaReviewStatus(r);
+                if (!st) return null;
+                const color = st.kind === "running" ? "var(--c-34d399)" : st.kind === "stale" ? P.yellow : "var(--c-e5534b)";
+                return (
+                  <div style={{ margin: "4px 0", padding: "5px 7px", borderRadius: 6, border: "1px solid " + P.border, maxWidth: 320 }}>
+                    <div style={{ fontWeight: 700, color }}>
+                      {st.kind === "running" ? "\u25cf " : ""}{st.label}{st.kind === "running" && st.ago ? " \u00b7 updated " + st.ago : ""}
+                    </div>
+                    {st.step && <div style={{ color: P.text }}>{st.step}</div>}
+                    {st.note && <div style={{ color: P.textMuted, fontSize: 10.5, marginTop: 1 }}>{st.note}</div>}
+                  </div>
+                );
+              })()}
               <div style={{ color: P.textMuted }}>{(countsByReview[r.id] || { open: 0, total: 0 }).open} open / {(countsByReview[r.id] || { total: 0 }).total} findings</div>
               {r.coverage && <div style={{ color: P.textMuted, marginTop: 2, fontSize: 10.5 }}>{r.coverage}</div>}
               {r.report_url && /^https:\/\//i.test(String(r.report_url)) && (
