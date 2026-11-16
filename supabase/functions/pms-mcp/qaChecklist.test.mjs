@@ -152,4 +152,21 @@ for (const hint of autoHints) {
   assert.ok(bod.includes("That is NOT a prior narrative"));
 }
 
+// A skill upload is refused when the frontmatter description is over 1024
+// characters (found 2026-11-16: three skills were over and could not be
+// uploaded). Folded YAML: lines join with a space.
+{
+  const { readdirSync } = await import("node:fs");
+  const dir = join(here, "../../../.claude/skills");
+  for (const name of readdirSync(dir)) {
+    const md = readFileSync(join(dir, name, "SKILL.md"), "utf8");
+    const fm = md.split("---")[1] || "";
+    const m = fm.match(/\ndescription: >\n([\s\S]*)$/);
+    assert.ok(m, `${name}: no folded description`);
+    const text = m[1].split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
+    assert.ok(text.length <= 1024, `${name}: description is ${text.length} characters, the limit is 1024`);
+    assert.ok(new RegExp(`\\nname: ${name}\\n`).test(fm), `${name}: name must match the folder`);
+  }
+}
+
 console.log("qaChecklist.test.mjs: all assertions passed");

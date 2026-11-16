@@ -2,20 +2,19 @@
 name: review-comment-responses
 description: >
   Draft Setty's responses to external design-review comments (DrChecks,
-  owner, architect, agency, code reviewer) for a project, using the Setty PMS
-  connector (setty-pms): for every open comment in the QA ledger, verify what
-  the current drawings show, choose a disposition (comply / partial / clarify
-  / no-change / already-addressed / not-in-scope / defer), write the response
-  in Setty's voice with the sheets and revisions it rests on, save the drafts
-  with save_comment_responses so they appear in the PMS QA Reviews tab for
-  the engineer's sign-off, and build the Comments & Responses register that
-  goes back to the reviewer. Use whenever someone asks to respond to, answer,
-  or draft responses for review comments, DrChecks, owner comments, agency
-  comments, a comment log or comment register, a backcheck response, or says
-  "the comments came back", "respond to the SUCF comments", "fill in the
-  response column", "what do we say to comment 14". Also ingests a comment
-  log that is not in the ledger yet. Drafts only: it never sends anything,
-  never writes the human response, and never closes an external comment.
+  owner, architect, agency, code reviewer) for a project, using the Setty
+  PMS connector (setty-pms): for every open comment in the QA ledger, verify
+  what the current drawings show, choose a disposition (comply, partial,
+  clarify, no-change, already-addressed, not-in-scope, defer), write the
+  response in Setty's voice with the sheets and revisions it rests on, save
+  the drafts so they appear in the PMS QA Reviews tab for the engineer's
+  sign-off, and build the Comments & Responses register. Use whenever
+  someone asks to respond to, answer, or draft responses for review
+  comments, DrChecks, owner or agency comments, a comment log, or says "the
+  comments came back", "respond to the SUCF comments", "what do we say to
+  comment 14". Also ingests a comment log not in the ledger yet. Drafts
+  only: never sends anything, never writes the human response, never closes
+  an external comment.
 ---
 
 # Review Comment Responses
