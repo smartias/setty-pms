@@ -3,7 +3,8 @@ name: qa-coordination-review
 description: >
   Run an internal QA review of a project's drawing set using the Setty PMS
   connector (setty-pms), in four passes: the firm's QA Deliverables Checklist
-  item by item, the knowledge layer (project lessons, best practices, agency
+  item by item (with a cross-discipline pass against the architectural,
+  structural and life safety drawings), the knowledge layer (project lessons, best practices, agency
   preferences, engineering standards), a general engineering sanity review,
   and a punch list for the team grouped by discipline. QA is PROACTIVE: it is
   for DESIGN-phase sets, through bid, with the goal of removing the causes of
@@ -67,6 +68,7 @@ below with the detail.
 | 1 | **Carry-over**: prior reviewer comments and open ledger findings, back-checked against this set | Carry-over section |
 | 2 | **Backgrounds inventory**: what other disciplines' drawings we hold, and how current | Backgrounds section |
 | 3 | **Pass 1 — Checklist**: every checklist item gets a disposition | Checklist coverage table |
+| 3b | **Cross-discipline pass**: MEPFP against architecture, structure, the life safety plan and the non-MEP specs | Cross-discipline table |
 | 4 | **Pass 2 — Knowledge layer**: lessons, best practices, agency preferences, engineering standards applied to this set | Knowledge section |
 | 5 | **Pass 3 — Engineering review**: does the design make engineering sense | Engineering flags |
 | 6 | **Punch list and report** | The deliverable |
@@ -378,7 +380,8 @@ budget goes where the risk is, and let whatever is left land honestly in
    legends/abbreviations and sequence-of-operation tags via
    `search_drawings`; the Code Compliance section (qa-400 series) and
    External Data Dependencies (qa-300 series, method below).
-4. **Cross-discipline items** (method below), congested areas first.
+4. **The cross-discipline pass** (its own section below): six checks, each
+   with a disposition, then the clash screening, congested areas first.
 5. **Remaining assisted items**, life-safety and agency-rejection risk
    first, graphics/polish last.
 6. **`manual` items**, if the checklist has any: list them verbatim as the
@@ -451,6 +454,82 @@ them. Do them right after the `auto` items, before anything else assisted.
 Each of the four gets a disposition like any other item. When one is
 `not attempted`, give the reason in the coverage table, because these are
 the checks most likely to have prevented an RFI.
+
+### Cross-discipline pass — MEPFP against everyone else's documents
+
+Run this on every DD, CD, permit and bid set. Passes 1 to 3 mostly test the
+MEPFP set against itself, and that is not where most RFIs come from. On BPL
+New Lots (41 RFIs, compared 2026-11-16) a review of the 100% CD set found 33
+problems inside the MEPFP sheets and matched none of the RFIs exactly: 18 of
+the 25 RFIs a document review could have caught were MEPFP against
+architecture, structure, the life safety plan or a non-MEP spec section.
+Several had been raised by the owner at DD and were still open at bid.
+
+It depends on Step 2. For each check, name the background it was run
+against and its date. A check whose background is missing or stale is
+`not attempted` with the reason, and the missing set goes on the punch list
+as a request to the PM. Never mark a check clean without the other
+discipline's sheet in hand.
+
+Reading the other disciplines: `search_drawings` finds their sheets when
+they are in the project library and indexed; `view_drawing` in direct mode
+renders any PDF page by itemId when they are not; `find_document` and
+`read_document` open the spec book.
+
+Every one of the six checks gets a disposition (the same vocabulary as
+Pass 1) in the report's Cross-discipline table, with the sheets compared.
+
+- **X-1 Work that another document asks MEPFP to provide.** Look in the
+  architectural plans, the door and hardware schedule, and spec divisions
+  08, 10, 11, 12 and 14 for anything that needs power, a fire alarm
+  connection, water, a drain or exhaust: fire and smoke doors and shutters
+  that close on alarm, door operators and hold-opens, motorized shades,
+  projectors and screens, appliances, hand dryers, drinking fountains,
+  elevators and their pits, drip pans called for under piping, heat trace.
+  Search for the item, then confirm it is on the E, FA, P or M sheet that
+  would serve it. An item the architect or a spec calls for and the MEPFP
+  set does not show is a finding, `rfi-bait` or `cost`.
+- **X-2 Fire ratings, dampers and vents against the life safety plan.**
+  Take the rated walls, shafts and floors from the life safety plan (or the
+  code sheet). Every duct, transfer opening and outside-air path crossing
+  one needs a fire or fire smoke damper on the mechanical plan, with power
+  and monitoring on E and FA where it is a smoke damper. Check the reverse:
+  dampers drawn at walls the life safety plan does not rate, and wall
+  ratings that differ between the architectural wall tags and the life
+  safety plan. Check stair, elevator and shaft vents for the same location
+  and type on A, M and FA. Severity `life-safety` or `cost`.
+- **X-3 Structure.** Underslab sanitary, storm and conduit against footings,
+  grade beams and wall footings on the foundation plan. Beams, joists and
+  timber members against duct mains, sprinkler mains and the heads above
+  ceilings. Roof and floor openings, equipment supports and dunnage: the
+  height and size the equipment needs against what structural shows.
+  Penetrations through beams, mass timber or post-tensioned slabs: are they
+  shown to structural, and does structural allow them.
+- **X-4 Ceiling space, chases and access.** At the tightest ceilings, add
+  up structure depth, duct or pipe, fixture and ceiling against the
+  floor-to-floor height. Equipment above hard, plaster or acoustic ceilings
+  needs an access panel on the RCP. Equipment under operable partitions,
+  stairs and soffits needs service clearance. Every riser and drop needs a
+  chase or furred wall on the architectural plan.
+- **X-5 Devices and fixtures where the architect put something else.**
+  Devices and outlets on curtain wall, glazing, millwork or movable
+  partitions, with a mounting detail and height. Lights, diffusers,
+  sprinkler heads and access panels competing for the same ceiling space on
+  the RCP. Plumbing fixtures: count, type and location against the
+  architectural plans and the fixture schedule.
+- **X-6 Rooms.** Room names and numbers on the M, E, P and FP schedules,
+  panel circuit descriptions and sequences against the current
+  architectural plans. One renumbered room on the architect's side makes
+  every schedule that names it wrong.
+
+Report format for this pass:
+
+| Check | Disposition | Compared (ours / theirs, dated) | Punch-list numbers |
+
+Findings from this pass are recorded with discipline `Multi-discipline`,
+naming each discipline that has to act in the action, and cite both sheets.
+A hit read only from text is a flag for the engineer until someone looks at
+the sheets; say which were confirmed with `view_drawing`.
 
 ### Cross-discipline clash screening (assisted — never sold as clash detection)
 
@@ -669,7 +748,8 @@ condition is `rfi-bait`.
 it is organized by who fixes it, not by how it was found:
 
 - **One list, numbered once** (P-1, P-2 ...), merging Step 1 carry-overs
-  and the findings and flags of all three passes. Carry-overs include every
+  and the findings and flags of all three passes and the
+  cross-discipline pass. Carry-overs include every
   open OWNER, agency and architect comment: the team works those from the
   same list as the internal findings, never from a separate document. The same problem found by
   two passes is ONE item naming both.
@@ -713,6 +793,7 @@ Stopped early at: <step, or "ran all steps">
 ## Evidence                   (per P-number: the text/values/renders behind it, and the view_drawing call to see it)
 ## Carry-over                 (prior comments and open ledger rows: picked up / still open / could not read)
 ## Checklist coverage         (every item id, grouped by section: disposition + what was examined or why not)
+## Cross-discipline           (the six X checks: disposition, sheets compared with dates, punch-list numbers)
 ## Knowledge layer            (per source: applicable entries with disposition; counts not applicable; sources not queried)
 ## Engineering review         (limits statement; per discipline: what was examined, flags, what was not reviewed)
 ## Backgrounds                (found with dates / stale / not found)
