@@ -45,7 +45,12 @@ test("the counts line reads like the report header", () => {
 
 test("the tool, the migration, the tab and the skill all carry both fields", () => {
   const index = read("./index.ts");
-  assert.match(index, /checklistResults: z\.array/);
+  assert.match(index, /checklistResults: z\.union\(\[z\.array/);
+  // A client holding an older copy of the tool sends new fields as text.
+  assert.match(index, /function qaLooseNumber/);
+  assert.match(index, /function qaLooseList/);
+  assert.match(index, /const checklistIn = qaLooseList\(checklistResults\)/);
+  assert.equal(index.split("reviewId: z.union([z.number(), z.string()])").length - 1, 2);
   assert.match(index, /designNarrative: z\.string/);
   assert.match(index, /checklist_results/);
   assert.match(index, /design_narrative/);
