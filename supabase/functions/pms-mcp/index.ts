@@ -69,7 +69,7 @@ import { buildLedgerMatcher, sheetKey, normalizeTag, scheduleRowsForTag } from "
 import { issuedSets, backcheckStatus } from "./backcheckCandidates.ts";
 // The floor under the QA action standard: flags "Coordinate." and the like. Pure; see its tests.
 import { actionProblem, ACTION_STANDARD } from "./qaAction.ts";
-import { cleanChecklistResults, checklistCountsLine, QA_DISPOSITIONS, QA_CHECKLIST_RESULTS_MAX, QA_NARRATIVE_MAX } from "./qaChecklistResults.ts";
+import { cleanChecklistResults, checklistCountsLine, QA_CHECKLIST_RESULTS_MAX, QA_NARRATIVE_MAX } from "./qaChecklistResults.ts";
 // Other disciplines' drawings in the index, kept apart from what Setty issued. Pure; see its tests.
 import { isBackgroundPath, BACKGROUND_NOTE } from "./drawingTier.ts";
 // Reading a large PDF in byte ranges instead of downloading it whole. See its tests.
@@ -1448,7 +1448,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-qa-review-status";
+const BUILD = "2026-11-16-qa-stale-client-fields";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -10021,6 +10021,21 @@ function qaNormalizeDiscipline(v: unknown): string | null {
 // punctuation changes do not hide a repeat.
 const qaTitleKey = (t: unknown) => String(t ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
+// A client that cached a tool's schema before a field was added does not know
+// the new field's type and sends it as text: a review id arrives as "54", a
+// list as its JSON string. Until that client reconnects it could not use the
+// field at all, so the newer QA fields accept the text form too. (Same reason
+// as the deprecated `identifier` alias on get_project.)
+function qaLooseNumber(v: unknown): number | undefined {
+  if (v === undefined || v === null || v === "") return undefined;
+  const n = typeof v === "number" ? v : Number(String(v).trim());
+  return Number.isFinite(n) ? n : NaN;
+}
+function qaLooseList(v: unknown): unknown {
+  if (typeof v !== "string") return v;
+  try { return JSON.parse(v); } catch { return undefined; }
+}
+
 async function sbPatch(path: string, body: Record<string, unknown>): Promise<any> {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method: "PATCH",
@@ -10100,13 +10115,13 @@ mcp.tool("record_qa_findings", {
       discipline: z.string().optional().describe("Responsible discipline — who fixes it: Mechanical, Electrical, Plumbing, Fire Protection, Fire Alarm, Multi-discipline (name each in the action), PM / Project, or a subconsultant discipline on prime jobs. The QA tab groups the punch list by this."),
     })).max(QA_FINDINGS_MAX_PER_CALL).describe("Up to 50 per call; send more as further calls with the same setName and phase. May be empty to record a review run that found nothing new."),
     allowDuplicates: z.boolean().optional().describe("Record findings even when an open row with the same title already exists on the project (default false: they are skipped)."),
-    checklistResults: z.array(z.object({
+    checklistResults: z.union([z.array(z.object({
       itemId: z.string().describe("Checklist item id from get_qa_checklist, e.g. 'qa-060'."),
-      disposition: z.enum(QA_DISPOSITIONS).describe("clean (checked, nothing found), finding, flag (needs a person to confirm), partial, not attempted, or n/a. Never a sign-off."),
+      disposition: z.string().describe("clean (checked, nothing found), finding, flag (needs a person to confirm), partial, not attempted, or n/a. Never a sign-off."),
       note: z.string().optional().describe("One or two sentences: what was examined (sheets, schedules, search terms), the finding it produced, or why it was not attempted."),
-    })).max(QA_CHECKLIST_RESULTS_MAX).optional().describe("The item-by-item result of the checklist pass: one entry for EVERY item get_qa_checklist returned for this phase and role. Shown as a table in the QA Reviews tab."),
+    })).max(QA_CHECKLIST_RESULTS_MAX), z.string()]).optional().describe("The item-by-item result of the checklist pass: one entry for EVERY item get_qa_checklist returned for this phase and role. Shown as a table in the QA Reviews tab."),
     designNarrative: z.string().max(QA_NARRATIVE_MAX).optional().describe("The 'Design as read' narrative (qa-coordination-review Step 5b): about one page, plain text with blank lines between paragraphs, written only from the drawings of the set reviewed. Shown in the QA Reviews tab under a draft label."),
-    reviewId: z.number().optional().describe("Add to an EXISTING review row of this project instead of opening a new one: more findings (a punch list over 50 items), or the checklistResults / designNarrative of a review recorded earlier. Fields given replace what the row holds; fields omitted are left alone."),
+    reviewId: z.union([z.number(), z.string()]).optional().describe("Add to an EXISTING review row of this project instead of opening a new one: more findings (a punch list over 50 items), or the checklistResults / designNarrative of a review recorded earlier. Fields given replace what the row holds; fields omitted are left alone."),
   }),
   handler: async ({ projectNumber, setName, phase, kind, sourceDoc, coverage, findings, allowDuplicates, checklistResults, designNarrative, reviewId }) => {
     const who = qaLedgerCaller();
@@ -10124,7 +10139,13 @@ mcp.tool("record_qa_findings", {
     // The checklist table and the narrative ride on the review row. Only sent
     // when given, so a database that has not run the migration
     // (20261117000000) still records the review and its findings.
-    const cleaned = checklistResults ? cleanChecklistResults(checklistResults) : null;
+    const reviewIdNum = qaLooseNumber(reviewId);
+    if (Number.isNaN(reviewIdNum)) return asText({ error: `reviewId must be a review number, got "${String(reviewId).slice(0, 40)}".` });
+    const checklistIn = qaLooseList(checklistResults);
+    if (checklistResults !== undefined && !Array.isArray(checklistIn)) {
+      return asText({ error: "checklistResults must be a list of { itemId, disposition, note } entries (or that list as JSON text)." });
+    }
+    const cleaned = checklistIn ? cleanChecklistResults(checklistIn) : null;
     const narrative = designNarrative?.trim() ? designNarrative.trim() : null;
     const extraCols: Record<string, unknown> = {
       ...(cleaned && cleaned.results.length ? { checklist_results: cleaned.results } : {}),
@@ -10134,8 +10155,8 @@ mcp.tool("record_qa_findings", {
     let extrasNotStored = false;
     const missingExtraCols = (e: unknown) => /checklist_results|design_narrative/.test(String((e as any)?.message ?? e));
     let review: any;
-    if (reviewId !== undefined) {
-      const rid = Math.round(reviewId);
+    if (reviewIdNum !== undefined) {
+      const rid = Math.round(reviewIdNum);
       let existing: any[] = [];
       try {
         existing = await sbGetAll(`pms_qa_reviews?select=id,project&id=eq.${rid}&project=eq.${encodeURIComponent(project)}`);
@@ -10276,7 +10297,7 @@ mcp.tool("record_qa_findings", {
         checklistAndNarrativeNotStored: true,
         notStoredNote: "The review and its findings ARE recorded, but the checklist results and the design narrative were NOT: the database has not run migration 20261117000000. Tell the user; once it has run, send them again with reviewId: " + review.id + ".",
       } : {}),
-      ...(reviewId === undefined && kind !== "comment-log" && kind !== "backcheck" && !cleaned && !narrative ? {
+      ...(reviewIdNum === undefined && kind !== "comment-log" && kind !== "backcheck" && !cleaned && !narrative ? {
         checklistNote: "No checklistResults or designNarrative were sent. A full review stores both on the review row (the QA Reviews tab is where the team reads them): send them with reviewId: " + review.id + ".",
       } : {}),
       reportLinkNote: "A report file is optional. If one is filed, pass reviewIds: [" + review.id + "] to file_qa_report so the QA Reviews tab links it from this review.",
@@ -10534,7 +10555,7 @@ mcp.tool("set_qa_review_progress", {
     "findings, no sign-off.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number OR name."),
-    reviewId: z.number().optional().describe("The review to update: the id this tool returned at the start. Omit ONLY on the first call, which opens the review."),
+    reviewId: z.union([z.number(), z.string()]).optional().describe("The review to update: the id this tool returned at the start. Omit ONLY on the first call, which opens the review."),
     step: z.string().max(QA_PROGRESS_STEP_MAX).describe("The step the review is on, in a few words, e.g. 'Pass 1: checklist' or 'Step 6: punch list'."),
     note: z.string().max(QA_PROGRESS_NOTE_MAX).optional().describe("One line of detail: what is done, what is next, or why it stopped."),
     status: z.enum(["running", "stopped"]).optional().describe("Default 'running'. 'stopped' when the review ends early without being recorded; say why in note. Completion is set by record_qa_findings, not here."),
@@ -10561,7 +10582,9 @@ mcp.tool("set_qa_review_progress", {
       project, progressNotStored: true,
       note: "The database has not run migration 20261117010000, so a review's status cannot be shown yet. Carry on with the review and record it at the end as usual; do not call this tool again in this run.",
     };
-    if (reviewId === undefined) {
+    const reviewIdNum = qaLooseNumber(reviewId);
+    if (Number.isNaN(reviewIdNum)) return asText({ error: `reviewId must be a review number, got "${String(reviewId).slice(0, 40)}".` });
+    if (reviewIdNum === undefined) {
       if (cols.status === "stopped") return asText({ error: "Nothing to stop: pass the reviewId of the running review." });
       try {
         const review = await sbInsert("pms_qa_reviews", {
@@ -10576,7 +10599,7 @@ mcp.tool("set_qa_review_progress", {
         return asText({ error: `Could not open the review: ${String((e as any)?.message ?? e).slice(0, 200)}` });
       }
     }
-    const rid = Math.round(reviewId);
+    const rid = Math.round(reviewIdNum);
     try {
       const existing: any[] = await sbGetAll(`pms_qa_reviews?select=id,status&id=eq.${rid}&project=eq.${encodeURIComponent(project)}`);
       if (!existing.length) return asText({ error: `No review ${rid} on project ${project}.` });
