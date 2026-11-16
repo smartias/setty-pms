@@ -1434,7 +1434,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-current-set-real-sets";
+const BUILD = "2026-11-16-qa-key-items";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -9897,7 +9897,9 @@ mcp.tool("record_qa_findings", {
     "change order, so bulletin findings state their cost consequence), rfi-bait (contractor confusion), " +
     "polish. Give each finding its responsible `discipline` (Mechanical, Electrical, Plumbing, Fire Protection, " +
     "Fire Alarm, Multi-discipline, PM / Project, or a subconsultant discipline on prime jobs): the QA Reviews " +
-    "tab groups the punch list by it; a person, not this tool, assigns a name. A finding whose title matches a " +
+    "tab groups the punch list by it; a person, not this tool, assigns a name. Mark the few findings the team " +
+    "must see first with keyItem and a keyReason (recurring / clear miss / high consequence): the tab, the Send " +
+    "to team email and the export show them in bold. A finding whose title matches a " +
     "row that is still open on the project is SKIPPED (returned in skippedDuplicates) so a re-run does not " +
     "double the punch list; pass allowDuplicates only when the repeat is deliberate. A review that found " +
     "nothing new still records its review row (findings may be empty) so the run and its coverage are on " +
@@ -9918,9 +9920,11 @@ mcp.tool("record_qa_findings", {
       severity: z.enum(QA_FINDING_SEVERITIES).optional(),
       sheets: z.array(z.string()).optional().describe("Sheets cited, with revisions: ['M601 Rev 11', 'E602 Rev 15']."),
       evidence: z.string().optional().describe("The text/values supporting it."),
-      action: z.string().optional().describe("Suggested action."),
+      action: z.string().optional().describe("The instruction the team works from, one or two sentences: the discipline first, an imperative verb, the sheet (and schedule row, keynote, detail or spec section) to change, and the value or wording it should read when done, e.g. 'Mechanical: on M-601, change FCU-1-1 from 220/1/60 to 208/1/60 to match E-601.' Name every sheet that has to change. Written so a back-check is a lookup on the named sheet. Never just 'coordinate' or 'verify'."),
       externalRef: z.string().optional().describe("Comment number / DrChecks id for external rows."),
       tags: z.array(z.string()).max(20).optional().describe("Equipment tags the finding concerns, e.g. ['EF-7','LP-2']. Stored beside sheets so a later RFI or submittal review of that equipment finds this row."),
+      keyItem: z.boolean().optional().describe("Mark as a KEY ITEM, shown in bold at the top of its discipline group. Use sparingly, roughly 1 finding in 5 at most, and always with keyReason."),
+      keyReason: z.string().max(120).optional().describe("Why it is a key item: 'recurring' (the same kind of problem keeps coming up on this project or across projects), 'clear miss' (a plain error on the face of the documents), or 'high consequence' (life safety, a failed inspection, a change order). A few words more may follow."),
       discipline: z.string().optional().describe("Responsible discipline — who fixes it: Mechanical, Electrical, Plumbing, Fire Protection, Fire Alarm, Multi-discipline (name each in the action), PM / Project, or a subconsultant discipline on prime jobs. The QA tab groups the punch list by this."),
     })).max(QA_FINDINGS_MAX_PER_CALL).describe("Up to 50 per call; send more as further calls with the same setName and phase. May be empty to record a review run that found nothing new."),
     allowDuplicates: z.boolean().optional().describe("Record findings even when an open row with the same title already exists on the project (default false: they are skipped)."),
@@ -9962,13 +9966,14 @@ mcp.tool("record_qa_findings", {
     const recorded: Array<{ id: number; title: string }> = [];
     const failed: Array<{ title: string; reason: string }> = [];
     const skippedDuplicates: Array<{ title: string; existingId: number }> = [];
+    const keyNotStored: string[] = [];
     for (const f of findings) {
       const key = qaTitleKey(f.title);
       const dup = openByTitle.get(key);
       if (dup !== undefined) { skippedDuplicates.push({ title: f.title, existingId: dup }); continue; }
       try {
         const discipline = qaNormalizeDiscipline(f.discipline);
-        const row = await sbInsert("pms_qa_findings", {
+        const base = {
           review_id: review.id, project,
           item_id: f.itemId ?? null, source: f.source ?? "qa", severity: f.severity ?? null,
           title: f.title, sheets: f.sheets ?? null, evidence: f.evidence ?? null,
@@ -9981,7 +9986,19 @@ mcp.tool("record_qa_findings", {
             return tg.length ? { tags: tg } : {};
           })(),
           created_by: who.email,
-        });
+        };
+        const keyCols = f.keyItem
+          ? { key_item: true, key_reason: f.keyReason?.trim() || null, key_by: who.email, key_at: new Date().toISOString() } : null;
+        let row: any;
+        try {
+          row = await sbInsert("pms_qa_findings", keyCols ? { ...base, ...keyCols } : base);
+        } catch (e) {
+          // The finding matters more than its emphasis: a database without
+          // the key-item columns still gets the row, and the caller is told.
+          if (!keyCols || !/key_item|key_reason|key_by|key_at/.test(String((e as any)?.message ?? e))) throw e;
+          row = await sbInsert("pms_qa_findings", base);
+          keyNotStored.push(f.title);
+        }
         recorded.push({ id: row.id, title: f.title });
         if (key) openByTitle.set(key, row.id);
       } catch (e) {
@@ -9991,6 +10008,10 @@ mcp.tool("record_qa_findings", {
     return asText({
       project, reviewId: review.id, recorded: recorded.length, findingIds: recorded,
       ...(failed.length ? { failed } : {}),
+      ...(keyNotStored.length ? {
+        keyItemNotStored: keyNotStored,
+        keyItemNote: "These rows were recorded WITHOUT their key-item mark: the database has not run the key-item migration (20261116200000). Tell the user; the findings themselves are saved.",
+      } : {}),
       ...(skippedDuplicates.length ? {
         skippedDuplicates,
         skippedNote: "These match rows that are still open on the project and were NOT recorded again. Back-check the existing rows (update_qa_finding) instead; pass allowDuplicates:true only if the repeat is deliberate.",
@@ -10193,6 +10214,41 @@ mcp.tool("update_qa_finding", {
       });
     } catch (e) {
       return asText({ error: `Update failed: ${String((e as any)?.message ?? e)}` });
+    }
+  },
+});
+
+// Emphasis on a row that already exists: the review marks a few key items
+// when it records them; this is for marking or unmarking afterwards. Status
+// is untouched, so it is safe on external comments too.
+mcp.tool("mark_qa_key_item", {
+  description:
+    "Mark or unmark one QA ledger finding as a KEY ITEM: shown in bold, first in its discipline group, in the QA " +
+    "Reviews tab, the Send to team email and the export. A key item is one the team must see first, for one of " +
+    "three reasons: 'recurring' (the same kind of problem keeps coming up on this project or across projects), " +
+    "'clear miss' (a plain error on the face of the documents that a check should have caught) or 'high " +
+    "consequence' (life safety, a failed inspection, a change order). Keep it to roughly 1 open finding in 5: " +
+    "when everything is bold nothing is. Does not change status, discipline or assignee.",
+  inputSchema: z.object({
+    findingId: z.number().describe("The ledger row id (from record_qa_findings or list_qa_findings)."),
+    keyItem: z.boolean().describe("true to mark, false to unmark."),
+    reason: z.string().max(120).optional().describe("Required when marking: recurring, clear miss or high consequence, plus a few words if useful."),
+  }),
+  handler: async ({ findingId, keyItem, reason }) => {
+    const who = qaLedgerCaller();
+    if (!who.ok) return who.response;
+    if (keyItem && !reason?.trim()) return asText({ error: "A key item needs a reason: recurring, clear miss or high consequence." });
+    try {
+      const updated = await sbPatch("pms_qa_findings?id=eq." + Math.round(findingId), {
+        key_item: keyItem, key_reason: keyItem ? reason!.trim() : null, key_by: who.email, key_at: new Date().toISOString(),
+      });
+      if (!updated?.id) return asText({ error: `No ledger finding with id ${findingId}.` });
+      return asText({ id: updated.id, title: updated.title, keyItem: updated.key_item, reason: updated.key_reason, by: who.email });
+    } catch (e) {
+      const m = String((e as any)?.message ?? e);
+      return asText({ error: /key_item|key_reason/.test(m)
+        ? "Key items are not available yet: the database has not run the key-item migration (20261116200000)."
+        : `Update failed: ${m}` });
     }
   },
 });

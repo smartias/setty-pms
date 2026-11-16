@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-16-pms-v202-qa-backcheck-button";
+    window.__appVersion = "2026-11-16-pms-v203-qa-key-items";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16092,6 +16092,9 @@ const qaIsCaFinding = f => !!f && (f.source === "rfi" || f.source === "submittal
 // or marks an issue. The three severities that carry real consequence
 // (life-safety, agency rejection, cost) are counted apart from the rest.
 const QA_HIGH_SEV = { "life-safety": 1, "agency": 1, "cost": 1 };
+// Key items first, otherwise the order given (Array.sort is stable).
+const qaKeyFirst = (a, b) => (b && b.key_item ? 1 : 0) - (a && a.key_item ? 1 : 0);
+const QA_KEY_REASONS = ["recurring", "clear miss", "high consequence"];
 const QA_COMMENT_SRC = { drchecks: 1, owner: 1, architect: 1, agency: 1 };
 // "M-601 Rev 3" / "M601" / "E101.00" -> "m601" / "e101". Mirrors sheetKey in
 // pms-mcp/qaLedgerMatch.ts.
@@ -16171,7 +16174,7 @@ function qaPunchListEmailHtml(opts) {
       html += "<tr>"
         + '<td style="' + td + 'white-space:nowrap;">' + esc(f.id) + "</td>"
         + '<td style="' + td + "white-space:nowrap;color:" + (sevColor[f.severity] || "#667085") + ';font-weight:600;">' + esc(f.severity || "") + "</td>"
-        + '<td style="' + td + '">' + esc(f.title) + (src ? '<br><span style="color:#667085;font-size:9pt;">' + esc(src) + "</span>" : "") + "</td>"
+        + '<td style="' + td + '">' + (f.key_item ? '<b>KEY ITEM' + (f.key_reason ? " (" + esc(f.key_reason) + ")" : "") + ": " + esc(f.title) + "</b>" : esc(f.title)) + (src ? '<br><span style="color:#667085;font-size:9pt;">' + esc(src) + "</span>" : "") + "</td>"
         + '<td style="' + td + '">' + esc(Array.isArray(f.sheets) ? f.sheets.join(", ") : "") + "</td>"
         + '<td style="' + td + '">' + esc(f.action || "") + "</td>"
         + '<td style="' + td + '">' + esc(f.assignee || "") + "</td>"
@@ -16216,6 +16219,7 @@ function ProjectQAReviewsView({ project, onChange }) {
   const [fDisc, setFDisc] = React.useState("");            // punch list filters ("" = all)
   const [fSev, setFSev] = React.useState("");
   const [fWho, setFWho] = React.useState("");
+  const [keyErr, setKeyErr] = React.useState(null);        // { id, msg } when marking a key item failed
 
   React.useEffect(() => {
     let dead = false;
@@ -16337,6 +16341,22 @@ function ProjectQAReviewsView({ project, onChange }) {
     setBusyId(null);
   }
 
+  // Key item: a finding the team must see first (recurring, a clear miss, or
+  // high consequence). Shown in bold, first in its group. The review marks a
+  // few; a person can mark or unmark any row here.
+  async function commitKey(f, key, reason) {
+    setBusyId(f.id);
+    try {
+      await sheetRefRpc("pms_qa_finding_set_key", { p_id: f.id, p_key: !!key, p_reason: key ? (reason || null) : null });
+      setFindings(fs => fs.map(x => x.id === f.id ? { ...x, key_item: !!key, key_reason: key ? (reason || null) : null } : x));
+      setKeyErr(null);
+    } catch (e) {
+      const m = String(e.message || e);
+      setKeyErr({ id: f.id, msg: /HTTP 404/.test(m) ? "Key items are not available yet: the database update that adds them has not been applied." : "Could not save: " + m });
+    }
+    setBusyId(null);
+  }
+
   // Who fixes it. The review names a discipline; a person names a person.
   function openAssignEditor(f) {
     const d = qaFindingDiscipline(f);
@@ -16394,8 +16414,9 @@ function ProjectQAReviewsView({ project, onChange }) {
   const openAssignees = [...new Set(openRows.map(f => f.assignee).filter(Boolean))].sort();
   const openSeverities = Object.keys(QA_SEV_RANK).filter(sv => openRows.some(f => f.severity === sv));
   const shownOpen = openRows.filter(f =>
-    (!fDisc || discOf(f) === fDisc) && (!fSev || (fSev === "__high__" ? !!QA_HIGH_SEV[f.severity] : f.severity === fSev)) &&
-    (!fWho || (fWho === "__none__" ? !f.assignee : f.assignee === fWho)));
+    (!fDisc || discOf(f) === fDisc) && (!fSev || (fSev === "__key__" ? !!f.key_item : fSev === "__high__" ? !!QA_HIGH_SEV[f.severity] : f.severity === fSev)) &&
+    (!fWho || (fWho === "__none__" ? !f.assignee : f.assignee === fWho)))
+    .sort(qaKeyFirst);
   const openGroups = qaGroupByDiscipline(shownOpen);
   const filtersOn = !!(fDisc || fSev || fWho);
   const disciplineChoices = [...new Set([...QA_DISCIPLINES, ...findings.map(f => qaNormalizeDiscipline(f.discipline)).filter(Boolean)])];
@@ -16423,7 +16444,7 @@ function ProjectQAReviewsView({ project, onChange }) {
       const bodyHtml = qaPunchListEmailHtml({
         projectLabel: label, groups: openGroups,
         setName: latest && latest.set_name, reviewDate: latest ? String(latest.run_at || "").slice(0, 10) : "",
-        filterNote: filtersOn ? "This list is filtered: " + [fDisc, fSev === "__high__" ? "life-safety / agency / cost" : fSev, fWho === "__none__" ? "unassigned" : fWho].filter(Boolean).join(", ") + "." : "",
+        filterNote: filtersOn ? "This list is filtered: " + [fDisc, fSev === "__key__" ? "key items only" : fSev === "__high__" ? "life-safety / agency / cost" : fSev, fWho === "__none__" ? "unassigned" : fWho].filter(Boolean).join(", ") + "." : "",
         tabUrl: window.location.origin + window.location.pathname + "#project:" + project.id,
         reportUrl: withReport ? withReport.report_url : "",
       });
@@ -16441,15 +16462,16 @@ function ProjectQAReviewsView({ project, onChange }) {
   }
 
   function exportPunchList(fmtKind) {
-    const headers = ["Ledger #", "Discipline", "Severity", "Finding", "Sheets", "Action", "Source", "Checklist item", "Status", "Assigned to", "Raised"];
+    const headers = ["Ledger #", "Discipline", "Severity", "Finding", "Sheets", "Action", "Source", "Checklist item", "Status", "Assigned to", "Raised", "Key item"];
     const rows = [];
     openGroups.forEach(g => g.rows.forEach(f => rows.push([
       f.id, g.name, f.severity || "", f.title || "", Array.isArray(f.sheets) ? f.sheets.join(", ") : "", f.action || "",
       QA_EXTERNAL_SRC[f.source] ? QA_EXTERNAL_SRC[f.source] + " comment" + (f.external_ref ? " #" + f.external_ref : "") : (f.source === "ripple" ? "Ripple check" : (QA_CA_SRC[f.source] || "Internal QA")),
       f.item_id || "", String(f.status || "").replace(/_/g, " "), f.assignee || "", String(f.created_at || "").slice(0, 10),
+      f.key_item ? (f.key_reason || "yes") : "",
     ])));
     const summary = rows.length + " open item" + (rows.length === 1 ? "" : "s")
-      + (filtersOn ? " (filtered: " + [fDisc, fSev === "__high__" ? "life-safety / agency / cost" : fSev, fWho === "__none__" ? "unassigned" : fWho].filter(Boolean).join(", ") + ")" : "")
+      + (filtersOn ? " (filtered: " + [fDisc, fSev === "__key__" ? "key items only" : fSev === "__high__" ? "life-safety / agency / cost" : fSev, fWho === "__none__" ? "unassigned" : fWho].filter(Boolean).join(", ") + ")" : "")
       + " - grouped by discipline, worst first";
     pmsExportTable({ project, title: "QA Punch List", fileTag: "QA_Punch_List", headers, rows, fmtKind, summary });
   }
@@ -16561,6 +16583,7 @@ function ProjectQAReviewsView({ project, onChange }) {
     return (
       <div key={f.id} style={{ border: "1px solid " + (external && isOpen ? "var(--c-8957e5)" : P.border), borderRadius: 8, padding: "10px 12px", marginBottom: 8, background: P.card }}>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
+          {f.key_item && <QAChip text={"\u2605 key item" + (f.key_reason ? ": " + f.key_reason : "")} color="var(--c-d4a72c)" solid />}
           {f.severity && <QAChip text={f.severity} color={sevColor} solid={f.severity === "life-safety"} />}
           <QAChip text={external ? (QA_EXTERNAL_SRC[f.source] + (f.external_ref ? " #" + f.external_ref : "")) : (f.source === "ripple" ? "ripple" : (QA_CA_SRC[f.source] ? QA_CA_SRC[f.source] + (f.external_ref ? " " + f.external_ref : "") : "internal QA"))} color={external ? "var(--c-8957e5)" : undefined} />
           {f.item_id && <QAChip text={f.item_id} />}
@@ -16572,7 +16595,7 @@ function ProjectQAReviewsView({ project, onChange }) {
           <span style={{ flex: 1 }} />
           <span style={{ fontSize: 10, color: P.textMuted }}>{String(f.created_at || "").slice(0, 10)}</span>
         </div>
-        <div style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 4 }}>{f.title}</div>
+        <div style={{ fontSize: f.key_item ? 13 : 12.5, fontWeight: f.key_item ? 700 : 400, lineHeight: 1.5, marginBottom: 4 }}>{f.title}</div>
         <div style={{ fontSize: 10.5, color: P.textMuted, marginBottom: 4 }}>
           {provenance}
           {disc.name !== QA_DISCIPLINE_NONE && <span>{"  \u00b7  "}{disc.name}{disc.inferred ? " (inferred from the sheets)" : ""}</span>}
@@ -16582,7 +16605,7 @@ function ProjectQAReviewsView({ project, onChange }) {
           <div style={{ fontSize: 11, color: P.accentLight, marginBottom: 4 }}>{f.sheets.join("  ·  ")}</div>
         )}
         {ex && f.evidence && <div style={{ fontSize: 11.5, color: P.textDim, background: P.bg, borderRadius: 6, padding: "6px 8px", marginBottom: 4, whiteSpace: "pre-wrap" }}>{f.evidence}</div>}
-        {ex && f.action && <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 4 }}>Suggested: {f.action}</div>}
+        {f.action && <div style={{ fontSize: 12, color: P.text, marginBottom: 4 }}><b style={{ color: P.textDim, fontWeight: 600 }}>Action:</b> {f.action}</div>}
         {f.status_note && (f.status === "ready_to_backcheck" ? (
           <div style={{ fontSize: 11, color: autoNote ? "var(--c-3fb950)" : P.textMuted, marginBottom: 4 }}>
             {autoNote ? f.status_note : "Backcheck note: " + f.status_note}
@@ -16627,6 +16650,15 @@ function ProjectQAReviewsView({ project, onChange }) {
           {isOpen && <Btn variant="primary" small disabled={busyId === f.id} title={f.status === "ready_to_backcheck" ? "Confirms the backcheck evidence on the row - no note needed" : undefined} onClick={() => openStatusEditor(f, "closed")}>{f.status === "ready_to_backcheck" ? "Confirm & close" : "Resolved - close"}</Btn>}
           {f.status === "open" && <Btn variant="ghost" small disabled={busyId === f.id} title="The fix appears on the drawings (or a response came in) - marks the row ready for a person to backcheck and close" onClick={() => openStatusEditor(f, "ready_to_backcheck")}>Ready to backcheck</Btn>}
           {isOpen && <Btn variant="ghost" small disabled={busyId === f.id} title="Set the discipline that fixes this, and optionally the person" onClick={() => openAssignEditor(f)}>{f.assignee ? "Reassign" : "Assign"}</Btn>}
+          {isOpen && (f.key_item
+            ? <Btn variant="ghost" small disabled={busyId === f.id} title="Remove the key item mark: the row goes back to normal weight" onClick={() => commitKey(f, false)}>Unmark key</Btn>
+            : <select value="" disabled={busyId === f.id} aria-label="Mark as a key item" title="Mark as a key item: shown in bold, first in its group, in this tab, the Send to team email and the export"
+                onChange={e => { if (e.target.value) commitKey(f, true, e.target.value); }}
+                style={{ background: "transparent", color: P.textDim, border: "1px solid " + P.border, borderRadius: 6, fontSize: 11, padding: "3px 6px" }}>
+                <option value="">{"\u2606"} Key item...</option>
+                {QA_KEY_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>)}
+          {keyErr && keyErr.id === f.id && <span style={{ fontSize: 11, color: P.red }}>{keyErr.msg}</span>}
           {isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => openStatusEditor(f, "dismissed")}>Dismiss</Btn>}
           {!isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => openStatusEditor(f, "open")}>Reopen</Btn>}
         </div>
@@ -16850,8 +16882,9 @@ function ProjectQAReviewsView({ project, onChange }) {
                   </select>
                   <select value={fSev} onChange={e => setFSev(e.target.value)} style={sel} aria-label="Filter by severity">
                     <option value="">All severities</option>
+                    {openRows.some(f => f.key_item) && <option value="__key__">Key items</option>}
                     <option value="__high__">Life-safety / agency / cost</option>
-                    {[...new Set([...openSeverities, fSev === "__high__" ? "" : fSev].filter(Boolean))].map(sv => <option key={sv} value={sv}>{sv}</option>)}
+                    {[...new Set([...openSeverities, (fSev === "__high__" || fSev === "__key__") ? "" : fSev].filter(Boolean))].map(sv => <option key={sv} value={sv}>{sv}</option>)}
                   </select>
                   <select value={fWho} onChange={e => setFWho(e.target.value)} style={sel} aria-label="Filter by assignee">
                     <option value="">Anyone</option>
