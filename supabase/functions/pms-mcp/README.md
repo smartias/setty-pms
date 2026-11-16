@@ -485,6 +485,28 @@ that made them safe to reverse.
   a tag its rows from the saved schedules, newest issued revision that was
   read, never a pre-issuance QA copy.
 
+**Schedule reader, second pass (2026-11-16, `scheduleExtract.ts`).** On
+Tabler's 100% CD set the reader returned nothing or garbage for M601, M602,
+P601 and every panel schedule. Three causes, all fixed in the extractor, which
+now lives in its own pure module:
+
+- *Rotated pages.* A landscape sheet is often a portrait page with `/Rotate 90`;
+  its text runs carry the rotation, so raw x/y read columns as rows.
+  `orientSheetItems` turns the page upright from the runs' own transforms and
+  drops runs in any other direction.
+- *Side-by-side tables.* A table's width is found from where the text under its
+  title actually sits (runs carry their printed width), a table ends at the
+  next title below it, and columns come from the clear paper between them, which
+  reads right-aligned numbers that start-position clustering merged.
+- *Panel schedules.* "Branch Panel: RP1A" / "PANELBOARD: LP-2" are titles; the
+  ratings block comes back as `details`, the circuits as rows. Notes under any
+  schedule come back as `notes`.
+
+Known limits: a table with no title of either kind (Tabler's E614 feeder
+schedule) is still not read; when two tables nearly touch, the left one can
+pick up the right one's first column. `SCHED_PARSER` is `sched-v2`, so parses
+saved by the first version are not served.
+
 Equipment tags themselves are still derived from the drawing text at query
 time (`find_equipment`); only links that a review or a person established are
 stored.

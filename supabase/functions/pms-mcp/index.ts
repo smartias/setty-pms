@@ -58,6 +58,7 @@ import { pickRecordedFolderName, matchRecordedFolder } from "./recordedFolder.ts
 import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OLD } from "./sheetFromFilename.ts";
 // set_project_fee: what may be written into the Fee Calculator and what is
 // refused. Pure; see feeCalculator.test.mjs.
+import { extractSheetTables, orientSheetItems, type SheetTextItem, type SheetTable } from "./scheduleExtract.ts";
 import { buildLedgerMatcher, sheetKey, normalizeTag, scheduleRowsForTag } from "./qaLedgerMatch.ts";
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
@@ -1424,7 +1425,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-schedule-cache-find-related";
+const BUILD = "2026-11-16-schedule-reader-rotated-panels";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -9215,97 +9216,7 @@ async function resolveIndexedSheet(projectNumber: string | undefined, sheet: str
 // rebuild the tables: lines cluster by y, columns by recurring x-starts —
 // CAD-generated schedules are strongly aligned, which is what makes this
 // reliable without any drawing-specific configuration.
-const SCHEDULE_TITLE_RE = /\bSCHEDULES?\b/i;
-const SCHED_LINE_TOL = 3;      // pt of y-drift that still reads as one row
-const SCHED_COL_TOL = 6;       // pt of x-drift that still reads as one column
-const SCHED_GAP_LINES = 3;     // sparse lines that end the table
-const SCHED_MAX_ROWS = 250;    // per schedule
 const SCHED_MAX_CHARS = 60_000; // whole response guard
-
-type SheetTextItem = { str: string; x: number; y: number };
-
-function clusterSheetLines(items: SheetTextItem[]): Array<{ y: number; cells: SheetTextItem[] }> {
-  const sorted = [...items].sort((a, b) => b.y - a.y || a.x - b.x);
-  const lines: Array<{ y: number; cells: SheetTextItem[] }> = [];
-  for (const it of sorted) {
-    const line = lines[lines.length - 1];
-    if (line && Math.abs(line.y - it.y) <= SCHED_LINE_TOL) line.cells.push(it);
-    else lines.push({ y: it.y, cells: [it] });
-  }
-  for (const l of lines) l.cells.sort((a, b) => a.x - b.x);
-  return lines;
-}
-
-function extractSheetTables(items: SheetTextItem[], matchFilter?: string): Array<{ title: string; columns: number; rows: string[][]; truncatedRows: number }> {
-  const lines = clusterSheetLines(items);
-  const titleIdx: number[] = [];
-  lines.forEach((l, i) => {
-    const text = l.cells.map((c) => c.str).join(" ");
-    if (SCHEDULE_TITLE_RE.test(text) && text.length <= 120) titleIdx.push(i);
-  });
-  const tables: Array<{ title: string; columns: number; rows: string[][]; truncatedRows: number }> = [];
-  for (let t = 0; t < titleIdx.length; t++) {
-    const start = titleIdx[t];
-    const end = titleIdx[t + 1] ?? lines.length;
-    const titleLine = lines[start];
-    const title = titleLine.cells.map((c) => c.str).join(" ").trim();
-    if (matchFilter && !title.toLowerCase().includes(matchFilter.toLowerCase())) continue;
-    const titleX = titleLine.cells[0].x;
-
-    // Header = the first line below the title with 3+ cells near it; its
-    // extent bounds the table horizontally so plan text to the side of the
-    // schedule never leaks into the rows.
-    let headerCells: SheetTextItem[] | null = null, hIdx = -1;
-    for (let i = start + 1; i < end && i - start <= 6; i++) {
-      const cand = lines[i].cells.filter((c) => c.x >= titleX - 60);
-      if (cand.length >= 3) { headerCells = cand; hIdx = i; break; }
-    }
-    if (!headerCells) continue;
-    const xMin = headerCells[0].x - 20;
-    const xMax = headerCells[headerCells.length - 1].x + 400;
-
-    const blockLines: SheetTextItem[][] = [];
-    let gap = 0;
-    for (let i = hIdx; i < end; i++) {
-      const cells = lines[i].cells.filter((c) => c.x >= xMin && c.x <= xMax);
-      if (cells.length >= 2) { blockLines.push(cells); gap = 0; }
-      else if (blockLines.length && ++gap >= SCHED_GAP_LINES) break;
-    }
-    if (blockLines.length < 2) continue;
-
-    // Column starts: x positions that recur across enough rows. A text run
-    // the PDF split mid-cell yields an x nothing else aligns with, so the
-    // frequency floor drops it and bucketing folds it into the column to
-    // its left.
-    const clusters: Array<{ sum: number; n: number; lines: Set<number> }> = [];
-    blockLines.forEach((cells, li) => {
-      for (const c of cells) {
-        const hit = clusters.find((cl) => Math.abs(cl.sum / cl.n - c.x) <= SCHED_COL_TOL);
-        if (hit) { hit.sum += c.x; hit.n++; hit.lines.add(li); }
-        else clusters.push({ sum: c.x, n: 1, lines: new Set([li]) });
-      }
-    });
-    const minLines = Math.max(2, Math.ceil(blockLines.length * 0.3));
-    const bounds = clusters.filter((cl) => cl.lines.size >= minLines).map((cl) => cl.sum / cl.n).sort((a, b) => a - b);
-    if (bounds.length < 2) continue;
-
-    const rows = blockLines.map((cells) => {
-      const row = new Array<string>(bounds.length).fill("");
-      for (const c of cells) {
-        let k = 0;
-        while (k + 1 < bounds.length && bounds[k + 1] <= c.x + SCHED_COL_TOL) k++;
-        row[k] = row[k] ? row[k] + " " + c.str : c.str;
-      }
-      return row;
-    });
-    tables.push({
-      title, columns: bounds.length,
-      rows: rows.slice(0, SCHED_MAX_ROWS),
-      truncatedRows: Math.max(0, rows.length - SCHED_MAX_ROWS),
-    });
-  }
-  return tables;
-}
 
 // ── The schedule cache (pms_drawing_schedules, migration 20261116160000) ─────
 // The parse of a given PDF page never changes, so it is kept: the QA review
@@ -9315,8 +9226,8 @@ function extractSheetTables(items: SheetTextItem[], matchFilter?: string): Array
 // extractor version matches and the file is the size it was when parsed, so a
 // PDF replaced in place is re-read. Reads and writes are best-effort: any
 // failure (the table not created yet included) falls back to the live parse.
-const SCHED_PARSER = "sched-v1"; // bump when extractSheetTables changes what it returns
-type SchedTable = { title: string; columns: number; rows: string[][]; truncatedRows: number };
+const SCHED_PARSER = "sched-v2"; // bump when extractSheetTables changes what it returns (v2: rotated pages, panels, side-by-side tables)
+type SchedTable = SheetTable;
 async function schedCacheGet(fileId: string, page: number): Promise<{ tables: SchedTable[]; hasText: boolean; cachedAt: string } | null> {
   try {
     const rows = await sbGet("pms_drawing_schedules?select=tables,has_text,size_bytes,cached_at&item_id=eq." + encodeURIComponent(fileId) +
@@ -9344,7 +9255,10 @@ async function schedCachePut(fileId: string, page: number, sizeBytes: number, ha
 mcp.tool("read_drawing_schedule", {
   description:
     "READ the SCHEDULES on a drawing sheet as structured rows — equipment schedules, fixture schedules, fan/" +
-    "pump/AHU schedules, panel schedules: any titled '... SCHEDULE' table on the sheet. Answers 'what's the " +
+    "pump/AHU schedules, and PANEL SCHEDULES: any table titled '... SCHEDULE', and any panel titled " +
+    "'Branch Panel: RP1A' / 'PANELBOARD: LP-2' (its ratings — supply, mains, AIC, voltage — come back under " +
+    "`details`, its circuits as rows; pass match:'RP1A' for one panel). Notes printed under a schedule come " +
+    "back under `notes`. A table with no title of either kind is not recognized. Answers 'what's the " +
     "CFM on AHU-2', 'list the fixture units on the plumbing schedule', 'compare the fan schedule between " +
     "revisions' (call once per revision, pinned with revision or set). Pass projectNumber + sheet (e.g. " +
     "'M-601'); the NEWEST indexed revision reads by default, and the result lists other indexed revisions. " +
@@ -9416,13 +9330,11 @@ mcp.tool("read_drawing_schedule", {
         }
         const pg = await pdf.getPage(pageInFile);
         const tc = await pg.getTextContent();
-        items = (tc.items as any[])
-          .map((it) => ({
-            str: String(it?.str ?? "").replace(/\u0000/g, " ").trim(),
-            x: Number(it?.transform?.[4] ?? 0),
-            y: Number(it?.transform?.[5] ?? 0),
-          }))
-          .filter((it) => it.str);
+        // Upright coordinates whatever the page's rotation: a landscape sheet
+        // is often a portrait page with /Rotate 90, and reading its raw x/y
+        // turns columns into rows (Tabler M601/M602, 2026-11-16). Null bytes
+        // are stripped there too.
+        items = orientSheetItems(tc.items as any[]);
         if (typeof pg.cleanup === "function") pg.cleanup();
       } catch (e) {
         return asText({ ...source, error: `Could not read the page: ${String((e as any)?.message ?? e).slice(0, 200)}` });
