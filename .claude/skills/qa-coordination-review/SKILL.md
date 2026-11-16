@@ -604,6 +604,12 @@ is in the report header, and spend the budget accordingly:
      folder,* mark the parts that need them (panels and feeders, roof
      framing, pads) `not attempted` and name the missing set. Do not write
      "not shown" about something that would be on a sheet you do not have.
+  9. *On a new building* this item is small: it applies to what the design
+     connects to outside the building. Check that the utility mains (size,
+     invert, location) and the water supply pressure used for the
+     sprinkler and booster pump design each name their source and date (a
+     survey, a utility letter, a flow test). Say "not applicable beyond the
+     utility connections" for the rest.
 - **qa-631 Every new service shows its point of connection.** Follow each
   new pipe, duct, feeder and cable to both ends. "Connect to existing" with
   no location, a line that stops at a break line, or a chase with several
@@ -621,11 +627,32 @@ is in the report header, and spend the budget accordingly:
     the PM can confirm each was picked up. It becomes a finding when the
     other set is in the folder and does not show it.
 - **qa-632 Plan, schedule and spec agree on the small items.** qa-602 is
-  major equipment; this is everything smaller. Circuit numbers on plans
-  against the panel schedule. Duct, pipe and accessory material in spec
-  part 2, spec part 3, the schedule, the detail and the plan note: one
-  answer in all five. Device ratings and mounting heights in a sheet note
-  against what is drawn. Quote both sources in the finding.
+  major equipment (its capacity, model and electrical data against the
+  spec); this is everything smaller, and also the tags and room names that
+  panel schedule descriptions give for any equipment.
+  1. *Circuiting, at two depths.* For every panel, set level: each circuit
+     on the schedule has a homerun on a plan, and each homerun has a
+     schedule row. This is cheap; do all panels. For at least three panels,
+     description level: the load description, equipment tag, room name and
+     breaker on the schedule match what the plan shows at that homerun. Say
+     in the coverage statement which panels got which depth. Homerun labels
+     have to be paired with the nearby tags by position, so render the
+     plan; the text layer alone will not do it.
+  2. *Material and construction.* Duct, pipe and accessory material in spec
+     part 2, spec part 3, the schedule, the detail and the plan note: one
+     answer in all five. Include damper leakage class and sleeve gauge,
+     flexible duct length and supports, insulation and jacketing.
+  3. *Device ratings and mounting heights* in a sheet note against what is
+     drawn. Counting devices on the plans against a riser or schedule is
+     part of this.
+  4. *A silent source is a finding too.* A spec paragraph that points to a
+     section not in the book, a schedule heading with the wrong text under
+     it, or a material stated nowhere, leaves the contractor with no
+     answer, the same as two answers. Check each referenced section against
+     the table of contents.
+  5. Quote both sources word for word. Where the sources can be read as two
+     layers of one requirement (an insulation jacket, then a protective
+     enclosure), say so and raise it as a flag, not a conflict.
 - **qa-633 Every controlled item names its controller.**
   1. *Build the list from more than the equipment schedules.* Schedules
      give the fans, pumps, heaters and units. Add what has no schedule row:
@@ -652,11 +679,30 @@ is in the report header, and spend the budget accordingly:
      room unit) is a finding.
   6. *When the spec has no sequence section,* the drawings are the only
      sequence. Record the dangling spec reference once and carry on.
-- **qa-634 A revision is carried to every sheet it touches.** For each
-  changed item in an addendum or bulletin, list every other place it
-  appears, in every discipline, and open each at its newest revision. Use
-  the `history` block from `search_drawings` (`absentAt`,
-  `stillPresentAtLatest`) to find sheets that still show the old condition.
+- **qa-634 A revision is carried to every sheet it touches.**
+  1. *Start from the narrative.* List every changed item the bulletin or
+     addendum narrative names. Narratives are often Word files, which
+     `read_document` cannot read: get them with `download_document`.
+  2. *For each changed item, list every other place it appears,* in every
+     discipline: plan, riser, schedule, detail, key note, panel schedule
+     and its summary, specification, and the structural and architectural
+     sheets that carry its weight, size or opening.
+  3. *Open each of those at its newest revision.* The `history` block from
+     `search_drawings` (`absentAt`, `stillPresentAtLatest`) helps when the
+     sheets are indexed with sheet numbers. When it comes back empty or
+     with no sheet numbers, compare directly: download the bulletin sheets
+     and the prior issue of the same sheets and compare their text, then
+     look at the sheets that were NOT reissued for the old value.
+  4. *Check the reissued sheets against the narrative too:* the revision
+     label and date on each sheet, and that the sheet shows what the
+     narrative says it shows.
+  5. *When the newest revision of a location cannot be opened* (an earlier
+     bulletin is not in Outgoing, or the sheet belongs to another
+     discipline whose set is not in the folder), it goes on the to-confirm
+     list with the sheet named. Do not report it as not carried.
+  6. *A closed finding does not close its neighbours.* When an earlier
+     finding was closed as fixed in this revision, check the other places
+     that value appears; the fix is often made on one sheet only.
 
 **One row per defect.** A connection to an existing system can read as
 qa-630 or qa-631. Use qa-630 when the question is whether the existing
@@ -689,7 +735,10 @@ circuits that turned out to be in use and the floor box that had to move
 off a beam. Oakwood (plant HVAC replacement, Setty a sub with HVAC sheets
 only): 6 of 11 existing-condition RFIs flagged, 2 close; the misses needed
 the structural and equipment sheets. BPL (new building): qa-631 and qa-633
-caught 2 of 3 matching RFIs exactly.
+caught 2 of 3 matching RFIs exactly; qa-632 and qa-634 found real
+errors there (a damper leakage class, flexible duct limits, a bulletin
+change not carried to the switchboard summary) but none that had become an
+RFI on that job.
 
 ### Cross-discipline pass — MEPFP against everyone else's documents
 
