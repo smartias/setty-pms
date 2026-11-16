@@ -438,6 +438,18 @@ those `pms_qa_reviews` rows (`report_url`, this project's rows only) so the tab
 links the report. Findings appear only in the project's QA Reviews tab; nothing
 here writes to the knowledge layer.
 
+**Automatic back-check (2026-11-16).** `list_backcheck_candidates` lists the
+projects whose ledger has open rows the newest issued set has not been checked
+against (`backcheckCandidates.ts`). The newest set is the newest dated Outgoing
+folder holding discipline drawings in `pms_documents`. A row is due unless its
+own review names that set, or a `kind:'backcheck'` review naming that set was
+recorded after the row was created; so a back-check pass must record its review
+row with `setName` equal to the set's folder name even when nothing moved.
+Source `rfi`/`submittal` rows are not counted. The connector cannot start a
+Claude run: a scheduled Claude task (created in claude.ai with this connector
+attached) calls the tool daily and back-checks what it returns. External rows
+stop at `ready_to_backcheck`; a person closes them in the tab.
+
 **The ledger in CA reviews (2026-11-16).** `list_qa_findings` takes `sheets`
 and `mentions` (equipment tags) and returns only the rows that cite or name
 them, each with `matchedOn` (`qaLedgerMatch.ts`: sheet references reduce to a

@@ -60,6 +60,8 @@ import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OL
 // refused. Pure; see feeCalculator.test.mjs.
 import { extractSheetTables, orientSheetItems, type SheetTextItem, type SheetTable } from "./scheduleExtract.ts";
 import { buildLedgerMatcher, sheetKey, normalizeTag, scheduleRowsForTag } from "./qaLedgerMatch.ts";
+// Which projects have ledger rows due a back-check against a newer set. Pure; see its tests.
+import { issuedSets, backcheckStatus } from "./backcheckCandidates.ts";
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
@@ -1425,7 +1427,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-schedule-reader-rotated-panels";
+const BUILD = "2026-11-16-backcheck-candidates";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -10165,6 +10167,80 @@ mcp.tool("update_qa_finding", {
     } catch (e) {
       return asText({ error: `Update failed: ${String((e as any)?.message ?? e)}` });
     }
+  },
+});
+
+// The work list for an automatic back-check. Nothing in the connector can
+// start a Claude run, so "automatic" is a scheduled Claude task that calls
+// this first: it answers "which projects have open rows the newest issued set
+// has not been checked against", so the task spends nothing on projects where
+// nothing changed. The set list comes from pms_documents (refreshed about
+// daily), so a set uploaded today is seen on the next sync.
+const BACKCHECK_MAX_PROJECTS = 80;
+mcp.tool("list_backcheck_candidates", {
+  description:
+    "The work list for a QA BACK-CHECK run: projects whose QA ledger has OPEN rows (internal findings, owner / " +
+    "architect / agency / DrChecks comments) that have not yet been checked against the project's NEWEST issued " +
+    "set. A row is due unless it was raised on that set, or a back-check of that set was recorded after the row " +
+    "was created. Use it to answer 'what needs back-checking', and as the first call of a scheduled back-check " +
+    "task. For each due project: list_qa_findings, verify each open row on the newest revision of its cited " +
+    "sheets, update_qa_finding with the evidence (external rows to ready_to_backcheck at most; a person closes " +
+    "them), then record_qa_findings kind:'backcheck' with setName EXACTLY the newestSet.name returned here, " +
+    "even when nothing moved (findings may be empty): that review row is what marks the set as checked, and " +
+    "without it the project is listed again on the next run. Rows with source rfi or submittal are construction " +
+    "flags and are not counted. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().optional().describe("One project (number OR name). Omit for every project with open rows."),
+    includeNotDue: z.boolean().optional().describe("Also list projects with open rows where nothing is due, with the reason (default false)."),
+  }),
+  handler: async ({ projectNumber, includeNotDue }) => {
+    let only: string | null = null;
+    if (projectNumber) {
+      const pid = await resolveProjectId(projectNumber);
+      if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+      only = String((await getProjectById(pid))?.projectNumber || projectNumber);
+    }
+    let rows: any[], reviews: any[];
+    try {
+      rows = await sbGetAll("pms_qa_findings?select=id,project,review_id,source,created_at&status=eq.open" +
+        (only ? "&project=eq." + encodeURIComponent(only) : "") + "&order=id");
+      reviews = await sbGetAll("pms_qa_reviews?select=id,project,set_name,kind,run_at" +
+        (only ? "&project=eq." + encodeURIComponent(only) : "") + "&order=id");
+    } catch (e) {
+      return asText({ error: `Could not read the ledger: ${String((e as any)?.message ?? e)}` });
+    }
+    const projects = [...new Set(rows.map((r) => String(r.project)))].sort();
+    const cut = projects.length > BACKCHECK_MAX_PROJECTS;
+    const due: any[] = [], notDue: any[] = [], noSet: string[] = [], unread: string[] = [];
+    for (const project of projects.slice(0, BACKCHECK_MAX_PROJECTS)) {
+      let files: any[];
+      try {
+        files = await sbGetAll("pms_documents?select=set_name,set_date,first_seen_at,discipline" +
+          "&project_prefix=eq." + encodeURIComponent(project.toLowerCase().trim()) +
+          "&area=eq.Outgoing&doc_type=eq.Drawing&set_name=not.is.null&discipline=not.is.null&deleted_at=is.null&order=item_id");
+      } catch { unread.push(project); continue; }
+      const sets = issuedSets(files.filter((f) => !isPreIssuePath(String(f.set_name))));
+      const c = backcheckStatus(project, rows, reviews, sets);
+      if (!c.newestSet) { if (c.openRows) noSet.push(project); continue; }
+      const row = {
+        project, newestSet: c.newestSet.name, setDate: c.newestSet.date, setFirstIndexed: c.newestSet.firstSeenAt,
+        previousSet: sets[1]?.name ?? null, openRows: c.openRows, due: c.due,
+        dueExternalComments: c.dueExternal, dueInternalFindings: c.dueInternal,
+        raisedOnThisSet: c.raisedOnThisSet, alreadyChecked: c.alreadyChecked,
+        lastBackcheckOfThisSet: c.lastBackcheckOfThisSet,
+      };
+      if (c.due) due.push({ ...row, dueFindingIds: c.dueIds.slice(0, 200) });
+      else notDue.push(row);
+    }
+    due.sort((a, b) => b.dueExternalComments - a.dueExternalComments || b.due - a.due || a.project.localeCompare(b.project));
+    return asText({
+      dueProjects: due.length, candidates: due,
+      ...(includeNotDue ? { notDue } : { notDueProjects: notDue.length }),
+      ...(noSet.length ? { noIssuedSetIndexed: noSet, noIssuedSetNote: "Open rows but no Outgoing drawing set in the file index: nothing to check against yet." } : {}),
+      ...(unread.length ? { couldNotRead: unread } : {}),
+      ...(cut ? { truncated: true, truncatedNote: `Only the first ${BACKCHECK_MAX_PROJECTS} projects with open rows were examined.` } : {}),
+      note: "newestSet is the newest dated Outgoing folder holding discipline drawings, from the file index (refreshed about daily; a set uploaded today appears after the next sync). Confirm it with get_current_set before checking. After each project, record_qa_findings kind:'backcheck' with setName exactly newestSet, findings empty if nothing new was found: that is what marks it done.",
+    });
   },
 });
 

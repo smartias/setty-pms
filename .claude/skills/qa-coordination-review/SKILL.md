@@ -279,6 +279,27 @@ resubmission", "check the addendum picked everything up"): run Steps 0–1,
 the change record and ripple analysis for the new set, then Steps 6–7.
 Passes 1–3 in full are for a review of a deliverable.
 
+**Automatic back-check** (a scheduled run, or "what needs back-checking"):
+call `list_backcheck_candidates`. It lists the projects whose open rows the
+newest issued set has not been checked against. For each one, in the order
+returned and no more than the run's stated limit:
+
+1. Confirm the newest set with `get_current_set`. If the drawing index
+   still has files pending for it, skip the project this run and say so:
+   a half-indexed set produces false "not picked up" results.
+2. Run item 4 above on the due rows only (`dueFindingIds`). Move a row only
+   on evidence read in this run. A row the set does not answer, or that
+   drawings cannot answer ("review with the client"), stays `open` and is
+   not touched.
+3. Record the pass: `record_qa_findings` with `kind:'backcheck'`,
+   `setName` exactly the `newestSet` the tool returned, the coverage note
+   (rows checked, moved, left open, could not verify, sheets not read) and
+   `findings` empty unless the new set introduced a new problem. This row
+   is what marks the set as checked; without it the project is listed
+   again tomorrow.
+4. Do not ingest comment logs, draft responses, file a report or run
+   Passes 1 to 3 in an automatic run. Report what moved, per project.
+
 ## Step 2 — Backgrounds inventory: ALWAYS run, ALWAYS report
 
 MEPFP coordination is only checkable against the other disciplines'
