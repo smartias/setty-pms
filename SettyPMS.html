@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-16-pms-v205-qa-tab-no-ca-flags";
+    window.__appVersion = "2026-11-16-pms-v206-qa-prompt-design-as-read";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16513,7 +16513,7 @@ function ProjectQAReviewsView({ project, onChange }) {
       ? "Run an internal coordination QA review of a SPECIFIC set for " + label + ": review the folder \"" + (issuedSets.some(s => s.set === selSet) ? "Outgoing/" + selSet : selSet) + "\" - pass it as the subfolder to search_drawings and extract_sheet_index exactly as written, and treat it as the deliverable under review. A path under the QAQC folder is a PRE-ISSUANCE internal QA set: findings are fix-before-issue."
       : "Run an internal coordination QA review of the current issued drawing set for " + label + ".",
     "",
-    "Use the Setty PMS connector and the qa-coordination-review skill, in its run order: back-check this project's open ledger findings first (list_qa_findings), then the three passes - the checklist item by item (get_qa_checklist with the phase derived from the set), the knowledge layer, and the engineering review - and give me the punch list grouped by discipline. Record the new findings with record_qa_findings (each with its discipline) so they show here for my sign-off, then file the report with file_qa_report (pass the reviewIds) into a new dated folder under Design Reports and Narratives and give me the folder link.",
+    "Use the Setty PMS connector and the qa-coordination-review skill, in its run order: back-check this project's open ledger findings first (list_qa_findings), then the three passes - the checklist item by item (get_qa_checklist with the phase derived from the set), the knowledge layer, and the engineering review - and give me the punch list grouped by discipline. Include the skill's brief design narrative as read from the drawings (Step 5b) as the report's 'Design as read' section: about one page, written only from the sheets of this set, every value quoted as scheduled with its sheet number, 'not stated on the drawings' wherever the set is silent, and headed as a draft that is not the engineer's Basis of Design and not for issue. Record the new findings with record_qa_findings (each with its discipline) so they show here for my sign-off, then file the report with file_qa_report (pass the reviewIds) into a new dated folder under Design Reports and Narratives and give me the folder link.",
   ].join("\n"));
 
   const responsesUrl = "https://claude.ai/new?q=" + encodeURIComponent([

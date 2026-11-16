@@ -137,4 +137,19 @@ for (const hint of autoHints) {
   for (const id of ids) assert.ok(skill.includes(`**${id} `), `skill has no method for ${id}`);
 }
 
+// Design narrative as read (Step 5b): the review writes a brief account of the
+// design from the drawings alone, inside the report. The QA tab's prompt asks
+// for it by name, and the design-narrative skill must not take it for an
+// engineer's prior narrative.
+{
+  const skill = readFileSync(join(here, "../../../.claude/skills/qa-coordination-review/SKILL.md"), "utf8");
+  assert.ok(skill.includes("## Step 5b — Design narrative as read from the drawings"));
+  assert.ok(skill.includes("## Design as read"), "the report structure has no Design as read section");
+  assert.ok(skill.includes("not stated on the drawings"));
+  const pms = readFileSync(join(here, "../../../SettyPMS.html"), "utf8");
+  assert.ok(pms.includes("'Design as read' section"), "the QA tab prompt does not ask for the narrative");
+  const bod = readFileSync(join(here, "../../../.claude/skills/design-narrative/SKILL.md"), "utf8");
+  assert.ok(bod.includes("That is NOT a prior narrative"));
+}
+
 console.log("qaChecklist.test.mjs: all assertions passed");
