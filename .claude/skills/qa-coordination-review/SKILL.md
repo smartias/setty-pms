@@ -21,10 +21,14 @@ description: >
 # QA Coordination Review
 
 You are performing Setty's internal QA review of an MEPFP drawing set. The
-deliverable is a **punch list the team works from**, backed by a findings
-report a human reviewer signs off on. The report also carries a brief
-**design narrative as read from the drawings** (Step 5b), so the engineer
-can see what the reviewer understood the design to be.
+deliverable is a **punch list the team works from**, recorded in the
+project's QA Reviews tab for a human reviewer to sign off on. Two more
+things are recorded with it and shown in the same tab: the **result of
+every checklist item** (was it looked at, and what was examined), and a
+brief **design narrative as read from the drawings** (Step 5b), so the
+engineer can see what the reviewer understood the design to be. The PMS is
+where the team reads all three. Do not write a report document, in
+markdown or any other format, unless the user asks for a file.
 
 ## What QA is for — and where it stops
 
@@ -71,9 +75,9 @@ below with the detail.
 | 3d | **RFI history checks** (qa-630 series): existing conditions, points of connection, small-item agreement, controls scope, revisions carried through. Weighted by project type | Checklist coverage table |
 | 4 | **Pass 2 — Knowledge layer**: lessons, best practices, agency preferences, engineering standards applied to this set | Knowledge section |
 | 5 | **Pass 3 — Engineering review**: does the design make engineering sense | Engineering flags |
-| 5b | **Design narrative as read**: a brief account of the design, written only from what this review read on the drawings | Design as read section |
-| 6 | **Punch list and report** | The deliverable |
-| 7 | **Record and file**: ledger rows, report in SharePoint | Ledger ids, folder link |
+| 5b | **Design narrative as read**: a brief account of the design, written only from what this review read on the drawings | Design as read, in the QA Reviews tab |
+| 6 | **Punch list and summary** | The deliverable |
+| 7 | **Record in the PMS**: findings, checklist results and narrative | Review id and ledger ids |
 
 A resubmission or a bid addendum — a set that CHANGES an earlier one —
 adds the **change record and ripple analysis** (its own section) inside
@@ -97,9 +101,10 @@ stopped and what was not done.
    every checklist item you did not attempt — a review that looks complete
    but silently skipped half the set is worse than no review.
 3. **What this review may write, and nothing else.** The review itself only
-   reads. It writes in exactly two places, both at the end (Step 7): the QA
-   findings ledger (`record_qa_findings`, and `update_qa_finding` for
-   back-check status moves) and the filed report (`file_qa_report`). It
+   reads. It writes in one place, at the end (Step 7): this project's QA
+   record (`record_qa_findings` for the findings, the checklist results and
+   the design narrative, and `update_qa_finding` for back-check status
+   moves). `file_qa_report` is used only when the user asks for a file. It
    never marks checklist items complete, never closes an EXTERNAL comment
    (those stop at `ready_to_backcheck` for a human), never writes to
    Outgoing or the transmittal register, and never issues or sends anything.
@@ -1214,8 +1219,9 @@ uses:
 
 It is not the `design-narrative` skill's Basis of Design. That document is
 built from the whole record (minutes, emails, prior narratives) for the
-engineer to issue. This one is built from the drawings only, stays inside
-the QA report, and is never issued.
+engineer to issue. This one is built from the drawings only, is stored on
+the review in the PMS (`designNarrative`, Step 7), and is never issued or
+filed as a document.
 
 **Rules:**
 
@@ -1258,16 +1264,21 @@ the QA report, and is never issued.
    expect to find and could not.
 5. **Basis**: which sheets it was read from, and what was not read.
 
-Head the section with this line, verbatim: *Draft, read from the drawings
-by the QA review. It is not the engineer's Basis of Design and is not for
-issue.* When the set is a pre-issuance QAQC copy, add that it describes the
-QA copy and not what the client holds.
+Write it as plain text, with a blank line between paragraphs and each
+paragraph starting with its label (`Scope:`, `Codes and criteria:`,
+`Mechanical:`, `Not stated on the drawings:`, `Basis:`). No markdown
+headings, tables or bullets: the tab shows it as written. The tab prints
+the draft label above it (*Draft, read from the drawings by the QA review.
+It is not the engineer's Basis of Design and is not for issue.*), so do not
+repeat that line. When the set is a pre-issuance QAQC copy, say in the
+Basis paragraph that it describes the QA copy and not what the client
+holds.
 
 **How it ties to the punch list.** The narrative adds no findings of its
 own. A missing design basis is already Pass 3's "Design basis stated and
 consistent" check, and a disagreement is already a finding: each goes on
 the punch list once, and the narrative cites the P-number. Nothing from the
-narrative is recorded in the ledger or saved to the knowledge layer.
+narrative becomes a ledger finding or is saved to the knowledge layer.
 
 **When to skip it.** Back-check-only and automatic back-check runs do not
 write one. If the review stopped early, write it from what was read and say
@@ -1347,40 +1358,55 @@ consequence in a few words: "would be an RFI", "bidders will ask",
 "change order: feeder upsize after award". On a bid set or an addendum this
 matters most, because it is the last point at which the fix is free.
 
-Report structure:
+**What the user gets in chat.** Lead with the result, not with process,
+and keep it short, because the detail is in the PMS:
 
 ```
-# QA Review — <project> — <set> (<phase>)
-Reviewed <date> · <lifecycle moment> · Setty role: <prime|sub>
+QA Review: <project>, <set> (<phase>)
+<lifecycle moment> · Setty role: <prime|sub> · Stopped early at: <step, or "ran all steps">
 Index coverage: <n>/<m> current-set files, <k> textless sheets unreviewed by machine
 Checklist: <a> clean · <b> finding/flag · <c> partial · <d> not attempted · <e> n/a (of <total>)
-Stopped early at: <step, or "ran all steps">
 
-## Summary                    (3–6 lines: what would embarrass the firm in front of the owner; counts by severity)
-## Punch list                 (grouped by discipline, P-numbered — the table above)
-## Evidence                   (per P-number: the text/values/renders behind it, and the view_drawing call to see it)
-## Design as read             (Step 5b: the draft label; scope, codes and criteria, one paragraph per discipline, not stated on the drawings, basis)
-## Carry-over                 (prior comments and open ledger rows: picked up / still open / could not read)
-## Checklist coverage         (every item id, grouped by section: disposition + what was examined or why not)
-## Cross-discipline           (the coverage plan; the seven X checks: disposition, areas done, sheets compared with dates, punch-list numbers; areas not reached)
-## Knowledge layer            (per source: applicable entries with disposition; counts not applicable; sources not queried)
-## Engineering review         (limits statement; per discipline: what was examined, flags, what was not reviewed)
-## Backgrounds                (found with dates / stale / not found)
-## Not reviewed by machine    (textless or unindexed sheets, areas not screened, manual-tier items)
+Summary        3 to 6 lines: what would embarrass the firm in front of the owner; counts by severity
+Punch list     grouped by discipline, P-numbered, key items in bold
+Carry-over     prior comments and open ledger rows: picked up / still open / could not read
+Not covered    backgrounds missing or stale, areas and checks not reached, sheets unread by machine
 ```
 
-Lead with the summary and the punch list, not with process. If the user
-wants a file, produce the report as a document (docx skill conventions) and
-the punch list additionally as a spreadsheet (xlsx: one row per item, the
-columns above, one tab or filter per discipline) so the team can sort and
-tick it off; otherwise the chat report stands.
+Everything else is recorded, not written up: each finding carries its own
+evidence, each checklist item its result and what was examined, and the
+narrative is on the review. **Do not produce a report document** (no
+markdown file, no docx) unless the user asks for one. If they do, build it
+from the same content (docx skill conventions; the punch list additionally
+as an xlsx with one row per item) and file it as Step 7 describes.
 
-## Step 7 — Record and file
+## Step 7 — Record in the PMS
 
 Do this when the request asked for it (the QA tab's "Run Coordination
-Review" prompt does), or once the user has seen the report and says to go
-ahead. If neither, end the report by offering both. Recording and filing
-are separate from sign-off: neither marks anything resolved.
+Review" prompt does), or once the user has seen the punch list and says to
+go ahead. If neither, end by offering to record. Recording is separate
+from sign-off: it marks nothing resolved.
+
+One `record_qa_findings` call carries three things, and a full review
+sends all three:
+
+- `findings`: the punch-list items (rules below).
+- `checklistResults`: **one entry for every item `get_qa_checklist`
+  returned** for this phase and role, the cross-discipline, bidder's eye
+  and RFI history items included: `itemId`, `disposition` (`clean`,
+  `finding`, `flag`, `partial`, `not attempted`, `n/a`) and a `note` of one
+  or two sentences. The note says what was examined (sheets, schedules,
+  search terms) for `clean` and `partial`, the P-number and the gist for
+  `finding` and `flag`, the reason for `not attempted`, and why it does
+  not apply for `n/a`. This table is what the QA Reviews tab shows as the
+  checklist, so an item left out reads as never considered. Never write
+  `clean` for an item that was not examined.
+- `designNarrative`: the Step 5b text.
+
+The result reports `checklistStored` and `designNarrativeStored`. If it
+says `checklistAndNarrativeNotStored`, the database is missing a migration:
+tell the user, and send both again with `reviewId` once it has run. To add
+either to a review recorded earlier, pass that review's `reviewId`.
 
 **Record: `record_qa_findings`.** Write the punch-list items into the
 ledger (project, set, phase, coverage, and per finding: title, item id,
@@ -1398,6 +1424,8 @@ and quietly dies.
   `record_qa_findings` with an empty `findings` list so the run, its set
   and its coverage are on the project's record.
 - **More than 50 items**: the tool takes at most 50 findings per call. Send
+  the first 50 with the checklist results and the narrative, then the rest
+  with the `reviewId` that call returned, so the review stays one row. Send
   several calls with the same `setName` and `phase`, worst severity first,
   and report every review id returned.
 - **`coverage`** carries the header's coverage line, including the
@@ -1469,20 +1497,17 @@ later by the RFI and submittal reviews of those sheets. Two hard rules:
   PRIME this rule is OFF** (see "Prime vs sub" above): every comment
   ingests as a full row with the responsible discipline/sub in the action.
 
-**File: `file_qa_report`.** The report belongs in the project record, not
-just the chat: file it into a new dated folder under "Design Reports and
-Narratives" (`title` like 'QA Coordination Review' or 'Back-check — 100%
-CD Resubmission'; markdown as contentText, docx/xlsx as contentBase64), pass
-`reviewIds` with the review id(s) `record_qa_findings` returned so the QA
-Reviews tab links the report from the review, and hand the user the
-folder's webUrl. Record first, then file, so the ids exist. Filing never touches Outgoing and never
-issues anything.
-
-The design narrative as read (Step 5b) is filed as a section of the report,
-not as a file of its own: a separate file named like a narrative in that
-folder would be picked up by the next `design-narrative` run as the
-engineer's prior narrative, which it is not.
+**A report file, only on request.** If the user asked for a document,
+file it with `file_qa_report` into a new dated folder under "Design Reports
+and Narratives" (`title` like 'QA Coordination Review'; docx/xlsx as
+contentBase64), pass `reviewIds` so the tab links it from the review, and
+hand the user the folder's webUrl. Record first, then file, so the ids
+exist. Never file the design narrative as a file of its own: a file named
+like a narrative in that folder would be picked up by the next
+`design-narrative` run as the engineer's prior narrative, which it is not.
+Filing never touches Outgoing and never issues anything.
 
 End by telling the user, in a few lines: how many punch-list items by
-discipline and severity, what was recorded (review ids) and filed (the
-link), and what the review did NOT cover.
+discipline and severity, what was recorded (the review id, how many
+findings, how many checklist results, the narrative), that all of it is in
+the project's QA Reviews tab, and what the review did NOT cover.
