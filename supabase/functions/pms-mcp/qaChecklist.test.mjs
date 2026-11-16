@@ -87,4 +87,20 @@ for (const hint of autoHints) {
   assert.ok(!/post-bid cost posture/i.test(skill), "the QA skill carries construction-phase guidance again");
 }
 
+// Cross-discipline items (qa-610 series, 2026-11-16): the skill's X checks on
+// the checklist, so each shows in the PMS and gets a tracked result.
+{
+  const x = readFileSync(join(here, "../../migrations/20261116220000_qa_cross_discipline_items.sql"), "utf8");
+  const ids = ["qa-610", "qa-611", "qa-612", "qa-613", "qa-614", "qa-615", "qa-616"];
+  for (const id of ids) assert.ok(x.includes(`('${id}','deliverable-qa','Cross-Discipline Coordination',`), `missing ${id}`);
+  assert.equal(x.split("'rfi-lesson','qa-rfi-review-2026-11-16-bpl'").length - 1, 7);
+  assert.ok(x.includes("on conflict (item_id) do nothing;"));
+  const details = [...x.matchAll(/\n '(\[.*\])'::jsonb,\n 'assisted'/g)].map((m) => JSON.parse(m[1].replace(/''/g, "'")));
+  assert.equal(details.length, 7);
+  for (const d of details) assert.ok(Array.isArray(d) && d.length >= 3);
+  const skill = readFileSync(join(here, "../../../.claude/skills/qa-coordination-review/SKILL.md"), "utf8");
+  for (const id of ids) assert.ok(skill.includes("`" + id + "`"), `skill does not map ${id}`);
+  assert.ok(skill.includes("revise_qa_finding_action"));
+}
+
 console.log("qaChecklist.test.mjs: all assertions passed");
