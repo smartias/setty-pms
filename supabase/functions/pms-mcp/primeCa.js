@@ -249,6 +249,87 @@ export function itemFromCandidate(base, cand, bodyText, dueDays) {
   return item;
 }
 
+/* ---------- possible duplicate RFIs ---------- */
+// The same RFI can reach the log by more than one road (a portal email, the
+// contractor-email import, a backfill through the connector, a person typing
+// it) and each road numbers it its own way: "012" and "RFI-012" were logged as
+// two open items on one job (2026-11). These rules only FLAG a likely twin;
+// nothing is merged or removed. A person voids the extra one.
+//
+// One comparable key per log number: "RFI-012", "012", "#12" → "12";
+// "RFI-005R" → "5R"; "121.1" stays "121.1" (a follow-up, not RFI 121);
+// "001-BID" → "1-BID". Same rule as rfiKey in caIntake.js.
+export function rfiNumberKey(s) {
+  let t = String(s == null ? "" : s).trim().toUpperCase().replace(/^#\s*/, "");
+  t = t.replace(/\bRFI\s*[-#:]?\s*/g, "").replace(/^[-\s]+|[-\s]+$/g, "");
+  return t.replace(/(^|[^\d.])0+(\d)/g, "$1$2");
+}
+// Words that say what an RFI is about: 4+ characters, minus the boilerplate
+// every contractor question carries.
+const DUP_STOP = new Set(["please", "advise", "attached", "provide", "clarify", "clarification", "confirm", "regarding",
+  "that", "this", "with", "from", "have", "been", "were", "will", "would", "should", "shall", "there", "their", "which",
+  "refer", "submitted", "response", "question", "contractor", "drawings", "drawing", "during", "indicated", "also", "does", "what", "where", "when"]);
+function dupWords(s) {
+  const out = new Set();
+  for (const w of String(s || "").toLowerCase().replace(/<[^>]+>/g, " ").split(/[^a-z0-9]+/)) {
+    if (w.length >= 4 && !DUP_STOP.has(w)) out.add(w);
+  }
+  return out;
+}
+// Share of the SMALLER word set found in the other one (0..1). One side is
+// often a clipped copy of the other (an import keeps 200 characters of the
+// question), so the smaller set is the fair denominator.
+function dupOverlap(a, b) {
+  const small = a.size <= b.size ? a : b, big = small === a ? b : a;
+  if (!small.size) return 0;
+  let n = 0;
+  for (const w of small) if (big.has(w)) n++;
+  return n / small.size;
+}
+const dupPrep = (r) => ({ key: rfiNumberKey(r && r.number), title: dupWords(r && r.title), text: dupWords(r && r.description) });
+// Why two RFIs look like one: "number" (same number written two ways),
+// "text" (same question or same title), or null. The question decides when
+// both have one: two RFIs titled alike but asking different things are a
+// follow-up, not a twin.
+function dupReason(a, b) {
+  if (a.key && a.key === b.key) return "number";
+  if (a.text.size >= 8 && b.text.size >= 8) return dupOverlap(a.text, b.text) >= 0.85 ? "text" : null;
+  if (a.title.size >= 3 && b.title.size >= 3 && dupOverlap(a.title, b.title) >= 0.8) return "text";
+  return null;
+}
+const DUP_DONE = ["Closed", "Void"];
+const dupSkip = (r) => !r || r.status === "Void";
+// Every likely twin in one project's RFI log: { [item.id]: [{ id, number,
+// status, reason }] }. Void items are ignored (voiding the extra copy is how a
+// person clears the flag), and so is a pair that is closed on both sides.
+export function findRfiDuplicates(rfis) {
+  const rows = (rfis || []).filter((r) => !dupSkip(r) && r.id).map((r) => ({ r, p: dupPrep(r) }));
+  const out = {};
+  const add = (x, y, reason) => (out[x.id] = out[x.id] || []).push({ id: y.id, number: y.number || "", status: y.status || "", reason });
+  for (let i = 0; i < rows.length; i++) {
+    for (let j = i + 1; j < rows.length; j++) {
+      const a = rows[i], b = rows[j];
+      if (DUP_DONE.includes(a.r.status) && DUP_DONE.includes(b.r.status)) continue;
+      const reason = dupReason(a.p, b.p);
+      if (reason) { add(a.r, b.r, reason); add(b.r, a.r, reason); }
+    }
+  }
+  return out;
+}
+// The logged RFIs a NEW item ({ number, title, description }) looks like,
+// before it is written. Closed items count here: logging an RFI that was
+// already answered is the mistake to catch.
+export function rfiLikelyDuplicates(candidate, rfis) {
+  const c = dupPrep(candidate || {});
+  const out = [];
+  for (const r of rfis || []) {
+    if (dupSkip(r)) continue;
+    const reason = dupReason(c, dupPrep(r));
+    if (reason) out.push({ id: r.id || "", number: r.number || "", title: r.title || "", status: r.status || "", reason });
+  }
+  return out;
+}
+
 /* ---------- distribution lists ---------- */
 // project.caDistribution = { rfi: { to: "a@x.com; b@y.com", cc: "…" }, submittal: { … } }
 // Who gets every outgoing RFI response / submittal return, so each one goes to

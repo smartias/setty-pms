@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-16-pms-v203-qa-key-items";
+    window.__appVersion = "2026-11-16-pms-v204-rfi-duplicate-warning";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -11245,6 +11245,26 @@ function IntakeBadge({ item }) {
   );
 }
 
+// The same RFI logged twice ("012" and "RFI-012" were both open on one job).
+// The rule is primeCa.js findRfiDuplicates; this only warns, nothing is merged.
+// { [rfi.id]: [{ id, number, status, reason }] }, or {} if the module is missing.
+function caRfiDuplicates(rfis) {
+  const L = window.PrimeCa;
+  try { return L && L.findRfiDuplicates ? L.findRfiDuplicates(rfis) : {}; } catch (e) { return {}; }
+}
+function DuplicateBadge({ twins }) {
+  if (!twins || !twins.length) return null;
+  const nums = twins.map(t => t.number || "(no number)").join(", ");
+  const why = twins.some(t => t.reason === "number") ? "it has the same RFI number, written differently" : "it asks the same question";
+  return (
+    <span title={"This looks like the same RFI as " + nums + ": " + why + ". Open both and compare. If they are the same RFI, keep one and set the other's status to Void; the warning then goes away."}
+      style={{ display: "inline-block", marginLeft: 6, padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+        fontFamily: "inherit", background: P.redDim, color: P.red, verticalAlign: "middle", whiteSpace: "nowrap" }}>
+      ⚠ Possible duplicate of {nums}
+    </span>
+  );
+}
+
 // The scheduled intake moved this logged item's status forward from a portal
 // email (item.intakeStatus = {from, to, prev, vendor, eventDate, reviewed}).
 // Shown until a person Keeps or Undoes it in the item modal.
@@ -13771,6 +13791,8 @@ function RFIsView({ project, onChange, staff, clients }) {
   const openCount     = rfis.filter(r => RFI_OPEN_STATUSES.includes(r.status)).length;
   const overdueCount  = rfis.filter(r => isOverdue(r)).length;
   const pendingSubCnt = rfis.filter(r => r.status === "Pending Sub Response").length;
+  const dupMap        = caRfiDuplicates(rfis);
+  const dupCnt        = Object.keys(dupMap).length;
   const subLateCnt    = caSubLateCount(project, rfis);
   const staffList     = project.teamMembers || [];
 
@@ -13784,6 +13806,7 @@ function RFIsView({ project, onChange, staff, clients }) {
         <KpiBox label="Pending Sub" val={String(pendingSubCnt)} color={pendingSubCnt > 0 ? P.yellow : P.textDim} />
         <KpiBox label="Closed" val={String(rfis.filter(r => r.status === "Closed").length)} color={P.green} />
         {rfis.some(isUnreviewedIntake) && <KpiBox label="Unreviewed" val={String(rfis.filter(isUnreviewedIntake).length)} color={P.yellow} />}
+        {dupCnt > 0 && <KpiBox label="Possible duplicates" val={String(dupCnt)} color={P.red} />}
         {subLateCnt > 0 && <KpiBox label="Sub late" val={String(subLateCnt)} color={P.red} />}
       </div>
 
@@ -13843,7 +13866,7 @@ function RFIsView({ project, onChange, staff, clients }) {
               }).filter(Boolean);
               return (
                 <tr key={r.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
-                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}<IntakeBadge item={r} /><IntakeStatusBadge item={r} /><AiReviewMark item={withFresh(r)} /><AnswerReadyBadge item={r} isRFI={true} /></td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}<DuplicateBadge twins={dupMap[r.id]} /><IntakeBadge item={r} /><IntakeStatusBadge item={r} /><AiReviewMark item={withFresh(r)} /><AnswerReadyBadge item={r} isRFI={true} /></td>
                   <td>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{r.title || <span style={{ color: P.textDim }}>No title</span>}</div>
                     {r.description && <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>{r.description.slice(0, 80)}{r.description.length > 80 ? "…" : ""}</div>}

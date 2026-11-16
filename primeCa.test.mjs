@@ -204,3 +204,63 @@ test("caLogRows: sorted by number, every date, html stripped", () => {
   assert.ok(sh.headers.includes("Spec section") && sh.headers.includes("Stamp"));
   assert.equal(sh.rows[0][sh.headers.indexOf("Stamp")], "");
 });
+
+/* ---------- possible duplicate RFIs ---------- */
+import { rfiNumberKey, findRfiDuplicates, rfiLikelyDuplicates } from "./primeCa.js";
+
+// The Q126 pair that prompted this: one RFI logged as "012" and as "RFI-012".
+const FOUNTAIN_Q = "Please see attached RFI from EC and advise. \"During the site walkthrough, it was indicated that the replacement of the existing fountain would require the removal of the marble slab on the adjacent wall. Additionally, the contract drawings do not indicate the electrical routing required for the replacement fountain.";
+const DOOR_Q = "Please see attached RFI from EC and advise. \"During the site walkthrough, it was indicated that the existing door is to be replaced in accordance with the contract documents. However, upon inspection, an existing conduit was found inside the door frame.";
+const Q126 = [
+  { id: "a", number: "012", title: "Q126 (RFI#12) Fountain Repl & Electrical Routing", description: FOUNTAIN_Q, status: "Open" },
+  { id: "b", number: "RFI-012", title: "Fountain Repl & Electrical Routing) submitted on Q126 (IS126Q) - Reso A Science Lab Upgrade - POT", description: FOUNTAIN_Q.slice(0, 200), status: "Open" },
+  { id: "c", number: "RFI-013", title: "Existing Conduit @ Door Frame) submitted on Q126 (IS126Q) - Reso A Science Lab Upgrade - POT", description: DOOR_Q, status: "Open" },
+  { id: "d", number: "RFI-010", title: "Existing Conduits in Rm 301) submitted on Q126 (IS126Q) - Reso A Science Lab Upgrade - POT", description: "Please refer to attached RFI from EC and advise. \"During the site walkthrough, unidentified electrical conduits were observed extending downward from the ceiling of Room 301. The conduits are not indicated on the drawings.", status: "Open" },
+];
+
+test("rfiNumberKey: one key however the number is written", () => {
+  for (const n of ["012", "RFI-012", "rfi 12", "#12", "RFI#12"]) assert.equal(rfiNumberKey(n), "12", n);
+  assert.equal(rfiNumberKey("RFI-005R"), "5R");
+  assert.equal(rfiNumberKey("121.1"), "121.1");
+  assert.equal(rfiNumberKey("001-BID"), "1-BID");
+  assert.equal(rfiNumberKey(""), "");
+});
+
+test("findRfiDuplicates: flags 012 / RFI-012 on each other and nothing else", () => {
+  const d = findRfiDuplicates(Q126);
+  assert.deepEqual(Object.keys(d).sort(), ["a", "b"]);
+  assert.deepEqual(d.a, [{ id: "b", number: "RFI-012", status: "Open", reason: "number" }]);
+  assert.deepEqual(d.b, [{ id: "a", number: "012", status: "Open", reason: "number" }]);
+});
+
+test("findRfiDuplicates: same question under different numbers is flagged by text", () => {
+  const rows = [Q126[0], { ...Q126[1], number: "RFI-019" }, Q126[2]];
+  const d = findRfiDuplicates(rows);
+  assert.equal(d.a[0].reason, "text");
+  assert.equal(d.b[0].number, "012");
+  assert.equal(d.c, undefined);
+});
+
+test("findRfiDuplicates: same title with no question on one side is flagged; different questions are not", () => {
+  const t = "Panel RP201 Spare Circuits";
+  assert.ok(findRfiDuplicates([{ id: "x", number: "1", title: t, status: "Open" }, { id: "y", number: "2", title: t + " breaker", description: "", status: "Open" }]).x);
+  const followUp = findRfiDuplicates([
+    { id: "x", number: "1", title: t, description: FOUNTAIN_Q, status: "Open" },
+    { id: "y", number: "2", title: t, description: DOOR_Q, status: "Open" }]);
+  assert.deepEqual(followUp, {});
+});
+
+test("findRfiDuplicates: a voided copy clears the flag; closed-on-both-sides is left alone", () => {
+  assert.deepEqual(findRfiDuplicates([Q126[0], { ...Q126[1], status: "Void" }]), {});
+  assert.deepEqual(findRfiDuplicates([{ ...Q126[0], status: "Closed" }, { ...Q126[1], status: "Closed" }]), {});
+  assert.ok(findRfiDuplicates([{ ...Q126[0], status: "Closed" }, Q126[1]]).b);
+  assert.deepEqual(findRfiDuplicates([{ id: "a", number: "001-BID", title: "Pre Bid walk Through", status: "Closed" }, { id: "b", number: "001", title: "Hot Water Lines", status: "Open" }]), {});
+});
+
+test("rfiLikelyDuplicates: a new item is checked before it is written", () => {
+  const log = [Q126[1], Q126[2], Q126[3]];
+  const hit = rfiLikelyDuplicates({ number: "012", title: "Q126 (RFI#12) Fountain Repl & Electrical Routing", description: FOUNTAIN_Q }, log);
+  assert.deepEqual(hit.map((h) => [h.number, h.reason]), [["RFI-012", "number"]]);
+  assert.deepEqual(rfiLikelyDuplicates({ number: "015", title: "Sprinkler head clearance at soffit", description: "The sprinkler heads at the new soffit in the corridor conflict with the light fixtures shown on the reflected ceiling plan." }, log), []);
+  assert.equal(rfiLikelyDuplicates({ number: "012", title: "x" }, [{ ...Q126[1], status: "Void" }]).length, 0);
+});

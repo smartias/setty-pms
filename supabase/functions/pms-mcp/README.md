@@ -623,7 +623,12 @@ life-safety/agency/cost red flags into the QA ledger (`source:'submittal'`/`'rfi
 `kind:'ca-review'`, `external_ref` = the item number; migration
 `20260909000000_qa_ca_review_sources.sql` widens both enums). `backload_ca_item` is
 the Newforma-cutover backfill: append-only by item number, idempotent (an existing
-number is left alone unless `update:true`), stamped with source/provenance. Both are
+number is left alone unless `update:true`), stamped with source/provenance. An RFI
+that looks already logged under another number (`012` against `RFI-012`, or the same
+question; the rule is `rfiLikelyDuplicates` in `primeCa.js`) is not written: the call
+returns `outcome: "possibleDuplicate"` until the caller passes `allowDuplicate:true`.
+`search_rfis_submittals` flags such twins already in a log as `possibleDuplicateOf`,
+and the PMS RFI log shows the same warning as a chip. Both are
 signed-in-only (`qaLedgerCaller`); neither touches SharePoint or the transmittal
 register.
 
