@@ -141,7 +141,7 @@ Check the skill is on your seat before relying on it: type / in a chat and look 
 
 **Design narrative.** "Draft the DD basis of design for SAPX239010.00" builds a narrative from the issued drawings, notes, filed email and any earlier narratives, with a drawing index. Everything traces to the record; you edit before it goes anywhere.
 
-**QA coordination review.** "Run QA on the 100% CD set for the Thrive Center" works the QA Deliverables Checklist against the set and the project's open items. Findings go to the ledger keyed to checklist items for your sign-off.
+**QA coordination review.** "Run QA on the 100% CD set for the Thrive Center" runs three passes on the set: the QA Deliverables Checklist item by item, the knowledge layer (project lessons, best practices, agency preferences, engineering standards), and a general engineering sanity review. You get a punch list grouped by discipline, with a table showing which checklist items were and were not checked. Findings go to that project's QA Reviews tab for your sign-off; they are not added to the firm knowledge layer.
 
 **Review comment responses.** "Respond to the DrChecks comments on SIPX268014.00" drafts a disposition and response for every open comment and builds the register that goes back to the reviewer. You approve each one.
 
