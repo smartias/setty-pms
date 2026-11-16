@@ -58,7 +58,7 @@ import { pickRecordedFolderName, matchRecordedFolder } from "./recordedFolder.ts
 import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OLD } from "./sheetFromFilename.ts";
 // set_project_fee: what may be written into the Fee Calculator and what is
 // refused. Pure; see feeCalculator.test.mjs.
-import { buildLedgerMatcher } from "./qaLedgerMatch.ts";
+import { buildLedgerMatcher, sheetKey, normalizeTag, scheduleRowsForTag } from "./qaLedgerMatch.ts";
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
@@ -1424,7 +1424,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-qa-ledger-in-ca-reviews";
+const BUILD = "2026-11-16-schedule-cache-find-related";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3334,6 +3334,7 @@ const HOW_TO_USE_TOPICS: Record<string, { title: string; summary: string; prompt
     { ask: "List the open RFIs on SAPX256011.00 and who is waiting on us", note: "Filter by status, discipline or keyword." },
     { ask: "Review submittal 23-05-00-004 on the Vanderbilt project against the drawings and draft a response", note: "Checks the marked selection against the spec and suggests a stamp. The engineer decides." },
     { ask: "Which sheets does RFI 017 refer to, and are they still current?", note: "References are checked against the register." },
+    { ask: "What do we already know about EF-7 on SAPX256011.00?", note: "One lookup: QA findings and owner comments on it, earlier RFIs and submittals, and its scheduled values if that schedule has been read." },
     { ask: "On our prime job SAPX256011.00, which change order requests are waiting on us and what's our pending exposure?", note: "Reads the PMS change log (ASIs, PRs, CCDs, CORs, change orders) and the running contract sum." },
     { ask: "What does the GC still owe us for closeout on SAPX256011.00, and are we ready for final completion?", note: "Reads the PMS closeout checklist (O&Ms, warranties, record drawings, test reports, certificates)." },
   ]},
@@ -9306,6 +9307,40 @@ function extractSheetTables(items: SheetTextItem[], matchFilter?: string): Array
   return tables;
 }
 
+// ── The schedule cache (pms_drawing_schedules, migration 20261116160000) ─────
+// The parse of a given PDF page never changes, so it is kept: the QA review
+// reads a schedule a few days before issue, and every RFI and submittal review
+// in CA reads it again. A hit costs one metadata call (the file's current
+// size) instead of a download and a pdf.js parse. A row is used only when the
+// extractor version matches and the file is the size it was when parsed, so a
+// PDF replaced in place is re-read. Reads and writes are best-effort: any
+// failure (the table not created yet included) falls back to the live parse.
+const SCHED_PARSER = "sched-v1"; // bump when extractSheetTables changes what it returns
+type SchedTable = { title: string; columns: number; rows: string[][]; truncatedRows: number };
+async function schedCacheGet(fileId: string, page: number): Promise<{ tables: SchedTable[]; hasText: boolean; cachedAt: string } | null> {
+  try {
+    const rows = await sbGet("pms_drawing_schedules?select=tables,has_text,size_bytes,cached_at&item_id=eq." + encodeURIComponent(fileId) +
+      "&page=eq." + page + "&parser=eq." + SCHED_PARSER + "&limit=1");
+    const row = Array.isArray(rows) ? rows[0] : null;
+    if (!row || row.size_bytes == null) return null;
+    const meta = await drawingItemMeta(fileId);
+    if (!meta.size || Number(row.size_bytes) !== Number(meta.size)) return null;
+    return { tables: Array.isArray(row.tables) ? row.tables : [], hasText: row.has_text !== false, cachedAt: String(row.cached_at || "") };
+  } catch { return null; }
+}
+async function schedCachePut(fileId: string, page: number, sizeBytes: number, hasText: boolean, tables: SchedTable[], src: any | null): Promise<void> {
+  try {
+    await sbUpsert("pms_drawing_schedules", "item_id,page", [{
+      item_id: fileId, page, parser: SCHED_PARSER, size_bytes: sizeBytes, has_text: hasText, tables,
+      project_prefix: src ? String(src.project_prefix ?? "") || null : null,
+      sheet_no: src?.sheet_no ?? null, revision: src?.revision ?? null, revision_date: src?.revision_date ?? null,
+      folder_path: src?.folder_path ?? null, cached_at: new Date().toISOString(),
+    }]);
+  } catch (e) {
+    console.warn("[read_drawing_schedule] cache write failed:", String((e as any)?.message ?? e).slice(0, 160));
+  }
+}
+
 mcp.tool("read_drawing_schedule", {
   description:
     "READ the SCHEDULES on a drawing sheet as structured rows — equipment schedules, fixture schedules, fan/" +
@@ -9318,7 +9353,9 @@ mcp.tool("read_drawing_schedule", {
     "column to its left — sanity-check surprising values with view_drawing (region zoom) before quoting them. " +
     "match filters to schedules whose title contains the text (e.g. match:'FAN'). Direct mode: itemId + page " +
     "reads any PDF page's tables without the index. Scanned/image-only sheets have no text to rebuild — use " +
-    "view_drawing there. Read-only.",
+    "view_drawing there. A page parsed once is kept: later reads of the same file answer from that copy " +
+    "(`fromCache`) without downloading the PDF, and re-parse on their own if the file changed; refresh:true " +
+    "forces a fresh parse. Read-only.",
   inputSchema: z.object({
     projectNumber: z.string().optional().describe("Project number OR project name (required unless itemId is passed)."),
     sheet: z.string().optional().describe("Sheet number carrying the schedule, e.g. 'M-601'. Hyphens/spacing don't matter."),
@@ -9327,10 +9364,12 @@ mcp.tool("read_drawing_schedule", {
     match: z.string().optional().describe("Only schedules whose TITLE contains this text, e.g. 'FAN', 'PANEL LP-1'."),
     itemId: z.string().optional().describe("Direct mode: 'driveId|itemId' of a PDF from list_project_documents."),
     page: z.number().optional().describe("Direct mode: 1-based page (default 1). Ignored in sheet mode."),
+    refresh: z.boolean().optional().describe("Parse the PDF again even if this page's schedules are already saved. Use when a value looks wrong and the sheet may have been re-plotted."),
   }),
-  handler: async ({ projectNumber, sheet, revision, set, match, itemId, page }) => {
+  handler: async ({ projectNumber, sheet, revision, set, match, itemId, page, refresh }) => {
     let fileId = "", pageInFile = 1;
     let source: Record<string, unknown> = {};
+    let indexRow: any | null = null; // the drawing-index row in sheet mode: what the cache row is labelled with
     if (itemId?.trim()) {
       fileId = itemId.trim();
       if (!isAzId(fileId) && fileId.indexOf("|") <= 0) return asText({ error: "itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it, or an 'az:' drive id." });
@@ -9342,6 +9381,7 @@ mcp.tool("read_drawing_schedule", {
       const c = picked.chosen;
       fileId = String(c.item_id);
       pageInFile = Number(c.page);
+      indexRow = { ...c, project_prefix: String(picked.project).toLowerCase().trim() };
       source = {
         project: picked.project, sheet: c.sheet_no, sheetTitle: c.sheet_title ?? null,
         revision: c.revision ?? null, revisionDate: c.revision_date ?? null,
@@ -9353,35 +9393,53 @@ mcp.tool("read_drawing_schedule", {
       };
     }
 
-    let items: SheetTextItem[];
-    try {
-      const bytes = await fetchDrawingPdfById(fileId);
-      const { getDocumentProxy } = await import("unpdf");
-      // pdf.js may take ownership of the buffer it is handed — feed it a copy
-      // so the cached bytes stay intact for the next call.
-      const pdf: any = await getDocumentProxy(bytes.slice());
-      if (pageInFile < 1 || pageInFile > pdf.numPages) {
-        return asText({ ...source, error: `Page ${pageInFile} is out of range — the file has ${pdf.numPages} page(s).` });
+    const cached = refresh ? null : await schedCacheGet(fileId, pageInFile);
+    let allTables: SchedTable[];
+    if (cached) {
+      source = { ...source, fromCache: true, cachedAt: cached.cachedAt };
+      if (!cached.hasText) {
+        return asText({ ...source, tables: [], error: "The page has no text layer (scanned or image-only).", nextStep: "view_drawing renders it as an image instead. Pass refresh:true if the PDF has since been replaced with one that has text." });
       }
-      const pg = await pdf.getPage(pageInFile);
-      const tc = await pg.getTextContent();
-      items = (tc.items as any[])
-        .map((it) => ({
-          str: String(it?.str ?? "").replace(/\u0000/g, " ").trim(),
-          x: Number(it?.transform?.[4] ?? 0),
-          y: Number(it?.transform?.[5] ?? 0),
-        }))
-        .filter((it) => it.str);
-      if (typeof pg.cleanup === "function") pg.cleanup();
-    } catch (e) {
-      return asText({ ...source, error: `Could not read the page: ${String((e as any)?.message ?? e).slice(0, 200)}` });
-    }
-    if (!items.length) {
-      return asText({ ...source, tables: [], error: "The page has no text layer (scanned or image-only).", nextStep: "view_drawing renders it as an image instead." });
+      allTables = cached.tables;
+    } else {
+      let items: SheetTextItem[];
+      let sizeBytes = 0;
+      try {
+        const bytes = await fetchDrawingPdfById(fileId);
+        sizeBytes = bytes.byteLength;
+        const { getDocumentProxy } = await import("unpdf");
+        // pdf.js may take ownership of the buffer it is handed — feed it a copy
+        // so the cached bytes stay intact for the next call.
+        const pdf: any = await getDocumentProxy(bytes.slice());
+        if (pageInFile < 1 || pageInFile > pdf.numPages) {
+          return asText({ ...source, error: `Page ${pageInFile} is out of range — the file has ${pdf.numPages} page(s).` });
+        }
+        const pg = await pdf.getPage(pageInFile);
+        const tc = await pg.getTextContent();
+        items = (tc.items as any[])
+          .map((it) => ({
+            str: String(it?.str ?? "").replace(/\u0000/g, " ").trim(),
+            x: Number(it?.transform?.[4] ?? 0),
+            y: Number(it?.transform?.[5] ?? 0),
+          }))
+          .filter((it) => it.str);
+        if (typeof pg.cleanup === "function") pg.cleanup();
+      } catch (e) {
+        return asText({ ...source, error: `Could not read the page: ${String((e as any)?.message ?? e).slice(0, 200)}` });
+      }
+      if (!items.length) {
+        await schedCachePut(fileId, pageInFile, sizeBytes, false, [], indexRow);
+        return asText({ ...source, tables: [], error: "The page has no text layer (scanned or image-only).", nextStep: "view_drawing renders it as an image instead." });
+      }
+      // Every schedule on the page is parsed and kept; `match` is a filter on
+      // titles, applied below, so one saved parse serves any later match.
+      allTables = extractSheetTables(items);
+      await schedCachePut(fileId, pageInFile, sizeBytes, true, allTables, indexRow);
     }
 
-    let tables = extractSheetTables(items, match);
-    const titlesOnSheet = extractSheetTables(items).map((tb) => tb.title);
+    const ml = match?.trim().toLowerCase();
+    let tables = ml ? allTables.filter((tb) => String(tb.title).toLowerCase().includes(ml)) : allTables;
+    const titlesOnSheet = allTables.map((tb) => tb.title);
     if (!tables.length) {
       return asText({
         ...source, tables: [],
@@ -9567,6 +9625,153 @@ mcp.tool("find_equipment", {
         nextStep: filesPending > 0 ? "Index incomplete — search_drawings indexOnly:true, then retry." : "Check the spelling; enumeration mode (omit tag) lists what exists.",
       } : {}),
       note: "Schedule-flagged sheets first: read_drawing_schedule reads the scheduled capacities there; view_drawing shows the unit in place; read_rfi_submittal opens a CA item in full.",
+    });
+  },
+});
+
+// ── find_related: everything recorded about one sheet, tag or spec section ───
+// The single lookup the reviews were each assembling by hand: the QA ledger
+// (internal findings and owner/agency comments), the RFIs and submittals, and
+// the scheduled values, for one sheet, one equipment tag or one spec section.
+// It reads what earlier work SAVED — the links a CA review recorded
+// (pms_ca_item_refs), the sheet links a PM confirmed on an item, the tags and
+// sheets on a finding, the schedules already parsed (pms_drawing_schedules) —
+// and falls back to matching text for records made before those existed. Each
+// row says how it was linked, so a recorded link and a text match are never
+// confused. Read-only.
+const specKey = (v: unknown) => String(v ?? "").replace(/[^0-9A-Za-z]/g, "").toLowerCase();
+
+mcp.tool("find_related", {
+  description:
+    "EVERYTHING RECORDED about one drawing SHEET, one EQUIPMENT TAG or one SPEC SECTION on a project, in one " +
+    "call: the QA ledger rows on it (open internal findings, and owner/agency/architect review comments with " +
+    "the responses Setty gave), the RFIs and submittals that touch it, and — for a tag — its rows from the " +
+    "equipment schedules that have already been read. Use it at the START of an RFI or submittal review, when " +
+    "someone asks 'what do we know about EF-7 / sheet E-610 / section 23 74 00', and before answering a " +
+    "question about equipment someone has reviewed before. Each row carries `linkedBy`: 'recorded link' (a " +
+    "review saved it), 'confirmed sheet link' (a PM confirmed it on the item), 'spec section' or 'text match' " +
+    "(found in the record's wording — read the row before relying on it). Schedule rows come only from sheets " +
+    "whose schedules were read before; find_equipment names the schedule sheets and read_drawing_schedule reads " +
+    "one. Nothing found is not a clean bill: it reflects what was reviewed and recorded. The QA ledger is " +
+    "internal — never quote it to a contractor. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    sheet: z.string().optional().describe("A drawing sheet, e.g. 'E-610'. Revision is ignored."),
+    tag: z.string().optional().describe("An equipment tag, e.g. 'EF-7'. Hyphen, space or nothing between the parts all match."),
+    specSection: z.string().optional().describe("A spec section, e.g. '23 74 00'."),
+    includeClosed: z.boolean().optional().describe("Also return closed and dismissed QA rows (default: rows still open, plus reviewer comments that carry a response)."),
+  }),
+  handler: async ({ projectNumber, sheet, tag, specSection, includeClosed }) => {
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = String(p?.projectNumber || projectNumber);
+    const sKey = sheet?.trim() ? sheetKey(sheet) : "";
+    const tKey = tag?.trim() ? normalizeTag(tag) : "";
+    const spKey = specSection?.trim() ? specKey(specSection) : "";
+    if (sheet?.trim() && !sKey) return asText({ error: `"${sheet}" is not a sheet number.` });
+    if (!sKey && !tKey && !spKey) return asText({ error: "Pass at least one of sheet, tag or specSection." });
+    const lookedFor = { ...(sKey ? { sheet: sheet!.trim() } : {}), ...(tKey ? { tag: tKey } : {}), ...(spKey ? { specSection: specSection!.trim() } : {}) };
+    const q = { sheets: sKey ? [sheet!.trim()] : [], mentions: tKey ? [tKey] : [] };
+    const matcher = buildLedgerMatcher(q);
+
+    // ── 1. QA ledger ────────────────────────────────────────────────────────
+    let qa: any[] = [];
+    let qaError: string | undefined;
+    if (matcher.active) {
+      try {
+        qa = await qaLedgerFor(project, q, includeClosed ? { status: "all" } : { relevantOnly: true });
+      } catch (e) { qaError = `Could not read the QA ledger: ${String((e as any)?.message ?? e).slice(0, 160)}`; }
+    }
+    const qaRows = qa.slice(0, 30).map((r: any) => {
+      const cited = (Array.isArray(r.sheets) ? r.sheets : []).some((x: unknown) => sKey && sheetKey(x) === sKey) ||
+        (Array.isArray(r.tags) ? r.tags : []).some((x: unknown) => tKey && normalizeTag(x) === tKey);
+      return {
+        id: r.id, source: r.source, severity: r.severity ?? null, status: r.status, title: r.title,
+        sheets: r.sheets ?? null, ...(Array.isArray(r.tags) && r.tags.length ? { tags: r.tags } : {}),
+        ...(r.discipline ? { discipline: r.discipline } : {}), ...(r.external_ref ? { externalRef: r.external_ref } : {}),
+        ...(r.action ? { action: r.action } : {}),
+        ...(r.response ? { response: r.response, responseDisposition: r.response_disposition ?? null } : {}),
+        linkedBy: cited ? "recorded link" : "text match",
+      };
+    });
+
+    // ── 2. RFIs and submittals ──────────────────────────────────────────────
+    const recorded = new Map<string, string[]>(); // "rfi|004" -> labels
+    let refsError: string | undefined;
+    try {
+      const ors = [
+        ...(sKey ? [`and(ref_kind.eq.sheet,ref_key.eq.${sKey})`] : []),
+        // Quoted: a tag may carry characters PostgREST reserves in a filter list.
+        ...(tKey ? [`and(ref_kind.eq.tag,ref_key.eq.${encodeURIComponent('"' + tKey.replace(/["\\]/g, "") + '"')})`] : []),
+        ...(spKey ? [`and(ref_kind.eq.spec,ref_key.eq.${spKey})`] : []),
+      ];
+      const rows: any[] = await sbGetAll("pms_ca_item_refs?select=item_type,item_number,ref_kind,ref_label&project=eq." +
+        encodeURIComponent(project) + "&or=(" + ors.join(",") + ")&order=id");
+      for (const r of rows) {
+        const k = `${r.item_type}|${r.item_number}`;
+        recorded.set(k, [...(recorded.get(k) || []), `${r.ref_kind} ${r.ref_label || ""}`.trim()]);
+      }
+    } catch (e) { refsError = `Recorded review links could not be read (matching on confirmed links and text only): ${String((e as any)?.message ?? e).slice(0, 140)}`; }
+    const ca: any[] = [];
+    for (const kind of ["rfi", "submittal"] as const) {
+      for (const item of ((kind === "rfi" ? p?.rfis : p?.submittals) ?? [])) {
+        const linkedBy: string[] = [];
+        if (recorded.has(`${kind}|${item.number}`)) linkedBy.push("recorded link");
+        if (sKey && (Array.isArray(item.sheetRefs) ? item.sheetRefs : []).some((x: any) => x && x.status === "confirmed" && sheetKey(x.sheet) === sKey)) linkedBy.push("confirmed sheet link");
+        if (spKey && specKey(item.specSection) === spKey) linkedBy.push("spec section");
+        if (!linkedBy.length && matcher.active) {
+          const hay = [item.number, item.title, item.description, item.response, item.comments, item.notes].filter(Boolean).join("\n");
+          if (matcher.matchParts([], [], hay)) linkedBy.push("text match");
+        }
+        if (!linkedBy.length) continue;
+        ca.push({
+          type: kind, number: item.number,
+          subject: item.title || String(item.description || "").replace(/<[^>]+>/g, " ").slice(0, 80),
+          status: item.status ?? null, ...(item.stamp ? { reviewAction: item.stamp } : {}),
+          ...(item.specSection ? { specSection: item.specSection } : {}),
+          linkedBy,
+        });
+      }
+    }
+    const strength = (r: any) => (r.linkedBy.includes("text match") ? 1 : 0);
+    ca.sort((a, b) => strength(a) - strength(b) || String(b.number).localeCompare(String(a.number)));
+
+    // ── 3. Scheduled values, from schedules already read ────────────────────
+    let schedules: any[] | undefined;
+    let schedulesNote: string | undefined;
+    if (tKey) {
+      try {
+        const rows: any[] = await sbGetAll("pms_drawing_schedules?select=item_id,page,sheet_no,revision,revision_date,folder_path,tables,cached_at" +
+          "&project_prefix=eq." + encodeURIComponent(project.toLowerCase().trim()) + "&has_text=is.true&parser=eq." + SCHED_PARSER + "&order=item_id,page");
+        // One copy per sheet: the newest ISSUED revision that was read.
+        const best = new Map<string, any>();
+        const rv = (x: any): DrawingRev => ({ revision: x.revision ?? null, revisionDate: x.revision_date ?? null, revisionDescription: null, set: drawingSetOf(x.folder_path) });
+        for (const r of rows) {
+          if (isPreIssuePath(r.folder_path)) continue;
+          const k = normSheetToken(r.sheet_no) || `${r.item_id}#${r.page}`;
+          const cur = best.get(k);
+          if (!cur || drawingRevSort(rv(r), rv(cur)) < 0) best.set(k, r);
+        }
+        schedules = [];
+        for (const r of best.values()) {
+          const hit = scheduleRowsForTag(Array.isArray(r.tables) ? r.tables : [], tKey);
+          if (hit.length) schedules.push({ sheet: r.sheet_no ?? null, revision: r.revision ?? null, revisionDate: r.revision_date ?? null, set: drawingSetOf(r.folder_path), readOn: String(r.cached_at || "").slice(0, 10), schedules: hit });
+        }
+        schedulesNote = schedules.length
+          ? "Rows as parsed when that sheet's schedule was last read: the header rows, then the rows naming the tag. This is the newest revision that has been READ, which may not be the newest issued — check get_current_set, and read_drawing_schedule on the current sheet if it is newer. Verify a value with view_drawing before quoting it."
+          : `No saved schedule names ${tKey}. ${best.size} schedule sheet(s) have been read on this project so far; find_equipment tag:'${tKey}' names the sheets it is on, and read_drawing_schedule reads (and saves) one.`;
+      } catch (e) { schedulesNote = `Saved schedules could not be read: ${String((e as any)?.message ?? e).slice(0, 140)}`; }
+    }
+
+    return asText({
+      project, lookedFor,
+      qaLedger: { count: qa.length, rows: qaRows, ...(qaError ? { error: qaError } : {}), ...(spKey && !matcher.active ? { note: "The QA ledger is looked up by sheet or tag, not by spec section." } : {}) },
+      caItems: { count: ca.length, rows: ca.slice(0, 40), ...(refsError ? { note: refsError } : {}) },
+      ...(schedules ? { scheduledValues: { sheets: schedules.length, rows: schedules.slice(0, 6), note: schedulesNote } } : (schedulesNote ? { scheduledValues: { note: schedulesNote } } : {})),
+      note: "linkedBy says how each row was tied to what you asked about: a recorded or confirmed link was set by a review or a person; a text match was found in the record's wording and needs reading. Nothing found is not a clean bill — it reflects what was reviewed and recorded. " +
+        (qa.length ? QA_LEDGER_CA_NOTE + " " : "") +
+        "Next: read_rfi_submittal for an item in full; find_equipment for every sheet a tag is drawn on.",
     });
   },
 });
@@ -9774,6 +9979,7 @@ mcp.tool("record_qa_findings", {
       evidence: z.string().optional().describe("The text/values supporting it."),
       action: z.string().optional().describe("Suggested action."),
       externalRef: z.string().optional().describe("Comment number / DrChecks id for external rows."),
+      tags: z.array(z.string()).max(20).optional().describe("Equipment tags the finding concerns, e.g. ['EF-7','LP-2']. Stored beside sheets so a later RFI or submittal review of that equipment finds this row."),
       discipline: z.string().optional().describe("Responsible discipline — who fixes it: Mechanical, Electrical, Plumbing, Fire Protection, Fire Alarm, Multi-discipline (name each in the action), PM / Project, or a subconsultant discipline on prime jobs. The QA tab groups the punch list by this."),
     })).max(QA_FINDINGS_MAX_PER_CALL).describe("Up to 50 per call; send more as further calls with the same setName and phase. May be empty to record a review run that found nothing new."),
     allowDuplicates: z.boolean().optional().describe("Record findings even when an open row with the same title already exists on the project (default false: they are skipped)."),
@@ -9829,6 +10035,10 @@ mcp.tool("record_qa_findings", {
           // Only sent when given, so a database that has not run the
           // discipline migration yet still accepts the row.
           ...(discipline ? { discipline } : {}),
+          ...(() => {
+            const tg = [...new Set((f.tags ?? []).map(normalizeTag).filter(Boolean))];
+            return tg.length ? { tags: tg } : {};
+          })(),
           created_by: who.email,
         });
         recorded.push({ id: row.id, title: f.title });
@@ -10520,9 +10730,11 @@ mcp.tool("save_ca_review", {
       url: z.string().describe("The document's SharePoint webUrl — from get_current_set (per-sheet webUrl and the set folder's webUrl), search_drawings hits, or find_document (spec book). https only; anything else is dropped."),
       kind: z.enum(["set", "sheet", "spec"]).optional().describe("What the link is: the reviewed set's folder, one drawing sheet, or a spec document. Default 'sheet'."),
     })).optional().describe("Clickable references for the review panel: the reviewed set folder, each cited sheet, the governing spec. The modal renders the set name, sheet chips, and spec sections as links when a label matches."),
+    sheets: z.array(z.string()).max(40).optional().describe("Every drawing sheet the review relied on, e.g. ['M-601 Rev 11','E-610']. Saved as structured links so find_related can answer 'what touched E-610' later."),
+    equipmentTags: z.array(z.string()).max(30).optional().describe("Every equipment tag the item covers or the review checked, e.g. ['EF-7','RTU-1']. Saved as structured links, like sheets."),
     merge: z.boolean().optional().describe("MERGE into the item's existing aiReview instead of replacing it: fields you pass overwrite their counterparts; everything else (markedSelection, redFlags, docLinks, coverage, the ledger backlink) is PRESERVED, and the QA ledger is left untouched unless you also pass redFlags. Use for pull-reply capture and other partial updates — a full re-review omits this so stale flags get superseded."),
   }),
-  handler: async ({ projectNumber, type, number, reviewedAgainstSet, specSections, coverage, suggestedResponse, suggestedStamp, internalNotes, markedSelection, redFlags, docLinks, merge }) => {
+  handler: async ({ projectNumber, type, number, reviewedAgainstSet, specSections, coverage, suggestedResponse, suggestedStamp, internalNotes, markedSelection, redFlags, docLinks, sheets, equipmentTags, merge }) => {
     const who = qaLedgerCaller();
     if (!who.ok) return who.response;
     if (type === "rfi" && suggestedStamp) return asText({ error: "suggestedStamp applies to submittals only — RFIs have no stamp." });
@@ -10663,10 +10875,39 @@ mcp.tool("save_ca_review", {
       ledger = { mirrored: 0, error: `Ledger mirror failed (the review is still on the record): ${String((e as any)?.message ?? e).slice(0, 200)}` };
     }
 
+    // Structured links: the sheets, tags and spec sections this review rests
+    // on, plus the sheets its red flags cite. A full review REPLACES the
+    // item's earlier review links; merge only adds. Best-effort: the review is
+    // already saved, and find_related also matches on text.
+    let refs: Record<string, unknown> | undefined;
+    {
+      const want = new Map<string, { ref_kind: string; ref_key: string; ref_label: string }>();
+      const add = (kind: string, key: string, label: string) => { if (key) want.set(kind + "|" + key, { ref_kind: kind, ref_key: key, ref_label: label.slice(0, 120) }); };
+      for (const sh of [...(sheets ?? []), ...flags.flatMap((f: any) => (Array.isArray(f.sheets) ? f.sheets : []))]) add("sheet", sheetKey(sh), String(sh));
+      for (const tg of equipmentTags ?? []) add("tag", normalizeTag(tg), String(tg));
+      for (const sp of specSections ?? []) add("spec", String(sp).replace(/[^0-9A-Za-z]/g, "").toLowerCase(), String(sp));
+      const provided = sheets !== undefined || equipmentTags !== undefined || specSections !== undefined || redFlags !== undefined;
+      if (provided) {
+        try {
+          const scope = "pms_ca_item_refs?project=eq." + encodeURIComponent(String(project)) + "&item_type=eq." + type +
+            "&item_number=eq." + encodeURIComponent(String(itemNumber)) + "&origin=eq.ca-review";
+          if (!merge) {
+            const del = await fetch(`${SUPABASE_URL}/rest/v1/${scope}`, { method: "DELETE", headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` } });
+            if (!del.ok) throw new Error(`Supabase delete ${del.status}: ${(await del.text()).slice(0, 160)}`);
+          }
+          await sbUpsert("pms_ca_item_refs", "project,item_type,item_number,ref_kind,ref_key,origin",
+            [...want.values()].map((r) => ({ project: String(project), item_type: type, item_number: String(itemNumber), ...r, origin: "ca-review", created_by: who.email })));
+          refs = { saved: want.size };
+        } catch (e) {
+          refs = { saved: 0, error: `Links not saved (the review is still on the record): ${String((e as any)?.message ?? e).slice(0, 160)}` };
+        }
+      }
+    }
     return asText({
       project,
       type, number: itemNumber, subject: itemSubject, savedBy: who.email,
       redFlags: flags.length, ledger,
+      ...(refs ? { links: refs } : { linksHint: "Pass sheets and equipmentTags so this review's basis is findable later (find_related)." }),
       note: "The review is on the record as aiReview — the RFI/Submittal modal shows it as an accept/dismiss suggestion; it did NOT change the human's response or stamp. Tracked flags (life-safety/agency/cost) are in the QA Reviews ledger.",
     });
   },

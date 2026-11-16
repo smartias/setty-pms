@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { sheetKey, mentionRegex, buildLedgerMatcher } from "./qaLedgerMatch.ts";
+import { sheetKey, mentionRegex, buildLedgerMatcher, normalizeTag, scheduleRowsForTag } from "./qaLedgerMatch.ts";
 
 test("sheet references reduce to one key whatever the review wrote", () => {
   for (const s of ["M-601 Rev 3", "M601", "m 601", "M.601 (Bulletin #2)", " M-601"]) assert.equal(sheetKey(s), "m601", s);
@@ -49,7 +49,7 @@ test("no criteria means no filtering, not match-everything", () => {
 test("the tools use the matcher and keep the pre-issue guard", () => {
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
   for (const anchor of [
-    'import { buildLedgerMatcher } from "./qaLedgerMatch.ts";',
+    'import { buildLedgerMatcher, sheetKey, normalizeTag, scheduleRowsForTag } from "./qaLedgerMatch.ts";',
     "async function qaLedgerFor(",
     "sheets: z.array(z.string()).max(40).optional()",
     "mentions: z.array(z.string()).max(20).optional()",
@@ -69,4 +69,63 @@ test("the tools use the matcher and keep the pre-issue guard", () => {
   assert.ok(sql.includes("p_exclude is null or coalesce(t.folder_path, '') !~* p_exclude"));
   assert.ok(sql.includes("grant execute on function public.pms_equipment_tags_scoped(text, int, text, text) to service_role;"));
   assert.ok(src.includes('const PRE_ISSUE_FOLDER_SQL_RE = "(^|/)[^/]*qaqc[^/]*(/|$)";'));
+});
+
+test("tags recorded on a row match without relying on its wording", () => {
+  assert.equal(normalizeTag(" ef 7 "), "EF-7");
+  assert.equal(normalizeTag("RTU--1"), "RTU-1");
+  const m = buildLedgerMatcher({ mentions: ["EF-7"] });
+  assert.deepEqual(m.match({ title: "Feeder undersized", tags: ["EF 7"] }), { sheets: [], mentions: ["EF-7"] });
+  assert.equal(m.match({ title: "Feeder undersized", tags: ["EF-70"] }), null);
+  // matchParts is what find_related uses on an RFI or submittal's text.
+  assert.deepEqual(m.matchParts([], [], "Contractor asks about EF7 disconnect"), { sheets: [], mentions: ["EF-7"] });
+  assert.equal(m.matchParts([], [], "Contractor asks about EF-17"), null);
+});
+
+test("saved schedules give back the rows naming a tag, with their headers", () => {
+  const tables = [
+    { title: "FAN SCHEDULE", columns: 4, rows: [
+      ["TAG", "CFM", "HP", "V/PH"], ["", "", "", "VOLTS"],
+      ["EF-7", "1200", "2", "208/3"], ["EF-70", "9000", "5", "480/3"], ["EF-8", "800", "1", "120/1"] ] },
+    { title: "PUMP SCHEDULE", columns: 3, rows: [["TAG", "GPM", "HEAD"], ["P-1", "40", "60"]] },
+    { title: "NOTES SCHEDULE", columns: 2, rows: [["NOTE", "TEXT"], ["1", "Interlock with EF-7."]] },
+  ];
+  const hit = scheduleRowsForTag(tables, "EF 7");
+  assert.deepEqual(hit.map((h) => h.title), ["FAN SCHEDULE", "NOTES SCHEDULE"]);
+  assert.deepEqual(hit[0].header, [["TAG", "CFM", "HP", "V/PH"], ["", "", "", "VOLTS"]]);
+  assert.deepEqual(hit[0].rows, [["EF-7", "1200", "2", "208/3"]]); // EF-70 is another fan
+  assert.deepEqual(scheduleRowsForTag(tables, "AHU-1"), []);
+  assert.deepEqual(scheduleRowsForTag(null, "EF-7"), []);
+});
+
+test("the schedule cache, the saved links and find_related keep their guard rails", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  for (const anchor of [
+    'mcp.tool("find_related"',
+    // A cached parse is used only for the same extractor version and file size.
+    'const SCHED_PARSER = "sched-v1";',
+    '"&page=eq." + page + "&parser=eq." + SCHED_PARSER',
+    "if (!meta.size || Number(row.size_bytes) !== Number(meta.size)) return null;",
+    "const cached = refresh ? null : await schedCacheGet(fileId, pageInFile);",
+    // The whole page is parsed and kept; match only filters titles.
+    "allTables = extractSheetTables(items);",
+    // Cache failures never break a read.
+    "} catch { return null; }",
+    // A full CA review replaces the item's earlier review links; merge only adds.
+    "if (!merge) {",
+    '"project,item_type,item_number,ref_kind,ref_key,origin"',
+    // find_related never serves a pre-issuance QA copy's schedule as the scheduled value.
+    "if (isPreIssuePath(r.folder_path)) continue;",
+    'linkedBy.push("confirmed sheet link")',
+  ]) assert.ok(src.includes(anchor), `index.ts lost anchor: ${anchor}`);
+  const sql = readFileSync(new URL("../../migrations/20261116160000_drawing_schedule_cache_and_refs.sql", import.meta.url), "utf8");
+  for (const anchor of [
+    "create table if not exists public.pms_drawing_schedules",
+    "primary key (item_id, page)",
+    "add column if not exists tags jsonb",
+    "create table if not exists public.pms_ca_item_refs",
+    "unique (project, item_type, item_number, ref_kind, ref_key, origin)",
+    "alter table public.pms_drawing_schedules enable row level security;",
+    "alter table public.pms_ca_item_refs enable row level security;",
+  ]) assert.ok(sql.includes(anchor), `migration lost anchor: ${anchor}`);
 });

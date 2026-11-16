@@ -36,22 +36,64 @@ function sheetProseRegex(key: string): RegExp | null {
   return new RegExp(`(?<![A-Za-z0-9])${esc(m[1])}\\s?[-.]?\\s?${esc(m[2])}(?![A-Za-z0-9.]*\\d)`, "i");
 }
 
-export function buildLedgerMatcher(q: LedgerQuery): { active: boolean; match: (row: any) => LedgerMatch | null } {
+/** A tag as stored on a row: upper case, single hyphen between parts ("ef 7" → "EF-7"). */
+export function normalizeTag(tag: unknown): string {
+  return String(tag ?? "").trim().toUpperCase().split(/[-\s]+/).filter(Boolean).join("-").slice(0, 40);
+}
+const tagKey = (tag: unknown) => normalizeTag(tag).replace(/-/g, "");
+
+export interface RefMatcher {
+  active: boolean;
+  /** citedSheets: sheet references recorded on the record. citedTags: equipment tags recorded on it. prose: its free text. */
+  matchParts: (citedSheets: unknown[], citedTags: unknown[], prose: string) => LedgerMatch | null;
+  match: (row: any) => LedgerMatch | null;
+}
+
+export function buildLedgerMatcher(q: LedgerQuery): RefMatcher {
   const sheetKeys = [...new Set((q.sheets ?? []).map(sheetKey).filter(Boolean))];
   const sheetRes = sheetKeys.map((k) => ({ key: k, re: sheetProseRegex(k) }));
   const mentions = [...new Set((q.mentions ?? []).map((t) => String(t ?? "").trim()).filter(Boolean))]
-    .map((term) => ({ term, re: mentionRegex(term) }))
+    .map((term) => ({ term, key: tagKey(term), re: mentionRegex(term) }))
     .filter((x) => x.re);
   const active = sheetKeys.length > 0 || mentions.length > 0;
+  const matchParts = (citedSheets: unknown[], citedTags: unknown[], prose: string): LedgerMatch | null => {
+    if (!active) return null;
+    const cited = new Set((Array.isArray(citedSheets) ? citedSheets : []).map(sheetKey).filter(Boolean));
+    const tags = new Set((Array.isArray(citedTags) ? citedTags : []).map(tagKey).filter(Boolean));
+    const hitSheets = sheetRes.filter((s) => cited.has(s.key) || (s.re ? s.re.test(prose) : false)).map((s) => s.key.toUpperCase());
+    const hitMentions = mentions.filter((m) => tags.has(m.key) || m.re!.test(prose)).map((m) => m.term);
+    return hitSheets.length || hitMentions.length ? { sheets: hitSheets, mentions: hitMentions } : null;
+  };
   return {
-    active,
+    active, matchParts,
     match(row: any): LedgerMatch | null {
-      if (!active) return null;
-      const cited = new Set((Array.isArray(row?.sheets) ? row.sheets : []).map(sheetKey).filter(Boolean));
       const prose = [row?.title, row?.evidence, row?.action, row?.response, row?.status_note].filter(Boolean).join("\n");
-      const hitSheets = sheetRes.filter((s) => cited.has(s.key) || (s.re ? s.re.test(prose) : false)).map((s) => s.key.toUpperCase());
-      const hitMentions = mentions.filter((m) => m.re!.test(prose)).map((m) => m.term);
-      return hitSheets.length || hitMentions.length ? { sheets: hitSheets, mentions: hitMentions } : null;
+      return matchParts(row?.sheets, row?.tags, prose);
     },
   };
+}
+
+// ── Cached schedules: the rows that name a tag ───────────────────────────────
+export interface ScheduleTable { title: string; columns: number; rows: string[][]; truncatedRows?: number }
+
+/**
+ * From one sheet's parsed schedules, the rows that name the tag. Header rows
+ * ride along so the values can be read: every row above the first row that
+ * looks like data (a row whose first cells carry a hyphenated tag), capped at
+ * three. A schedule with no matching row is left out.
+ */
+export function scheduleRowsForTag(tables: ScheduleTable[], tag: string): Array<{ title: string; header: string[][]; rows: string[][] }> {
+  const re = mentionRegex(tag);
+  if (!re) return [];
+  const looksLikeData = (r: string[]) => r.slice(0, 2).some((c) => /^[A-Za-z]{1,5}[-\s]?\d/.test(String(c || "").trim()));
+  const out: Array<{ title: string; header: string[][]; rows: string[][] }> = [];
+  for (const t of Array.isArray(tables) ? tables : []) {
+    const rows = Array.isArray(t?.rows) ? t.rows : [];
+    const hit = rows.filter((r) => Array.isArray(r) && r.some((c) => re.test(String(c ?? ""))));
+    if (!hit.length) continue;
+    const firstData = rows.findIndex(looksLikeData);
+    const header = rows.slice(0, Math.min(firstData < 0 ? 1 : Math.max(firstData, 1), 3));
+    out.push({ title: String(t.title || ""), header, rows: hit.slice(0, 12) });
+  }
+  return out;
 }

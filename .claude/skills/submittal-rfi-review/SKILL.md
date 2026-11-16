@@ -163,10 +163,20 @@ response wording on any contested RFI or rejected submittal.
    - `read_rfi_submittal` already returns `sheetRefs` (the sheets a person
      confirmed the item refers to) and `qaLedger` (ledger rows on those
      sheets). Read them.
-   - Then call `list_qa_findings` with `sheets` (every sheet from sub-step 3
-     and the item's own references) and `mentions` (the equipment tags the
-     item covers), with `status:'all'`. One call; `matchedOn` says why each
-     row came back.
+   - Then call **`find_related`** once for each equipment tag the item
+     covers and each main sheet it touches (`tag:'EF-7'`, `sheet:'E-610'`;
+     `specSection` for a submittal's section). One call returns the ledger
+     rows, the earlier RFIs and submittals on the same thing, and, for a
+     tag, its rows from the schedules that have already been read.
+     `linkedBy` says whether a row was linked by a review or a person, or
+     only matched on wording (read those before relying on them).
+   - `scheduledValues` from `find_related` are a head start, not the
+     review basis: they come from the newest revision that has been READ.
+     Confirm against the current set with `read_drawing_schedule` (which
+     answers from its saved copy when the file has not changed, so this is
+     cheap) before quoting a value.
+   - For several sheets or tags at once, `list_qa_findings` with `sheets`
+     and `mentions` and `status:'all'` does the ledger part in one call.
    - **An open internal finding** on the sheet or tag is a known problem.
      Check whether this item touches it (the QA review flagged EF-7's feeder
      as unverified; this submittal is EF-7) and say so in `internalNotes`.
@@ -360,6 +370,12 @@ only), the `markedSelection` you confirmed from the cut sheet (submittals —
 `confirmed:false` with a `note` when nothing/multiple/illegible), `internalNotes`,
 and `redFlags` (each with a severity — **life-safety > agency > cost > rfi-bait >
 polish**).
+
+- **Always pass `sheets` and `equipmentTags`** — every sheet the review
+  relied on and every equipment tag the item covers or you checked. They are
+  saved as structured links, which is what lets the next review of that sheet
+  or that equipment (and `find_related`) find this item without guessing from
+  its wording. A review saved without them is findable only by text match.
 
 - `markedSelection` is what the modal shows first: the product, model, marked
   options, and where on the cut sheet it was marked — so the engineer confirms

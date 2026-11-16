@@ -69,6 +69,8 @@ Review one item at a time against the current set.
   Claude checks the marked selection on the cut sheet against what was specified and suggests a stamp. You decide.
 - `Which sheets does RFI 017 refer to, and are they still current?`  
   References are checked against the register so superseded sheets are flagged.
+- `What do we already know about EF-7 on SAPX256011.00?`  
+  One lookup: QA findings and owner comments on it, earlier RFIs and submittals, and its scheduled values if that schedule has been read.
 
 ### QA reviews
 

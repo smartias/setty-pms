@@ -618,6 +618,12 @@ quietly dies.
   title starting `Engineering review: `. Knowledge-layer findings record
   with `source:'qa'` and the lesson/practice/standard reference in the
   evidence.
+- **Every finding carries its `sheets` and its `tags`** — the sheets it
+  cites (with revisions) and the equipment tags it concerns (`['EF-7',
+  'LP-2']`). These are the links the RFI and submittal reviews in CA use to
+  find this row when a contractor's item touches the same sheet or
+  equipment; a finding with the tag only in its prose is found by text match
+  at best.
 - **Every finding carries its `discipline`** — the punch-list group it sits
   in (Mechanical, Electrical, Plumbing, Fire Protection, Fire Alarm,
   Multi-discipline, PM / Project, or the subconsultant's discipline on a
