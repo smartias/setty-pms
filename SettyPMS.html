@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-16-pms-v198-qa-punch-list";
+    window.__appVersion = "2026-11-16-pms-v199-qa-issue-readiness";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16077,6 +16077,58 @@ function qaGroupByDiscipline(rows) {
 // submittal/RFI review also writes a pms_qa_reviews row, and neither is a
 // review of the drawing set.
 const qaIsSetReview = r => !!r && r.kind !== "comment-log" && r.kind !== "ca-review";
+
+// Issue readiness (INTERNAL). QA runs a few days before a set is transmitted;
+// this answers "where does the punch list stand against the set going out" and,
+// once it has gone, "what was still open when it went". It lives in this tab
+// only: transmittals are for clients, QA is internal, and nothing here blocks
+// or marks an issue. The three severities that carry real consequence
+// (life-safety, agency rejection, cost) are counted apart from the rest.
+const QA_HIGH_SEV = { "life-safety": 1, "agency": 1, "cost": 1 };
+const QA_COMMENT_SRC = { drchecks: 1, owner: 1, architect: 1, agency: 1 };
+// "M-601 Rev 3" / "M601" / "E101.00" -> "m601" / "e101". Mirrors sheetKey in
+// pms-mcp/qaLedgerMatch.ts.
+function qaSheetKey(ref) {
+  const m = /^\s*([A-Za-z]{1,3})\s?[-.]?\s?(\d{1,4}(?:\.\d{1,2})?[A-Za-z]?)/.exec(String(ref == null ? "" : ref));
+  return m ? (m[1] + m[2].replace(/\.0+$/, "")).toLowerCase() : "";
+}
+// reviews and issuedSets arrive newest first. issueSheets = the sheet numbers
+// of the newest issue, from the transmittal register (may be empty).
+function qaIssueReadiness(findings, reviews, issuedSets, issueSheets) {
+  const ts = v => Date.parse(String(v || "")) || 0;
+  const isOpen = f => f.status === "open" || f.status === "ready_to_backcheck";
+  const count = rows => ({ total: rows.length, high: rows.filter(f => QA_HIGH_SEV[f.severity]).length });
+  const all = findings || [];
+  const open = all.filter(isOpen);
+  const lastReview = (reviews || []).find(qaIsSetReview) || null;
+  const issue = (issuedSets || [])[0] || null;
+  const out = {
+    phase: "none", lastReview, issue, open: count(open),
+    unanswered: open.filter(f => QA_COMMENT_SRC[f.source] && !f.response).length,
+    unassigned: open.filter(f => !f.assignee).length,
+    awaitingClose: open.filter(f => f.status === "ready_to_backcheck").length,
+  };
+  if (issue && (!lastReview || ts(issue.at) > ts(lastReview.run_at))) {
+    // The newest set went out after the last review of the drawings. A row
+    // counted as open at that moment if it existed then and either is still
+    // open or was last moved afterwards.
+    const at = ts(issue.at);
+    const openThen = all.filter(f => ts(f.created_at) <= at && (isOpen(f) || ts(f.status_at) > at));
+    const keys = {};
+    (issueSheets || []).forEach(sh => { const k = qaSheetKey(sh); if (k) keys[k] = 1; });
+    const haveSheets = Object.keys(keys).length > 0;
+    const onSheets = haveSheets ? openThen.filter(f => (Array.isArray(f.sheets) ? f.sheets : []).some(sh => keys[qaSheetKey(sh)])) : null;
+    out.phase = "post";
+    out.openAtIssue = count(openThen);
+    out.stillOpen = count(openThen.filter(isOpen));
+    out.onIssuedSheets = onSheets ? count(onSheets) : null;
+    out.onIssuedSheetsStillOpen = onSheets ? count(onSheets.filter(isOpen)) : null;
+    out.reviewedBeforeIssue = (reviews || []).some(r => qaIsSetReview(r) && ts(r.run_at) <= at);
+  } else if (lastReview) {
+    out.phase = "pre";
+  }
+  return out;
+}
 const QA_REVIEW_KIND_LABEL = { "comment-log": "Comment log", "backcheck": "Back-check", "ca-review": "Submittal / RFI review" };
 
 function QAChip({ text, color, solid }) {
@@ -16102,6 +16154,7 @@ function ProjectQAReviewsView({ project, onChange }) {
   const [issuedSets, setIssuedSets] = React.useState([]); // [{set, at}] newest first, from the register
   const [selSet, setSelSet] = React.useState("");          // "" = current composed set
   const [pendingLogs, setPendingLogs] = React.useState([]); // comment registers in the emails that were never ingested
+  const [issueSheets, setIssueSheets] = React.useState([]); // sheet numbers of the newest issued set (register)
   const [qaqcSets, setQaqcSets] = React.useState([]);      // pre-issuance set folders found under the project's QAQC folder (root-relative paths)
   const [qaqcRoot, setQaqcRoot] = React.useState("");      // that folder's real name, e.g. "09 \u2705 QAQC"
   const [customSet, setCustomSet] = React.useState(null);  // non-null while a folder path is being typed
@@ -16130,6 +16183,18 @@ function ProjectQAReviewsView({ project, onChange }) {
         const seen = {};
         setIssuedSets((reg || []).filter(r => r.set && !seen[r.set] && (seen[r.set] = 1)));
         setPendingLogs(qaCommentLogsNotIngested(em || [], (rv || []).map(r => r.source_doc).filter(Boolean)));
+        // Advisory, after the tab has painted: which sheets the newest issue
+        // carried, so "open when it went out" can be narrowed to that issue
+        // (a five-sheet bulletin is not answerable for the whole punch list).
+        if (project.id && (reg || []).length) {
+          sbFetch("GET", "/rest/v1/" + FILING_LOG_TABLE_PMS + "?select=sheets:files->sheets&project_id=eq." + encodeURIComponent(project.id) + "&operation=eq.transmittal-generated&order=created_at.desc&limit=1")
+            .then(rows => {
+              if (dead) return;
+              const list = rows && rows[0] && Array.isArray(rows[0].sheets) ? rows[0].sheets : [];
+              setIssueSheets(list.filter(x => x && x.kind !== "spec" && x.sheetNo).map(x => String(x.sheetNo)));
+            })
+            .catch(() => {});
+        }
       } catch (e) {
         if (!dead) { setError(String(e.message || e)); setReviews([]); }
       }
@@ -16272,7 +16337,7 @@ function ProjectQAReviewsView({ project, onChange }) {
   const openAssignees = [...new Set(openRows.map(f => f.assignee).filter(Boolean))].sort();
   const openSeverities = Object.keys(QA_SEV_RANK).filter(sv => openRows.some(f => f.severity === sv));
   const shownOpen = openRows.filter(f =>
-    (!fDisc || discOf(f) === fDisc) && (!fSev || f.severity === fSev) &&
+    (!fDisc || discOf(f) === fDisc) && (!fSev || (fSev === "__high__" ? !!QA_HIGH_SEV[f.severity] : f.severity === fSev)) &&
     (!fWho || (fWho === "__none__" ? !f.assignee : f.assignee === fWho)));
   const openGroups = qaGroupByDiscipline(shownOpen);
   const filtersOn = !!(fDisc || fSev || fWho);
@@ -16289,7 +16354,7 @@ function ProjectQAReviewsView({ project, onChange }) {
       f.item_id || "", String(f.status || "").replace(/_/g, " "), f.assignee || "", String(f.created_at || "").slice(0, 10),
     ])));
     const summary = rows.length + " open item" + (rows.length === 1 ? "" : "s")
-      + (filtersOn ? " (filtered: " + [fDisc, fSev, fWho === "__none__" ? "unassigned" : fWho].filter(Boolean).join(", ") + ")" : "")
+      + (filtersOn ? " (filtered: " + [fDisc, fSev === "__high__" ? "life-safety / agency / cost" : fSev, fWho === "__none__" ? "unassigned" : fWho].filter(Boolean).join(", ") + ")" : "")
       + " - grouped by discipline, worst first";
     pmsExportTable({ project, title: "QA Punch List", fileTag: "QA_Punch_List", headers, rows, fmtKind, summary });
   }
@@ -16565,18 +16630,64 @@ function ProjectQAReviewsView({ project, onChange }) {
       )}
 
       {(() => {
-        // A set issued AFTER the last recorded review, with findings still
-        // open, means the open rows have not been checked against the newest
-        // drawings - surface it instead of waiting for someone to notice.
-        const latestRun = (reviews || []).find(qaIsSetReview);
-        const newestIssue = issuedSets[0];
-        const openCount = findings.filter(f => f.status === "open" || f.status === "ready_to_backcheck").length;
-        if (!latestRun || !newestIssue || !openCount) return null;
-        if (String(newestIssue.at) <= String(latestRun.run_at)) return null;
+        // Issue readiness (internal). Before issue: where the punch list
+        // stands against the set that was reviewed. After issue: what was
+        // open when the newest set went out. It informs; it never blocks.
+        if (reviews === null || error) return null;
+        const r = qaIssueReadiness(findings, reviews, issuedSets, issueSheets);
+        if (r.phase === "none") return null;
+        const plural = (n, one, many) => n + " " + (n === 1 ? one : many);
+        const amber = "var(--c-d4a72c)", red = "var(--c-e5534b)", green = "var(--c-3fb950)";
+        const day = v => String(v || "").slice(0, 10);
+        let tone, verdict, lines = [];
+        if (r.phase === "pre") {
+          const rv = r.lastReview;
+          tone = r.open.high ? red : r.open.total ? amber : green;
+          verdict = r.open.high ? "Life-safety / agency / cost items open"
+            : r.open.total ? "Open items before issue" : "Punch list clear";
+          lines.push((rv.kind === "backcheck" ? "Back-check" : "QA review") + " #" + rv.id + (rv.set_name ? " of \u201c" + rv.set_name + "\u201d" : "") + " on " + day(rv.run_at)
+            + (r.issue ? " - newer than the last issue (\u201c" + r.issue.set + "\u201d, " + day(r.issue.at) + ")." : " - nothing has been issued on this project yet."));
+          lines.push(r.open.total
+            ? plural(r.open.total, "item is", "items are") + " open on the punch list: " + r.open.high + " life-safety / agency / cost, " + (r.open.total - r.open.high) + " other."
+            : "No open items on the punch list.");
+        } else {
+          const a = r.openAtIssue, st = r.stillOpen, on = r.onIssuedSheets, onSt = r.onIssuedSheetsStillOpen;
+          tone = (on ? onSt.high : st.high) ? red : st.total ? amber : green;
+          verdict = !r.reviewedBeforeIssue ? "Issued without a QA review on record"
+            : a.total ? "Issued with open items" : "Issued with a clear punch list";
+          lines.push("\u201c" + r.issue.set + "\u201d was issued " + day(r.issue.at)
+            + (r.lastReview ? ", after the last QA review (#" + r.lastReview.id + ", " + day(r.lastReview.run_at) + ")." : "; no QA review of the drawings is recorded for this project."));
+          if (a.total) {
+            lines.push(plural(a.total, "item was", "items were") + " open when it went out (" + a.high + " life-safety / agency / cost); "
+              + (st.total ? plural(st.total, "is", "are") + " still open (" + st.high + " life-safety / agency / cost)." : "all have since been closed."));
+            lines.push(on
+              ? (on.total ? plural(on.total, "of them cites", "of them cite") + " a sheet in that issue (" + on.high + " life-safety / agency / cost; " + onSt.total + " still open). The rest cite other sheets, or no sheet." : "None of them cites a sheet in that issue.")
+              : "The register has no sheet list for that issue, so these are not narrowed to its sheets.");
+            if (st.total) lines.push("Run the coordination review: it back-checks the open items against the issued set first.");
+          } else if (r.reviewedBeforeIssue) {
+            lines.push("No items were open when it went out.");
+          }
+        }
+        const extras = [
+          r.unanswered ? plural(r.unanswered, "reviewer comment", "reviewer comments") + " unanswered" : "",
+          r.awaitingClose ? plural(r.awaitingClose, "item", "items") + " back-checked, awaiting a person to close" : "",
+          r.open.total && r.unassigned ? r.unassigned + " of " + r.open.total + " open unassigned" : "",
+        ].filter(Boolean);
         return (
-          <div style={{ border: "1px solid var(--c-d4a72c)", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: P.text, background: P.card }}>
-            <b>Back-check due:</b> "{newestIssue.set}" was issued after the last review, and {openCount} finding{openCount === 1 ? "" : "s"} {openCount === 1 ? "is" : "are"} still open.
-            Run the coordination review - it back-checks the open findings against the newest revisions first.
+          <div style={{ border: "1px solid " + tone, borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: P.text, background: P.card }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
+              <b>Issue readiness</b>
+              <QAChip text={verdict} color={tone} />
+              <span style={{ flex: 1 }} />
+              <span style={{ fontSize: 10.5, color: P.textMuted }}>Internal - not shown on transmittals or to the client</span>
+            </div>
+            {lines.map((ln, i) => <div key={i} style={{ color: i === 0 ? P.textDim : P.text, lineHeight: 1.5 }}>{ln}</div>)}
+            {extras.length > 0 && <div style={{ color: P.textMuted, marginTop: 4, fontSize: 11 }}>{extras.join("  \u00b7  ")}</div>}
+            {r.open.high > 0 && fSev !== "__high__" && (
+              <div style={{ marginTop: 6 }}>
+                <Btn small variant="ghost" onClick={() => { setFSev("__high__"); setFDisc(""); setFWho(""); }}>Show the {r.open.high} life-safety / agency / cost item{r.open.high === 1 ? "" : "s"}</Btn>
+              </div>
+            )}
           </div>
         );
       })()}
@@ -16625,7 +16736,8 @@ function ProjectQAReviewsView({ project, onChange }) {
                   </select>
                   <select value={fSev} onChange={e => setFSev(e.target.value)} style={sel} aria-label="Filter by severity">
                     <option value="">All severities</option>
-                    {[...new Set([...openSeverities, fSev].filter(Boolean))].map(sv => <option key={sv} value={sv}>{sv}</option>)}
+                    <option value="__high__">Life-safety / agency / cost</option>
+                    {[...new Set([...openSeverities, fSev === "__high__" ? "" : fSev].filter(Boolean))].map(sv => <option key={sv} value={sv}>{sv}</option>)}
                   </select>
                   <select value={fWho} onChange={e => setFWho(e.target.value)} style={sel} aria-label="Filter by assignee">
                     <option value="">Anyone</option>

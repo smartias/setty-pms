@@ -462,6 +462,33 @@ when `set` names it or nothing was issued, and is marked `preIssueCopy`), and
 the index-derived current set on drive projects. `trace_references` still
 counts a QA copy as proof a sheet number exists, which is harmless.
 
+**Saved schedules and structured links (2026-11-16, migration
+`20261116160000_drawing_schedule_cache_and_refs.sql`).** This reverses two
+"derive every time" decisions on the owner's call, with the staleness guard
+that made them safe to reverse.
+
+- `read_drawing_schedule` keeps what it parses in `pms_drawing_schedules`,
+  keyed on file and page like the drawing index (a revision is a new file). A
+  row is used only when the extractor version (`SCHED_PARSER`) matches and the
+  file's current size equals the size it was parsed at, checked with one
+  metadata call; otherwise the PDF is parsed again and the row replaced.
+  `fromCache` / `cachedAt` mark a saved answer; `refresh:true` forces a parse.
+  Bump `SCHED_PARSER` whenever `extractSheetTables` changes its output. Cache
+  reads and writes are best-effort and never fail a read.
+- `record_qa_findings` takes `tags` per finding (`pms_qa_findings.tags`), and
+  `save_ca_review` takes `sheets` and `equipmentTags`; with `specSections` and
+  the sheets its red flags cite they are written to `pms_ca_item_refs` (a full
+  review replaces the item's earlier review links, `merge` only adds).
+- `find_related` is the one lookup over all of it for a sheet, a tag or a spec
+  section: ledger rows, RFIs and submittals (recorded links, PM-confirmed
+  `sheetRefs`, spec section, then text match — `linkedBy` says which), and for
+  a tag its rows from the saved schedules, newest issued revision that was
+  read, never a pre-issuance QA copy.
+
+Equipment tags themselves are still derived from the drawing text at query
+time (`find_equipment`); only links that a review or a person established are
+stored.
+
 `list_qa_findings` now returns the response columns, takes `needsResponse:true`
 (external rows with no accepted response, the drafting work list), and reports
 `commentLogsNotIngested`: attachments in the project's filed emails

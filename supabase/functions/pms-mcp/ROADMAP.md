@@ -653,6 +653,14 @@ Owner: unassigned. Raised by Sara 2026-08-06.
   revision-to-revision schedule diffs (call per set). Known limits, stated in
   the tool text: multi-row headers arrive as printed, misplaced cells fold
   LEFT, scanned sheets have no text (P3.10 OCR still open).
+- **2026-11-16: the parse is now kept** (`pms_drawing_schedules`). "Rebuilt on
+  demand" was chosen so no second store could drift from the drawings; the
+  cost was a PDF download and parse in every QA and CA review. A saved parse
+  is keyed on file and page and used only when the extractor version and the
+  file's size still match, so it cannot outlive the file it came from.
+  `find_related` reads the saved rows for one tag. Tags themselves stay
+  derived; only links a review or a person made are stored
+  (`pms_qa_findings.tags`, `pms_ca_item_refs`).
 
 ### Equipment tag registry: `find_equipment` (2026-09-07)
 
