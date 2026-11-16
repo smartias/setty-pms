@@ -119,4 +119,22 @@ for (const hint of autoHints) {
   assert.ok(skill.includes("Try to disprove each finding before it goes on the list"));
 }
 
+// RFI history items (qa-630 series, 2026-11-16): the five kinds of preventable
+// RFI that matched no checklist item when 25 projects' logs were tagged.
+{
+  const b = readFileSync(join(here, "../../migrations/20261116240000_qa_rfi_history_items.sql"), "utf8");
+  const ids = ["qa-630", "qa-631", "qa-632", "qa-633", "qa-634"];
+  for (const id of ids) assert.ok(b.includes(`('${id}','deliverable-qa','RFI History',`), `missing ${id}`);
+  assert.equal(b.split("::jsonb,'rfi-lesson','qa-rfi-review-2026-11-16-rfi-history'").length - 1, 5);
+  assert.ok(b.includes("on conflict (item_id) do nothing;"));
+  const details = [...b.matchAll(/\n '(\[.*\])'::jsonb,\n 'assisted'/g)].map((m) => JSON.parse(m[1].replace(/''/g, "'")));
+  assert.equal(details.length, 5);
+  for (const d of details) assert.ok(Array.isArray(d) && d.length >= 4);
+  const phases = [...b.matchAll(/\n '(\[[^\n]*\])'::jsonb,'rfi-lesson'/g)].map((m) => JSON.parse(m[1]));
+  assert.equal(phases.length, 5);
+  for (const ph of phases) for (const x of ph) assert.ok(["DD", "CD", "Permit", "Bid", "Addendum"].includes(x), `unknown phase ${x}`);
+  const skill = readFileSync(join(here, "../../../.claude/skills/qa-coordination-review/SKILL.md"), "utf8");
+  for (const id of ids) assert.ok(skill.includes(`**${id} `), `skill has no method for ${id}`);
+}
+
 console.log("qaChecklist.test.mjs: all assertions passed");
