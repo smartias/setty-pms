@@ -54,6 +54,26 @@ So:
   ahead with a look-back only when the user confirms that is what they want,
   and label the report as a look-back, not a pre-issue review.
 - **Never record a flag from an RFI or submittal review as a QA finding.**
+- **On a look-back of a set that is past bid, sort what you find into three
+  kinds, and record only the first:**
+  1. *A defect in the documents as issued* (two sheets disagree, something
+     needed is not shown). This is a QA finding. After bid every fix is a
+     possible change order, so use severity `cost` where a contractor would
+     price it.
+  2. *A change that came out of construction and has not been drawn:* an
+     approved submittal or an RFI response that differs from the sheets
+     (fan motors approved at 15 HP, still scheduled at 7.5 HP). The design
+     was not wrong when it issued; the record set is behind. This is
+     construction administration. Do not record it in the QA ledger. List
+     it in the report under **For construction administration**, naming the
+     RFI or submittal and the sheets to bring up to date in the next
+     bulletin.
+  3. *A problem with the log or the register:* RFIs filed on the drive and
+     not logged, a transmittal that was never recorded, a closed RFI with
+     no response text. Not a drawing finding. List it in the report under
+     **For the PM** and do not record it.
+  The test for kind 1 is whether a review of this set before it issued
+  could have caught it.
 - The record of what contractors asked on past jobs IS useful here, as
   input: the checklist's "RFI Prevention" items (qa-600 series) were written
   from real RFI logs. That is how the reactive record makes the next job's
@@ -1445,6 +1465,13 @@ and quietly dies.
   and report every review id returned.
 - **`coverage`** carries the header's coverage line, including the
   checklist disposition counts and where the review stopped.
+- **`itemId` is the checklist item whose check produced the finding, and
+  nothing else.** If you found it while running qa-632, it is qa-632. If no
+  item's check would have led to it, leave `itemId` out. Do not attach the
+  nearest-sounding item to give a finding a home: the item numbers are how
+  the firm learns which checks earn their place, and a wrong tag corrupts
+  that. A missing general note is not "plan and schedule disagree"; an
+  unlogged RFI is not "existing conditions".
 - Engineering-review flags record with `source:'qa'`, no `itemId`, and a
   title starting `Engineering review: `. Knowledge-layer findings record
   with `source:'qa'` and the lesson/practice/standard reference in the
