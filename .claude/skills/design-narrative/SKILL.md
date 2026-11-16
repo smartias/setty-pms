@@ -37,6 +37,11 @@ Two rules above all:
    phase's narrative sets the structure, voice, and system descriptions to
    UPDATE rather than rewrite; read it in full with `read_document`. Also
    check the Design folders (internal calcs may carry criteria).
+   A QA review report in the same "Design Reports and Narratives" folder
+   carries a "Design as read" section. That is NOT a prior narrative: it
+   was read from the drawings by the QA review and no engineer wrote or
+   approved it. Use it as a map of the set and of what the drawings do not
+   state, and verify every value against the drawings yourself.
 2. **The issued set** — `get_current_set` for what/when; derive the phase
    from the set name. `extract_sheet_index` (no subfolder) for the full
    current drawing list per discipline.

@@ -6,7 +6,9 @@ description: >
   item by item (with a cross-discipline pass against the architectural,
   structural and life safety drawings), the knowledge layer (project lessons, best practices, agency
   preferences, engineering standards), a general engineering sanity review,
-  and a punch list for the team grouped by discipline. QA is PROACTIVE: it is
+  and a punch list for the team grouped by discipline, plus a brief design
+  narrative of what the reviewer read the design to be, from the drawings
+  alone. QA is PROACTIVE: it is
   for DESIGN-phase sets, through bid, with the goal of removing the causes of
   RFIs and change orders before the set goes out. Use whenever someone asks
   for a QA review, internal coordination review, deliverable review, drawing
@@ -26,7 +28,9 @@ description: >
 
 You are performing Setty's internal QA review of an MEPFP drawing set. The
 deliverable is a **punch list the team works from**, backed by a findings
-report a human reviewer signs off on.
+report a human reviewer signs off on. The report also carries a brief
+**design narrative as read from the drawings** (Step 5b), so the engineer
+can see what the reviewer understood the design to be.
 
 ## What QA is for — and where it stops
 
@@ -73,6 +77,7 @@ below with the detail.
 | 3d | **RFI history checks** (qa-630 series): existing conditions, points of connection, small-item agreement, controls scope, revisions carried through. Weighted by project type | Checklist coverage table |
 | 4 | **Pass 2 — Knowledge layer**: lessons, best practices, agency preferences, engineering standards applied to this set | Knowledge section |
 | 5 | **Pass 3 — Engineering review**: does the design make engineering sense | Engineering flags |
+| 5b | **Design narrative as read**: a brief account of the design, written only from what this review read on the drawings | Design as read section |
 | 6 | **Punch list and report** | The deliverable |
 | 7 | **Record and file**: ledger rows, report in SharePoint | Ledger ids, folder link |
 
@@ -1053,6 +1058,80 @@ engineer should verify. Severity follows the same scale as everything else
 — an undersized feeder is `life-safety`/`cost`, an unstated design
 condition is `rfi-bait`.
 
+## Step 5b — Design narrative as read from the drawings
+
+Write this in every full review, after Pass 3 and before the punch list. It
+is a **brief** account of what the set under review says the design is,
+written by the reviewer from what was read during this review. It has two
+uses:
+
+- **It shows the engineer what the reviewer understood.** A narrative that
+  describes the wrong system tells the engineer, in a minute, that the
+  findings built on that reading need a second look.
+- **It shows what the drawings do not say.** What a careful reader cannot
+  learn from the set, a bidder or an agency reviewer cannot learn either.
+
+It is not the `design-narrative` skill's Basis of Design. That document is
+built from the whole record (minutes, emails, prior narratives) for the
+engineer to issue. This one is built from the drawings only, stays inside
+the QA report, and is never issued.
+
+**Rules:**
+
+1. **The drawings of the set under review, and nothing else.** Use the
+   sheets, schedules, notes, risers, one-lines and sequences read in Steps 0
+   to 5, and the spec book where qa-602 opened it. Do not use emails,
+   meeting notes, the project briefing, a prior narrative or the knowledge
+   layer: a statement that came from one of those would hide a gap in the
+   drawings. A few extra reads to fill an obvious hole (the general notes
+   sheet, the code summary, a schedule not yet opened) are fine; this is
+   not a second review.
+2. **Every statement carries its sheet.** Values are quoted as scheduled,
+   with the sheet number and revision ("two 150-ton air-cooled chillers,
+   CH-1 and CH-2, M-601 Rev 2"). Do not compute a total, a load or a
+   capacity the drawings do not state.
+3. **Where the drawings are silent, say "not stated on the drawings".**
+   Never fill a gap with what is typical, and never give a reason for a
+   design choice unless a note on the drawings gives it.
+4. **Where the drawings disagree with themselves, state both** with their
+   sheets and the punch-list number, and do not pick one.
+5. **Say what was not read.** Textless sheets, disciplines or areas the
+   review did not reach, and a spec book that was not in hand are named, so
+   a short paragraph is not mistaken for a simple system.
+6. **Keep it to about one page** (roughly 300 to 600 words). No drawing
+   index, no sheet-by-sheet list.
+
+**Outline:**
+
+1. **Project and scope as drawn**: the building, the areas of work, new or
+   renovation, the phase, from the cover and general notes sheets.
+2. **Codes and design criteria cited**: code editions and the design
+   conditions the sheets state, per discipline.
+3. **One short paragraph per discipline in the set** (Mechanical,
+   Electrical, Plumbing, Fire Protection, Fire Alarm): the systems
+   provided, the major equipment with its scheduled capacity, how each
+   system is served and distributed, and the controls intent as the
+   sequences state it. On a PRIME job add a line for each other discipline
+   whose sheets were read.
+4. **Not stated on the drawings**: a short list of what a reader would
+   expect to find and could not.
+5. **Basis**: which sheets it was read from, and what was not read.
+
+Head the section with this line, verbatim: *Draft, read from the drawings
+by the QA review. It is not the engineer's Basis of Design and is not for
+issue.* When the set is a pre-issuance QAQC copy, add that it describes the
+QA copy and not what the client holds.
+
+**How it ties to the punch list.** The narrative adds no findings of its
+own. A missing design basis is already Pass 3's "Design basis stated and
+consistent" check, and a disagreement is already a finding: each goes on
+the punch list once, and the narrative cites the P-number. Nothing from the
+narrative is recorded in the ledger or saved to the knowledge layer.
+
+**When to skip it.** Back-check-only and automatic back-check runs do not
+write one. If the review stopped early, write it from what was read and say
+so in its Basis line.
+
 ## Step 6 — The punch list and the report
 
 **The punch list is the deliverable.** It is what the team works from, so
@@ -1139,6 +1218,7 @@ Stopped early at: <step, or "ran all steps">
 ## Summary                    (3–6 lines: what would embarrass the firm in front of the owner; counts by severity)
 ## Punch list                 (grouped by discipline, P-numbered — the table above)
 ## Evidence                   (per P-number: the text/values/renders behind it, and the view_drawing call to see it)
+## Design as read             (Step 5b: the draft label; scope, codes and criteria, one paragraph per discipline, not stated on the drawings, basis)
 ## Carry-over                 (prior comments and open ledger rows: picked up / still open / could not read)
 ## Checklist coverage         (every item id, grouped by section: disposition + what was examined or why not)
 ## Cross-discipline           (the coverage plan; the seven X checks: disposition, areas done, sheets compared with dates, punch-list numbers; areas not reached)
@@ -1256,6 +1336,11 @@ CD Resubmission'; markdown as contentText, docx/xlsx as contentBase64), pass
 Reviews tab links the report from the review, and hand the user the
 folder's webUrl. Record first, then file, so the ids exist. Filing never touches Outgoing and never
 issues anything.
+
+The design narrative as read (Step 5b) is filed as a section of the report,
+not as a file of its own: a separate file named like a narrative in that
+folder would be picked up by the next `design-narrative` run as the
+engineer's prior narrative, which it is not.
 
 End by telling the user, in a few lines: how many punch-list items by
 discipline and severity, what was recorded (review ids) and filed (the
