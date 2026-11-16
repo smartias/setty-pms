@@ -227,6 +227,7 @@ export function parseNewformaFwdSub(email) {
 //   "CI00034 Q119 (RFI#34) Exposed Rough Carpentry"                        a new RFI
 //   "RFI  - Q119 (RFI#3) Casement Millwork - Additional Clarification on C000016114-MC0034 - …"   new, no CI number yet
 //   "RFI CI00033 - Q119 (RFI#33) Data Points response received on C000016114-MC0034 - …"   body has the question
+//   "RFI CI00012 (Q126 (RFI#12) Fountain Repl & Electrical Routing) submitted on Q126 (IS126Q) - …"   new, title inside the brackets
 //   "RFI CI00020 for Q119 C000016114-MC0034 D021838 has been returned"      sent back to us: never a close
 //   "CAMP Submittal: 16730-003 Returned in Project C000016114-MC0034"       body: "returned with response Revise Resubmit"
 //   "03542-001 Official Reviewer Task on Q119 (IS119Q) - …"                 a submittal assigned to us
@@ -246,7 +247,10 @@ export function parseKahuaRfi(email) {
   if (!rn && !/^RFI\b/i.test(subj)) return null;
   const key = rn ? rfiKey(rn[1]) : String(+cn[1]);
   const event = /has been returned/i.test(subj) ? "Returned to Us" : /response received/i.test(subj) ? "Response Received" : "New RFI";
-  const tm = subj.match(/\(RFI\s*#\s*[\w.-]+\)\s*(.*?)(?:\s+response received on\b.*|\s+on\s+C\d{6,}.*|\s+has been returned.*)?$/i);
+  // A new RFI now arrives as "RFI CI00012 (Q126 (RFI#12) <title>) submitted on
+  // Q126 (IS126Q) - …": the title ends at the bracket that closes the outer
+  // pair, and the project name after it is not part of it (Q126, 2026-11).
+  const tm = subj.match(/\(RFI\s*#\s*[\w.-]+\)\s*(.*?)(?:\s*\)\s*submitted on\b.*|\s+response received on\b.*|\s+on\s+C\d{6,}.*|\s+has been returned.*)?$/i);
   const unq = (x) => String(x || "").trim().replace(/^"+|"+$/g, "").trim();
   return {
     ...base(email), extNum: key, kahuaId: cn ? "CI" + cn[1].padStart(5, "0") : "", event,
