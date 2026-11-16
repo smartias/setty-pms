@@ -392,6 +392,10 @@ test("Kahua RFIs: RFI# and CI number are one key; events never close an RFI", as
   const r = parseKahuaRfi(kmail("RFI CI00033 - Q119 (RFI#33) Data Points response received on C000016114-MC0034 - Q119 (IS119Q) - Reso A Computer Lab Upgrade", K_RESP_BODY));
   assert.deepEqual([r.extNum, r.event, r.title], ["33", "Response Received", "Data Points"]);
   assert.match(r.question, /^As per contract drawing E201\.00/);
+  // The "submitted" notification wraps the title in brackets (Q126, 2026-11).
+  const sub = parseKahuaRfi(kmail("RFI CI00012 (Q126 (RFI#12) Fountain Repl & Electrical Routing) submitted on Q126 (IS126Q) - Reso A Science Lab Upgrade - POT"));
+  assert.deepEqual([sub.extNum, sub.kahuaId, sub.event, sub.title], ["12", "CI00012", "New RFI", "Fountain Repl & Electrical Routing"]);
+  assert.equal(parseKahuaRfi(kmail("RFI CI00014 (Q126 (RFI#14) Water Fountain Specs ) submitted on Q126 (IS126Q) - Reso A Science Lab Upgrade - POT")).title, "Water Fountain Specs");
   const back = parseKahuaRfi(kmail("RFI CI00020 for  Q119 C000016114-MC0034 D021838 has been returned", "Return Reason: please attached latest response"));
   assert.deepEqual([back.extNum, back.event], ["20", "Returned to Us"]);
   for (const s of ["Kahua Weekly Summary", "Meeting Minutes for C000016114-MC0034 - Q119 (IS119Q) - Reso A Computer Lab Upgrade, Job Progress : 00002",
