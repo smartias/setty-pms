@@ -476,19 +476,58 @@ they are in the project library and indexed; `view_drawing` in direct mode
 renders any PDF page by itemId when they are not; `find_document` and
 `read_document` open the spec book.
 
-Every one of the six checks gets a disposition (the same vocabulary as
+Every one of the six checks (X-1 as two lines, X-1a and X-1b) gets a disposition (the same vocabulary as
 Pass 1) in the report's Cross-discipline table, with the sheets compared.
 
-- **X-1 Work that another document asks MEPFP to provide.** Look in the
-  architectural plans, the door and hardware schedule, and spec divisions
-  08, 10, 11, 12 and 14 for anything that needs power, a fire alarm
-  connection, water, a drain or exhaust: fire and smoke doors and shutters
-  that close on alarm, door operators and hold-opens, motorized shades,
-  projectors and screens, appliances, hand dryers, drinking fountains,
-  elevators and their pits, drip pans called for under piping, heat trace.
-  Search for the item, then confirm it is on the E, FA, P or M sheet that
-  would serve it. An item the architect or a spec calls for and the MEPFP
-  set does not show is a finding, `rfi-bait` or `cost`.
+- **X-1 Work one discipline's documents hand to another.** Run it in both
+  directions; each direction gets its own line in the table.
+  - **X-1a What the others ask MEPFP to provide.** Look in the
+    architectural plans, the door and hardware schedule, and spec divisions
+    08, 10, 11, 12 and 14 for anything that needs power, a fire alarm
+    connection, water, a drain or exhaust: fire and smoke doors and
+    shutters that close on alarm, door operators and hold-opens, motorized
+    shades, projectors and screens, appliances, hand dryers, drinking
+    fountains, elevators and their pits, drip pans called for under piping,
+    heat trace. Search for the item, then confirm it is on the E, FA, P or
+    M sheet that would serve it. An item the architect or a spec calls for
+    and the MEPFP set does not show is a finding, `rfi-bait` or `cost`.
+  - **X-1b What MEPFP asks the others to provide.** Our own sheets hand
+    work to the architect, the structural engineer and other consultants,
+    usually in a note, and nobody checks that they picked it up.
+    1. Collect the hand-offs. `search_drawings` across the M, E, P, FP and
+       FA sheets (general notes, keynotes, sequences, smoke control and
+       purge notes, details) for: `BY ARCHITECT`, `BY OTHERS`, `BY G.C.`,
+       `BY STRUCTURAL`, `REFER TO ARCH`, `SEE ARCH`, `SEE STRUCT`,
+       `ARCHITECTURALLY-PROVIDED`, `COORDINATE WITH ARCHITECT`,
+       `N.I.C.`, and for the things MEPFP design leans on: rated
+       enclosures, shafts and chases, access panels and doors, louvers and
+       their free area, operable or breakable windows, skylights and smoke
+       vents, door undercuts and transfer openings, housekeeping pads,
+       curbs, dunnage and equipment supports, trenches, pits and sumps,
+       sleeves and beam penetrations, roof openings, ceiling return-air
+       slots.
+    2. For each hand-off, write down exactly what our note needs: the
+       item, where, and any number (a free area, a rating in hours, a
+       size, a clearance).
+    3. Find it in the other discipline's documents: the plan at that
+       location, the schedule or keynote, and the spec section. Search
+       their sheets for the word our note uses as well; if our note says
+       "breakable" or "rated enclosure" and no sheet of theirs does, that
+       is the first sign.
+    4. Compare. A hand-off the other documents do not show is a finding.
+       So is one they show differently: a fixed skylight where our purge
+       note needs an opening of a stated free area, a wall their plan
+       leaves unrated where our note relies on a rated enclosure, a sump
+       in a different corner. Severity follows what depends on it:
+       `life-safety` for smoke control, egress and fire ratings, otherwise
+       `cost` or `rfi-bait`.
+    5. A hand-off that defers a decision instead of stating it ("refer to
+       architectural plans for exact locations") is a flag, not a pass:
+       name the sheet of theirs that would have to carry the answer.
+    On BPL New Lots this direction found a post-fire smoke purge that
+    relied on a "breakable" skylight of 40.25 sq ft free area, where the
+    architect specified a fixed skylight under a steel screen. Neither
+    sheet is wrong when read alone, which is why only this check sees it.
 - **X-2 Fire ratings, dampers and vents against the life safety plan.**
   Take the rated walls, shafts and floors from the life safety plan (or the
   code sheet). Every duct, transfer opening and outside-air path crossing
