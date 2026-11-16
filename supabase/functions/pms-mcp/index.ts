@@ -62,6 +62,7 @@ import { extractSheetTables, orientSheetItems, type SheetTextItem, type SheetTab
 import { buildLedgerMatcher, sheetKey, normalizeTag, scheduleRowsForTag } from "./qaLedgerMatch.ts";
 // Which projects have ledger rows due a back-check against a newer set. Pure; see its tests.
 import { issuedSets, backcheckStatus } from "./backcheckCandidates.ts";
+import { isIssuedSetRow, notASetReason } from "./issuedSet.ts";
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
@@ -598,6 +599,12 @@ const MAX_DOC_BYTES = 20 * 1024 * 1024;
 // discipline books routinely run past it — Tabler's electrical book is 42MB.
 const SHEET_MAX_BYTES = 64 * 1024 * 1024;
 const SHEET_OVERSIZE_BUDGET = 96 * 1024 * 1024;
+// read_document on a PDF is the same bargain: text comes out a page range at a
+// time (50 pages, MAX_DOC_CHARS), so the file's size never reaches the response.
+// At 20MB it refused BPL's 23MB electrical book outright, and a QA review read
+// 6 of its 43 sheets by rendering pages as images instead.
+const READ_PDF_MAX_BYTES = SHEET_MAX_BYTES;
+const readDocMaxBytes = (name: string) => /\.pdf$/i.test(String(name || "")) ? READ_PDF_MAX_BYTES : MAX_DOC_BYTES;
 
 // ── Per-isolate PDF caches (2026-09-14) ─────────────────────────────────────
 // A CA review hammers the same files back to back: view_drawing full page,
@@ -1427,7 +1434,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-backcheck-candidates";
+const BUILD = "2026-11-16-current-set-real-sets";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -4543,7 +4550,23 @@ mcp.tool("get_current_set", {
     // for the newest set CONTAINING that discipline, which is not always the newest
     // set overall: a Bulletin covering only mechanical leaves the current electrical
     // set several transmittals back.
-    const candidates = disc ? rows.filter((r) => hasDiscipline(r, disc)) : rows;
+    //
+    // The register logs every send, and the transmittal tool is also used to
+    // email a single document. Those rows are not sets (issuedSet.ts) and must
+    // not be reported as one; they are listed apart so nothing is hidden.
+    const setRegister = rows.filter(isIssuedSetRow);
+    const notSets = rows.filter((r) => !isIssuedSetRow(r)).slice(0, 5).map((r) => ({
+      transmittalNumber: r.files?.transmittalNumber || null,
+      sentOn: registerIssueDate(r),
+      folder: r.files?.milestoneName || null,
+      files: sheetsOf(r).map((s: any) => s?.filename || s?.title).filter(Boolean).slice(0, 5),
+      why: notASetReason(r),
+    }));
+    const notSetsField = notSets.length ? {
+      otherTransmittals: notSets,
+      otherTransmittalsNote: "Sent through the transmittal tool but not an issued drawing/spec set, so not considered for the current set.",
+    } : {};
+    const candidates = disc ? setRegister.filter((r) => hasDiscipline(r, disc)) : setRegister;
     if (candidates.length) {
       const latest = candidates[0];
       const f = latest.files || {};
@@ -4659,6 +4682,7 @@ mcp.tool("get_current_set", {
             "list is not available here — open the folder link to see the contents.",
         }),
         ...(priorSets.length ? { priorSets } : {}),
+        ...notSetsField,
         ...(latest.sp_folder_url || f.driveFolder ? {} : {
           linkNote: "No folder link was recorded on this transmittal. Use list_project_documents with subfolder:'Outgoing' to locate it.",
         }),
@@ -4668,8 +4692,8 @@ mcp.tool("get_current_set", {
     // ── Inference fallback. Per the register's real coverage this is the common
     // case today, not the exception, so the basis has to be specific enough that
     // the reader can judge it rather than a bare "inferred".
-    const discNote = disc && rows.length
-      ? `The register has ${rows.length} transmittal(s) for this project but none recording discipline "${discipline}". Falling back to folder inference for the set overall.`
+    const discNote = disc && setRegister.length
+      ? `The register has ${setRegister.length} transmittal(s) for this project but none recording discipline "${discipline}". Falling back to folder inference for the set overall.`
       : null;
     // Drive-based project (1.16.0): no register and no SharePoint folder to
     // infer from — the drawing index is the basis. The newest indexed set is
@@ -4768,6 +4792,7 @@ mcp.tool("get_current_set", {
         sheetRegisterNote: "Inferred sets have no sheet register. Open the folder link, or use list_project_documents with subfolder:'Outgoing/<set name>'.",
         priorSets: dated.slice(1, 6).map((s: any) => ({ setName: s.name, issueDate: s.dateInName, webUrl: s.webUrl })),
         nextStep: "Issuing this set through the transmittal tool would make it authoritative here instead of inferred.",
+        ...notSetsField,
         ...(discNote ? { disciplineNote: discNote } : {}),
       });
     } catch (e) {
@@ -5274,7 +5299,7 @@ mcp.tool("read_document", {
         try {
           const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
           base.size = props.size; base.modified = props.modified;
-          if (props.size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open it from the mapped drive at sharePath, or download_document for the bytes." });
+          if (props.size > readDocMaxBytes(name)) return asText({ ...base, note: `File too large to extract inline (over ${readDocMaxBytes(name) / 1048576}MB) — open it from the mapped drive at sharePath, or download_document for the bytes.` });
           pdfCacheKey = itemId;
           pdfBytes = extOf(name) === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
           if (!pdfBytes) res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);
@@ -5291,7 +5316,7 @@ mcp.tool("read_document", {
         name = meta.name || "";
         const size = meta.size ?? 0;
         base = { itemId, name, size, webUrl: meta.webUrl };
-        if (size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open via webUrl, or download_document for the bytes." });
+        if (size > readDocMaxBytes(name)) return asText({ ...base, note: `File too large to extract inline (over ${readDocMaxBytes(name) / 1048576}MB) — open via webUrl, or download_document for the bytes.` });
         pdfCacheKey = drive + "|" + realId;
         pdfBytes = extOf(name) === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
         if (!pdfBytes) {
@@ -5309,8 +5334,10 @@ mcp.tool("read_document", {
           const { getDocumentProxy } = await import("unpdf");
           if (!pdfBytes) { pdfBytes = new Uint8Array(await res!.arrayBuffer()); pdfCachePut(pdfCacheKey, pdfBytes); }
           // pdf.js may take ownership of the buffer it is handed — feed it a
-          // copy so the cached bytes stay intact for the next call.
-          const pdf: any = await getDocumentProxy(pdfBytes.slice());
+          // copy so the cached bytes stay intact for the next call. A file too
+          // big for the cache was never stored, so it is handed over as is:
+          // a second copy of a 60MB book is memory the worker does not have.
+          const pdf: any = await getDocumentProxy(pdfBytes.byteLength > PDF_CACHE_MAX_BYTES ? pdfBytes : pdfBytes.slice());
           const total: number = pdf.numPages;
           const MAX_PAGES = 50;
           const textEntry = pdfPageTexts(pdfCacheKey);

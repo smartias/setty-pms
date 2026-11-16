@@ -255,7 +255,8 @@ for (const anchor of [
   "function pdfiumLibrary",
   "const library = await pdfiumLibrary();",
   "getDocumentProxy(bytes.slice())",
-  "getDocumentProxy(pdfBytes.slice())",
+  // read_document: cached bytes are copied; a file too big to cache is handed over as is.
+  "getDocumentProxy(pdfBytes.byteLength > PDF_CACHE_MAX_BYTES ? pdfBytes : pdfBytes.slice())",
 ] ) {
   assert.ok(src.includes(anchor), `index.ts lost anchor: ${anchor}`);
 }
