@@ -58,8 +58,8 @@ test("the tools use the matcher and keep the pre-issue guard", () => {
     "qaLedger:",
     // Pre-issuance QA copies stay out of the default index readers.
     "const PRE_ISSUE_FOLDER_RE = /(^|\\/)[^/]*qaqc[^/]*(\\/|$)/i;",
-    "if (isPreIssuePath(r.folder_path)) continue;",
-    "const issued = pool.filter((r) => !isPreIssuePath(r.folder_path));",
+    "if (isNotIssuedPath(r.folder_path)) continue;",
+    "const issued = pool.filter((r) => !isNotIssuedPath(r.folder_path));",
     '"pms_equipment_tags_scoped"',
   ]) assert.ok(src.includes(anchor), `index.ts lost anchor: ${anchor}`);
   const re = new RegExp(src.match(/const PRE_ISSUE_FOLDER_RE = \/(.+)\/i;/)[1], "i");
@@ -115,7 +115,7 @@ test("the schedule cache, the saved links and find_related keep their guard rail
     "if (!merge) {",
     '"project,item_type,item_number,ref_kind,ref_key,origin"',
     // find_related never serves a pre-issuance QA copy's schedule as the scheduled value.
-    "if (isPreIssuePath(r.folder_path)) continue;",
+    "if (isNotIssuedPath(r.folder_path)) continue;",
     'linkedBy.push("confirmed sheet link")',
   ]) assert.ok(src.includes(anchor), `index.ts lost anchor: ${anchor}`);
   const sql = readFileSync(new URL("../../migrations/20261116160000_drawing_schedule_cache_and_refs.sql", import.meta.url), "utf8");

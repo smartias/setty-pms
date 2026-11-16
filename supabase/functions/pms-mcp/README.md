@@ -438,6 +438,18 @@ those `pms_qa_reviews` rows (`report_url`, this project's rows only) so the tab
 links the report. Findings appear only in the project's QA Reviews tab; nothing
 here writes to the knowledge layer.
 
+**Backgrounds in the drawing index (2026-11-16).** `search_drawings` with a
+`subfolder` indexes any folder, so the architect's and structural engineer's
+sets can be indexed from where they were received (`Emails/...`, an Incoming or
+Backgrounds folder). `drawingTier.ts` marks those paths as backgrounds, and
+every reader that leaves QA copies out (`isNotIssuedPath`: the index-derived
+current set, default drawing search, newest-revision lookup, `find_equipment`,
+`find_related`) leaves them out too, so the architect's compiled copy of our own
+sheets never competes with the Outgoing one. Default search reports
+`coverage.backgroundsExcluded`; pass the folder as `subfolder` to search it.
+The 20MB indexing cap still applies: a larger combined PDF is skipped and has
+to be read with `view_drawing` in direct mode or downloaded.
+
 **RFI root causes (2026-11-16).** `pms_rfi_root_causes` (migration
 `20261116230000`) holds one tag per RFI: why it was asked (`rfiRootCause.ts`:
 doc-conflict, doc-missing, coordination, scope-gap, contractor,
