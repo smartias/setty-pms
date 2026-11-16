@@ -176,3 +176,14 @@ test("the tab keeps its guard rails", () => {
   assert.ok(!view.includes("{issuedSets.length > 0 && (\n          <select"));
   assert.ok(view.includes('sheetRefRpc("pms_qa_finding_set_assignment"'));
 });
+
+test("the tab has a back-check button that hands only the back-check to Claude", () => {
+  const page = readFileSync(new URL("./SettyPMS.html", import.meta.url), "utf8");
+  assert.match(page, /Back-check open items \(\{backcheckCount\}\)/);
+  assert.match(page, /href=\{backcheckUrl\}/);
+  const m = /const backcheckUrl = [\s\S]*?\]\.join/.exec(page);
+  assert.ok(m, "backcheckUrl is built");
+  assert.match(m[0], /list_backcheck_candidates/);
+  assert.match(m[0], /ready_to_backcheck, never closed/);
+  assert.match(m[0], /kind:'backcheck'/);
+});

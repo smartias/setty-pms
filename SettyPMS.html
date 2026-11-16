@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-16-pms-v201-qa-send-to-team";
+    window.__appVersion = "2026-11-16-pms-v202-qa-backcheck-button";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16479,6 +16479,15 @@ function ProjectQAReviewsView({ project, onChange }) {
     "",
     "Use the Setty PMS connector and the review-comment-responses skill: list_qa_findings with needsResponse:true is the work list; verify each comment against the newest revision of the sheets it cites (search_drawings history, read_drawing_schedule, view_drawing), choose a disposition and draft the response in Setty's voice with the sheets and revisions cited, save the drafts with save_comment_responses so they appear here in QA Reviews for my sign-off, then build the Comments & Responses register and file it with file_qa_report. Drafts only - nothing goes back to the reviewer.",
   ].join("\n"));
+  // Back-check only: the open rows against the newest issued set, nothing
+  // else. The count is rows still 'open'; 'ready to back-check' rows already
+  // carry evidence and wait for a person.
+  const backcheckCount = openRows.filter(f => f.status === "open").length;
+  const backcheckUrl = "https://claude.ai/new?q=" + encodeURIComponent([
+    "Back-check the open QA items for " + label + " against the newest issued drawing set. Back-check only: do not run a full review.",
+    "",
+    "Use the Setty PMS connector and the qa-coordination-review skill (its automatic back-check steps): call list_backcheck_candidates for this project to get the newest set and the rows that are due, and confirm the set with get_current_set. If the tool is not available, use list_qa_findings and back-check every row with status open. For each row, read the newest revision of the sheets it cites (search_drawings history, read_drawing_schedule, view_drawing) and move it with update_qa_finding ONLY on evidence you read: internal findings that are fixed go to closed, and owner, architect, agency and DrChecks comments that are picked up go to ready_to_backcheck, never closed, so I can confirm them here. Leave a row open when the set does not answer it or drawings cannot answer it. Leave RFI and submittal flags alone. Then record the pass with record_qa_findings kind:'backcheck', setName exactly the newest set's folder name, and tell me per row what moved, what stayed open and what you could not verify.",
+  ].join("\n"));
   const ingestUrl = "https://claude.ai/new?q=" + encodeURIComponent([
     "Ingest the review comment log" + (pendingLogs.length === 1 ? "" : "s") + " for " + label + " into the QA ledger: " + pendingLogs.slice(0, 6).map(l => '"' + l.attachment + '"').join(", ") + (pendingLogs.length > 6 ? " and " + (pendingLogs.length - 6) + " more" : "") + ".",
     "",
@@ -16681,6 +16690,15 @@ function ProjectQAReviewsView({ project, onChange }) {
           title="Opens your Claude seat with the QA review prefilled - backchecks open findings, runs the checklist, knowledge and engineering passes on the selected set, and records the punch list here for your sign-off">
           {"🤖"} Run Coordination Review
         </a>
+        {backcheckCount > 0 && (
+          <a href={backcheckUrl} target="_blank" rel="noreferrer"
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
+              border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, fontWeight: 600,
+              color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}
+            title="Opens your Claude seat with a back-check prefilled - checks every open finding and reviewer comment against the newest issued set and moves the ones the drawings answer. Reviewer comments stop at 'ready to back-check' for you to confirm here">
+            {"🤖"} Back-check open items ({backcheckCount})
+          </a>
+        )}
         {awaitingResponse > 0 && (
           <a href={responsesUrl} target="_blank" rel="noreferrer"
             style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
