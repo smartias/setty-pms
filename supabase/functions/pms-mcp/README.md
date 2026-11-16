@@ -438,6 +438,16 @@ those `pms_qa_reviews` rows (`report_url`, this project's rows only) so the tab
 links the report. Findings appear only in the project's QA Reviews tab; nothing
 here writes to the knowledge layer.
 
+**Actions (2026-11-16).** The team works the punch list from each finding's
+`action`. `qaAction.ts` is a lenient floor under the skill's standard:
+`record_qa_findings` still records an internal finding whose action is empty,
+only a vague verb ("Coordinate.", "Verify and revise as required") or names
+nowhere to look, and returns it under `actionNeedsRewrite`;
+`revise_qa_finding_action` rewrites the action of an existing row (action text
+only) and refuses a vague one. Reviewer comments are exempt. The cross-discipline
+pass of the skill is also on the checklist as `qa-610` to `qa-616` (migration
+`20261116220000`).
+
 **Key items (2026-11-16).** `pms_qa_findings.key_item` / `key_reason` mark the
 few findings the team must see first: recurring, a clear miss, or high
 consequence (migration `20261116200000`). `record_qa_findings` takes

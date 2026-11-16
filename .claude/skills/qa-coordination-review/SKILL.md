@@ -476,6 +476,13 @@ they are in the project library and indexed; `view_drawing` in direct mode
 renders any PDF page by itemId when they are not; `find_document` and
 `read_document` open the spec book.
 
+The checks are on the checklist as `qa-610` to `qa-616` (X-1a `qa-610`,
+X-1b `qa-611`, X-2 `qa-612`, X-3 `qa-613`, X-4 `qa-614`, X-5 `qa-615`, X-6
+`qa-616`): give each finding from this pass the matching `itemId`, and report
+each item's disposition in the checklist coverage table as well. If
+`get_qa_checklist` does not return them, the database has not had them added
+yet; run the pass anyway and say so.
+
 Every one of the six checks (X-1 as two lines, X-1a and X-1b) gets a disposition (the same vocabulary as
 Pass 1) in the report's Cross-discipline table, with the sheets compared.
 
@@ -968,6 +975,10 @@ and quietly dies.
   Multi-discipline items, name each discipline that has to act in
   `action`. Never name a person: the PM assigns people in the tab.
 - Check the result's `failed` list and report any row that did not save.
+- If the result has `actionNeedsRewrite`, those rows are saved but their
+  action is too vague to work from. Rewrite each one with
+  `revise_qa_finding_action` before you report the punch list; do not
+  leave it for the team.
 
 External comment logs — the owner's, the agency's, the architect's — ingest
 the same way (`kind:'comment-log'`, one row per comment, `externalRef` =
