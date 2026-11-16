@@ -36,6 +36,11 @@ import { KB_TEAM, isKbTeam, parseKbExclude, kbExcluded, walkKb, kbSearch } from 
 import { runIntakePass, intakeSince } from "./caIntakeRun.ts";
 import { runPortalIntakePass, type PortalFile } from "./portalIntakeRun.ts";
 import { runPortalLogsPass } from "./portalLogsRun.ts";
+// Plain JS shared with the PMS page (a drift-tested copy, like caIntake.js).
+import { findRfiDuplicates as findRfiDuplicatesJs, rfiLikelyDuplicates as rfiLikelyDuplicatesJs } from "./primeCa.js";
+type RfiTwin = { id: string; number: string; status: string; reason: "number" | "text"; title?: string };
+const findRfiDuplicates = findRfiDuplicatesJs as (rfis: any[]) => Record<string, RfiTwin[]>;
+const rfiLikelyDuplicates = rfiLikelyDuplicatesJs as (candidate: { number?: string; title?: string; description?: string }, rfis: any[]) => RfiTwin[];
 import { changeSummary, listChanges, readChange, isSettyPrime } from "./constructionChangesView.ts";
 import { closeoutSummary, listCloseout } from "./closeoutView.ts";
 // Raw-bytes path (1.19.0): signed single-file links behind download_document /
@@ -1442,7 +1447,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-index-cpu-budget";
+const BUILD = "2026-11-16-rfi-duplicate-warning";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -2289,6 +2294,28 @@ function flagCrossProjectDuplicates(items: any[]): any[] {
       ? { ...it, possibleDuplicate: others.map((o: any) => ({ project: o.project, status: o.status })),
           duplicateNote: "The same item appears to be logged on a sibling project too; statuses may differ. Check which log is current." }
       : it;
+  });
+}
+
+// The same RFI logged twice on ONE project ("012" and "RFI-012"): the rule is
+// primeCa.js findRfiDuplicates, the same one the PMS log's warning chip uses.
+// Rows are matched to log items by project + number; nothing is dropped.
+function flagSameProjectDuplicates(items: any[], projects: any[]): any[] {
+  const twins = new Map<string, string[]>();
+  for (const p of projects) {
+    const rfis = Array.isArray(p?.rfis) ? p.rfis : [];
+    if (rfis.length < 2) continue;
+    const found = findRfiDuplicates(rfis);
+    for (const r of rfis) {
+      const t = r?.id ? found[r.id] : null;
+      if (t?.length) twins.set(`${p.projectNumber || p.id}|${r.number}`, t.map((x) => x.number));
+    }
+  }
+  if (!twins.size) return items;
+  return items.map((it) => {
+    const t = it.type === "rfi" ? twins.get(`${it.project}|${it.number}`) : null;
+    return t ? { ...it, possibleDuplicateOf: t,
+      sameLogNote: "Looks like the same RFI as " + t.join(", ") + " in this project's log (same number written another way, or the same question). Tell the user; if it is a twin, one of them should be set to Void in the PMS." } : it;
   });
 }
 
@@ -3865,7 +3892,8 @@ mcp.tool("search_rfis_submittals", {
     "rows with a snippet — call read_rfi_submittal for the full text. With " +
     "no project, searches firm-wide. A project in a Related Projects group (phases, sister buildings) " +
     "is searched together with its siblings by default; each row's `project` says which log it came " +
-    "from, and an item logged on two siblings is flagged `possibleDuplicate`. For a project whose files live on the office network drive, the " +
+    "from, and an item logged on two siblings is flagged `possibleDuplicate`. With a project, an RFI that looks logged twice in the SAME log " +
+    "(the same number written two ways, or the same question) carries `possibleDuplicateOf`: say so. For a project whose files live on the office network drive, the " +
     "result also lists item folders filed under the CA folder on the drive that have NO log entry yet " +
     "(`driveOnly`), so they can be logged with backload_ca_item.",
   inputSchema: z.object({
@@ -3983,7 +4011,7 @@ mcp.tool("search_rfis_submittals", {
     // full scan's length in memory); `returned` is what this answer holds.
     return asText({
       count: total ?? out.length, returned: Math.min(out.length, lim),
-      items: withSiblings ? flagCrossProjectDuplicates(out.slice(0, lim)) : out.slice(0, lim), source,
+      items: flagSameProjectDuplicates(withSiblings ? flagCrossProjectDuplicates(out.slice(0, lim)) : out.slice(0, lim), pid ? projects : []), source,
       ...(searchMode && searchMode !== "list" ? { searchMode } : {}),
       ...(tableNote ? { note: tableNote } : {}),
       ...(semanticNote ? { semanticNote } : {}),
@@ -11462,7 +11490,10 @@ mcp.tool("backload_ca_item", {
     "BACKFILL the RFI/submittal log: create a CA record for an item that is not in the PMS yet (the hybrid " +
     "Newforma cutover — many CA items are still tracked outside the PMS). Append-only and idempotent by item " +
     "number: if the number already exists it is left ALONE and returned (pass update:true to merge new fields " +
-    "into an existing record instead). Feed it the fields you extracted from the filed submittal PDF or " +
+    "into an existing record instead). An RFI that LOOKS already logged under another number (the same number " +
+    "written another way, e.g. '012' against 'RFI-012', or the same question) is NOT written: the call returns " +
+    "outcome 'possibleDuplicate' with the logged item(s). Review that item instead, or ask the user; pass " +
+    "allowDuplicate:true only after the user confirmed it is a different RFI. Feed it the fields you extracted from the filed submittal PDF or " +
     "transmittal/notification email (read_document / read_email / find_document) — the submittal-rfi-review " +
     "skill does that extraction, then reviews the item it just logged. Version-guarded like the app's own save; " +
     "a concurrent save aborts cleanly. Signed-in callers only; every backfilled record is stamped with source " +
@@ -11487,6 +11518,7 @@ mcp.tool("backload_ca_item", {
     spFolderUrl: z.string().optional().describe("Link to the SharePoint folder, source PDF, or filed email."),
     sourceDoc: z.string().optional().describe("Provenance: the filed file/email this was backfilled from, e.g. '2026-08-12 Forma notification.pdf'."),
     update: z.boolean().optional().describe("If true and the number already exists, MERGE the provided fields into it (fields left blank are preserved). Default false = leave an existing record untouched."),
+    allowDuplicate: z.boolean().optional().describe("Set true ONLY after this tool returned outcome 'possibleDuplicate' and the user confirmed the new RFI is genuinely a different item."),
   }),
   handler: async (args) => {
     const who = qaLedgerCaller();
@@ -11503,8 +11535,9 @@ mcp.tool("backload_ca_item", {
     const now = new Date().toISOString();
     const backload = { by: who.email, at: now, sourceDoc: sourceDoc ?? null };
 
-    let outcome: "created" | "updated" | "exists" = "created";
+    let outcome: "created" | "updated" | "exists" | "possibleDuplicate" = "created";
     let stored: any = null;
+    let twins: RfiTwin[] = [];
     try {
       await updateProjectRecord(pid, (proj) => {
         const key = caArrKey(type);
@@ -11514,6 +11547,13 @@ mcp.tool("backload_ca_item", {
         // that is already logged under its number.
         const existing = findCaItem(arr, number);
         if (existing && !update) { outcome = "exists"; stored = existing; return proj; } // idempotent no-op
+        // No record under this exact number, but one that looks like the same
+        // RFI ("012" was backfilled next to an open "RFI-012", 2026-11): stop
+        // and hand the logged item back instead of writing a twin.
+        if (!existing && type === "rfi" && !args.allowDuplicate) {
+          twins = rfiLikelyDuplicates({ number, title: args.title, description: args.description }, arr);
+          if (twins.length) { outcome = "possibleDuplicate"; return proj; }
+        }
         // Only fields the caller actually PROVIDED go into `fields` — never a
         // default. On create the `base` template below supplies the defaults
         // (discipline Mechanical, status Open/Received, stamp —); on update the
@@ -11560,6 +11600,17 @@ mcp.tool("backload_ca_item", {
       });
     } catch (e) {
       return asText({ error: `Backfill failed: ${String((e as any)?.message ?? e)}` });
+    }
+    if (outcome === "possibleDuplicate") {
+      return asText({
+        project: (await getProjectById(pid))?.projectNumber || projectNumber,
+        type, number, outcome, written: false,
+        possibleDuplicateOf: twins.map((t) => ({ number: t.number, title: t.title, status: t.status,
+          why: t.reason === "number" ? "same RFI number, written differently" : "same question or title" })),
+        note: "NOT logged: this looks like an RFI already in the log. Read the logged item (read_rfi_submittal) and, if it is the same RFI, " +
+          "work on that one (save_ca_review, or backload_ca_item with ITS number and update:true to add fields). Tell the user what you found. " +
+          "Retry with allowDuplicate:true only if the user confirms this is a different RFI.",
+      });
     }
     return asText({
       project: (await getProjectById(pid))?.projectNumber || projectNumber,
