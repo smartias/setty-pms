@@ -438,6 +438,17 @@ those `pms_qa_reviews` rows (`report_url`, this project's rows only) so the tab
 links the report. Findings appear only in the project's QA Reviews tab; nothing
 here writes to the knowledge layer.
 
+**RFI root causes (2026-11-16).** `pms_rfi_root_causes` (migration
+`20261116230000`) holds one tag per RFI: why it was asked (`rfiRootCause.ts`:
+doc-conflict, doc-missing, coordination, scope-gap, contractor,
+field-condition, owner-change, other), whether a pre-issue document review
+could have caught it, and the checklist item that would have. `save_ca_review`
+takes `rootCause` on an RFI review; `tag_rfi_root_causes` back-fills a log, 50
+per call; `rfi_root_cause_summary` returns the counts per cause, per phase and
+per checklist item, and the preventable RFIs no item covers. The QA skill reads
+the summary at setup. Internal, like the ledger. The bidder's eye checks are on
+the checklist as `qa-620` to `qa-624` (migration `20261116231000`).
+
 **Actions (2026-11-16).** The team works the punch list from each finding's
 `action`. `qaAction.ts` is a lenient floor under the skill's standard:
 `record_qa_findings` still records an internal finding whose action is empty,
