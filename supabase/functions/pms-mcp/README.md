@@ -202,8 +202,8 @@ one indexed query.
 - **Lazy fill, never a sweep.** Each call indexes up to `maxFilesToIndex` (default 10,
   cap 20, time-boxed at ~28s) not-yet-indexed PDFs under the project's Outgoing folder,
   then searches everything indexed. The result's `coverage` block says how many files
-  are in scope, indexed, pending, skipped for size (>20MB, the combined books that time
-  out on download) or given up after 3 attempts, and `complete` is true only when
+  are in scope, indexed, pending, skipped for size (over 400MB; a file between 20MB and 400MB is
+  read in byte ranges, see `pdfRanged.ts`, a few pages per call) or given up after 3 attempts, and `complete` is true only when
   nothing is pending. A miss with `filesPending > 0` means "not read yet", and the
   description tells the model to call again. `indexOnly:true` pre-loads a project.
 - **Current sets first, duplicates never** (`planDrawingScope`, 2026-08-17). Tabler has
@@ -447,8 +447,18 @@ current set, default drawing search, newest-revision lookup, `find_equipment`,
 `find_related`) leaves them out too, so the architect's compiled copy of our own
 sheets never competes with the Outgoing one. Default search reports
 `coverage.backgroundsExcluded`; pass the folder as `subfolder` to search it.
-The 20MB indexing cap still applies: a larger combined PDF is skipped and has
-to be read with `view_drawing` in direct mode or downloaded.
+**Large PDFs (2026-11-16).** A PDF over 20MB used to be skipped by the index,
+which left out exactly the files the cross-discipline pass needs (BPL's
+architectural set is 124MB). Those are now read in byte ranges (`pdfRanged.ts`):
+pdf.js fetches the cross-reference table and then only the bytes each page
+needs, from the SharePoint download URL or an Azure Files Range request. A
+ranged file advances up to `DRAWING_INDEX_RANGED_PAGE_WINDOW` pages per call and
+stops early on `DRAWING_INDEX_RANGED_BYTE_BUDGET`, because pdf.js keeps what it
+fetches and the worker has a memory limit; the next call reopens the file and
+continues from `pages_done`. Rows marked `skipped` under the old cap become
+pending again. Only a file over `DRAWING_INDEX_RANGED_MAX_BYTES` (400MB) is
+still skipped. Not yet proven on the edge worker's memory limit with the
+heaviest sheets: if a ranged file fails, the row's `error` says why.
 
 **RFI root causes (2026-11-16).** `pms_rfi_root_causes` (migration
 `20261116230000`) holds one tag per RFI: why it was asked (`rfiRootCause.ts`:
