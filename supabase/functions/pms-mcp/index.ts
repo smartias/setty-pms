@@ -1448,7 +1448,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-qa-checklist-results";
+const BUILD = "2026-11-16-qa-review-status";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -10075,7 +10075,9 @@ mcp.tool("record_qa_findings", {
     "checklistResults (one entry per checklist item worked: itemId, disposition, and what was examined or why " +
     "not) and designNarrative (the brief 'Design as read' text): both are stored on the review row and shown " +
     "in the tab, which is where the team reads them. No report file is needed for either. To add them, or more " +
-    "findings, to a review that already exists, pass its reviewId.",
+    "findings, to a review that already exists, pass its reviewId. A review opened at its start with " +
+    "set_qa_review_progress MUST be recorded with that reviewId, so the tab shows one review that went from " +
+    "running to complete and not two.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number OR name."),
     setName: z.string().optional().describe("The deliverable/set reviewed, e.g. '2024-10-24_Revised 100% CD Submission + bulletins through 8/19'."),
@@ -10160,6 +10162,14 @@ mcp.tool("record_qa_findings", {
           extrasNotStored = true;
         }
       }
+      // A review opened with set_qa_review_progress is finished once its
+      // results are recorded. Best effort: a database without the status
+      // columns (20261117010000) simply has no status to move.
+      try {
+        await sbPatch(`pms_qa_reviews?id=eq.${rid}&status=eq.running`, {
+          status: "complete", progress_step: "Recorded", progress_note: null, progress_at: new Date().toISOString(),
+        });
+      } catch { /* status is a convenience, never a reason to fail a recording */ }
     } else {
       const base = {
         project, set_name: setName ?? null, phase: phase ?? null,
@@ -10505,6 +10515,84 @@ mcp.tool("revise_qa_finding_action", {
 // Emphasis on a row that already exists: the review marks a few key items
 // when it records them; this is for marking or unmarking afterwards. Status
 // is untouched, so it is safe on external comments too.
+// ── set_qa_review_progress: where a running review stands ────────────────────
+// A review takes half an hour or more and used to reach the PMS only at the
+// end. This opens the review row at the start (status running) and moves its
+// step as the review goes, so the QA Reviews tab can show it. Same write
+// posture as record_qa_findings: signed-in callers only, stamped.
+const QA_PROGRESS_STEP_MAX = 120;
+const QA_PROGRESS_NOTE_MAX = 400;
+mcp.tool("set_qa_review_progress", {
+  description:
+    "Tell the PMS where a QA review stands, so the project's QA Reviews tab shows it while it runs. Call it " +
+    "ONCE AT THE START of a qa-coordination-review run, without reviewId: it opens the review row (status " +
+    "running) and returns the reviewId. Then call it with that reviewId at the start of each step of the run " +
+    "order (step: 'Step 1: carry-over', 'Pass 1: checklist', 'Cross-discipline: cellar done, first floor " +
+    "next'...), a handful of times in all, not after every tool call. At the end, record_qa_findings with the " +
+    "same reviewId marks the review complete. If the review has to stop early and will not be recorded, call " +
+    "this with status:'stopped' and the reason in note. It writes nothing but the review's own status line: no " +
+    "findings, no sign-off.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR name."),
+    reviewId: z.number().optional().describe("The review to update: the id this tool returned at the start. Omit ONLY on the first call, which opens the review."),
+    step: z.string().max(QA_PROGRESS_STEP_MAX).describe("The step the review is on, in a few words, e.g. 'Pass 1: checklist' or 'Step 6: punch list'."),
+    note: z.string().max(QA_PROGRESS_NOTE_MAX).optional().describe("One line of detail: what is done, what is next, or why it stopped."),
+    status: z.enum(["running", "stopped"]).optional().describe("Default 'running'. 'stopped' when the review ends early without being recorded; say why in note. Completion is set by record_qa_findings, not here."),
+    setName: z.string().optional().describe("The set under review. Give it on the first call if known, or later once resolved."),
+    phase: z.string().optional().describe("Derived phase (SD/DD/CD/Bid...), once known."),
+  }),
+  handler: async ({ projectNumber, reviewId, step, note, status, setName, phase }) => {
+    const who = qaLedgerCaller();
+    if (!who.ok) return who.response;
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const cols = {
+      status: status ?? "running",
+      progress_step: step.replace(/\s+/g, " ").trim().slice(0, QA_PROGRESS_STEP_MAX),
+      progress_note: note?.replace(/\s+/g, " ").trim().slice(0, QA_PROGRESS_NOTE_MAX) || null,
+      progress_at: new Date().toISOString(),
+      ...(setName !== undefined ? { set_name: setName } : {}),
+      ...(phase !== undefined ? { phase } : {}),
+    };
+    const noColumns = (e: unknown) => /status|progress_step|progress_note|progress_at/.test(String((e as any)?.message ?? e));
+    const notStored = {
+      project, progressNotStored: true,
+      note: "The database has not run migration 20261117010000, so a review's status cannot be shown yet. Carry on with the review and record it at the end as usual; do not call this tool again in this run.",
+    };
+    if (reviewId === undefined) {
+      if (cols.status === "stopped") return asText({ error: "Nothing to stop: pass the reviewId of the running review." });
+      try {
+        const review = await sbInsert("pms_qa_reviews", {
+          project, set_name: setName ?? null, phase: phase ?? null, kind: "review", run_by: who.email, ...cols,
+        });
+        return asText({
+          project, reviewId: review.id, status: "running", step: cols.progress_step,
+          note: "The review is open and shows as running in the QA Reviews tab. Pass reviewId: " + review.id + " to every later set_qa_review_progress call and to record_qa_findings at the end.",
+        });
+      } catch (e) {
+        if (noColumns(e)) return asText(notStored);
+        return asText({ error: `Could not open the review: ${String((e as any)?.message ?? e).slice(0, 200)}` });
+      }
+    }
+    const rid = Math.round(reviewId);
+    try {
+      const existing: any[] = await sbGetAll(`pms_qa_reviews?select=id,status&id=eq.${rid}&project=eq.${encodeURIComponent(project)}`);
+      if (!existing.length) return asText({ error: `No review ${rid} on project ${project}.` });
+      // A recorded review is finished: a late progress call must not reopen it.
+      if (existing[0].status === "complete") {
+        return asText({ project, reviewId: rid, status: "complete", note: "This review is already recorded; its status was left as complete." });
+      }
+      await sbPatch(`pms_qa_reviews?id=eq.${rid}`, cols);
+      return asText({ project, reviewId: rid, status: cols.status, step: cols.progress_step });
+    } catch (e) {
+      if (noColumns(e)) return asText(notStored);
+      return asText({ error: `Could not update review ${rid}: ${String((e as any)?.message ?? e).slice(0, 200)}` });
+    }
+  },
+});
+
 mcp.tool("mark_qa_key_item", {
   description:
     "Mark or unmark one QA ledger finding as a KEY ITEM: shown in bold, first in its discipline group, in the QA " +

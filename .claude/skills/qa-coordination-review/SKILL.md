@@ -83,6 +83,19 @@ A resubmission or a bid addendum — a set that CHANGES an earlier one —
 adds the **change record and ripple analysis** (its own section) inside
 Pass 1.
 
+**Show where the review stands.** A review takes a while, and the team
+watches the project's QA Reviews tab, not this chat. As soon as the project
+is resolved in Step 0, call `set_qa_review_progress` with the project and
+`step: 'Step 0: setup'`. It opens the review in the PMS as running and
+returns a `reviewId`. Call it again with that `reviewId` at the start of
+each row of the table above, with a `note` when there is something worth a
+line (areas done, which set, what is next). That is about ten calls for a
+whole review: do not report every tool call. Record at the end with the
+same `reviewId` (Step 7), which marks the review complete. If the review
+has to end without being recorded, say so with `status: 'stopped'` and the
+reason. If the tool is missing or answers `progressNotStored`, carry on
+without it and say nothing more about it.
+
 If you run short of budget, do NOT silently drop a step: finish the steps
 in order as far as you can, and say in the report header exactly where you
 stopped and what was not done.
@@ -1388,7 +1401,9 @@ go ahead. If neither, end by offering to record. Recording is separate
 from sign-off: it marks nothing resolved.
 
 One `record_qa_findings` call carries three things, and a full review
-sends all three:
+sends all three. Pass the `reviewId` that `set_qa_review_progress` returned
+at the start, so the running review becomes the recorded one and the tab
+does not show two:
 
 - `findings`: the punch-list items (rules below).
 - `checklistResults`: **one entry for every item `get_qa_checklist`
