@@ -505,12 +505,47 @@ Pass 1) in the report's Cross-discipline table, with the sheets compared.
   height and size the equipment needs against what structural shows.
   Penetrations through beams, mass timber or post-tensioned slabs: are they
   shown to structural, and does structural allow them.
-- **X-4 Ceiling space, chases and access.** At the tightest ceilings, add
-  up structure depth, duct or pipe, fixture and ceiling against the
-  floor-to-floor height. Equipment above hard, plaster or acoustic ceilings
-  needs an access panel on the RCP. Equipment under operable partitions,
-  stairs and soffits needs service clearance. Every riser and drop needs a
-  chase or furred wall on the architectural plan.
+- **X-4 Ceiling space, chases and access.** Work it as a list of
+  locations, not as a general look. On BPL New Lots the first run of this
+  check ("add up the stack") produced nothing, while five RFIs were exactly
+  this: equipment that could not be reached or did not fit.
+  1. **List what is above a ceiling.** From the mechanical plans and
+     schedules, every fan coil, VAV and CAV box, fan, damper with an
+     actuator, control or balancing valve and cleanout, with its room.
+  2. **Give each room its ceiling.** From the RCP legend and ceiling tags:
+     the ceiling type and height. Lay-in tile is accessible. Gypsum board,
+     plaster, acoustic plaster, wood slats and exposed structure are not.
+  3. **Access.** Every item from step 1 in a room whose ceiling is not
+     accessible needs an access panel drawn on the RCP or the mechanical
+     plan, big enough for the unit's service side. None drawn is a finding
+     for that unit. A general note ("maintain service clearance per
+     manufacturer") does not count.
+  4. **What is directly below or beside the unit.** Overlay the RCP and the
+     structural framing plan at each unit: a light fixture, a soffit, an
+     operable partition track and its framing, a stair or a beam on the
+     unit's access side is a finding, and so is a pipe or duct drawn across
+     the access side on our own sheets.
+  5. **Depth.** Plenum available = floor-to-floor height (building section)
+     minus ceiling height (RCP) minus structure depth at that spot
+     (framing plan). Plenum needed = the unit's height from the schedule or
+     cut sheet, plus the duct or pipe that crosses it, plus the light
+     fixture. Do the sum, with the numbers, at least for: the lowest
+     ceiling on each floor, every corridor, every place a duct main crosses
+     a beam line, and every room under a stair, a skylight or a feature
+     ceiling. A location where needed exceeds available is a finding; one
+     where a number could not be read is `partial`, naming the number.
+  6. **Risers and drops.** Take every riser from the riser diagrams and
+     find its chase or furred wall on the architectural plan on each floor
+     it passes. Then every pipe drop to a fixture: the wall it drops in
+     must exist on the architectural plan and be a partition that can hold
+     it, not glazing, a movable partition or a wall the architect does not
+     draw. A riser or drop with no wall to hide in is a finding.
+  Report a table: room, item, ceiling type and height, access (panel shown
+  or not), plenum available against needed where computed, result. State
+  how many of the step 1 items were checked out of the total. If the RCPs
+  or the building sections are not in hand, the check is `not attempted`
+  for that reason, and the missing sheets go on the punch list as a
+  request.
 - **X-5 Devices and fixtures where the architect put something else.**
   Devices and outlets on curtain wall, glazing, millwork or movable
   partitions, with a mounting detail and height. Lights, diffusers,
