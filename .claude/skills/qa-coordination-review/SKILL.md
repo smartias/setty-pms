@@ -70,6 +70,7 @@ below with the detail.
 | 3 | **Pass 1 — Checklist**: every checklist item gets a disposition | Checklist coverage table |
 | 3b | **Cross-discipline pass**: MEPFP against architecture, structure, the life safety plan and the non-MEP specs, area by area | Coverage plan and cross-discipline table |
 | 3c | **Bidder's eye pass** (CD, permit, bid and addendum sets): read the set as someone who has to price it | Checklist coverage table |
+| 3d | **RFI history checks** (qa-630 series): existing conditions, points of connection, small-item agreement, controls scope, revisions carried through. Weighted by project type | Checklist coverage table |
 | 4 | **Pass 2 — Knowledge layer**: lessons, best practices, agency preferences, engineering standards applied to this set | Knowledge section |
 | 5 | **Pass 3 — Engineering review**: does the design make engineering sense | Engineering flags |
 | 6 | **Punch list and report** | The deliverable |
@@ -537,6 +538,61 @@ Run the five checklist items, each with a disposition:
 Findings from this pass are `rfi-bait`, or `cost` where the unassigned work
 is large. Write the action as the sentence that would have answered the
 bidder: who provides it, on which sheet or section it will say so.
+
+### RFI history checks (qa-630 series)
+
+922 RFIs on 25 projects were tagged with a root cause. About half were
+preventable by a review before issue, and a third of those matched nothing
+on the checklist. They fall into five repeating kinds, one item each. Run
+all five that apply to the set's phase, each with a disposition.
+
+Which ones carry the most weight depends on the project. Say which kind it
+is in the report header, and spend the budget accordingly:
+
+- **Renovation, fit-out or equipment replacement in an existing building:**
+  qa-630 and qa-631 first. On these jobs the RFIs come from what was assumed
+  about the building, not from the other disciplines.
+- **New building:** the cross-discipline pass first, then qa-632 and qa-633.
+- **Addendum, bulletin or conformed set:** qa-634 first.
+
+- **qa-630 Existing conditions were verified.** List everything the design
+  reuses or connects to: panel spaces and circuit numbers, feeders, risers
+  and mains, existing openings, existing equipment to remain or relocate.
+  For each, find where the drawings or the project folder say how it is
+  known (a survey note, a dated site visit, a record drawing). An existing
+  item drawn with no source is a finding. Write it as the one question a
+  site visit answers ("Confirm circuits 20, 22, 24 in panel CPP are spare"),
+  never as "verify existing conditions". Where the folder holds no survey
+  at all, say so once at the top of the punch list and mark the item
+  `not attempted` for the rest.
+- **qa-631 Every new service shows its point of connection.** Follow each
+  new pipe, duct, feeder and cable to both ends. "Connect to existing" with
+  no location, a line that stops at a break line, or a chase with several
+  mains and no statement of which one, is a finding. Check the terminations
+  too: where control and fire alarm cables land, relief valve discharge and
+  setting, vents, and the receptor each drain goes to.
+- **qa-632 Plan, schedule and spec agree on the small items.** qa-602 is
+  major equipment; this is everything smaller. Circuit numbers on plans
+  against the panel schedule. Duct, pipe and accessory material in spec
+  part 2, spec part 3, the schedule, the detail and the plan note: one
+  answer in all five. Device ratings and mounting heights in a sheet note
+  against what is drawn. Quote both sources in the finding.
+- **qa-633 Every controlled item names its controller.** Build the list
+  from the equipment schedules, then mark each row: on the points list with
+  a sequence, or stand-alone with its thermostat or switch drawn on a plan.
+  A row that is neither, or that says "BMS if applicable", is a finding.
+  This is a different check from qa-603, which compares diagrams that
+  exist; this one finds the equipment that is on no diagram.
+- **qa-634 A revision is carried to every sheet it touches.** For each
+  changed item in an addendum or bulletin, list every other place it
+  appears, in every discipline, and open each at its newest revision. Use
+  the `history` block from `search_drawings` (`absentAt`,
+  `stillPresentAtLatest`) to find sheets that still show the old condition.
+
+The disprove step applies here as everywhere: before a qa-630 finding goes
+on the list, look for the survey note on the general notes sheet and in the
+demolition drawings; before a qa-633 finding, search the controls sheets
+and the specification's sequence article for the tag.
 
 ### Cross-discipline pass — MEPFP against everyone else's documents
 
