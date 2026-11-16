@@ -26,6 +26,10 @@ export type RangedPdf = {
   failed: Promise<never>;         // rejects when a range could not be fetched; race page work against it
   bytesFetched: () => number;
   requests: () => number;
+  // Wall time during which at least one range was in flight. A caller that
+  // budgets CPU subtracts this from elapsed time: waiting on the network is
+  // not compute.
+  fetchBusyMs: () => number;
   destroy: () => Promise<void>;
 };
 
@@ -91,16 +95,20 @@ export async function openRangedPdf(
     rejectFailed(dead);
     try { task?.destroy(); } catch { /* already gone */ }
   };
+  let inFlight = 0, busySince = 0, busyMs = 0;
   class Transport extends pdfjs.PDFDataRangeTransport {
     requestDataRange(begin: number, end: number) {
       if (dead) return;
       const stop = Math.min(end, size);
       requests++;
+      if (inFlight++ === 0) busySince = Date.now();
+      const settle = () => { if (--inFlight === 0) busyMs += Date.now() - busySince; };
       fetchRange(begin, stop).then((chunk) => {
+        settle();
         if (dead) return;
         bytes += chunk.byteLength;
         (this as any).onDataRange(begin, chunk);
-      }, fail);
+      }, (e) => { settle(); fail(e); });
     }
     abort() { /* nothing is streaming; ranges in flight finish or time out */ }
   }
@@ -111,6 +119,7 @@ export async function openRangedPdf(
   const pdf = await Promise.race([task.promise, failed]);
   return {
     pdf, failed, bytesFetched: () => bytes, requests: () => requests,
+    fetchBusyMs: () => busyMs + (inFlight > 0 ? Date.now() - busySince : 0),
     destroy: async () => { dead = dead ?? new Error("closed"); try { await task.destroy(); } catch { /* already gone */ } },
   };
 }

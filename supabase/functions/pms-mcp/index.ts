@@ -1442,7 +1442,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-ranged-pacing";
+const BUILD = "2026-11-16-index-cpu-budget";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -7509,6 +7509,19 @@ const DRAWING_INDEX_RANGED_MAX_BYTES = 400 * 1024 * 1024; // over this, still sk
 // bounded by bytes and time, not by a small page count: 8 pages a call would
 // have been 227 calls for that one book, with every file behind it waiting.
 const DRAWING_INDEX_RANGED_PAGE_WINDOW = 400;             // upper bound; bytes and the deadline stop it sooner
+// The platform allows 2s of CPU per request (async I/O not counted) and kills
+// the worker past it: the client sees a dropped connection or a 502 and
+// nothing after the last flush is recorded. Parsing PDF pages is the CPU in
+// this path, so the indexer estimates what it has spent (elapsed time of the
+// open and of each page step, minus time a ranged read was waiting on the
+// network) and ends the call's indexing at this budget. Found 2026-11-16: a
+// 400-page window on BPL's spec book died every time where 8 pages had worked.
+// One page that costs more than the limit alone still dies; three such
+// deaths and the file is given up, as before.
+// The estimate runs low: measured against process CPU on the real BPL files it
+// read 1.0s where the process had used 1.75s (other threads, GC), and the
+// rest of the request spends CPU too. Hence 600, not 2000.
+const DRAWING_INDEX_CPU_BUDGET_MS = 600;
 const RANGED_RETRY_NOTE = "reading in ranges after a whole-file read died";
 const DRAWING_INDEX_RANGED_FLUSH_EVERY = 5;               // pages per progress write for a ranged file
 const DRAWING_INDEX_RANGED_BYTE_BUDGET = 64 * 1024 * 1024; // stop the window once this much has been fetched
@@ -8087,6 +8100,13 @@ async function indexDrawingFiles(a: {
   numPrefix: string; pending: any[]; knownById: Map<string, any>; fileBudget: number; t0: number; deadlineMs: number;
 }): Promise<DrawingIndexRun> {
   const { numPrefix, pending, knownById, fileBudget, t0, deadlineMs } = a;
+  // Estimated CPU spent parsing in THIS call, across files (see DRAWING_INDEX_CPU_BUDGET_MS).
+  let cpuMs = 0;
+  const timed = async <T>(work: () => Promise<T>, rp: RangedPdf | null): Promise<T> => {
+    const w0 = Date.now(), n0 = rp ? rp.fetchBusyMs() : 0;
+    try { return await work(); }
+    finally { cpuMs += Math.max(0, Date.now() - w0 - (rp ? rp.fetchBusyMs() - n0 : 0)); }
+  };
   const indexedNow: any[] = [];
   const skippedNow: any[] = [];
   const failedNow: any[] = [];
@@ -8094,6 +8114,8 @@ async function indexDrawingFiles(a: {
   for (const f of pending) {
     if (opened >= fileBudget) break;
     if (Date.now() - t0 > deadlineMs) break;
+    // Not enough CPU left to open another file safely; the next call takes it.
+    if (opened > 0 && cpuMs > DRAWING_INDEX_CPU_BUDGET_MS * 0.6) break;
     const prev = knownById.get(f.itemId);
     const attempts = Number(prev?.attempts || 0) + 1;
     const base = {
@@ -8135,7 +8157,10 @@ async function indexDrawingFiles(a: {
       if (ranged) {
         const src = await rangedPdfSource(f.itemId);
         const { getResolvedPDFJS } = await import("unpdf");
-        rp = await openRangedPdf(await getResolvedPDFJS(), src.size || Number(f.size), src.fetchRange);
+        const pdfjs = await getResolvedPDFJS();
+        const w0 = Date.now();
+        rp = await openRangedPdf(pdfjs, src.size || Number(f.size), src.fetchRange);
+        cpuMs += Math.max(0, Date.now() - w0 - rp.fetchBusyMs());
       } else {
         buf = await loadPdfBytes(f.itemId, DRAWING_INDEX_MAX_BYTES, { cache: false });
       }
@@ -8151,7 +8176,7 @@ async function indexDrawingFiles(a: {
       if (rp) pdf = rp.pdf;
       else {
         const { getDocumentProxy } = await import("unpdf");
-        pdf = await getDocumentProxy(new Uint8Array(buf!));
+        pdf = await timed(() => getDocumentProxy(new Uint8Array(buf!)), null);
       }
       // A ranged read can fail between pages (a range that never arrives):
       // every page step races that failure, so it ends the file, not the request.
@@ -8195,8 +8220,9 @@ async function indexDrawingFiles(a: {
         if (i > startPage && Date.now() - t0 > deadlineMs) break;
         // A ranged file also stops on bytes: pdf.js holds what it has fetched.
         if (rp && i > startPage && rp.bytesFetched() > DRAWING_INDEX_RANGED_BYTE_BUDGET) break;
-        const pg: any = await step(pdf.getPage(i));
-        const tc: any = await step(pg.getTextContent());
+        if (i > startPage && cpuMs > DRAWING_INDEX_CPU_BUDGET_MS) break;
+        const pg: any = await timed(() => step(pdf.getPage(i)), rp);
+        const tc: any = await timed(() => step(pg.getTextContent()), rp);
         // Null bytes appear in some PDFs' text layers (seen: a ProjNet
         // comment export) and Postgres rejects them ("\u0000 cannot be
         // converted to text", 22P05), leaving the file permanently
