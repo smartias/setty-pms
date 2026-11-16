@@ -80,6 +80,31 @@ test("the index uses ranged reading for files over the whole-download cap", () =
   assert.match(src, /from "\.\/pdfRanged\.ts"/);
   assert.match(src, /DRAWING_INDEX_RANGED_MAX_BYTES/);
   assert.match(src, /async function rangedPdfSource\(/);
+  // The 2s CPU limit: the indexer budgets parse time, not just pages and bytes.
+  assert.match(src, /DRAWING_INDEX_CPU_BUDGET_MS/);
+  assert.match(src, /cpuMs > DRAWING_INDEX_CPU_BUDGET_MS\) break/);
   assert.match(readFileSync(new URL("azureFiles.ts", here), "utf8"), /export async function getFileRange\(/);
   assert.match(readFileSync(new URL("README.md", here), "utf8"), /pdfRanged\.ts/);
+});
+
+test("fetchBusyMs counts time a range was in flight, overlaps once", async () => {
+  // A stand-in pdf.js: the "document" asks for two overlapping ranges, then resolves.
+  class PDFDataRangeTransport { constructor() {} onDataRange() { this.got = (this.got || 0) + 1; this.done?.(); } }
+  const pdfjs = {
+    PDFDataRangeTransport,
+    getDocument: ({ range }) => ({
+      promise: new Promise((res) => {
+        range.done = () => { if (range.got === 2) res({ numPages: 1 }); };
+        range.requestDataRange(0, 10); range.requestDataRange(10, 20);
+      }),
+      destroy: async () => {},
+    }),
+  };
+  const slow = (a, b) => new Promise((r) => setTimeout(() => r(bytes(b - a)), 60));
+  const rp = await openRangedPdf(pdfjs, 20, slow);
+  const busy = rp.fetchBusyMs();
+  assert.ok(busy >= 50 && busy < 110, `two overlapping 60ms ranges count once, got ${busy}`);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(rp.fetchBusyMs(), busy, "idle time is not counted");
+  await rp.destroy();
 });
