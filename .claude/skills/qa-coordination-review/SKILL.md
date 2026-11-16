@@ -560,44 +560,142 @@ is in the report header, and spend the budget accordingly:
 - **New building:** the cross-discipline pass first, then qa-632 and qa-633.
 - **Addendum, bulletin or conformed set:** qa-634 first.
 
-- **qa-630 Existing conditions were verified.** List everything the design
-  reuses or connects to: panel spaces and circuit numbers, feeders, risers
-  and mains, existing openings, existing equipment to remain or relocate.
-  For each, find where the drawings or the project folder say how it is
-  known (a survey note, a dated site visit, a record drawing). An existing
-  item drawn with no source is a finding. Write it as the one question a
-  site visit answers ("Confirm circuits 20, 22, 24 in panel CPP are spare"),
-  never as "verify existing conditions". Where the folder holds no survey
-  at all, say so once at the top of the punch list and mark the item
-  `not attempted` for the rest.
+- **qa-630 Existing conditions were verified.**
+  1. *List what the design reuses, connects to, removes or relies on.* MEP:
+     panel spaces and circuit numbers, feeders, risers and mains, existing
+     openings, existing equipment to remain, be relocated or be removed and
+     what each served, existing controls (pneumatic or electric), routes for
+     new work through existing rooms, stairs and ceilings. When Setty is
+     prime, the architectural and hazardous-material items are ours too and
+     produced the top findings on the test job: the floor finish and what is
+     under it, what is behind and under casework to be removed, walls and
+     ceilings to be cut, and every room the work touches against the rooms
+     the asbestos or lead report inspected.
+  2. *Only when Setty is prime: read the hazmat report against the scope
+     sheets.* On a sub-consultant job hazardous materials belong to the
+     prime; skip this step and do not raise hazmat findings. Two checks. Every
+     room with work drawn in it (including the rooms a conduit or cable
+     route crosses) is in the report's list of inspected locations. Every
+     material the report calls "not to be affected by the scope of work" is
+     in fact untouched by what the sheets demolish, cut or terminate in.
+  3. *Find how each item is known.* A survey note, a dated site visit
+     report, photos, a field-measured dimension, a record drawing reference.
+     A record-drawing background under the new work counts as a source.
+     A blanket "contractor to field verify existing conditions" note is not
+     a source for a specific item; note it once and do not raise a finding
+     per note. A note that admits the item is unverified ("circuit numbers
+     are based on existing documents and may not match the as-built
+     condition") confirms the finding; quote it.
+  4. *Say what survey evidence the folder holds,* with dates, and what it
+     covers. Three cases: none at all (say so once at the top and mark the
+     item `not attempted`); partial, which is the usual one (photos, an
+     asbestos report, record drawings: run the item and raise findings only
+     for what the evidence does not cover); a written survey (cite it).
+  5. *Raise a finding only where the new work depends on the existing
+     item's size, capacity, location or condition.* An existing item that is
+     simply drawn is not a finding. Strongest first:
+     - a source that contradicts the design (the record drawing shows a
+       72x72 opening and the new louver needs 80 sq ft);
+     - two sheets that disagree about the same existing item (reused on
+       one, demolished on another; two names for one panel);
+     - no source at all for something the design depends on.
+  6. *Missing dimensions are the finding.* If the schedule gives no overall
+     size or weight for new equipment going into an existing room, the
+     rig-in path and the service clearance cannot be checked by anyone. Say
+     that, and ask for the unit size and a dimensioned room plan.
+  7. Write each finding as the one question a site visit answers ("Confirm
+     circuits 20, 22, 24 in panel CPP are spare"), never as "verify existing
+     conditions".
+  8. *When Setty is a sub and the other disciplines' sheets are not in the
+     folder,* mark the parts that need them (panels and feeders, roof
+     framing, pads) `not attempted` and name the missing set. Do not write
+     "not shown" about something that would be on a sheet you do not have.
 - **qa-631 Every new service shows its point of connection.** Follow each
   new pipe, duct, feeder and cable to both ends. "Connect to existing" with
   no location, a line that stops at a break line, or a chase with several
-  mains and no statement of which one, is a finding. Check the terminations
-  too: where control and fire alarm cables land, relief valve discharge and
-  setting, vents, and the receptor each drain goes to.
+  mains and no statement of which one, is a finding.
+  - *Terminations are where this item pays on any job, and nearly all of it
+    on a new building:* the receptor each drain and condensate line goes to
+    (open the plumbing plan at that spot and confirm the fixture is there),
+    relief valve discharge and setting, vents, where emergency or secondary
+    drainage discharges, where control, fire alarm and metering cables land
+    and which trade runs them.
+  - *"Field verify nearest drain" on a new building is a finding:* there is
+    nothing to verify, the drain is on our own plumbing sheets.
+  - *A hand-off to a set you do not have* ("see civil drawings for
+    continuation") is not a finding. List the hand-offs in the report so
+    the PM can confirm each was picked up. It becomes a finding when the
+    other set is in the folder and does not show it.
 - **qa-632 Plan, schedule and spec agree on the small items.** qa-602 is
   major equipment; this is everything smaller. Circuit numbers on plans
   against the panel schedule. Duct, pipe and accessory material in spec
   part 2, spec part 3, the schedule, the detail and the plan note: one
   answer in all five. Device ratings and mounting heights in a sheet note
   against what is drawn. Quote both sources in the finding.
-- **qa-633 Every controlled item names its controller.** Build the list
-  from the equipment schedules, then mark each row: on the points list with
-  a sequence, or stand-alone with its thermostat or switch drawn on a plan.
-  A row that is neither, or that says "BMS if applicable", is a finding.
-  This is a different check from qa-603, which compares diagrams that
-  exist; this one finds the equipment that is on no diagram.
+- **qa-633 Every controlled item names its controller.**
+  1. *Build the list from more than the equipment schedules.* Schedules
+     give the fans, pumps, heaters and units. Add what has no schedule row:
+     fire smoke dampers and motorized dampers from the plans and risers,
+     detectors (refrigerant, gas, leak), electronic trap primers, meters,
+     and everything the fire alarm matrix opens, closes or shuts down.
+  2. *Give each row one of three answers:* on a controls diagram or points
+     list with a sequence; stand-alone, with its thermostat or switch drawn
+     on a plan and powered on E; or neither. "Neither" is a finding. So is
+     "BMS if applicable".
+  3. *Follow every pointer.* A schedule note such as "BMS diagram is shown
+     on sheet M-801" is a claim: open the sheet and confirm the diagram,
+     the points and a sequence are there. A name in a list beside a
+     "miscellaneous controller" box is not a diagram.
+  4. *Two documents that give different answers to "what controls it" is
+     this item's finding too:* schedule says integral thermostat and the
+     controls sheet puts it on the BMS; the mechanical sheet and the fire
+     alarm matrix list different dampers for the same mode. Quote both.
+     (qa-603 owns the next level down: the controller is agreed and the
+     diagrams disagree on valves, set points or point types.)
+  5. *A sequence must be able to do what it says.* "Stop all refrigerant
+     flow" needs an output or a valve on the diagram. A sequence copied
+     from another system (an occupancy schedule on a 24-hour electrical
+     room unit) is a finding.
+  6. *When the spec has no sequence section,* the drawings are the only
+     sequence. Record the dangling spec reference once and carry on.
 - **qa-634 A revision is carried to every sheet it touches.** For each
   changed item in an addendum or bulletin, list every other place it
   appears, in every discipline, and open each at its newest revision. Use
   the `history` block from `search_drawings` (`absentAt`,
   `stillPresentAtLatest`) to find sheets that still show the old condition.
 
-The disprove step applies here as everywhere: before a qa-630 finding goes
-on the list, look for the survey note on the general notes sheet and in the
-demolition drawings; before a qa-633 finding, search the controls sheets
-and the specification's sequence article for the tag.
+**One row per defect.** A connection to an existing system can read as
+qa-630 or qa-631. Use qa-630 when the question is whether the existing
+thing is there and adequate (is there a drain, is the panel pole free), and
+qa-631 when the existing thing is known and the new work does not say where
+it lands. Never raise both.
+
+**Disprove, then sort.** Before a qa-630 finding goes on the list, look for
+the survey note on the general notes sheet and in the demolition drawings;
+before a qa-633 finding, search the controls sheets, the fire alarm matrix
+and the specification's sequence article for the tag. Then sort what is
+left:
+
+- *Confirmed:* you saw both sides. These go on the punch list.
+- *To confirm:* you could not open one side (a sheet not in the folder, a
+  calculation, a code clause). Do not drop these and do not state them as
+  fact. List them under their own heading with the one thing to open. On
+  the test jobs two of the four held back this way were real RFIs.
+
+**If the set is on the office drive** (file ids starting `az:`) and
+`search_drawings` reports no folder for it, the index does not cover that
+set. Open the PDFs with `download_document` or `read_document` and
+`view_drawing` in direct mode, and say in the coverage statement that the
+set was read directly, not searched. The same applies to sheets with no
+text layer (outlined text): they index as empty and have to be looked at.
+
+Tested blind on 2026-11-16 against three RFI logs. Q119 (small renovation,
+Setty prime): 6 findings covered about 12 RFIs, including the panel CPP
+circuits that turned out to be in use and the floor box that had to move
+off a beam. Oakwood (plant HVAC replacement, Setty a sub with HVAC sheets
+only): 6 of 11 existing-condition RFIs flagged, 2 close; the misses needed
+the structural and equipment sheets. BPL (new building): qa-631 and qa-633
+caught 2 of 3 matching RFIs exactly.
 
 ### Cross-discipline pass — MEPFP against everyone else's documents
 
