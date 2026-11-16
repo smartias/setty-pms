@@ -15,8 +15,11 @@ const html = readFileSync(new URL("./SettyPMS.html", import.meta.url), "utf8").r
 const start = html.indexOf("const QA_DISCIPLINES = [");
 const end = html.indexOf("function QAChip(");
 assert.ok(start > 0 && end > start, "punch-list helpers not found in SettyPMS.html");
-const api = new Function(html.slice(start, end) +
-  "\nreturn { QA_DISCIPLINES, QA_DISCIPLINE_NONE, QA_DISCIPLINE_ALIASES, qaNormalizeDiscipline, qaDisciplineFromSheets, qaFindingDiscipline, qaGroupByDiscipline, qaIsSetReview, qaIsCaFinding, qaSheetKey, qaIssueReadiness };")();
+// The email builder reads two lookups defined just above the helpers.
+const QA_EXTERNAL_SRC_COPY = 'const QA_EXTERNAL_SRC = { drchecks: "Dr.Checks", owner: "Owner", architect: "Architect", agency: "Agency" };\n';
+assert.ok(html.includes(QA_EXTERNAL_SRC_COPY.trim()), "QA_EXTERNAL_SRC changed in SettyPMS.html");
+const api = new Function(QA_EXTERNAL_SRC_COPY + html.slice(start, end) +
+  "\nreturn { QA_DISCIPLINES, QA_DISCIPLINE_NONE, QA_DISCIPLINE_ALIASES, qaNormalizeDiscipline, qaDisciplineFromSheets, qaFindingDiscipline, qaGroupByDiscipline, qaIsSetReview, qaIsCaFinding, qaSheetKey, qaIssueReadiness, qaPunchListEmailHtml };")();
 
 test("discipline spellings fold to one name", () => {
   assert.equal(api.qaNormalizeDiscipline(" m "), "Mechanical");
@@ -126,6 +129,29 @@ test("RFI and submittal flags are construction administration, not QA", () => {
   assert.ok(html.includes("Not QA items."));
 });
 
+test("the send-to-team email lists the punch list by discipline and escapes what it prints", () => {
+  const groups = [
+    { name: "Electrical", rows: [
+      { id: 7, severity: "cost", title: "Breaker <20A> vs MCA 24 & MOCP 30", sheets: ["E-601", "E-603"], action: "Change the breaker", assignee: "Dana E" },
+      { id: 9, severity: "agency", source: "owner", external_ref: "14", title: "Provide fault current letter", sheets: [] },
+    ] },
+    { name: "Mechanical", rows: [{ id: 3, severity: "polish", title: "Legend", sheets: ["M-103"] }] },
+  ];
+  const out = api.qaPunchListEmailHtml({ projectLabel: "TEST1.00 - Demo", groups, setName: "100% CD", reviewDate: "2026-11-10",
+    tabUrl: "https://pms.example/SettyPMS.html#project:p1", reportUrl: "javascript:alert(1)", filterNote: "This list is filtered: Electrical." });
+  assert.ok(out.includes("3 open items, 2 of them life-safety, agency or cost."));
+  assert.ok(out.indexOf("Electrical (2)") < out.indexOf("Mechanical (1)"));
+  assert.ok(out.includes("Breaker &lt;20A&gt; vs MCA 24 &amp; MOCP 30") && !out.includes("<20A>"));
+  assert.ok(out.includes("Owner comment #14"));
+  assert.ok(out.includes("E-601, E-603") && out.includes("Dana E"));
+  assert.ok(out.includes('href="https://pms.example/SettyPMS.html#project:p1"'));
+  // Only https links are written; anything else is left out.
+  assert.ok(!out.includes("javascript:") && !out.includes("filed here"));
+  assert.ok(out.includes("Not for the client or the contractor."));
+  // The button drafts; it never sends.
+  assert.ok(html.includes("const msg = await createOutlookDraft({ subject: \"QA punch list - \""));
+});
+
 test("issue readiness stays internal", () => {
   assert.ok(html.includes("Internal - not shown on transmittals or to the client"));
   const transmittal = readFileSync(new URL("./transmittal.html", import.meta.url), "utf8");
@@ -149,4 +175,15 @@ test("the tab keeps its guard rails", () => {
   // The picker is not gated on an issued set existing.
   assert.ok(!view.includes("{issuedSets.length > 0 && (\n          <select"));
   assert.ok(view.includes('sheetRefRpc("pms_qa_finding_set_assignment"'));
+});
+
+test("the tab has a back-check button that hands only the back-check to Claude", () => {
+  const page = readFileSync(new URL("./SettyPMS.html", import.meta.url), "utf8");
+  assert.match(page, /Back-check open items \(\{backcheckCount\}\)/);
+  assert.match(page, /href=\{backcheckUrl\}/);
+  const m = /const backcheckUrl = [\s\S]*?\]\.join/.exec(page);
+  assert.ok(m, "backcheckUrl is built");
+  assert.match(m[0], /list_backcheck_candidates/);
+  assert.match(m[0], /ready_to_backcheck, never closed/);
+  assert.match(m[0], /kind:'backcheck'/);
 });

@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-16-pms-v200-qa-design-phase-only";
+    window.__appVersion = "2026-11-16-pms-v202-qa-backcheck-button";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16138,6 +16138,51 @@ function qaIssueReadiness(findings, reviews, issuedSets, issueSheets) {
 }
 const QA_REVIEW_KIND_LABEL = { "comment-log": "Comment log", "backcheck": "Back-check", "ca-review": "Submittal / RFI review" };
 
+// "Send to team": the punch list as an email body. One table per discipline,
+// in the order the tab shows them, so each person finds their own items; the
+// tab link is where they are assigned, answered and closed. Built as a plain
+// string (inline styles only, since mail clients strip everything else) and
+// every value is escaped: finding text comes from reviews and from reviewers'
+// comment logs.
+function qaPunchListEmailHtml(opts) {
+  const esc = v => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const safeUrl = u => (/^https:\/\//i.test(String(u || "")) ? String(u) : "");
+  const groups = opts.groups || [];
+  const total = groups.reduce((n, g) => n + g.rows.length, 0);
+  const high = groups.reduce((n, g) => n + g.rows.filter(f => QA_HIGH_SEV[f.severity]).length, 0);
+  const td = "border:1px solid #c8ccd2;padding:5px 7px;vertical-align:top;font-size:10pt;";
+  const th = td + "background:#1F3864;color:#ffffff;font-size:9pt;text-align:left;";
+  const sevColor = { "life-safety": "#b42318", "agency": "#b54708", "cost": "#b54708", "rfi-bait": "#175cd3", "polish": "#667085" };
+  const tabUrl = safeUrl(opts.tabUrl), reportUrl = safeUrl(opts.reportUrl);
+  let html = '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:10.5pt;color:#1f2933;">'
+    + '<p style="margin:0 0 6px;font-size:13pt;font-weight:600;">QA punch list - ' + esc(opts.projectLabel) + "</p>"
+    + '<p style="margin:0 0 10px;">' + (opts.setName ? "Set reviewed: <b>" + esc(opts.setName) + "</b>" + (opts.reviewDate ? " (" + esc(opts.reviewDate) + ")" : "") + ". " : "")
+    + total + " open item" + (total === 1 ? "" : "s") + ", " + high + " of them life-safety, agency or cost."
+    + (opts.filterNote ? " " + esc(opts.filterNote) : "") + "</p>"
+    + '<p style="margin:0 0 12px;">Items are grouped by the discipline that fixes them, worst first. '
+    + (tabUrl ? 'Assign, answer and close them in the <a href="' + esc(tabUrl) + '" style="color:#2F5496;">QA Reviews tab</a>.' : "Assign, answer and close them in the project's QA Reviews tab.")
+    + (reportUrl ? ' The full report is <a href="' + esc(reportUrl) + '" style="color:#2F5496;">filed here</a>.' : "") + "</p>";
+  groups.forEach(g => {
+    html += '<p style="margin:14px 0 4px;font-weight:600;">' + esc(g.name) + " (" + g.rows.length + ")</p>"
+      + '<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%;">'
+      + "<tr>" + ["#", "Severity", "Item", "Sheets", "Action", "Assigned to"].map(h => '<th style="' + th + '">' + h + "</th>").join("") + "</tr>";
+    g.rows.forEach(f => {
+      const src = QA_EXTERNAL_SRC[f.source] ? QA_EXTERNAL_SRC[f.source] + " comment" + (f.external_ref ? " #" + f.external_ref : "") : "";
+      html += "<tr>"
+        + '<td style="' + td + 'white-space:nowrap;">' + esc(f.id) + "</td>"
+        + '<td style="' + td + "white-space:nowrap;color:" + (sevColor[f.severity] || "#667085") + ';font-weight:600;">' + esc(f.severity || "") + "</td>"
+        + '<td style="' + td + '">' + esc(f.title) + (src ? '<br><span style="color:#667085;font-size:9pt;">' + esc(src) + "</span>" : "") + "</td>"
+        + '<td style="' + td + '">' + esc(Array.isArray(f.sheets) ? f.sheets.join(", ") : "") + "</td>"
+        + '<td style="' + td + '">' + esc(f.action || "") + "</td>"
+        + '<td style="' + td + '">' + esc(f.assignee || "") + "</td>"
+        + "</tr>";
+    });
+    html += "</table>";
+  });
+  html += '<p style="margin:14px 0 0;color:#667085;font-size:9pt;">Internal QA - for the Setty project team. Not for the client or the contractor.</p></div>';
+  return html;
+}
+
 function QAChip({ text, color, solid }) {
   return (
     <span style={{ display: "inline-block", padding: "1px 7px", borderRadius: 9, fontSize: 10, fontWeight: 700,
@@ -16156,6 +16201,7 @@ function ProjectQAReviewsView({ project, onChange }) {
   const [error, setError] = React.useState("");
   const [showResolved, setShowResolved] = React.useState(false);
   const [showLegacy, setShowLegacy] = React.useState(false);
+  const [sendState, setSendState] = React.useState({ status: "idle", msg: "" }); // "Send to team" draft
   const [showCa, setShowCa] = React.useState(false);       // RFI / submittal review flags, listed apart from QA
   const [expanded, setExpanded] = React.useState({});
   const [busyId, setBusyId] = React.useState(null);
@@ -16356,6 +16402,44 @@ function ProjectQAReviewsView({ project, onChange }) {
   const teamNames = [...new Set((project.teamMembers || []).map(m => String((m && m.name) || "").trim()).filter(Boolean))];
   const knownSet = selSet === "" || issuedSets.some(st => st.set === selSet) || qaqcSets.indexOf(selSet) >= 0;
 
+  // Send to team: an Outlook draft holding the punch list as shown (filters
+  // applied), for the PM to address and send. Same route as the schedule
+  // email: the draft is created in the signed-in person's own mailbox and
+  // opened in Outlook on the web; nothing is sent from here (Mail.Send is not
+  // consented), so a person always reads it and presses Send.
+  async function sendPunchListToTeam() {
+    if (!shownOpen.length || sendState.status === "sending") return;
+    setSendState({ status: "sending", msg: "" });
+    // Open the tab inside the click so pop-up blockers allow it; it is sent
+    // to the draft once that exists.
+    const draftWin = window.open("", "_blank");
+    if (draftWin) {
+      try {
+        draftWin.document.write('<title>Creating draft...</title><body style="font-family:Segoe UI,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:90vh;color:#44546A;"><div style="text-align:center;"><div style="font-size:15px;">Creating the punch list draft...</div><div style="font-size:12px;color:#94A3B8;margin-top:6px;">This tab will switch to Outlook automatically.</div></div></body>');
+      } catch (e) { /* cosmetic only */ }
+    }
+    try {
+      const withReport = (reviews || []).filter(qaIsSetReview).find(r => r.report_url);
+      const bodyHtml = qaPunchListEmailHtml({
+        projectLabel: label, groups: openGroups,
+        setName: latest && latest.set_name, reviewDate: latest ? String(latest.run_at || "").slice(0, 10) : "",
+        filterNote: filtersOn ? "This list is filtered: " + [fDisc, fSev === "__high__" ? "life-safety / agency / cost" : fSev, fWho === "__none__" ? "unassigned" : fWho].filter(Boolean).join(", ") + "." : "",
+        tabUrl: window.location.origin + window.location.pathname + "#project:" + project.id,
+        reportUrl: withReport ? withReport.report_url : "",
+      });
+      const msg = await createOutlookDraft({ subject: "QA punch list - " + label + (latest && latest.set_name ? " - " + latest.set_name : ""), bodyHtml });
+      let opened = false;
+      if (msg && msg.webLink) {
+        if (draftWin && !draftWin.closed) { draftWin.location = msg.webLink; opened = true; }
+        else opened = !!window.open(msg.webLink, "_blank");
+      } else if (draftWin && !draftWin.closed) draftWin.close();
+      setSendState({ status: "done", msg: opened ? "Draft opened in a new tab - add the team and send." : "Draft created - it is in your Outlook Drafts folder." });
+    } catch (e) {
+      if (draftWin && !draftWin.closed) draftWin.close();
+      setSendState({ status: "error", msg: "Could not create the draft: " + String(e.message || e) });
+    }
+  }
+
   function exportPunchList(fmtKind) {
     const headers = ["Ledger #", "Discipline", "Severity", "Finding", "Sheets", "Action", "Source", "Checklist item", "Status", "Assigned to", "Raised"];
     const rows = [];
@@ -16394,6 +16478,15 @@ function ProjectQAReviewsView({ project, onChange }) {
     "Draft responses to the open external reviewer comments for " + label + ".",
     "",
     "Use the Setty PMS connector and the review-comment-responses skill: list_qa_findings with needsResponse:true is the work list; verify each comment against the newest revision of the sheets it cites (search_drawings history, read_drawing_schedule, view_drawing), choose a disposition and draft the response in Setty's voice with the sheets and revisions cited, save the drafts with save_comment_responses so they appear here in QA Reviews for my sign-off, then build the Comments & Responses register and file it with file_qa_report. Drafts only - nothing goes back to the reviewer.",
+  ].join("\n"));
+  // Back-check only: the open rows against the newest issued set, nothing
+  // else. The count is rows still 'open'; 'ready to back-check' rows already
+  // carry evidence and wait for a person.
+  const backcheckCount = openRows.filter(f => f.status === "open").length;
+  const backcheckUrl = "https://claude.ai/new?q=" + encodeURIComponent([
+    "Back-check the open QA items for " + label + " against the newest issued drawing set. Back-check only: do not run a full review.",
+    "",
+    "Use the Setty PMS connector and the qa-coordination-review skill (its automatic back-check steps): call list_backcheck_candidates for this project to get the newest set and the rows that are due, and confirm the set with get_current_set. If the tool is not available, use list_qa_findings and back-check every row with status open. For each row, read the newest revision of the sheets it cites (search_drawings history, read_drawing_schedule, view_drawing) and move it with update_qa_finding ONLY on evidence you read: internal findings that are fixed go to closed, and owner, architect, agency and DrChecks comments that are picked up go to ready_to_backcheck, never closed, so I can confirm them here. Leave a row open when the set does not answer it or drawings cannot answer it. Leave RFI and submittal flags alone. Then record the pass with record_qa_findings kind:'backcheck', setName exactly the newest set's folder name, and tell me per row what moved, what stayed open and what you could not verify.",
   ].join("\n"));
   const ingestUrl = "https://claude.ai/new?q=" + encodeURIComponent([
     "Ingest the review comment log" + (pendingLogs.length === 1 ? "" : "s") + " for " + label + " into the QA ledger: " + pendingLogs.slice(0, 6).map(l => '"' + l.attachment + '"').join(", ") + (pendingLogs.length > 6 ? " and " + (pendingLogs.length - 6) + " more" : "") + ".",
@@ -16597,6 +16690,15 @@ function ProjectQAReviewsView({ project, onChange }) {
           title="Opens your Claude seat with the QA review prefilled - backchecks open findings, runs the checklist, knowledge and engineering passes on the selected set, and records the punch list here for your sign-off">
           {"🤖"} Run Coordination Review
         </a>
+        {backcheckCount > 0 && (
+          <a href={backcheckUrl} target="_blank" rel="noreferrer"
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
+              border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, fontWeight: 600,
+              color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}
+            title="Opens your Claude seat with a back-check prefilled - checks every open finding and reviewer comment against the newest issued set and moves the ones the drawings answer. Reviewer comments stop at 'ready to back-check' for you to confirm here">
+            {"🤖"} Back-check open items ({backcheckCount})
+          </a>
+        )}
         {awaitingResponse > 0 && (
           <a href={responsesUrl} target="_blank" rel="noreferrer"
             style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
@@ -16759,10 +16861,15 @@ function ProjectQAReviewsView({ project, onChange }) {
                   {filtersOn && <Btn small variant="ghost" onClick={() => { setFDisc(""); setFSev(""); setFWho(""); }}>Clear</Btn>}
                   <Btn small variant="ghost" disabled={!shownOpen.length} onClick={() => exportPunchList("csv")} title="Download the punch list as shown (filters applied) as a spreadsheet that opens in Excel">{"\u2b07"} Excel</Btn>
                   <Btn small variant="ghost" disabled={!shownOpen.length} onClick={() => exportPunchList("pdf")} title="Open a print-ready copy of the punch list as shown (choose Save as PDF)">{"\ud83d\udda8"} PDF</Btn>
+                  <Btn small variant="primary" disabled={!shownOpen.length || sendState.status === "sending"} onClick={sendPunchListToTeam}
+                    title="Creates an Outlook draft with the punch list as shown, grouped by discipline, with a link back to this tab. You add the recipients and press Send.">
+                    {sendState.status === "sending" ? "Creating draft..." : "\u2709 Send to team"}
+                  </Btn>
                 </span>
               );
             })()}
           </div>
+          {sendState.msg && <div style={{ fontSize: 11.5, marginBottom: 8, color: sendState.status === "error" ? "var(--c-e5534b)" : "var(--c-3fb950)" }}>{sendState.msg}</div>}
           {shownOpen.length === 0 && <div style={{ color: P.textDim, fontSize: 12, marginBottom: 8 }}>No open items match these filters.</div>}
           {openGroups.map(g => (
             <div key={g.name} style={{ marginBottom: 14 }}>
