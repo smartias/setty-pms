@@ -362,6 +362,30 @@ that flow stays supported, and this mode makes the PMS the record anyway:
    red-flag context in mind: a reviewer reply that contradicts a red flag is
    worth an `internalNotes` line, not a silent overwrite of the flag.
 
+## When the answer changes the drawings (a bulletin or sketch)
+
+An RFI response that revises a sheet is the one moment in construction where
+a coordination miss can still be caught before it costs more. This is
+construction administration, not QA: the QA review is for design and bid
+sets and does not run on bulletins. So the check belongs here, on the item
+that caused the change.
+
+Before a bulletin or sketch goes out with a response:
+
+1. List what it changes: for each revised sheet, the equipment parameters
+   that moved (HP, MCA, voltage, CFM, GPM, capacity, size, weight), anything
+   added or deleted, and any rating that changed.
+2. Fetch the ripple rules (`get_qa_checklist` returns them as `rippleRules`)
+   and, for each change, check that every discipline the rule names has its
+   sheet in the SAME bulletin. `find_equipment` names every sheet a tag
+   touches. A fan upsized on the mechanical schedule with no electrical
+   sheet in the bulletin is a `redFlags` entry, severity `cost`.
+3. State the cost consequence: after bid every change is a potential change
+   order, so say what the contractor will price.
+
+Record the result in `internalNotes` and `redFlags` on the RFI. Do not
+record it as a QA finding.
+
 ## Step 3 — Persist
 
 Call **`save_ca_review`** with: `reviewedAgainstSet`, `specSections` checked,
