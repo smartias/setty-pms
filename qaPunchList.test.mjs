@@ -126,7 +126,11 @@ test("RFI and submittal flags are construction administration, not QA", () => {
   // The punch list, its export and issue readiness are built from the design-phase rows only.
   assert.ok(html.includes("const openRows = qaFindings.filter("));
   assert.ok(html.includes("qaIssueReadiness(qaFindings, reviews, issuedSets, issueSheets)"));
-  assert.ok(html.includes("Not QA items."));
+  // They are not listed on the QA tab at all (removed 2026-11-16 at the QA lead's
+  // request): they are worked in the RFIs and Submittals tabs, and a second list
+  // here read as open QA items.
+  assert.ok(!html.includes("Not QA items."));
+  assert.ok(!html.includes("flags from RFI and submittal reviews"));
 });
 
 test("the send-to-team email lists the punch list by discipline and escapes what it prints", () => {
