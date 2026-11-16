@@ -401,6 +401,38 @@ polish**).
   or that equipment (and `find_related`) find this item without guessing from
   its wording. A review saved without them is findable only by text match.
 
+- **On every RFI, pass `rootCause`**: why the RFI was asked and which QA
+  check would have caught it. This is how the RFI log feeds the next
+  project's QA review, so do it even when the answer is one line.
+  - `cause`, one of:
+    - `doc-conflict`: the documents disagree with themselves (two sheets,
+      drawing against spec, plan against schedule, keynote against legend).
+    - `doc-missing`: something needed to build or price it is not there (a
+      detail, a size, a sequence, a termination).
+    - `coordination`: our work against another discipline's documents, or
+      trade against trade in the same space (ceiling depth, a riser in a
+      braced frame, pipe over electrical gear, a damper at a rated wall).
+    - `scope-gap`: who furnishes, installs or wires it is unclear.
+    - `contractor`: the documents as issued answer it, it is means and
+      methods, or it is a substitution request.
+    - `field-condition`: an existing or site condition nobody could draw.
+    - `owner-change`: the owner changed what they want.
+    - `other`: none of these, or the record does not say enough.
+  - `preventable`: could a review of the documents before issue have
+    caught it? It defaults from the cause; set it when the default is wrong
+    (a coordination RFI caused by the contractor's own routing is not).
+  - `qaItem`: the checklist item that would have caught it
+    (`get_qa_checklist` lists them; `qa-600` to `qa-603` are RFI
+    prevention, `qa-610` to `qa-616` cross-discipline, `qa-620` to `qa-624`
+    bidder's eye). Leave it out when no item covers it: on a preventable RFI
+    that gap is the signal a check is missing, and it is more useful than a
+    forced match.
+  - `note`: the discrepancy in one plain line, with the sheets.
+  Judge from the question and the documents, not from who is to blame.
+  The tag is internal: it never appears in the suggested response and is
+  never quoted to the contractor. To tag RFIs in bulk without reviewing
+  each (a finished project's log), use `tag_rfi_root_causes`.
+
 - `markedSelection` is what the modal shows first: the product, model, marked
   options, and where on the cut sheet it was marked — so the engineer confirms
   the selection you read before they trust the rest. An unconfirmed selection

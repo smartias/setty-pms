@@ -69,6 +69,7 @@ below with the detail.
 | 2 | **Backgrounds inventory**: what other disciplines' drawings we hold, and how current | Backgrounds section |
 | 3 | **Pass 1 — Checklist**: every checklist item gets a disposition | Checklist coverage table |
 | 3b | **Cross-discipline pass**: MEPFP against architecture, structure, the life safety plan and the non-MEP specs, area by area | Coverage plan and cross-discipline table |
+| 3c | **Bidder's eye pass** (CD, permit, bid and addendum sets): read the set as someone who has to price it | Checklist coverage table |
 | 4 | **Pass 2 — Knowledge layer**: lessons, best practices, agency preferences, engineering standards applied to this set | Knowledge section |
 | 5 | **Pass 3 — Engineering review**: does the design make engineering sense | Engineering flags |
 | 6 | **Punch list and report** | The deliverable |
@@ -228,6 +229,24 @@ EVERYTHING and for coordinating everyone, so:
    M, E, P, FP, FA, and the main systems — chilled water, emergency power,
    sprinklers...). Passes 2 and 3 are driven by this list.
 5. `project_briefing` if you lack context on where the job stands.
+
+### What the RFI logs say to look for
+
+Before the passes, call `rfi_root_cause_summary` with no project. It
+returns, from the RFIs the firm has tagged: how many were preventable by a
+document review, the checklist items those RFIs map to (most-hit first),
+and the preventable RFIs that no checklist item covers.
+
+- Run the most-hit items first and widest, and say in the report that you
+  did.
+- Read `noCheckExamples`. They are problems that became RFIs and that no
+  checklist item asks about. Look for the same kind of problem in this set
+  during Pass 3, and name any you find as such.
+- If the tool returns nothing or is not available, say so and carry on:
+  the tagging starts empty and fills as RFIs are reviewed.
+- This is firm-wide evidence about kinds of problems. It is not a list of
+  findings for this project, and nothing in it is quoted in the report as a
+  fact about this set.
 
 ## Step 1 — Carry-over: prior comments and open findings
 
@@ -454,6 +473,49 @@ them. Do them right after the `auto` items, before anything else assisted.
 Each of the four gets a disposition like any other item. When one is
 `not attempted`, give the reason in the coverage table, because these are
 the checks most likely to have prevented an RFI.
+
+### Bidder's eye pass (qa-620 series) — CD, permit, bid and addendum sets
+
+About half of Tabler Quad's RFIs (roughly 137 of 276) were bid RFIs, asked
+within weeks of issue, and most were not engineering questions. They were:
+who provides it, which trade wires it, how many are there, which spec
+section governs, where does the work stop. A design review reads the set as
+its author. This pass reads it as an estimator with a week to put a number
+on it, and writes down every place that person would have to ask.
+
+Run the five checklist items, each with a disposition:
+
+- **qa-620 Who provides it.** Collect every "by others", "by owner", "by
+  G.C.", "N.I.C.", "furnished by" and "installed by" note on our sheets and
+  in Divisions 21 to 28. Each must name a party. Then find the item in that
+  party's documents; if they also say "by others", nobody has it. Split
+  items (furnished by one, installed or wired by another) need both halves
+  stated.
+- **qa-621 Division of work for every motor.** Build a table from the M, P
+  and FP schedules: for each motor or powered unit, who furnishes and who
+  installs and wires the starter, disconnect, VFD, control wiring and fire
+  alarm interlock. Fill it from our schedules and notes, then again from
+  the E connection schedule and one-line. Any cell that is blank on both,
+  claimed by both, or different between them is a finding.
+- **qa-622 Can it be counted and priced.** Untagged devices and fixtures, a
+  tag with no schedule row, "typical" with no extent, items on the
+  architect's sheets that ours omit or lay out differently, alternates and
+  allowances in Division 01 that cannot be found on the drawings, and work
+  the documents require with no shown way to do it.
+- **qa-623 The spec book as one set.** Table of contents against the book:
+  a section twice in two versions, a missing section, a section for a system
+  the project does not have. For each major basis-of-design model, check
+  that the manufacturer still offers it; where you have no web access, mark
+  that part `not attempted` and list the models for a person to check.
+- **qa-624 Site, utilities and temporary services.** Each service entry
+  with size, invert or elevation and a named limit of work, matching the
+  civil plan; utility company work against contractor work; the fire
+  department connection shown by one discipline only; temporary power,
+  water and heat assigned in Division 01.
+
+Findings from this pass are `rfi-bait`, or `cost` where the unassigned work
+is large. Write the action as the sentence that would have answered the
+bidder: who provides it, on which sheet or section it will say so.
 
 ### Cross-discipline pass — MEPFP against everyone else's documents
 
@@ -919,6 +981,23 @@ condition is `rfi-bait`.
 **The punch list is the deliverable.** It is what the team works from, so
 it is organized by who fixes it, not by how it was found:
 
+- **Try to disprove each finding before it goes on the list.** A wrong
+  finding costs the team's trust faster than a missed one: after two or
+  three, people stop reading the list. Before recording, take each finding
+  and look for the reason it is wrong:
+  1. Is the "missing" thing somewhere you did not look? The other sheet of
+     the pair, the RCP, the device plan, a schedule, a general note, the
+     spec. Name where you looked in the evidence.
+  2. Did you read the value, or a neighbouring row or sheet? Re-read the
+     exact cell or note, and render the sheet when the text was ambiguous.
+  3. Is it the current revision of both sheets?
+  4. Is there a note that explains it (an exception, "by others", a
+     deliberate difference)?
+  What survives is recorded as a finding. What you could not confirm either
+  way is recorded as a flag, with CONFIRM and exactly what a person has to
+  look at. What you disproved is dropped, and the report says how many were
+  dropped at this step. Never promote a text-only hit to a confirmed
+  finding, and never record a guess to be safe.
 - **Key items: mark the few the team must see first.** A long list reads
   flat. Mark a finding as a key item (`keyItem: true` with a `keyReason`
   when you record it; **bold** in the report) when one of these is true:

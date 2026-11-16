@@ -103,4 +103,20 @@ for (const hint of autoHints) {
   assert.ok(skill.includes("revise_qa_finding_action"));
 }
 
+// Bidder's eye items (qa-620 series, 2026-11-16): the set read as someone who
+// has to price it. Not asked of a DD set.
+{
+  const b = readFileSync(join(here, "../../migrations/20261116231000_qa_bidders_eye_items.sql"), "utf8");
+  const ids = ["qa-620", "qa-621", "qa-622", "qa-623", "qa-624"];
+  for (const id of ids) assert.ok(b.includes(`('${id}','deliverable-qa','Bidder''s Eye',`), `missing ${id}`);
+  assert.equal(b.split("'[\"CD\",\"Permit\",\"Bid\",\"Addendum\"]'::jsonb,'rfi-lesson','qa-rfi-review-2026-11-16-tabler-bid'").length - 1, 5);
+  assert.ok(b.includes("on conflict (item_id) do nothing;"));
+  const details = [...b.matchAll(/\n '(\[.*\])'::jsonb,\n 'assisted'/g)].map((m) => JSON.parse(m[1].replace(/''/g, "'")));
+  assert.equal(details.length, 5);
+  for (const d of details) assert.ok(Array.isArray(d) && d.length >= 4);
+  const skill = readFileSync(join(here, "../../../.claude/skills/qa-coordination-review/SKILL.md"), "utf8");
+  for (const id of ids) assert.ok(skill.includes(`**${id} `), `skill has no method for ${id}`);
+  assert.ok(skill.includes("Try to disprove each finding before it goes on the list"));
+}
+
 console.log("qaChecklist.test.mjs: all assertions passed");

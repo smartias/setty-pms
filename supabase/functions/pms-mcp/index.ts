@@ -64,6 +64,8 @@ import { buildLedgerMatcher, sheetKey, normalizeTag, scheduleRowsForTag } from "
 import { issuedSets, backcheckStatus } from "./backcheckCandidates.ts";
 // The floor under the QA action standard: flags "Coordinate." and the like. Pure; see its tests.
 import { actionProblem, ACTION_STANDARD } from "./qaAction.ts";
+// Why an RFI was asked and which QA check would have caught it. Pure; see its tests.
+import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses } from "./rfiRootCause.ts";
 import { isIssuedSetRow, notASetReason } from "./issuedSet.ts";
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
@@ -1436,7 +1438,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-qa-action-standard";
+const BUILD = "2026-11-16-rfi-root-causes";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -10804,6 +10806,30 @@ const findCaItem = (arr: any[], number: string) =>
   arr.find((x: any) => String(x.number) === String(number)) ||
   arr.find((x: any) => String(x.id) === String(number));
 
+// One root-cause tag per RFI (pms_rfi_root_causes, migration 20261116230000).
+// Shared by save_ca_review (the tag rides with the review) and
+// tag_rfi_root_causes (back-filling a log). Internal, like the QA ledger.
+const ROOT_CAUSE_SHAPE = {
+  cause: z.string().describe("Why the RFI was asked: " + RFI_ROOT_CAUSES.join(" | ") + ". doc-conflict = the documents disagree with themselves; doc-missing = something needed is not in them; coordination = MEPFP against another discipline's documents, or trade against trade in space; scope-gap = who furnishes, installs or wires it; contractor = the documents as issued answer it, means and methods, or a substitution request; field-condition = an existing or site condition; owner-change = the owner changed what they want."),
+  preventable: z.boolean().optional().describe("Could a review of the documents BEFORE issue have caught it? Defaults from the cause (true for doc-conflict, doc-missing, coordination, scope-gap). Set it when the default is wrong: a coordination RFI caused by a contractor's own routing is not preventable."),
+  qaItem: z.string().optional().describe("The QA checklist item that would have caught it, e.g. 'qa-614' (get_qa_checklist lists them: qa-600 to qa-603 RFI prevention, qa-610 to qa-616 cross-discipline, qa-620 to qa-624 bidder's eye). Omit when NO item covers it: on a preventable RFI that is the signal a check is missing."),
+  note: z.string().max(400).optional().describe("One line: the discrepancy in plain words, e.g. 'feeder size in keynote 12 on E-201 differs from the feeder schedule'. This is what a later QA review reads."),
+};
+function rootCauseRow(project: string, type: string, number: string, subject: string | null, rc: any, sheets: string[] | undefined, who: string, phase?: string) {
+  const cause = normalizeRootCause(rc?.cause);
+  if (!cause) return { error: `Unknown root cause "${rc?.cause}". Use one of: ${RFI_ROOT_CAUSES.join(", ")}.` };
+  return {
+    row: {
+      project, item_type: type, item_number: number, subject: subject ? String(subject).slice(0, 300) : null,
+      phase: rfiPhase(number, phase), cause,
+      preventable: typeof rc.preventable === "boolean" ? rc.preventable : defaultPreventable(cause),
+      qa_item: normalizeQaItem(rc.qaItem), sheets: sheets?.length ? sheets.slice(0, 40) : null,
+      note: rc.note ? String(rc.note).replace(/\s+/g, " ").trim().slice(0, 400) : null,
+      tagged_by: who, tagged_at: new Date().toISOString(),
+    },
+  };
+}
+
 mcp.tool("save_ca_review", {
   description:
     "Write Claude's review of one submittal or RFI onto the CA record as its `aiReview` block — the suggested " +
@@ -10850,9 +10876,10 @@ mcp.tool("save_ca_review", {
     })).optional().describe("Clickable references for the review panel: the reviewed set folder, each cited sheet, the governing spec. The modal renders the set name, sheet chips, and spec sections as links when a label matches."),
     sheets: z.array(z.string()).max(40).optional().describe("Every drawing sheet the review relied on, e.g. ['M-601 Rev 11','E-610']. Saved as structured links so find_related can answer 'what touched E-610' later."),
     equipmentTags: z.array(z.string()).max(30).optional().describe("Every equipment tag the item covers or the review checked, e.g. ['EF-7','RTU-1']. Saved as structured links, like sheets."),
+    rootCause: z.object(ROOT_CAUSE_SHAPE).optional().describe("RFIs: why this RFI was asked and which QA check would have caught it. Pass it on EVERY RFI review: it is how the RFI log feeds the next project's QA review. Internal; never shown to the contractor."),
     merge: z.boolean().optional().describe("MERGE into the item's existing aiReview instead of replacing it: fields you pass overwrite their counterparts; everything else (markedSelection, redFlags, docLinks, coverage, the ledger backlink) is PRESERVED, and the QA ledger is left untouched unless you also pass redFlags. Use for pull-reply capture and other partial updates — a full re-review omits this so stale flags get superseded."),
   }),
-  handler: async ({ projectNumber, type, number, reviewedAgainstSet, specSections, coverage, suggestedResponse, suggestedStamp, internalNotes, markedSelection, redFlags, docLinks, sheets, equipmentTags, merge }) => {
+  handler: async ({ projectNumber, type, number, reviewedAgainstSet, specSections, coverage, suggestedResponse, suggestedStamp, internalNotes, markedSelection, redFlags, docLinks, sheets, equipmentTags, rootCause, merge }) => {
     const who = qaLedgerCaller();
     if (!who.ok) return who.response;
     if (type === "rfi" && suggestedStamp) return asText({ error: "suggestedStamp applies to submittals only — RFIs have no stamp." });
@@ -11021,12 +11048,133 @@ mcp.tool("save_ca_review", {
         }
       }
     }
+    // Root cause: best-effort, like the links. The review is already saved.
+    let rootCauseResult: Record<string, unknown> | undefined;
+    if (rootCause) {
+      const built = rootCauseRow(String(project), type, String(itemNumber), itemSubject ?? null, rootCause, sheets, who.email);
+      if (built.error) rootCauseResult = { saved: false, error: built.error };
+      else {
+        try {
+          await sbUpsert("pms_rfi_root_causes", "project,item_type,item_number", [built.row!]);
+          rootCauseResult = { saved: true, cause: built.row!.cause, preventable: built.row!.preventable, qaItem: built.row!.qa_item };
+        } catch (e) {
+          rootCauseResult = { saved: false, error: `Root cause not saved (the review is still on the record): ${String((e as any)?.message ?? e).slice(0, 160)}` };
+        }
+      }
+    }
     return asText({
       project,
       type, number: itemNumber, subject: itemSubject, savedBy: who.email,
       redFlags: flags.length, ledger,
+      ...(rootCauseResult ? { rootCause: rootCauseResult } : (type === "rfi" ? { rootCauseHint: "No rootCause passed. Tag why this RFI was asked (rootCause, or tag_rfi_root_causes) so the log feeds the next project's QA review." } : {})),
       ...(refs ? { links: refs } : { linksHint: "Pass sheets and equipmentTags so this review's basis is findable later (find_related)." }),
       note: "The review is on the record as aiReview — the RFI/Submittal modal shows it as an accept/dismiss suggestion; it did NOT change the human's response or stamp. Tracked flags (life-safety/agency/cost) are in the QA Reviews ledger.",
+    });
+  },
+});
+
+// Back-filling a log: tag many RFIs in one call, without reviewing each. This
+// is how a finished project's RFIs become evidence (the 2026-11-16 look-backs
+// did it by hand). A tag is Claude's classification from the RFI's question
+// and answer; re-tagging an item replaces its row.
+mcp.tool("tag_rfi_root_causes", {
+  description:
+    "Tag RFIs with WHY they were asked and which QA check would have caught them, up to 50 per call. Use it to " +
+    "back-fill a project's RFI log (read each RFI's question and answer first: search_rfis_submittals, " +
+    "read_rfi_submittal), or to correct a tag. A single RFI under review is tagged through save_ca_review's " +
+    "rootCause instead. Tags are internal: they feed rfi_root_cause_summary, which the QA review reads before it " +
+    "starts, and they are never shown to the contractor. Tag from what the record says; when the question text is " +
+    "missing, use cause 'other' and say so in the note, do not guess. Re-tagging an RFI replaces its earlier tag.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR name."),
+    items: z.array(z.object({
+      number: z.string().describe("The RFI number as logged, e.g. 'RFI-047' or 'BID-011'."),
+      subject: z.string().optional().describe("The RFI subject, kept beside the tag so the summary is readable without the log."),
+      phase: z.enum(["bid", "construction"]).optional().describe("Default: bid when the number starts with BID, else construction."),
+      sheets: z.array(z.string()).max(40).optional().describe("Sheets the RFI concerns."),
+      ...ROOT_CAUSE_SHAPE,
+    })).min(1).max(50),
+  }),
+  handler: async ({ projectNumber, items }) => {
+    const who = qaLedgerCaller();
+    if (!who.ok) return who.response;
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const project = String((await getProjectById(pid))?.projectNumber || projectNumber);
+    const rows: Record<string, unknown>[] = [];
+    const rejected: Array<{ number: string; reason: string }> = [];
+    const seen = new Set<string>();
+    for (const it of items) {
+      const num = String(it.number ?? "").trim();
+      if (!num) { rejected.push({ number: "", reason: "no RFI number" }); continue; }
+      if (seen.has(num.toLowerCase())) { rejected.push({ number: num, reason: "listed twice in this call" }); continue; }
+      seen.add(num.toLowerCase());
+      const built = rootCauseRow(project, "rfi", num, it.subject ?? null, it, it.sheets, who.email, it.phase);
+      if (built.error) { rejected.push({ number: num, reason: built.error }); continue; }
+      rows.push(built.row!);
+    }
+    try {
+      await sbUpsert("pms_rfi_root_causes", "project,item_type,item_number", rows);
+    } catch (e) {
+      const m = String((e as any)?.message ?? e);
+      return asText({ project, saved: 0, error: /pms_rfi_root_causes/.test(m) && /404|not exist|PGRST205/.test(m)
+        ? "Root causes are not available yet: the database has not run migration 20261116230000."
+        : `Not saved: ${m.slice(0, 200)}` });
+    }
+    const s = summarizeRootCauses(rows as any, { uncoveredLimit: 0 });
+    return asText({
+      project, saved: rows.length, ...(rejected.length ? { rejected } : {}),
+      thisCall: { preventable: s.preventable, byCause: s.byCause, preventableWithNoCheck: s.preventableWithNoCheck },
+      note: "Tags are internal. rfi_root_cause_summary reads them across projects.",
+    });
+  },
+});
+
+mcp.tool("rfi_root_cause_summary", {
+  description:
+    "What the firm's RFI logs say QA should look for. Reads the root-cause tags on RFIs (one project, or every " +
+    "project) and returns: how many were preventable by a document review before issue, the count per cause and " +
+    "per phase (bid / construction), the QA checklist items those preventable RFIs map to, most-hit first, and " +
+    "the preventable RFIs that NO checklist item covers, which are the candidates for a new item. Call it at the " +
+    "start of a QA review to decide where the effort goes, when asked what causes our RFIs, or after a project " +
+    "to see how its log compares. Only as complete as the tagging: it reports how many RFIs carry a tag, not how " +
+    "many exist. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().optional().describe("One project (number OR name). Omit for all tagged projects."),
+    cause: z.string().optional().describe("Only one cause, e.g. 'coordination'."),
+    phase: z.enum(["bid", "construction"]).optional(),
+    listRfis: z.boolean().optional().describe("Also list the tagged RFIs (up to 300), not only the counts. Default false."),
+  }),
+  handler: async ({ projectNumber, cause, phase, listRfis }) => {
+    let project: string | null = null;
+    if (projectNumber) {
+      const pid = await resolveProjectId(projectNumber);
+      if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+      project = String((await getProjectById(pid))?.projectNumber || projectNumber);
+    }
+    const wantCause = cause ? normalizeRootCause(cause) : null;
+    if (cause && !wantCause) return asText({ error: `Unknown cause "${cause}". Use one of: ${RFI_ROOT_CAUSES.join(", ")}.` });
+    let rows: any[];
+    try {
+      rows = await sbGetAll("pms_rfi_root_causes?select=project,item_number,subject,phase,cause,preventable,qa_item,note,tagged_at" +
+        "&item_type=eq.rfi" + (project ? "&project=eq." + encodeURIComponent(project) : "") +
+        (wantCause ? "&cause=eq." + wantCause : "") + (phase ? "&phase=eq." + phase : "") + "&order=project,item_number");
+    } catch (e) {
+      const m = String((e as any)?.message ?? e);
+      return asText({ error: /404|not exist|PGRST205/.test(m)
+        ? "Root causes are not available yet: the database has not run migration 20261116230000."
+        : `Could not read the tags: ${m.slice(0, 200)}` });
+    }
+    const s = summarizeRootCauses(rows);
+    if (!rows.length) {
+      return asText({ ...(project ? { project } : {}), tagged: 0,
+        note: "No RFIs carry a root-cause tag" + (project ? " on this project" : "") + " yet. Tags are written when an RFI is reviewed (save_ca_review rootCause) or back-filled with tag_rfi_root_causes." });
+    }
+    return asText({
+      ...(project ? { project } : { projects: s.projects }),
+      ...s,
+      ...(listRfis ? { rfis: rows.slice(0, 300) } : {}),
+      note: "Counts cover TAGGED RFIs only. byQaItem says which checks the log would have rewarded: run those first and widest. noCheckExamples are preventable RFIs with no checklist item: a kind that recurs across projects is a candidate for a new item (tell the user; do not add items yourself). Internal: never quote to the contractor.",
     });
   },
 });
