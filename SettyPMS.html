@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-16-pms-v199-qa-issue-readiness";
+    window.__appVersion = "2026-11-16-pms-v200-qa-design-phase-only";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16077,6 +16077,13 @@ function qaGroupByDiscipline(rows) {
 // submittal/RFI review also writes a pms_qa_reviews row, and neither is a
 // review of the drawing set.
 const qaIsSetReview = r => !!r && r.kind !== "comment-log" && r.kind !== "ca-review";
+// QA is a DESIGN-phase activity: it exists to catch things before the set goes
+// out, and after bid it is too late to be proactive (Sara, 2026-11-16). A flag
+// raised while reviewing an RFI or a submittal is construction administration.
+// It is worked on that RFI or submittal, so it stays off the QA punch list,
+// out of its export and out of issue readiness, and is listed apart for
+// reference.
+const qaIsCaFinding = f => !!f && (f.source === "rfi" || f.source === "submittal");
 
 // Issue readiness (INTERNAL). QA runs a few days before a set is transmitted;
 // this answers "where does the punch list stand against the set going out" and,
@@ -16149,6 +16156,7 @@ function ProjectQAReviewsView({ project, onChange }) {
   const [error, setError] = React.useState("");
   const [showResolved, setShowResolved] = React.useState(false);
   const [showLegacy, setShowLegacy] = React.useState(false);
+  const [showCa, setShowCa] = React.useState(false);       // RFI / submittal review flags, listed apart from QA
   const [expanded, setExpanded] = React.useState({});
   const [busyId, setBusyId] = React.useState(null);
   const [issuedSets, setIssuedSets] = React.useState([]); // [{set, at}] newest first, from the register
@@ -16314,9 +16322,12 @@ function ProjectQAReviewsView({ project, onChange }) {
     else commitStatus(f, ed.status, ed.text);
   }
 
-  const openRows = findings.filter(f => f.status === "open" || f.status === "ready_to_backcheck").sort((a, b) => qaFindingRank(a) - qaFindingRank(b));
+  const qaFindings = findings.filter(f => !qaIsCaFinding(f));   // the design-phase ledger
+  const caFindings = findings.filter(qaIsCaFinding);            // flags from RFI / submittal reviews
+  const caOpen = caFindings.filter(f => f.status === "open" || f.status === "ready_to_backcheck").sort((a, b) => qaFindingRank(a) - qaFindingRank(b));
+  const openRows = qaFindings.filter(f => f.status === "open" || f.status === "ready_to_backcheck").sort((a, b) => qaFindingRank(a) - qaFindingRank(b));
   const awaitingResponse = openRows.filter(f => QA_EXTERNAL_SRC[f.source] && !f.response).length;
-  const resolvedRows = findings.filter(f => f.status === "closed" || f.status === "dismissed");
+  const resolvedRows = qaFindings.filter(f => f.status === "closed" || f.status === "dismissed");
   const countsByReview = {};
   findings.forEach(f => {
     const k = f.review_id || 0;
@@ -16538,6 +16549,7 @@ function ProjectQAReviewsView({ project, onChange }) {
           <div style={{ fontSize: 12, color: P.textDim, lineHeight: 1.5, maxWidth: 640 }}>
             This project&apos;s QA punch list: review findings and reviewer comments, grouped by the discipline that fixes them.
             Claude drafts and back-checks; a person assigns, answers and closes. Findings stay on this project.
+            QA is for design, before the set goes out; RFI and submittal flags from construction are listed separately at the bottom.
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -16634,7 +16646,7 @@ function ProjectQAReviewsView({ project, onChange }) {
         // stands against the set that was reviewed. After issue: what was
         // open when the newest set went out. It informs; it never blocks.
         if (reviews === null || error) return null;
-        const r = qaIssueReadiness(findings, reviews, issuedSets, issueSheets);
+        const r = qaIssueReadiness(qaFindings, reviews, issuedSets, issueSheets);
         if (r.phase === "none") return null;
         const plural = (n, one, many) => n + " " + (n === 1 ? one : many);
         const amber = "var(--c-d4a72c)", red = "var(--c-e5534b)", green = "var(--c-3fb950)";
@@ -16703,7 +16715,7 @@ function ProjectQAReviewsView({ project, onChange }) {
 
       {reviews !== null && reviews.length > 0 && (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-          {reviews.map(r => (
+          {reviews.filter(r => r.kind !== "ca-review").map(r => (
             <div key={r.id} style={{ border: "1px solid " + P.border, borderRadius: 8, padding: "8px 12px", fontSize: 11.5, minWidth: 220, background: P.card }}>
               <div style={{ fontWeight: 600, marginBottom: 2 }}>{QA_REVIEW_KIND_LABEL[r.kind] || "Review"} #{r.id}{r.phase ? " · " + r.phase : ""}</div>
               {(r.set_name || r.source_doc) && <div style={{ color: P.textDim, marginBottom: 2 }}>{r.set_name || r.source_doc}</div>}
@@ -16769,6 +16781,27 @@ function ProjectQAReviewsView({ project, onChange }) {
             {showResolved ? "Hide" : "Show"} resolved ({resolvedRows.length})
           </Btn>
           {showResolved && <div style={{ marginTop: 8 }}>{resolvedRows.map(f => renderFinding(f))}</div>}
+        </div>
+      )}
+
+      {caFindings.length > 0 && (
+        <div style={{ marginBottom: 18, border: "1px dashed " + P.border, borderRadius: 10, padding: "10px 14px" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ fontWeight: 700, fontSize: 12.5 }}>Construction phase: flags from RFI and submittal reviews</div>
+            <QAChip text={caOpen.length + " open of " + caFindings.length} />
+            <span style={{ flex: 1 }} />
+            <Btn variant="ghost" small onClick={() => setShowCa(v => !v)}>{showCa ? "Hide" : "Show"}</Btn>
+          </div>
+          <div style={{ fontSize: 11.5, color: P.textDim, marginTop: 4, lineHeight: 1.5 }}>
+            Not QA items. These were raised while reviewing an RFI or a submittal and are worked there, in the RFIs and Submittals tabs.
+            They are listed here for reference only and are not part of the punch list, its export or issue readiness.
+          </div>
+          {showCa && (
+            <div style={{ marginTop: 10 }}>
+              {caOpen.map(f => renderFinding(f))}
+              {caFindings.filter(f => f.status === "closed" || f.status === "dismissed").map(f => renderFinding(f))}
+            </div>
+          )}
         </div>
       )}
 
