@@ -485,6 +485,18 @@ that made them safe to reverse.
   a tag its rows from the saved schedules, newest issued revision that was
   read, never a pre-issuance QA copy.
 
+**QA is design-phase; RFI prevention items (2026-11-16).** QA is proactive:
+it exists to remove the causes of RFIs and change orders before a set goes
+out, through bid. The qa-coordination-review skill no longer runs on
+construction bulletins or carries post-bid guidance; a bulletin that answers
+an RFI gets its ripple check in submittal-rfi-review, on that RFI. Migration
+`20261116180000_qa_rfi_prevention_items.sql` adds four checklist rows
+(qa-600 to qa-603, section "RFI Prevention", `source` 'rfi-lesson') written
+from Tabler's RFI log: note and keynote sizes against the feeder schedule,
+keynote legend defects, specifications against drawings for major equipment,
+and riser against detail against controls diagram. The skill carries the
+method for each. Further projects' RFI logs are meant to add rows the same way.
+
 **Schedule reader, second pass (2026-11-16, `scheduleExtract.ts`).** On
 Tabler's 100% CD set the reader returned nothing or garbage for M601, M602,
 P601 and every panel schedule. Three causes, all fixed in the extractor, which

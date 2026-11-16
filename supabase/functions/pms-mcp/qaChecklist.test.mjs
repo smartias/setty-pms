@@ -65,4 +65,26 @@ for (const hint of autoHints) {
     `auto hint names no tool: ${hint}`);
 }
 
+// RFI prevention items (qa-600 series, 2026-11-16): written from a real RFI
+// log, phase-restricted to the sets that carry the content, and marked so the
+// next project's lessons can be added and counted the same way.
+{
+  const rfi = readFileSync(join(here, "../../migrations/20261116180000_qa_rfi_prevention_items.sql"), "utf8");
+  for (const id of ["qa-600", "qa-601", "qa-602", "qa-603"]) assert.ok(rfi.includes(`('${id}','deliverable-qa','RFI Prevention',`), `missing ${id}`);
+  assert.equal(rfi.split("'rfi-lesson','qa-rfi-review-2026-11-16'").length - 1, 4);
+  assert.ok(rfi.includes("on conflict (item_id) do nothing;"));
+  // A schematic set has no spec book: the spec item is not asked of DD.
+  assert.ok(/'qa-602'[\s\S]*?'\["CD","Permit","Bid","Addendum"\]'::jsonb,'rfi-lesson'/.test(rfi));
+  // Every details value is valid JSON (a broken array would fail the insert).
+  // Each sits on one line between the item text and its automation class.
+  const details = [...rfi.matchAll(/\n '(\[.*\])'::jsonb,\n 'assisted'/g)].map((m) => JSON.parse(m[1].replace(/''/g, "'")));
+  assert.equal(details.length, 4);
+  for (const d of details) assert.ok(Array.isArray(d) && d.length >= 3);
+  // The skill carries the method for each, and says where QA stops.
+  const skill = readFileSync(join(here, "../../../.claude/skills/qa-coordination-review/SKILL.md"), "utf8");
+  for (const id of ["qa-600", "qa-601", "qa-602", "qa-603"]) assert.ok(skill.includes(`**${id} `), `skill has no method for ${id}`);
+  assert.ok(skill.includes("## What QA is for — and where it stops"));
+  assert.ok(!/post-bid cost posture/i.test(skill), "the QA skill carries construction-phase guidance again");
+}
+
 console.log("qaChecklist.test.mjs: all assertions passed");

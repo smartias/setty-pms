@@ -5,11 +5,15 @@ description: >
   connector (setty-pms), in four passes: the firm's QA Deliverables Checklist
   item by item, the knowledge layer (project lessons, best practices, agency
   preferences, engineering standards), a general engineering sanity review,
-  and a punch list for the team grouped by discipline. Use whenever someone
-  asks for a QA review, internal coordination review, deliverable review,
-  drawing review, or back-check of a submission, set, bulletin, or
-  deliverable — "run QA on the Tabler set", "review the DD submission before
-  it goes out", "coordination review for the 100% CD". Produces a punch list
+  and a punch list for the team grouped by discipline. QA is PROACTIVE: it is
+  for DESIGN-phase sets, through bid, with the goal of removing the causes of
+  RFIs and change orders before the set goes out. Use whenever someone asks
+  for a QA review, internal coordination review, deliverable review, drawing
+  review, or back-check of a design submission or bid set — "run QA on the
+  Tabler set", "review the DD submission before it goes out", "coordination
+  review for the 100% CD", "check the addendum before it issues". Not for
+  construction: an RFI, a submittal, or the bulletin that answers one is
+  reviewed with the submittal-rfi-review skill. Produces a punch list
   and findings report with sheet-level evidence for a human sign-off, then
   records the findings in that project's QA ledger (the QA Reviews tab) and
   files the report. It never marks checklist items complete, never closes an
@@ -22,6 +26,35 @@ description: >
 You are performing Setty's internal QA review of an MEPFP drawing set. The
 deliverable is a **punch list the team works from**, backed by a findings
 report a human reviewer signs off on.
+
+## What QA is for — and where it stops
+
+QA is **proactive**. Its purpose is to reduce or eliminate RFIs and change
+orders by catching their causes while the set can still be changed for free:
+in design, a few days before each submission, and through bid (the bid set
+and its addenda). Everything in this skill serves that.
+
+After bid it is too late to be proactive. An RFI or a submittal is
+**reactive**: something has already gone to a contractor, and the question
+is how to answer it. That work belongs to construction administration and
+the `submittal-rfi-review` skill, not here.
+
+So:
+
+- **Do** review SD, DD, CD, permit and bid sets, and bid addenda before they
+  issue.
+- **Do not** run this review on a construction bulletin, an RFI response
+  set, or "the current set" of a project in construction. If asked to, say
+  that QA is for design-phase sets, name the last design or bid set on the
+  project, and offer either to review that set (as a look-back) or to hand
+  the bulletin to `submittal-rfi-review` with the RFI that caused it. Go
+  ahead with a look-back only when the user confirms that is what they want,
+  and label the report as a look-back, not a pre-issue review.
+- **Never record a flag from an RFI or submittal review as a QA finding.**
+- The record of what contractors asked on past jobs IS useful here, as
+  input: the checklist's "RFI Prevention" items (qa-600 series) were written
+  from real RFI logs. That is how the reactive record makes the next job's
+  QA more proactive.
 
 ## Run order — follow it top to bottom
 
@@ -39,8 +72,9 @@ below with the detail.
 | 6 | **Punch list and report** | The deliverable |
 | 7 | **Record and file**: ledger rows, report in SharePoint | Ledger ids, folder link |
 
-Bulletin, addendum and back-check reviews add the **change record and
-ripple analysis** (its own section) inside Pass 1.
+A resubmission or a bid addendum — a set that CHANGES an earlier one —
+adds the **change record and ripple analysis** (its own section) inside
+Pass 1.
 
 If you run short of budget, do NOT silently drop a step: finish the steps
 in order as far as you can, and say in the report header exactly where you
@@ -92,17 +126,26 @@ in the report header:
    as the folder is named — the provisioned folder is "09 ✅ QAQC", not
    "QAQC" — so use the path the tab's prompt gives you, or read the real
    names with `list_project_documents` before passing one. Every finding here is
-   FIX-BEFORE-ISSUE: severity leans practical (what would embarrass us or
-   draw comments), cost severity applies only if the job is already bid.
-   This is the highest-leverage review — run every pass in full.
+   FIX-BEFORE-ISSUE: severity leans practical (what would embarrass us,
+   draw agency comments, or come back as an RFI or a change order). Use
+   severity `cost` for anything a contractor would price or dispute, and
+   `rfi-bait` for anything a bidder would have to ask about. This is the
+   highest-leverage review — run every pass in full.
 2. **Pre-issuance coordination comments.** Comments from the architect or
    other disciplines on the QAQC set ingest as `kind:'comment-log'`
    (`source:'architect'`/`'other'`) and are worked BEFORE issuance — the
    goal is that the official set goes out with those rows closed.
-3. **Post-issuance: agency / AHJ / owner comments.** These arrive after the
-   official submission, ingest as comment-logs with their source, carry
-   priority over internal findings, and follow the human-close rule.
-   Back-check runs against each subsequent bulletin.
+3. **Design-review comments: agency / AHJ / owner.** These arrive after a
+   design submission (SD, DD, CD), ingest as comment-logs with their source,
+   carry priority over internal findings, and follow the human-close rule.
+   They are back-checked against the NEXT design submission, so the set
+   that goes to bid has them closed.
+4. **Bid.** The bid set and each addendum before it issues. Bidders'
+   questions answered by addendum are the last free chance to fix a cause;
+   an addendum is reviewed like a resubmission (change record and ripple).
+
+If the project is already in construction, see "What QA is for" above:
+this review does not apply to what is issued from here on.
 
 ### Prime vs sub: establish Setty's role FIRST
 
@@ -124,7 +167,7 @@ EVERYTHING and for coordinating everyone, so:
 - **Include the prime-coordination checklist items** (qa-500 series —
   `details.primeOnly: true` in get_qa_checklist): cover-index vs delivered
   set per discipline, cross-firm title-block consistency, every discipline
-  picking up each addendum/bulletin, comment routing, package completeness
+  picking up each addendum, comment routing, package completeness
   (spec TOC vs sections shipped, narratives, owner forms). On sub jobs
   DROP these items.
 - **The for-reference rule is OFF.** Every external comment — architectural,
@@ -141,9 +184,10 @@ EVERYTHING and for coordinating everyone, so:
 ### The set, the phase, the coverage
 
 1. **Resolve the project and the set under review.** `get_current_set` gives
-   the current issued set. In CA, "the set" is the baseline full submission
-   PLUS every bulletin/addendum after it — that composed view is what
-   search_drawings' `currentSets` tier covers.
+   the current issued set. During design that is the last submission; at bid
+   it is the bid set plus the addenda issued so far. On a project in
+   construction it also folds in bulletins, which are NOT a QA subject —
+   name the design or bid set explicitly instead (see "What QA is for").
    - **A SPECIFIC set:** when the user (or the QA tab's set picker) names a
      set, that folder is the deliverable under review — pass it as
      `subfolder` to `search_drawings` / `extract_sheet_index` and say so in
@@ -159,7 +203,7 @@ EVERYTHING and for coordinating everyone, so:
      `preIssueCopiesExcluded` on a result means you forgot to name it.
    - **If the register comes back EMPTY** (`extract_sheet_index` with no
      subfolder says no set was ever logged as a transmittal — common on
-     small CA jobs and on a first internal QA), that is NOT the end of the
+     small jobs and on a first internal QA), that is NOT the end of the
      review: `list_project_documents` to find the set folders under QAQC and
      Outgoing, pick the newest (ask if it is ambiguous), and re-run
      `extract_sheet_index` / `search_drawings` with that folder as
@@ -170,8 +214,10 @@ EVERYTHING and for coordinating everyone, so:
      issuing through the transmittal tool is what enables revision tracking
      and back-check benchmarking on this project.
 2. **Derive the phase from the deliverable/set name** — `100% CD` → CD,
-   `DD Progress` → DD, `Bulletin #13` → Bulletin, `Addendum` → Bid. Say which
-   phase you derived and from what.
+   `DD Progress` → DD, `Permit Set` → Permit, `Bid Set` / `Addendum` → Bid.
+   Say which phase you derived and from what. A name that says Bulletin, RFI
+   response, ASI or CCD is a construction document: stop and follow "What QA
+   is for".
 3. **Check index coverage**: `search_drawings` with `indexOnly:true` until
    `coverage.currentSets.complete` (or you run out of budget — then report
    how far you got). Note `textlessFiles`: those sheets are invisible to text
@@ -184,9 +230,13 @@ EVERYTHING and for coordinating everyone, so:
 ## Step 1 — Carry-over: prior comments and open findings
 
 Run this in EVERY review, not just back-checks. Reviewer comments on
-previous issuances are the first thing a human reviewer would check the new
-set against, and a review that skips them can pass a set that ignores the
-owner's last round of comments.
+previous submissions are the first thing a human reviewer would check the
+new set against, and a review that skips them can pass a set that ignores
+the owner's last round of comments.
+
+Leave rows with source `rfi` or `submittal` alone: they are construction
+flags from RFI and submittal reviews, not QA findings, and are not
+back-checked, counted or put on the punch list here.
 
 1. **Read the ledger**: `list_qa_findings` with `status:'all'`. If the
    result says `truncated`, older rows were left out: read the rest by
@@ -224,10 +274,10 @@ owner's last round of comments.
    a text pass cannot parse get listed for human review with view_drawing
    spot-checks, not silently skipped).
 
-**Back-check-only requests** ("a new bulletin landed, back-check it",
-"the comments came back"): run Steps 0–1, the change record and ripple
-analysis for the new set, then Steps 6–7. Passes 1–3 in full are for a
-review of a deliverable.
+**Back-check-only requests** ("the comments came back", "back-check the
+resubmission", "check the addendum picked everything up"): run Steps 0–1,
+the change record and ripple analysis for the new set, then Steps 6–7.
+Passes 1–3 in full are for a review of a deliverable.
 
 ## Step 2 — Backgrounds inventory: ALWAYS run, ALWAYS report
 
@@ -275,7 +325,8 @@ budget goes where the risk is, and let whatever is left land honestly in
 `not attempted` — never in silence:
 
 1. **All `auto` items.** Each carries a `how` hint naming the tools; follow
-   it.
+   it. Then the four **RFI prevention checks** (qa-600 series, method
+   below).
    - Sheet-set integrity (qa-003/004/151): `extract_sheet_index` for the
      register view; compare against distinct sheet numbers actually indexed.
      Duplicates, gaps in numbering runs, format drift.
@@ -314,6 +365,71 @@ budget goes where the risk is, and let whatever is left land honestly in
    check`. Do not attempt them.
 
 Label every assisted result as needing human confirmation.
+
+### RFI prevention checks (qa-600 series) — run these on every CD, permit and bid set
+
+These four items were written from a real RFI log (Tabler Quad, 276 RFIs,
+reviewed 2026-11-16): each is a way the documents disagreed with themselves
+that bidders and the contractor then had to ask about, several of them
+twice, once at bid and again in construction. They are mechanical
+comparisons, they are cheap, and a general read of the set does not find
+them. Do them right after the `auto` items, before anything else assisted.
+
+- **qa-600 Sizes in keynotes and notes against the feeder schedule.** The
+  single most common cause. A plan keynote, a site-plan note or a one-line
+  keynote states a conduit or conductor size, and the feeder schedule states
+  another.
+  1. Read the feeder schedule (`read_drawing_schedule` on the feeder
+     schedule sheet; if the table has no title the reader will not find it,
+     so `view_drawing` it by region instead and say so).
+  2. `search_drawings` across the electrical plans, site plans, enlarged
+     plans and one-lines for the notes that carry sizes: `CONDUIT`, `" C`,
+     `KCMIL`, `#4/0`, `SETS OF`, `2 HR` / `2-HOUR`, `SCHEDULE 40` / `80`.
+  3. For each feeder a note names (service, chiller, fire pump, generator,
+     ATS, duct banks, each panel feeder), compare size, number of sets,
+     conduit type and any fire rating against the schedule row. Compare the
+     same feeder across EVERY sheet that notes it: the chiller feeder that
+     was corrected on one plan and still wrong on another came back as a
+     second RFI.
+  A mismatch is a MECHANICAL-FACT finding, severity `rfi-bait`, or `cost`
+  where the larger size is the right one.
+- **qa-601 Keynote legends.** On each sheet with keynotes: a number used on
+  the plan that is not in that sheet's legend; a number that appears twice
+  in the legend; two keynotes that have been swapped (the text describes the
+  other one's subject); a keynote on an item marked existing-to-remain; a
+  keynote that points to a sheet or detail not in the set. Read the legend
+  with `search_drawings` (subfolder pinned) and confirm doubtful ones with
+  `view_drawing` on the legend's region.
+- **qa-602 Specifications against the drawings, for major equipment.** Open
+  the spec book (`find_document` docType Specification, then
+  `read_document`; if the specs are not in the project library say so and
+  mark the item `not attempted`, which is a real gap).
+  1. Table of contents against the sections actually in the book: a section
+     listed and missing, a wrong section number, the same section included
+     twice in two versions.
+  2. For each major piece of equipment (chiller, air handling, boilers and
+     heat exchangers, pumps, generator, switchgear, fire pump, fire alarm
+     panel and annunciator, elevators, air compressors): type, basis-of-design
+     manufacturer and key accessories in the spec against the schedule and
+     details. The spec that calls for a traction elevator when the drawings
+     show hydraulic controls, a graphic annunciator the drawings do not
+     show, or a load bank that is drawn nowhere.
+  3. Sections that refer to another section that was never issued.
+  4. A construction or material shown on a detail with no spec behind it
+     (double-wall duct, a duct gauge), and the reverse.
+- **qa-603 Riser against detail against controls diagram.** The same valve
+  or device is drawn in three places and they must agree. For each hydronic
+  and air system: take the riser diagram, the piping or installation detail
+  for the equipment it serves, and the controls or flow diagram
+  (`view_drawing` each; `search_drawings` for the equipment tag finds the
+  sheets). Check that every isolation and control valve on one appears on
+  the others, on the same side (supply or return), and that every damper or
+  device on a control schematic has a line in the sequence of operation and
+  is drawn on the plans.
+
+Each of the four gets a disposition like any other item. When one is
+`not attempted`, give the reason in the coverage table, because these are
+the checks most likely to have prevented an RFI.
 
 ### Cross-discipline clash screening (assisted — never sold as clash detection)
 
@@ -361,12 +477,13 @@ Data Dependencies" section (qa-300+) drives this:
    such an item clean on inference; only a document in the log or a human
    note closes it.
 
-### Change record and cross-discipline ripple analysis (bulletins, addenda, back-checks)
+### Change record and cross-discipline ripple analysis (resubmissions, addenda, back-checks)
 
 Every revision of every sheet is indexed separately, so the system already
 holds the change record: what revised, in which set, with the revision
-block's own label ("BULLETIN #13") and the transmittal register's when and
-to-whom. When reviewing a bulletin or back-checking, USE it:
+block's own label ("ADDENDUM #2") and the transmittal register's when and
+to-whom. When a set changes an earlier one — DD to CD, a resubmission after
+comments, a bid addendum — USE it:
 
 1. **Diff the change.** For each sheet the set revised, compare against its
    prior revision — text for plans/notes, `read_drawing_schedule` per pinned
@@ -375,8 +492,8 @@ to-whom. When reviewing a bulletin or back-checking, USE it:
 2. **For every changed equipment parameter, run the ripple rules** and check
    whether each affected discipline's sheet ALSO revised in the same set (or
    a later one) — `find_equipment` names every sheet the tag touches, and
-   the register knows which sheets each set revised. A fan upsized in a
-   bulletin whose electrical sheets did not move is a finding, always.
+   the register knows which sheets each set revised. A fan upsized in an
+   addendum whose electrical sheets did not move is a finding, always.
    **The authoritative rules come from `get_qa_checklist`'s `rippleRules`**
    (the pms_qa_ripple_rules table — lessons learned extend it without a
    deploy); the table below is the seed copy for reference:
@@ -394,16 +511,17 @@ to-whom. When reviewing a bulletin or back-checking, USE it:
    | Gas-fired equipment | P: gas load/pipe size; M: venting/combustion air |
    | Fire/smoke rating of a wall | M: fire/smoke dampers (qa-211); FP: head layout |
 
-3. **Report the ripple as its own finding**: "Bulletin #14 changed EF-7 from
+3. **Report the ripple as its own finding**: "Addendum #2 changed EF-7 from
    1 HP to 2 HP on M-601; its circuit on E-610 (panel LP-2, cct 14) was not
-   revised in Bulletin #14 or since — verify breaker/feeder sizing." Cite
+   revised in Addendum #2 — verify breaker/feeder sizing." Cite
    both sides. When the counterpart DID revise, say so — that is the
    coordination working, and the record of it is worth as much as a catch.
 
 These rules are a starting set; lessons learned extend them. Treat any
-reviewer/RFI-driven change (the "owner wants the fan bigger" case) as the
-highest-priority ripple candidate — externally-driven changes are the ones
-most often made under time pressure by one discipline alone.
+change driven by a reviewer's comment or a bidder's question (the "owner
+wants the fan bigger" case) as the highest-priority ripple candidate —
+externally-driven changes are the ones most often made under time pressure
+by one discipline alone.
 
 ## Step 4 — Pass 2: the knowledge layer
 
@@ -545,7 +663,7 @@ it is organized by who fixes it, not by how it was found:
   owner/architect) come before internal findings: someone else's
   unanswered comment always outranks a house nit.
 - **Each item is one row a designer can act on without reading the rest of
-  the report**: sheets with revisions (`E-211 Rev 6 (Bulletin #13)`), what
+  the report**: sheets with revisions (`E-211 Rev 2 (Addendum #1)`), what
   is wrong or to verify in one sentence, the action, severity, and where it
   came from (checklist id, lesson/practice/standard, engineering review,
   reviewer comment #, ripple). Mark `confirm` on anything that is a flag
@@ -554,12 +672,11 @@ it is organized by who fixes it, not by how it was found:
 - Do not assign items to named people — the PM does that. Discipline is as
   far as the list goes.
 
-**Post-bid cost posture.** From bid issuance on, every change is a potential
-change order. On any review of a bid set, bulletin, or addendum: state each
-item's cost consequence explicitly; a design change that could have been
-caught pre-bid is severity 'cost' at minimum; the ripple analysis asks not
-only "did the other discipline pick it up" but "what does this change cost
-now that a contractor holds a price".
+**Say what each item would have cost later.** The reason to fix a thing now
+is what it turns into after bid. Where it is clear, end the item with the
+consequence in a few words: "would be an RFI", "bidders will ask",
+"change order: feeder upsize after award". On a bid set or an addendum this
+matters most, because it is the last point at which the fix is free.
 
 Report structure:
 
@@ -596,9 +713,9 @@ are separate from sign-off: neither marks anything resolved.
 
 **Record: `record_qa_findings`.** Write the punch-list items into the
 ledger (project, set, phase, coverage, and per finding: title, item id,
-severity, sheets, evidence, action). That is what makes the next bulletin's
-back-check possible — an unrecorded finding cannot be back-checked and
-quietly dies.
+severity, sheets, evidence, action). That is what makes the back-check of
+the next submission possible — an unrecorded finding cannot be back-checked
+and quietly dies.
 
 - **Do not duplicate.** Compare against the ledger rows read in Step 1: an
   item that is already an open row is NOT recorded again (it was
@@ -655,8 +772,8 @@ later by the RFI and submittal reviews of those sheets. Two hard rules:
 
 **File: `file_qa_report`.** The report belongs in the project record, not
 just the chat: file it into a new dated folder under "Design Reports and
-Narratives" (`title` like 'QA Coordination Review' or 'Back-check —
-Bulletin #14'; markdown as contentText, docx/xlsx as contentBase64), pass
+Narratives" (`title` like 'QA Coordination Review' or 'Back-check — 100%
+CD Resubmission'; markdown as contentText, docx/xlsx as contentBase64), pass
 `reviewIds` with the review id(s) `record_qa_findings` returned so the QA
 Reviews tab links the report from the review, and hand the user the
 folder's webUrl. Record first, then file, so the ids exist. Filing never touches Outgoing and never
