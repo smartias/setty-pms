@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-16-pms-v204-rfi-duplicate-warning";
+    window.__appVersion = "2026-11-16-pms-v205-qa-tab-no-ca-flags";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16228,7 +16228,6 @@ function ProjectQAReviewsView({ project, onChange }) {
   const [showResolved, setShowResolved] = React.useState(false);
   const [showLegacy, setShowLegacy] = React.useState(false);
   const [sendState, setSendState] = React.useState({ status: "idle", msg: "" }); // "Send to team" draft
-  const [showCa, setShowCa] = React.useState(false);       // RFI / submittal review flags, listed apart from QA
   const [expanded, setExpanded] = React.useState({});
   const [busyId, setBusyId] = React.useState(null);
   const [issuedSets, setIssuedSets] = React.useState([]); // [{set, at}] newest first, from the register
@@ -16412,8 +16411,6 @@ function ProjectQAReviewsView({ project, onChange }) {
   }
 
   const qaFindings = findings.filter(f => !qaIsCaFinding(f));   // the design-phase ledger
-  const caFindings = findings.filter(qaIsCaFinding);            // flags from RFI / submittal reviews
-  const caOpen = caFindings.filter(f => f.status === "open" || f.status === "ready_to_backcheck").sort((a, b) => qaFindingRank(a) - qaFindingRank(b));
   const openRows = qaFindings.filter(f => f.status === "open" || f.status === "ready_to_backcheck").sort((a, b) => qaFindingRank(a) - qaFindingRank(b));
   const awaitingResponse = openRows.filter(f => QA_EXTERNAL_SRC[f.source] && !f.response).length;
   const resolvedRows = qaFindings.filter(f => f.status === "closed" || f.status === "dismissed");
@@ -16944,27 +16941,6 @@ function ProjectQAReviewsView({ project, onChange }) {
             {showResolved ? "Hide" : "Show"} resolved ({resolvedRows.length})
           </Btn>
           {showResolved && <div style={{ marginTop: 8 }}>{resolvedRows.map(f => renderFinding(f))}</div>}
-        </div>
-      )}
-
-      {caFindings.length > 0 && (
-        <div style={{ marginBottom: 18, border: "1px dashed " + P.border, borderRadius: 10, padding: "10px 14px" }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 700, fontSize: 12.5 }}>Construction phase: flags from RFI and submittal reviews</div>
-            <QAChip text={caOpen.length + " open of " + caFindings.length} />
-            <span style={{ flex: 1 }} />
-            <Btn variant="ghost" small onClick={() => setShowCa(v => !v)}>{showCa ? "Hide" : "Show"}</Btn>
-          </div>
-          <div style={{ fontSize: 11.5, color: P.textDim, marginTop: 4, lineHeight: 1.5 }}>
-            Not QA items. These were raised while reviewing an RFI or a submittal and are worked there, in the RFIs and Submittals tabs.
-            They are listed here for reference only and are not part of the punch list, its export or issue readiness.
-          </div>
-          {showCa && (
-            <div style={{ marginTop: 10 }}>
-              {caOpen.map(f => renderFinding(f))}
-              {caFindings.filter(f => f.status === "closed" || f.status === "dismissed").map(f => renderFinding(f))}
-            </div>
-          )}
         </div>
       )}
 
