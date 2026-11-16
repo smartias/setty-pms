@@ -341,6 +341,24 @@ CURRENT drawings, and those arrive as PDFs from outside.
    ask for what they know is missing, so absence is a first-class result,
    never a silent skip. A stale or missing background also caps how far the
    cross-discipline checklist items can go — say so on each affected item.
+4. **Index the current backgrounds so they can be searched.** For each
+   folder that holds another discipline's current set, call
+   `search_drawings` with `subfolder` set to that folder exactly as
+   `list_project_documents` prints it and `indexOnly: true`, and repeat
+   until `coverage.filesPending` is 0. After that, `search_drawings` with
+   the same `subfolder` searches their sheets by text, which is what makes
+   the cross-discipline pass cover a whole building instead of a few
+   rendered pages.
+   - Sheets indexed from a received-files folder are kept out of the
+     current set and out of default search, so they cannot be mistaken for
+     what Setty issued. You have to pass the folder as `subfolder` to see
+     them.
+   - A PDF over the indexing size limit is reported as skipped. Architects'
+     combined sets often are. Read those with `view_drawing` in direct mode,
+     page by page, and say in the Backgrounds section which files were
+     searchable and which were only spot-read.
+   - Index only the CURRENT issue of each discipline. A stale set in the
+     index produces findings against drawings nobody is building from.
 
 ## Step 3 — Pass 1: the checklist, item by item
 

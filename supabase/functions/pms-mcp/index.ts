@@ -64,6 +64,8 @@ import { buildLedgerMatcher, sheetKey, normalizeTag, scheduleRowsForTag } from "
 import { issuedSets, backcheckStatus } from "./backcheckCandidates.ts";
 // The floor under the QA action standard: flags "Coordinate." and the like. Pure; see its tests.
 import { actionProblem, ACTION_STANDARD } from "./qaAction.ts";
+// Other disciplines' drawings in the index, kept apart from what Setty issued. Pure; see its tests.
+import { isBackgroundPath, BACKGROUND_NOTE } from "./drawingTier.ts";
 // Why an RFI was asked and which QA check would have caught it. Pure; see its tests.
 import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses } from "./rfiRootCause.ts";
 import { isIssuedSetRow, notASetReason } from "./issuedSet.ts";
@@ -1438,7 +1440,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-rfi-root-causes";
+const BUILD = "2026-11-16-drawing-backgrounds";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -7526,6 +7528,13 @@ function drawingQueryPatterns(query: string): string[] {
 // the caller names that folder; only then is a QA copy what was asked for.
 const PRE_ISSUE_FOLDER_RE = /(^|\/)[^/]*qaqc[^/]*(\/|$)/i;
 const isPreIssuePath = (folderPath: unknown): boolean => PRE_ISSUE_FOLDER_RE.test(String(folderPath || ""));
+// BACKGROUNDS (2026-11-16). The cross-discipline QA checks need the architect's
+// and structural engineer's drawings searchable, so those get indexed from the
+// folders they were received in (drawingTier.ts). They are not what Setty
+// issued either, and the architect's compiled set usually carries a copy of
+// our own sheets. So every reader that leaves QA copies out leaves backgrounds
+// out too, unless the caller names the folder.
+const isNotIssuedPath = (folderPath: unknown): boolean => isPreIssuePath(folderPath) || isBackgroundPath(folderPath);
 // POSIX form of the same test for the SQL side (pms_equipment_tags_scoped).
 const PRE_ISSUE_FOLDER_SQL_RE = "(^|/)[^/]*qaqc[^/]*(/|$)";
 const PRE_ISSUE_NOTE =
@@ -7646,7 +7655,7 @@ async function indexDerivedSet(numPrefix: string): Promise<{
   const best = new Map<string, any>();
   for (const r of rows) {
     // The current set is what was ISSUED: a QA copy never competes for newest.
-    if (isPreIssuePath(r.folder_path)) continue;
+    if (isNotIssuedPath(r.folder_path)) continue;
     const key = normSheetToken(r.sheet_no);
     if (!key) continue;
     const cur = best.get(key);
@@ -8360,9 +8369,15 @@ mcp.tool("search_drawings", {
     }
     if (!subfolder) {
       const all = hits || [];
-      hits = all.filter((h: any) => !isPreIssuePath(h.folder_path)).slice(0, 120);
-      const dropped = all.length - all.filter((h: any) => !isPreIssuePath(h.folder_path)).length;
+      hits = all.filter((h: any) => !isNotIssuedPath(h.folder_path)).slice(0, 120);
+      const dropped = all.filter((h: any) => isPreIssuePath(h.folder_path)).length;
       if (dropped) (coverage as any).preIssueCopiesExcluded = { pages: dropped, note: PRE_ISSUE_NOTE };
+      const bg = all.filter((h: any) => !isPreIssuePath(h.folder_path) && isBackgroundPath(h.folder_path));
+      if (bg.length) {
+        (coverage as any).backgroundsExcluded = {
+          pages: bg.length, folders: [...new Set(bg.map((h: any) => String(h.folder_path || "")))].slice(0, 8), note: BACKGROUND_NOTE,
+        };
+      }
     }
 
     // Group by sheet, newest revision first, one entry per (revision, set). A set
@@ -8400,7 +8415,7 @@ mcp.tool("search_drawings", {
           "&order=item_id,page",
         );
         for (const r of rows) {
-          if (!subfolder && isPreIssuePath(r.folder_path)) continue;
+          if (!subfolder && isNotIssuedPath(r.folder_path)) continue;
           const list = indexedBySheet.get(r.sheet_no) || [];
           list.push({ revision: r.revision, revisionDate: r.revision_date, revisionDescription: r.revision_description, set: drawingSetOf(r.folder_path) });
           indexedBySheet.set(r.sheet_no, list);
@@ -9116,6 +9131,7 @@ mcp.tool("view_drawing", {
         region: reg, renderedPixels: `${out.width}x${out.height}`,
         ...(otherRevisions.length ? { otherIndexedRevisions: otherRevisions } : {}),
         ...(picked.preIssue ? { preIssueCopy: PRE_ISSUE_COPY_NOTE } : {}),
+        ...(picked.background ? { backgroundCopy: "This sheet was read from a received-files folder, not from a set Setty issued: it is another discipline's drawing, or a copy of ours as someone else compiled it. " + BACKGROUND_NOTE } : {}),
         webUrl: chosen.web_url ?? null,
         note: (reg === "full"
           ? "Full sheet — good for layout; small text may not be legible. Call again with a region (top-left/top-right/bottom-left/bottom-right/center) to zoom in. "
@@ -9151,7 +9167,7 @@ function dedupeRevs(revs: Array<{ revision: string | null; revisionDate: string 
 // download), then the lowest page. Errors come back as ready-to-return
 // responses so callers stay one-liner thin.
 type IndexedSheetPick =
-  | { ok: true; project: string; chosen: any; preIssue: boolean; otherRevisions: Array<{ revision: string | null; revisionDate: string | null; revisionDescription: string | null; set: string }> }
+  | { ok: true; project: string; chosen: any; preIssue: boolean; background: boolean; otherRevisions: Array<{ revision: string | null; revisionDate: string | null; revisionDescription: string | null; set: string }> }
   | { ok: false; response: { content: Array<{ type: "text"; text: string }> } };
 
 async function resolveIndexedSheet(projectNumber: string | undefined, sheet: string | undefined, revision: string | undefined, set: string | undefined): Promise<IndexedSheetPick> {
@@ -9228,7 +9244,7 @@ async function resolveIndexedSheet(projectNumber: string | undefined, sheet: str
     // No set named: the answer is the ISSUED sheet. A pre-issuance QA copy is
     // used only when the sheet has never been issued (the first QA of a new
     // set), and the result says so.
-    const issued = pool.filter((r) => !isPreIssuePath(r.folder_path));
+    const issued = pool.filter((r) => !isNotIssuedPath(r.folder_path));
     if (issued.length) pool = issued;
   }
 
@@ -9239,7 +9255,7 @@ async function resolveIndexedSheet(projectNumber: string | undefined, sheet: str
   const chosen = pool[0];
   const chosenKey = drawingRevKey(revOf(chosen));
   const otherRevisions = dedupeRevs(matches.map(revLabel)).filter((r) => `${r.revision ?? ""}|${r.set}` !== chosenKey);
-  return { ok: true, project, chosen, preIssue: isPreIssuePath(chosen.folder_path), otherRevisions };
+  return { ok: true, project, chosen, preIssue: isPreIssuePath(chosen.folder_path), background: isBackgroundPath(chosen.folder_path), otherRevisions };
 }
 
 // ── read_drawing_schedule: schedules as structured rows (phase 5 slice) ──────
@@ -9336,6 +9352,7 @@ mcp.tool("read_drawing_schedule", {
         set: drawingSetOf(c.folder_path), file: c.file_name, pageInFile: c.page,
         ...(picked.otherRevisions.length ? { otherIndexedRevisions: picked.otherRevisions } : {}),
         ...(picked.preIssue ? { preIssueCopy: PRE_ISSUE_COPY_NOTE } : {}),
+        ...(picked.background ? { backgroundCopy: "This sheet was read from a received-files folder, not from a set Setty issued: it is another discipline's drawing, or a copy of ours as someone else compiled it. " + BACKGROUND_NOTE } : {}),
         webUrl: c.web_url ?? null,
       };
     }
@@ -9522,7 +9539,7 @@ mcp.tool("find_equipment", {
     }
     let preIssueDropped = 0;
     if (!folder) {
-      const issued = hits.filter((h: any) => !isPreIssuePath(h.folder_path));
+      const issued = hits.filter((h: any) => !isNotIssuedPath(h.folder_path));
       preIssueDropped = hits.length - issued.length;
       hits = issued.slice(0, 120);
     }
@@ -9693,7 +9710,7 @@ mcp.tool("find_related", {
         const best = new Map<string, any>();
         const rv = (x: any): DrawingRev => ({ revision: x.revision ?? null, revisionDate: x.revision_date ?? null, revisionDescription: null, set: drawingSetOf(x.folder_path) });
         for (const r of rows) {
-          if (isPreIssuePath(r.folder_path)) continue;
+          if (isNotIssuedPath(r.folder_path)) continue;
           const k = normSheetToken(r.sheet_no) || `${r.item_id}#${r.page}`;
           const cur = best.get(k);
           if (!cur || drawingRevSort(rv(r), rv(cur)) < 0) best.set(k, r);
