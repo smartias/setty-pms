@@ -452,13 +452,15 @@ which left out exactly the files the cross-discipline pass needs (BPL's
 architectural set is 124MB). Those are now read in byte ranges (`pdfRanged.ts`):
 pdf.js fetches the cross-reference table and then only the bytes each page
 needs, from the SharePoint download URL or an Azure Files Range request. A
-ranged file advances up to `DRAWING_INDEX_RANGED_PAGE_WINDOW` pages per call and
-stops early on `DRAWING_INDEX_RANGED_BYTE_BUDGET`, because pdf.js keeps what it
+ranged file advances until `DRAWING_INDEX_RANGED_BYTE_BUDGET` or the time box
+stops it (`DRAWING_INDEX_RANGED_PAGE_WINDOW` is only an upper bound; opening
+the file costs most of the bytes, pages after that are cheap), because pdf.js keeps what it
 fetches and the worker has a memory limit; the next call reopens the file and
 continues from `pages_done`. Rows marked `skipped` under the old cap become
 pending again. Only a file over `DRAWING_INDEX_RANGED_MAX_BYTES` (400MB) is
-still skipped. Not yet proven on the edge worker's memory limit with the
-heaviest sheets: if a ranged file fails, the row's `error` says why.
+still skipped. Proven live on BPL's 38MB spec book (2026-11-16). A smaller file whose
+whole-file read killed the request (attempt marked, no error recorded) is
+retried in ranges too.
 
 **RFI root causes (2026-11-16).** `pms_rfi_root_causes` (migration
 `20261116230000`) holds one tag per RFI: why it was asked (`rfiRootCause.ts`:
