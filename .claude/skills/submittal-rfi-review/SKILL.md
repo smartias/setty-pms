@@ -155,7 +155,37 @@ response wording on any contested RFI or rejected submittal.
      (CN 2-314 sits squarely over the electrical room). The renderer failure
      of September 2026 is fixed in pms-mcp 1.18.2; `/pms-mcp/health?probe=
      render` tells you whether it works on the current build.
-6. **What reviewers did with earlier suggestions.** `search_review_feedback`
+6. **What design-phase QA and the owner's review comments already say about
+   these sheets and this equipment.** The QA ledger holds the internal QA
+   findings from before the set was issued AND the external review comments
+   (owner, agency, architect, DrChecks) with the responses Setty gave. Both
+   bear on a CA item, and neither is in the drawings:
+   - `read_rfi_submittal` already returns `sheetRefs` (the sheets a person
+     confirmed the item refers to) and `qaLedger` (ledger rows on those
+     sheets). Read them.
+   - Then call `list_qa_findings` with `sheets` (every sheet from sub-step 3
+     and the item's own references) and `mentions` (the equipment tags the
+     item covers), with `status:'all'`. One call; `matchedOn` says why each
+     row came back.
+   - **An open internal finding** on the sheet or tag is a known problem.
+     Check whether this item touches it (the QA review flagged EF-7's feeder
+     as unverified; this submittal is EF-7) and say so in `internalNotes`.
+     A CA item that exposes or settles an open finding is worth a line.
+   - **An owner / agency / architect comment** is a requirement the reviewer
+     put on the design, and its `response` is what Setty committed to. The
+     suggested response and stamp must not contradict it. A submittal or RFI
+     answer that departs from what the owner was told is a `redFlags` entry
+     (severity `agency`, or `cost` if it changes the work), naming the
+     comment number and the log it came from.
+   - A comment with **no response yet** is unanswered: note it for the
+     engineer, do not answer it here (that is the review-comment-responses
+     skill).
+   - The ledger is INTERNAL. Never quote a QA finding or a comment response
+     in `suggestedResponse` — that text goes to the contractor. They inform
+     the review; they appear only in `internalNotes` and `redFlags`.
+   - Nothing returned is not a clean bill: say "no QA findings or review
+     comments recorded on these sheets/tags", not "none exist".
+7. **What reviewers did with earlier suggestions.** `search_review_feedback`
    BEFORE drafting: first for this project, then (if the project has no rows)
    for the discipline and item type. Each row is a prior suggestion and what
    the engineer saved instead — accepted / edited / replaced / dismissed — with
