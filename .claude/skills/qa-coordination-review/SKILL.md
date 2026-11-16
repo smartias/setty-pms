@@ -85,10 +85,13 @@ in the report header:
    review is NOT in the transmittal register yet, and it does NOT belong in
    Outgoing — Outgoing is reserved for what actually went out (per Sara).
    Convention: a top-level **QAQC** folder in the project library with dated
-   subfolders ("QAQC/YYYY-MM-DD_<phase> QAQC"), named via the tab's set
-   picker or by the user; pass that path as `subfolder` (the crawler
+   subfolders ("<QAQC folder>/YYYY-MM-DD_<phase> QAQC"), named via the tab's
+   set picker or by the user; pass that path as `subfolder` (the crawler
    resolves explicit subfolders from the project root, and a QAQC path can
-   never be mistaken for an issued set). Every finding here is
+   never be mistaken for an issued set). The path must be spelled EXACTLY
+   as the folder is named — the provisioned folder is "09 ✅ QAQC", not
+   "QAQC" — so use the path the tab's prompt gives you, or read the real
+   names with `list_project_documents` before passing one. Every finding here is
    FIX-BEFORE-ISSUE: severity leans practical (what would embarrass us or
    draw comments), cost severity applies only if the job is already bid.
    This is the highest-leverage review — run every pass in full.
@@ -176,10 +179,10 @@ previous issuances are the first thing a human reviewer would check the new
 set against, and a review that skips them can pass a set that ignores the
 owner's last round of comments.
 
-1. **Read the ledger**: `list_qa_findings` with `status:'all'` and
-   `limit:200`. The tool returns the newest rows up to the limit and does
-   not say when there are more — if you get exactly the limit back, say in
-   the report that older rows may not have been read. Note
+1. **Read the ledger**: `list_qa_findings` with `status:'all'`. If the
+   result says `truncated`, older rows were left out: read the rest by
+   status or discipline, or raise `limit` (max 500), and if you still
+   cannot read them all, say so in the report. Note
    `commentLogsNotIngested` in the result.
 2. **Find comment packages**: `find_document` with docType 'Comment Log'
    (queries like "review comments responses markup"), plus
@@ -588,7 +591,13 @@ quietly dies.
 
 - **Do not duplicate.** Compare against the ledger rows read in Step 1: an
   item that is already an open row is NOT recorded again (it was
-  back-checked in Step 1 instead). Only new items are written.
+  back-checked in Step 1 instead). Only new items are written. The tool
+  backs this up: a finding whose title matches an open row comes back in
+  `skippedDuplicates` instead of being written — report those as
+  carried-over, and do not force them through with `allowDuplicates`.
+- **A review with nothing new still gets recorded**: call
+  `record_qa_findings` with an empty `findings` list so the run, its set
+  and its coverage are on the project's record.
 - **More than 50 items**: the tool takes at most 50 findings per call. Send
   several calls with the same `setName` and `phase`, worst severity first,
   and report every review id returned.
@@ -598,8 +607,12 @@ quietly dies.
   title starting `Engineering review: `. Knowledge-layer findings record
   with `source:'qa'` and the lesson/practice/standard reference in the
   evidence.
-- The ledger has no discipline field yet: name the responsible discipline
-  at the start of `action` ("Electrical: verify feeder size ...").
+- **Every finding carries its `discipline`** — the punch-list group it sits
+  in (Mechanical, Electrical, Plumbing, Fire Protection, Fire Alarm,
+  Multi-discipline, PM / Project, or the subconsultant's discipline on a
+  prime job). The QA Reviews tab groups and filters by it. For
+  Multi-discipline items, name each discipline that has to act in
+  `action`. Never name a person: the PM assigns people in the tab.
 - Check the result's `failed` list and report any row that did not save.
 
 External comment logs ingest the same way (`kind:'comment-log'`, one row
@@ -622,8 +635,10 @@ commenter) with two hard rules:
 **File: `file_qa_report`.** The report belongs in the project record, not
 just the chat: file it into a new dated folder under "Design Reports and
 Narratives" (`title` like 'QA Coordination Review' or 'Back-check —
-Bulletin #14'; markdown as contentText, docx/xlsx as contentBase64) and
-hand the user the folder's webUrl. Filing never touches Outgoing and never
+Bulletin #14'; markdown as contentText, docx/xlsx as contentBase64), pass
+`reviewIds` with the review id(s) `record_qa_findings` returned so the QA
+Reviews tab links the report from the review, and hand the user the
+folder's webUrl. Record first, then file, so the ids exist. Filing never touches Outgoing and never
 issues anything.
 
 End by telling the user, in a few lines: how many punch-list items by

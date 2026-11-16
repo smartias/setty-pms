@@ -423,6 +423,21 @@ refuses the service lane, and never moves status; a `comply` whose fix is on
 the newest revision goes to `ready_to_backcheck` through `update_qa_finding`,
 and external rows are still closed only by a person.
 
+**Punch list (2026-11-16, migration `20261116120000_qa_findings_discipline_assignee.sql`).**
+Findings carry the responsible `discipline` (free text, folded by
+`qaNormalizeDiscipline`; `record_qa_findings` takes it per finding) and an
+`assignee` that only a signed-in person sets, in the QA Reviews tab through the
+`pms_qa_finding_set_assignment` RPC: the review names a discipline, the PM names
+a person. `record_qa_findings` skips a finding whose title matches a row that is
+still open on the project (`skippedDuplicates`; `allowDuplicates` overrides) and
+accepts an empty `findings` list so a review that found nothing new still leaves
+its review row. `list_qa_findings` defaults to 200 rows (max 500), filters by
+`discipline`, and says `truncated` when older rows were left out.
+`file_qa_report` takes `reviewIds` and saves the filed folder's `webUrl` on
+those `pms_qa_reviews` rows (`report_url`, this project's rows only) so the tab
+links the report. Findings appear only in the project's QA Reviews tab; nothing
+here writes to the knowledge layer.
+
 `list_qa_findings` now returns the response columns, takes `needsResponse:true`
 (external rows with no accepted response, the drafting work list), and reports
 `commentLogsNotIngested`: attachments in the project's filed emails
