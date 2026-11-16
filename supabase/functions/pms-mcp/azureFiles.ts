@@ -274,6 +274,23 @@ export async function getFile(
   return res;
 }
 
+// One byte range of a file (end exclusive). Azure Files honours a standard
+// Range header on Get File and answers 206; the caller checks the length. Used
+// to read large PDFs in pieces (pdfRanged.ts) instead of downloading them whole.
+export async function getFileRange(
+  share: AzureShare, relPath: string, sas: string, begin: number, endExclusive: number,
+  signal?: AbortSignal, fetchImpl: FetchLike = globalThis.fetch as FetchLike,
+): Promise<Uint8Array> {
+  const res = await fetchImpl(azureUrl(share, relPath, sas), {
+    headers: { ...HEADERS, Range: `bytes=${begin}-${endExclusive - 1}` }, signal,
+  } as any);
+  if (res.status !== 206) {
+    if (!res.ok) throw await failFrom(res);
+    throw new Error("the share ignored the Range header");
+  }
+  return new Uint8Array(await res.arrayBuffer());
+}
+
 // The project folder on a share is found the way it is found in SharePoint:
 // a folder at the root whose name STARTS WITH the project number, case-
 // insensitively (folders are "<number> <name>" on the NY drive too).

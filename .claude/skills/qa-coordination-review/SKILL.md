@@ -353,10 +353,13 @@ CURRENT drawings, and those arrive as PDFs from outside.
      current set and out of default search, so they cannot be mistaken for
      what Setty issued. You have to pass the folder as `subfolder` to see
      them.
-   - A PDF over the indexing size limit is reported as skipped. Architects'
-     combined sets often are. Read those with `view_drawing` in direct mode,
-     page by page, and say in the Backgrounds section which files were
-     searchable and which were only spot-read.
+   - A large combined PDF (an architect's full set is often over 100MB) is
+     indexed a few pages per call, so it takes many calls: a result marked
+     `resumes` with `pagesDone` is progress, not a failure. Keep calling
+     until `filesPending` is 0. If a file ends in `filesGivenUp` or
+     `filesSkippedForSize`, read it with `view_drawing` in direct mode, page
+     by page, and say in the Backgrounds section which files were searchable
+     and which were only spot-read.
    - Index only the CURRENT issue of each discipline. A stale set in the
      index produces findings against drawings nobody is building from.
 

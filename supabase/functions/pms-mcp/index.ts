@@ -26,7 +26,7 @@ import {
 // region's network-drive annex. Pure + injectable-fetch; see azureFiles.ts.
 import {
   type AzureShare, type AzEntry, parseShareUrl, normalizeSas, cleanRelPath, joinRel,
-  encodeAzId, decodeAzId, isAzId, listDirectory, fileProps, getFile, sharePathOf, relFromSharePath,
+  encodeAzId, decodeAzId, isAzId, listDirectory, fileProps, getFile, getFileRange, sharePathOf, relFromSharePath,
   findProjectFolderName, projectForFolderName, extOf, shareLabelClean,
   YEAR_SEG_RE, ENTITY_SEG_RE, isGroupingSegment, entityPrefixScore, yearOfProjectNumber, standardFolderName, resolveChildFolder,
   projectNumberOfFolder, projectNameFromFolders, caKindFolders, isDisciplineFolder, folderMentionsNumber,
@@ -66,6 +66,8 @@ import { issuedSets, backcheckStatus } from "./backcheckCandidates.ts";
 import { actionProblem, ACTION_STANDARD } from "./qaAction.ts";
 // Other disciplines' drawings in the index, kept apart from what Setty issued. Pure; see its tests.
 import { isBackgroundPath, BACKGROUND_NOTE } from "./drawingTier.ts";
+// Reading a large PDF in byte ranges instead of downloading it whole. See its tests.
+import { retryingRange, httpRange, openRangedPdf, type RangedPdf } from "./pdfRanged.ts";
 // Why an RFI was asked and which QA check would have caught it. Pure; see its tests.
 import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses } from "./rfiRootCause.ts";
 import { isIssuedSetRow, notASetReason } from "./issuedSet.ts";
@@ -1440,7 +1442,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-drawing-backgrounds";
+const BUILD = "2026-11-16-index-large-pdfs";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -7493,7 +7495,16 @@ const DRAWING_INDEX_MAX_ATTEMPTS = 3;        // a file that dies mid-request 3 t
 // runs out of attempts.
 const DRAWING_INDEX_PAGE_WINDOW = 40;        // pages per file per call
 const DRAWING_INDEX_FLUSH_EVERY = 10;        // pages per pms_drawing_text upsert batch
-const DRAWING_INDEX_MAX_BYTES = MAX_DOC_BYTES; // the 42MB combined book times out on download; skip, say so
+const DRAWING_INDEX_MAX_BYTES = MAX_DOC_BYTES; // up to here a file is downloaded whole; the 42MB combined book timed out that way
+// Above that, a file is read in byte ranges (pdfRanged.ts): pdf.js fetches the
+// cross-reference table and then only what each page needs. pdf.js keeps every
+// chunk it fetches, so a call stops its window on a byte budget as well as on
+// pages and time, and the next call reopens the file and continues. Measured
+// 2026-11-16 on a 124MB architectural set: 12 pages cost 16 to 32MB; one sheet
+// of a 47MB sprinkler set cost 33MB by itself.
+const DRAWING_INDEX_RANGED_MAX_BYTES = 400 * 1024 * 1024; // over this, still skipped
+const DRAWING_INDEX_RANGED_PAGE_WINDOW = 8;               // pages per call for a ranged file
+const DRAWING_INDEX_RANGED_BYTE_BUDGET = 48 * 1024 * 1024; // stop the window once this much has been fetched
 
 // Query → POSIX regexes for Postgres `~*`. Every whitespace-separated term must
 // match (AND); a double-quoted phrase is one term. Everything is escaped so user
@@ -7685,10 +7696,12 @@ async function indexDerivedSet(numPrefix: string): Promise<{
   // "nothing more will be read", or a partial set reads as complete.
   let indexedFiles = 0, filesPending = 0, skipped = 0, givenUp = 0;
   try {
-    const known: any[] = await sbGetAll("pms_drawing_index_files?select=status,attempts&project_prefix=eq." + encodeURIComponent(numPrefix));
+    const known: any[] = await sbGetAll("pms_drawing_index_files?select=status,attempts,size_bytes&project_prefix=eq." + encodeURIComponent(numPrefix));
     for (const k of known) {
       if (k.status === "done") indexedFiles++;
-      else if (k.status === "skipped") skipped++;
+      // A row skipped under the old 20MB cap is readable in ranges now: pending.
+      else if (k.status === "skipped" && Number(k.size_bytes) > DRAWING_INDEX_RANGED_MAX_BYTES) skipped++;
+      else if (k.status === "skipped") filesPending++;
       else if (Number(k.attempts || 0) >= DRAWING_INDEX_MAX_ATTEMPTS) givenUp++;
       else filesPending++;
     }
@@ -8080,10 +8093,11 @@ async function indexDrawingFiles(a: {
       item_id: f.itemId, project_prefix: numPrefix, file_name: f.name, folder_path: f.folderPath,
       web_url: f.webUrl, size_bytes: Number(f.size) || null, updated_at: new Date().toISOString(),
     };
-    if (Number(f.size) > DRAWING_INDEX_MAX_BYTES) {
+    const ranged = Number(f.size) > DRAWING_INDEX_MAX_BYTES;
+    if (Number(f.size) > DRAWING_INDEX_RANGED_MAX_BYTES) {
       const sizeMB = Math.round(Number(f.size) / 104857.6) / 10;
       await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
-        { ...base, status: "skipped", attempts, error: `${sizeMB}MB is over the ${DRAWING_INDEX_MAX_BYTES / 1048576}MB indexing cap` },
+        { ...base, status: "skipped", attempts, error: `${sizeMB}MB is over the ${DRAWING_INDEX_RANGED_MAX_BYTES / 1048576}MB indexing cap` },
         "resolution=merge-duplicates,return=minimal");
       skippedNow.push({ itemId: f.itemId, file: f.name, folderPath: f.folderPath, sizeMB, webUrl: f.webUrl });
       continue;
@@ -8098,9 +8112,16 @@ async function indexDrawingFiles(a: {
       throw new Error(`Could not write to the drawing index: ${String((e as any)?.message ?? e)}`);
     }
     opened++;
-    let buf: Uint8Array;
+    let buf: Uint8Array | null = null;
+    let rp: RangedPdf | null = null;
     try {
-      buf = await loadPdfBytes(f.itemId, DRAWING_INDEX_MAX_BYTES, { cache: false });
+      if (ranged) {
+        const src = await rangedPdfSource(f.itemId);
+        const { getResolvedPDFJS } = await import("unpdf");
+        rp = await openRangedPdf(await getResolvedPDFJS(), src.size || Number(f.size), src.fetchRange);
+      } else {
+        buf = await loadPdfBytes(f.itemId, DRAWING_INDEX_MAX_BYTES, { cache: false });
+      }
     } catch (e) {
       const msg = String((e as any)?.message ?? e);
       failedNow.push({ file: f.name, reason: msg });
@@ -8109,8 +8130,17 @@ async function indexDrawingFiles(a: {
       continue;
     }
     try {
-      const { getDocumentProxy } = await import("unpdf");
-      const pdf: any = await getDocumentProxy(new Uint8Array(buf));
+      let pdf: any;
+      if (rp) pdf = rp.pdf;
+      else {
+        const { getDocumentProxy } = await import("unpdf");
+        pdf = await getDocumentProxy(new Uint8Array(buf!));
+      }
+      // A ranged read can fail between pages (a range that never arrives):
+      // every page step races that failure, so it ends the file, not the request.
+      const step = <T>(work: Promise<T>): Promise<T> => rp ? Promise.race([work, rp.failed]) : work;
+      const pageWindow = rp ? DRAWING_INDEX_RANGED_PAGE_WINDOW : DRAWING_INDEX_PAGE_WINDOW;
+      const flushEvery = rp ? 1 : DRAWING_INDEX_FLUSH_EVERY;
       const total: number = pdf.numPages;
       // Page-windowed resume (see DRAWING_INDEX_PAGE_WINDOW). Start where the
       // last attempt stopped; pms_drawing_text rows upsert on (item_id,page)
@@ -8118,7 +8148,7 @@ async function indexDrawingFiles(a: {
       // text_pages/pages_done are written only for flushed pages, so counts
       // never double on a retried window.
       const startPage = Math.max(0, Number(prev?.pages_done || 0)) + 1;
-      const windowEnd = Math.min(total, startPage + DRAWING_INDEX_PAGE_WINDOW - 1);
+      const windowEnd = Math.min(total, startPage + pageWindow - 1);
       let textPages = Number(prev?.text_pages || 0);
       let batch: any[] = [];
       let lastFlushed = startPage - 1;
@@ -8146,8 +8176,10 @@ async function indexDrawingFiles(a: {
         // The window itself can outlive the request budget on text-dense
         // books; stop at the deadline and let pages_done carry the progress.
         if (i > startPage && Date.now() - t0 > deadlineMs) break;
-        const pg = await pdf.getPage(i);
-        const tc = await pg.getTextContent();
+        // A ranged file also stops on bytes: pdf.js holds what it has fetched.
+        if (rp && i > startPage && rp.bytesFetched() > DRAWING_INDEX_RANGED_BYTE_BUDGET) break;
+        const pg: any = await step(pdf.getPage(i));
+        const tc: any = await step(pg.getTextContent());
         // Null bytes appear in some PDFs' text layers (seen: a ProjNet
         // comment export) and Postgres rejects them ("\u0000 cannot be
         // converted to text", 22P05), leaving the file permanently
@@ -8166,7 +8198,7 @@ async function indexDrawingFiles(a: {
           text, text_len: text.length, indexed_at: new Date().toISOString(),
         });
         stoppedAt = i;
-        if (batch.length >= DRAWING_INDEX_FLUSH_EVERY) await flush(i, textPages);
+        if (batch.length >= flushEvery) await flush(i, textPages);
       }
       await flush(stoppedAt, textPages);
       const finished = lastFlushed >= total;
@@ -8184,9 +8216,12 @@ async function indexDrawingFiles(a: {
       indexedNow.push({
         file: f.name, folderPath: f.folderPath, pages: total, textPages: flushedTextPages,
         ...(finished ? {} : { pagesDone: lastFlushed, resumes: "large file — the next call continues from where this one stopped" }),
+        ...(rp ? { readInRanges: { fetchedMB: Math.round(rp.bytesFetched() / 104857.6) / 10, ofMB: Math.round(Number(f.size) / 104857.6) / 10 } } : {}),
         sheets: [...sheetsSeen],
       });
+      if (rp) await rp.destroy();
     } catch (e) {
+      if (rp) await rp.destroy().catch(() => {});
       const msg = `PDF parse failed: ${String((e as any)?.message ?? e)}`;
       failedNow.push({ file: f.name, reason: msg });
       await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
@@ -8278,7 +8313,10 @@ mcp.tool("search_drawings", {
     const pending = ordered.filter((f) => {
       const k = knownById.get(f.itemId);
       if (!k) return true;
-      if (k.status === "done" || k.status === "skipped") return false;
+      if (k.status === "done") return false;
+      // "skipped" used to mean over 20MB. Those are readable in ranges now;
+      // only a file over the ranged cap stays skipped.
+      if (k.status === "skipped") return Number(f.size) <= DRAWING_INDEX_RANGED_MAX_BYTES;
       return Number(k.attempts) < DRAWING_INDEX_MAX_ATTEMPTS;
     });
     const givenUp = ordered.filter((f) => {
@@ -8308,7 +8346,8 @@ mcp.tool("search_drawings", {
     const givenUpIds = new Set(givenUp.map((f) => f.itemId));
     const tally = (list: typeof ordered) => {
       const indexed = list.filter((f) => doneIds.has(f.itemId)).length;
-      const skipped = list.filter((f) => knownById.get(f.itemId)?.status === "skipped" || skippedNowIds.has(f.itemId)).length;
+      const skipped = list.filter((f) => skippedNowIds.has(f.itemId)
+        || (knownById.get(f.itemId)?.status === "skipped" && Number(f.size) > DRAWING_INDEX_RANGED_MAX_BYTES)).length;
       const gaveUp = list.filter((f) => givenUpIds.has(f.itemId)).length;
       const pending = Math.max(0, list.length - indexed - skipped - gaveUp);
       return { filesInScope: list.length, filesIndexed: indexed, filesPending: pending, skipped, sets: new Set(list.map((f) => f.set)).size };
@@ -8996,6 +9035,40 @@ async function renderProbe(): Promise<{ ok: boolean; ms: number; renders?: strin
 // checked before the download where the storage tells us (HEAD on a share)
 // and after it where it does not. Cached by id unless the caller says not to
 // (the indexers stream a file once and never need it again).
+// Where to fetch byte ranges of a file from. SharePoint: the item's
+// pre-authenticated download URL honours Range; when Graph does not return one,
+// /content with the bearer token does (the redirect keeps the Range header).
+// A drive file: Azure Files Get File with a Range header. Same visibility gate
+// as loadPdfBytes for drive ids.
+async function rangedPdfSource(itemId: string): Promise<{ size: number; fetchRange: (begin: number, endExclusive: number) => Promise<Uint8Array> }> {
+  if (isAzId(itemId)) {
+    const dec = decodeAzId(itemId);
+    if (!azFileIdOk(dec)) throw new Error("malformed drive file id");
+    const gate = await azurePathProject(dec.team, dec.relPath);
+    if (!gate.ok) throw new Error(`No project matching "${dec.relPath.split("/")[0]}".`);
+    const az = await azureCtxForTeam(dec.team, dec.label);
+    if (!az.ok) throw new Error(az.error);
+    const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
+    return {
+      size: props.size,
+      fetchRange: retryingRange((b, e, signal) => getFileRange(az.ctx.share, dec.relPath, az.ctx.sas, b, e, signal)),
+    };
+  }
+  const bar = itemId.indexOf("|");
+  const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
+  const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
+  const item = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}`);
+  const size = Number(item?.size) || 0;
+  const direct = typeof item?.["@microsoft.graph.downloadUrl"] === "string" ? item["@microsoft.graph.downloadUrl"] as string : "";
+  const contentUrl = `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`;
+  return {
+    size,
+    fetchRange: retryingRange(async (b, e, signal) =>
+      direct ? httpRange(direct, b, e, signal)
+             : httpRange(contentUrl, b, e, signal, { Authorization: "Bearer " + (await graphToken()) })),
+  };
+}
+
 async function loadPdfBytes(itemId: string, maxBytes: number, opts: { cache?: boolean } = {}): Promise<Uint8Array> {
   const useCache = opts.cache !== false;
   const tooBig = (n: number) => new Error(`the file is ${(n / 1048576).toFixed(0)}MB — over the ${maxBytes / 1048576}MB limit`);
@@ -13915,7 +13988,8 @@ app.post("/pms-mcp/admin/drawings-index", async (c) => {
       const pending = planDrawingScope(scope.files).files.filter((f) => {
         const k = knownById.get(f.itemId);
         if (!k) return true;
-        if (k.status === "done" || k.status === "skipped") return false;
+        if (k.status === "done") return false;
+        if (k.status === "skipped") return Number(f.size) <= DRAWING_INDEX_RANGED_MAX_BYTES;
         // A file another worker (a live search_drawings call) touched in the
         // last two minutes is theirs: the background has no deadline to miss,
         // so it never races a user's resume pointer. The per-call path keeps
