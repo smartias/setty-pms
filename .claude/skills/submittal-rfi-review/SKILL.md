@@ -1,24 +1,20 @@
 ---
 name: submittal-rfi-review
 description: >
-  Review one construction-administration SUBMITTAL or RFI against the current
-  issued drawing set and specs, using the Setty PMS connector (setty-pms), and
-  produce a suggested response, internal notes to human-verify, and cost/scope
-  red flags for the reviewing engineer. Use whenever someone asks to review,
-  check, or draft a response to a submittal or RFI, or asks "what stamp should
-  this submittal get", "is this substitution a problem", "draft a response to
-  RFI 12", "review the VAV submittal against the drawings", "which model did
-  they submit", "check the marked selection on this cut sheet against the spec".
-  Reads the submitted cut sheet to confirm which model/size/option the
-  contractor actually marked (highlighted, circled, checked) and reconciles it
-  against the scheduled and specified basis of design; pairs with the
-  pdf-highlighted-selections skill when the submittal PDF is in hand. Also
-  backfills the log: if the item is not in the PMS yet (the Newforma cutover),
-  it reads the filed submittal PDF or transmittal email, logs the record,
-  then reviews it.
-  Produces suggestions the engineer accepts or edits in the RFI/Submittal
-  modal; it never sends anything and never changes the human's response or
-  stamp on its own.
+  Review one construction-administration SUBMITTAL or RFI against the
+  current issued drawing set and specs, using the Setty PMS connector
+  (setty-pms), and produce a suggested response, internal notes to
+  human-verify, and cost/scope red flags for the reviewing engineer. Use
+  whenever someone asks to review, check, or draft a response to a submittal
+  or RFI: "what stamp should this submittal get", "is this substitution a
+  problem", "draft a response to RFI 12", "review the VAV submittal against
+  the drawings", "which model did they submit". Reads the submitted cut
+  sheet to confirm which model, size or option the contractor marked and
+  reconciles it against the scheduled and specified basis of design. Also
+  backfills the log: if the item is not in the PMS yet, it reads the filed
+  PDF or transmittal email, logs the record, then reviews it. Produces
+  suggestions the engineer accepts or edits in the RFI/Submittal modal; it
+  never sends anything and never changes the human's response or stamp.
 ---
 
 # Submittal / RFI Review

@@ -1,27 +1,21 @@
 ---
 name: qa-coordination-review
 description: >
-  Run an internal QA review of a project's drawing set using the Setty PMS
-  connector (setty-pms), in four passes: the firm's QA Deliverables Checklist
-  item by item (with a cross-discipline pass against the architectural,
-  structural and life safety drawings), the knowledge layer (project lessons, best practices, agency
-  preferences, engineering standards), a general engineering sanity review,
-  and a punch list for the team grouped by discipline, plus a brief design
-  narrative of what the reviewer read the design to be, from the drawings
-  alone. QA is PROACTIVE: it is
-  for DESIGN-phase sets, through bid, with the goal of removing the causes of
-  RFIs and change orders before the set goes out. Use whenever someone asks
-  for a QA review, internal coordination review, deliverable review, drawing
-  review, or back-check of a design submission or bid set — "run QA on the
-  Tabler set", "review the DD submission before it goes out", "coordination
-  review for the 100% CD", "check the addendum before it issues". Not for
-  construction: an RFI, a submittal, or the bulletin that answers one is
-  reviewed with the submittal-rfi-review skill. Produces a punch list
-  and findings report with sheet-level evidence for a human sign-off, then
-  records the findings in that project's QA ledger (the QA Reviews tab) and
-  files the report. It never marks checklist items complete, never closes an
-  external comment, never saves findings to the knowledge layer, and never
-  issues or touches Outgoing.
+  Run Setty's internal QA review of a project's drawing set with the Setty
+  PMS connector (setty-pms): the QA Deliverables Checklist item by item, a
+  cross-discipline pass against the architectural, structural and life
+  safety drawings, the knowledge layer, an engineering sanity review, and a
+  punch list for the team grouped by discipline. QA is proactive: it is for
+  design-phase sets, through bid, to remove the causes of RFIs and change
+  orders before the set goes out. Use whenever someone asks for a QA review,
+  coordination review, drawing review, or back-check of a design submission
+  or bid set: "run QA on the Tabler set", "review the DD submission before
+  it goes out", "check the addendum before it issues". Not for
+  construction: RFIs and submittals use the submittal-rfi-review skill.
+  Records findings with sheet-level evidence in the project's QA Reviews
+  tab for a human sign-off. Never marks checklist items complete, closes an
+  external comment, saves findings to the knowledge layer, or touches
+  Outgoing.
 ---
 
 # QA Coordination Review
