@@ -16,7 +16,7 @@ const start = html.indexOf("const QA_DISCIPLINES = [");
 const end = html.indexOf("function QAChip(");
 assert.ok(start > 0 && end > start, "punch-list helpers not found in SettyPMS.html");
 const api = new Function(html.slice(start, end) +
-  "\nreturn { QA_DISCIPLINES, QA_DISCIPLINE_NONE, QA_DISCIPLINE_ALIASES, qaNormalizeDiscipline, qaDisciplineFromSheets, qaFindingDiscipline, qaGroupByDiscipline, qaIsSetReview, qaSheetKey, qaIssueReadiness };")();
+  "\nreturn { QA_DISCIPLINES, QA_DISCIPLINE_NONE, QA_DISCIPLINE_ALIASES, qaNormalizeDiscipline, qaDisciplineFromSheets, qaFindingDiscipline, qaGroupByDiscipline, qaIsSetReview, qaIsCaFinding, qaSheetKey, qaIssueReadiness };")();
 
 test("discipline spellings fold to one name", () => {
   assert.equal(api.qaNormalizeDiscipline(" m "), "Mechanical");
@@ -114,6 +114,16 @@ test("a comment-log ingest is not a review of the drawings, and no review at all
   assert.equal(r.phase, "post");
   assert.equal(r.reviewedBeforeIssue, false);
   assert.equal(api.qaIssueReadiness([], [], [], []).phase, "none");
+});
+
+test("RFI and submittal flags are construction administration, not QA", () => {
+  assert.equal(api.qaIsCaFinding({ source: "rfi" }), true);
+  assert.equal(api.qaIsCaFinding({ source: "submittal" }), true);
+  for (const source of ["qa", "ripple", "owner", "agency", "architect", "drchecks", "other"]) assert.equal(api.qaIsCaFinding({ source }), false, source);
+  // The punch list, its export and issue readiness are built from the design-phase rows only.
+  assert.ok(html.includes("const openRows = qaFindings.filter("));
+  assert.ok(html.includes("qaIssueReadiness(qaFindings, reviews, issuedSets, issueSheets)"));
+  assert.ok(html.includes("Not QA items."));
 });
 
 test("issue readiness stays internal", () => {
