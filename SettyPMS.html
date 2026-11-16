@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-13-pms-v197-rfp-facts-preticked";
+    window.__appVersion = "2026-11-16-pms-v198-qa-punch-list";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16019,6 +16019,66 @@ function qaCommentLogsNotIngested(emails, sourceDocs) {
 const QA_SEV_COLOR = { "life-safety": "var(--c-e5534b)", "agency": "var(--c-d4a72c)", "cost": "var(--c-e8a03c)", "rfi-bait": "var(--c-58a6ff)", "polish": "#8b949e" };
 const qaFindingRank = (f) => (QA_SEV_RANK[f.severity] !== undefined ? QA_SEV_RANK[f.severity] : 5) * 2 + (QA_EXTERNAL_SRC[f.source] ? 0 : 1);
 
+// The punch list groups by the responsible discipline (pms_qa_findings.
+// discipline, migration 20261116120000). The usual spellings fold to one
+// name; keep in step with QA_DISCIPLINE_ALIASES in pms-mcp/index.ts.
+const QA_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Fire Alarm", "Multi-discipline", "PM / Project"];
+const QA_DISCIPLINE_NONE = "Discipline not set";
+const QA_DISCIPLINE_ALIASES = {
+  m: "Mechanical", mech: "Mechanical", mechanical: "Mechanical", hvac: "Mechanical",
+  e: "Electrical", elec: "Electrical", electrical: "Electrical",
+  p: "Plumbing", plbg: "Plumbing", plumbing: "Plumbing",
+  fp: "Fire Protection", "fire protection": "Fire Protection", sprinkler: "Fire Protection",
+  fa: "Fire Alarm", "fire alarm": "Fire Alarm",
+  multi: "Multi-discipline", "multi-discipline": "Multi-discipline", multidiscipline: "Multi-discipline",
+  coordination: "Multi-discipline", mepfp: "Multi-discipline",
+  pm: "PM / Project", project: "PM / Project", "pm / project": "PM / Project", "pm/project": "PM / Project",
+  s: "Structural", structural: "Structural", a: "Architectural", arch: "Architectural", architectural: "Architectural",
+  c: "Civil", civil: "Civil",
+};
+function qaNormalizeDiscipline(v) {
+  const t = String(v == null ? "" : v).replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  return QA_DISCIPLINE_ALIASES[t.toLowerCase()] || t.slice(0, 80);
+}
+// Rows recorded before the discipline column existed have none. Their cited
+// sheets usually say whose they are (M-601, E211, FP-101), so the tab infers
+// a group from the sheet prefixes and labels it as inferred until a person
+// confirms it with Assign. Unknown prefixes are ignored, not guessed.
+const QA_SHEET_PREFIX = { M: "Mechanical", H: "Mechanical", MH: "Mechanical", MP: "Mechanical", E: "Electrical", EL: "Electrical", EP: "Electrical",
+  P: "Plumbing", PL: "Plumbing", FP: "Fire Protection", SP: "Fire Protection", FA: "Fire Alarm" };
+function qaDisciplineFromSheets(sheets) {
+  const found = {};
+  (Array.isArray(sheets) ? sheets : []).forEach(sh => {
+    const m = /^\s*([A-Za-z]{1,2})[-\s.]?\d/.exec(String(sh || ""));
+    const d = m && QA_SHEET_PREFIX[m[1].toUpperCase()];
+    if (d) found[d] = 1;
+  });
+  const names = Object.keys(found);
+  return names.length === 1 ? names[0] : names.length > 1 ? "Multi-discipline" : "";
+}
+function qaFindingDiscipline(f) {
+  const set = qaNormalizeDiscipline(f && f.discipline);
+  if (set) return { name: set, inferred: false };
+  const guess = qaDisciplineFromSheets(f && f.sheets);
+  return guess ? { name: guess, inferred: true } : { name: QA_DISCIPLINE_NONE, inferred: false };
+}
+// Groups in working order: the MEPFP disciplines, then coordination and PM,
+// then any subconsultant disciplines (prime jobs) by name, unset last. Rows
+// keep the order they arrive in (already worst-first).
+function qaGroupByDiscipline(rows) {
+  const by = {};
+  (rows || []).forEach(f => { const n = qaFindingDiscipline(f).name; (by[n] = by[n] || []).push(f); });
+  const rank = n => n === QA_DISCIPLINE_NONE ? 999 : (QA_DISCIPLINES.indexOf(n) >= 0 ? QA_DISCIPLINES.indexOf(n) : 100);
+  return Object.keys(by).sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map(n => ({ name: n, rows: by[n] }));
+}
+// The review a person's checks and the "back-check due" notice key to: the
+// newest coordination review or back-check. A comment-log ingest or a
+// submittal/RFI review also writes a pms_qa_reviews row, and neither is a
+// review of the drawing set.
+const qaIsSetReview = r => !!r && r.kind !== "comment-log" && r.kind !== "ca-review";
+const QA_REVIEW_KIND_LABEL = { "comment-log": "Comment log", "backcheck": "Back-check", "ca-review": "Submittal / RFI review" };
+
 function QAChip({ text, color, solid }) {
   return (
     <span style={{ display: "inline-block", padding: "1px 7px", borderRadius: 9, fontSize: 10, fontWeight: 700,
@@ -16042,6 +16102,13 @@ function ProjectQAReviewsView({ project, onChange }) {
   const [issuedSets, setIssuedSets] = React.useState([]); // [{set, at}] newest first, from the register
   const [selSet, setSelSet] = React.useState("");          // "" = current composed set
   const [pendingLogs, setPendingLogs] = React.useState([]); // comment registers in the emails that were never ingested
+  const [qaqcSets, setQaqcSets] = React.useState([]);      // pre-issuance set folders found under the project's QAQC folder (root-relative paths)
+  const [qaqcRoot, setQaqcRoot] = React.useState("");      // that folder's real name, e.g. "09 \u2705 QAQC"
+  const [customSet, setCustomSet] = React.useState(null);  // non-null while a folder path is being typed
+  const [editor, setEditor] = React.useState(null);        // the one row being edited: { id, kind: status|response|assign, ... }
+  const [fDisc, setFDisc] = React.useState("");            // punch list filters ("" = all)
+  const [fSev, setFSev] = React.useState("");
+  const [fWho, setFWho] = React.useState("");
 
   React.useEffect(() => {
     let dead = false;
@@ -16070,28 +16137,62 @@ function ProjectQAReviewsView({ project, onChange }) {
     return () => { dead = true; };
   }, [projNum]);
 
-  async function moveStatus(f, status) {
+  // Pre-issuance sets live in the project's QAQC folder, which is NOT in the
+  // transmittal register, so the picker lists that folder's subfolders by
+  // their real names (the provisioned folder is "09 \u2705 QAQC", and the
+  // connector resolves the path exactly as spelled). Advisory: if SharePoint
+  // cannot be read the picker still takes a typed path.
+  React.useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        const parts = String(project.projectFolderUrl || "").replace(/\/+$/, "").split("/");
+        const root = safeDecodeFolderUrl(parts[parts.length - 1] || "");
+        if (!root) return;
+        const { driveId } = await resolveSpIds();
+        const kids = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodeSpPath(root) + ":/children?$select=name,folder&$top=200");
+        const qa = ((kids && kids.value) || []).find(k => k.folder && /qaqc/i.test(String(k.name)));
+        if (!qa || dead) return;
+        const sub = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodeSpPath(root + "/" + qa.name) + ":/children?$select=name,folder&$top=200");
+        if (dead) return;
+        setQaqcRoot(qa.name);
+        setQaqcSets(((sub && sub.value) || []).filter(k => k.folder).map(k => String(k.name)).sort().reverse().map(n => qa.name + "/" + n));
+      } catch (e) { console.warn("[qa] could not list the QAQC folder:", e && e.message); }
+    })();
+    return () => { dead = true; };
+  }, [project.projectFolderUrl]);
+
+  // Notes, responses and assignments are typed in an editor on the row itself
+  // (a browser prompt is a single line and loses the text on a stray click).
+  // `editor` holds the one row being edited. The rows are rendered by plain
+  // function calls, not as components, so typing does not remount the box.
+  function openStatusEditor(f, status) {
     const external = !!QA_EXTERNAL_SRC[f.source];
-    // Closing a row already at ready_to_backcheck is a confirmation click:
-    // the backcheck evidence is on the row, so no note is required and an
-    // empty note KEEPS that evidence (the RPC enforces both server-side).
-    // Every other terminal move still records why. (Per Sara, Tabler Quad
-    // feedback 2026-09-08.)
+    // Closing a row already at ready_to_backcheck is a confirmation: the
+    // backcheck evidence is on the row, so no note is required and an empty
+    // note KEEPS that evidence (the RPC enforces both server-side). Every
+    // other terminal move still records why. (Per Sara, Tabler Quad feedback
+    // 2026-09-08.)
     const confirmClose = status === "closed" && f.status === "ready_to_backcheck";
-    const needNote = status === "dismissed" || (status === "closed" && !confirmClose);
-    const msg = confirmClose ? "Close as backchecked. Optional note - the evidence already on the row is kept:"
+    const required = status === "dismissed" || (status === "closed" && !confirmClose);
+    const label = confirmClose ? "Close as backchecked. Optional note - the evidence already on the row is kept:"
       : status === "closed"
       ? (external ? "Closing an EXTERNAL reviewer comment - record the human decision (required):" : "Close with the evidence or resolution (required):")
       : status === "dismissed" ? "Dismiss with the reasoning (required):"
-      : status === "ready_to_backcheck" ? "What shows this was addressed? (noted for the person backchecking - optional):" : "Note (optional):";
-    const note = window.prompt(msg, "");
-    if (note === null) return;
-    if (needNote && !note.trim()) { window.alert("A note is required - the ledger records why, not just that."); return; }
+      : status === "ready_to_backcheck" ? "What shows this was addressed? (noted for the person backchecking - optional):" : "Reopen - note (optional):";
+    setEditor({ id: f.id, kind: "status", status, text: "", required, label, err: "" });
+  }
+  const editorError = (id, msg) => setEditor(ed => (ed && ed.id === id ? { ...ed, err: msg } : ed));
+
+  async function commitStatus(f, status, noteIn) {
+    const note = String(noteIn || "").trim();
+    const confirmClose = status === "closed" && f.status === "ready_to_backcheck";
     setBusyId(f.id);
     try {
-      await sheetRefRpc("pms_qa_finding_set_status", { p_id: f.id, p_status: status, p_note: note.trim() || null });
-      setFindings(fs => fs.map(x => x.id === f.id ? { ...x, status, status_note: note.trim() || (confirmClose ? f.status_note : null), status_by: getChecklistUserName() || "you", status_at: new Date().toISOString() } : x));
-    } catch (e) { window.alert("Update failed: " + String(e.message || e)); }
+      await sheetRefRpc("pms_qa_finding_set_status", { p_id: f.id, p_status: status, p_note: note || null });
+      setFindings(fs => fs.map(x => x.id === f.id ? { ...x, status, status_note: note || (confirmClose ? f.status_note : null), status_by: getChecklistUserName() || "you", status_at: new Date().toISOString() } : x));
+      setEditor(null);
+    } catch (e) { editorError(f.id, "Update failed: " + String(e.message || e)); }
     setBusyId(null);
   }
 
@@ -16099,20 +16200,53 @@ function ProjectQAReviewsView({ project, onChange }) {
   // editing it, or writing one from scratch all land here: the RPC stamps
   // the signed-in person and refuses internal rows. The draft (ai_response)
   // is left as written so the tab can still show what was suggested.
-  async function setResponse(f, seedText, disposition, edit) {
-    let text = seedText || "";
-    if (edit || !text) {
-      const t = window.prompt(text ? "Edit the response that goes back to the reviewer:" : "Response to this comment (what goes back to the reviewer):", text);
-      if (t === null) return;
-      text = t;
-    }
-    if (!text.trim()) { window.alert("A response is required - the register records what went back."); return; }
+  function openResponseEditor(f, seedText, disposition) {
+    setEditor({ id: f.id, kind: "response", text: seedText || "", disposition: disposition || "", required: true,
+      label: seedText ? "Edit the response that goes back to the reviewer:" : "Response to this comment (what goes back to the reviewer):", err: "" });
+  }
+  async function commitResponse(f, textIn, disposition) {
+    const text = String(textIn || "").trim();
     setBusyId(f.id);
     try {
-      await sheetRefRpc("pms_qa_finding_set_response", { p_id: f.id, p_disposition: disposition || null, p_response: text.trim() });
-      setFindings(fs => fs.map(x => x.id === f.id ? { ...x, response: text.trim(), response_disposition: disposition || null, response_by: getChecklistUserName() || "you", response_at: new Date().toISOString() } : x));
-    } catch (e) { window.alert("Could not save the response: " + String(e.message || e)); }
+      await sheetRefRpc("pms_qa_finding_set_response", { p_id: f.id, p_disposition: disposition || null, p_response: text });
+      setFindings(fs => fs.map(x => x.id === f.id ? { ...x, response: text, response_disposition: disposition || null, response_by: getChecklistUserName() || "you", response_at: new Date().toISOString() } : x));
+      setEditor(null);
+    } catch (e) {
+      const msg = "Could not save the response: " + String(e.message || e);
+      if (editor && editor.id === f.id) editorError(f.id, msg); else window.alert(msg);
+    }
     setBusyId(null);
+  }
+
+  // Who fixes it. The review names a discipline; a person names a person.
+  function openAssignEditor(f) {
+    const d = qaFindingDiscipline(f);
+    setEditor({ id: f.id, kind: "assign", discipline: d.name === QA_DISCIPLINE_NONE ? "" : d.name, assignee: f.assignee || "", err: "" });
+  }
+  async function commitAssign(f, disciplineIn, assigneeIn) {
+    const discipline = qaNormalizeDiscipline(disciplineIn);
+    const assignee = String(assigneeIn || "").trim();
+    setBusyId(f.id);
+    try {
+      await sheetRefRpc("pms_qa_finding_set_assignment", { p_id: f.id, p_discipline: discipline || null, p_assignee: assignee || null });
+      setFindings(fs => fs.map(x => x.id === f.id ? { ...x, discipline: discipline || null, assignee: assignee || null, assigned_by: getChecklistUserName() || "you", assigned_at: new Date().toISOString() } : x));
+      setEditor(null);
+    } catch (e) {
+      const m = String(e.message || e);
+      editorError(f.id, /HTTP 404/.test(m) ? "Assignment is not available yet: the database update that adds it has not been applied." : "Could not save: " + m);
+    }
+    setBusyId(null);
+  }
+  function saveEditor(f) {
+    const ed = editor;
+    if (!ed || ed.id !== f.id) return;
+    if (ed.kind === "assign") { commitAssign(f, ed.discipline, ed.assignee); return; }
+    if (ed.required && !String(ed.text || "").trim()) {
+      editorError(f.id, ed.kind === "response" ? "A response is required - the register records what went back." : "A note is required - the ledger records why, not just that.");
+      return;
+    }
+    if (ed.kind === "response") commitResponse(f, ed.text, ed.disposition || null);
+    else commitStatus(f, ed.status, ed.text);
   }
 
   const openRows = findings.filter(f => f.status === "open" || f.status === "ready_to_backcheck").sort((a, b) => qaFindingRank(a) - qaFindingRank(b));
@@ -16127,8 +16261,38 @@ function ProjectQAReviewsView({ project, onChange }) {
   });
   const reviewById = {};
   (reviews || []).forEach(r => { reviewById[r.id] = r; });
-  const latest = (reviews || [])[0] || null;
+  // Keyed to the newest review OF THE SET: ingesting a comment log (which
+  // also writes a review row) must not blank the reviewer's ticks.
+  const latest = (reviews || []).find(qaIsSetReview) || null;
   const manualState = latest ? ((project.qaManualChecks || {})[latest.id] || {}) : {};
+
+  // The punch list: open rows, filtered, grouped by responsible discipline.
+  const discOf = f => qaFindingDiscipline(f).name;
+  const openDisciplines = qaGroupByDiscipline(openRows).map(g => g.name);
+  const openAssignees = [...new Set(openRows.map(f => f.assignee).filter(Boolean))].sort();
+  const openSeverities = Object.keys(QA_SEV_RANK).filter(sv => openRows.some(f => f.severity === sv));
+  const shownOpen = openRows.filter(f =>
+    (!fDisc || discOf(f) === fDisc) && (!fSev || f.severity === fSev) &&
+    (!fWho || (fWho === "__none__" ? !f.assignee : f.assignee === fWho)));
+  const openGroups = qaGroupByDiscipline(shownOpen);
+  const filtersOn = !!(fDisc || fSev || fWho);
+  const disciplineChoices = [...new Set([...QA_DISCIPLINES, ...findings.map(f => qaNormalizeDiscipline(f.discipline)).filter(Boolean)])];
+  const teamNames = [...new Set((project.teamMembers || []).map(m => String((m && m.name) || "").trim()).filter(Boolean))];
+  const knownSet = selSet === "" || issuedSets.some(st => st.set === selSet) || qaqcSets.indexOf(selSet) >= 0;
+
+  function exportPunchList(fmtKind) {
+    const headers = ["Ledger #", "Discipline", "Severity", "Finding", "Sheets", "Action", "Source", "Checklist item", "Status", "Assigned to", "Raised"];
+    const rows = [];
+    openGroups.forEach(g => g.rows.forEach(f => rows.push([
+      f.id, g.name, f.severity || "", f.title || "", Array.isArray(f.sheets) ? f.sheets.join(", ") : "", f.action || "",
+      QA_EXTERNAL_SRC[f.source] ? QA_EXTERNAL_SRC[f.source] + " comment" + (f.external_ref ? " #" + f.external_ref : "") : (f.source === "ripple" ? "Ripple check" : (QA_CA_SRC[f.source] || "Internal QA")),
+      f.item_id || "", String(f.status || "").replace(/_/g, " "), f.assignee || "", String(f.created_at || "").slice(0, 10),
+    ])));
+    const summary = rows.length + " open item" + (rows.length === 1 ? "" : "s")
+      + (filtersOn ? " (filtered: " + [fDisc, fSev, fWho === "__none__" ? "unassigned" : fWho].filter(Boolean).join(", ") + ")" : "")
+      + " - grouped by discipline, worst first";
+    pmsExportTable({ project, title: "QA Punch List", fileTag: "QA_Punch_List", headers, rows, fmtKind, summary });
+  }
 
   function toggleManual(itemId) {
     if (!latest) return;
@@ -16144,10 +16308,10 @@ function ProjectQAReviewsView({ project, onChange }) {
 
   const reviewUrl = "https://claude.ai/new?q=" + encodeURIComponent([
     selSet
-      ? "Run an internal coordination QA review of a SPECIFIC set for " + label + ": review the folder \"" + (issuedSets.some(s => s.set === selSet) ? "Outgoing/" + selSet : selSet) + "\" - pass it as the subfolder to search_drawings and extract_sheet_index, and treat it as the deliverable under review. A QAQC/ path is a PRE-ISSUANCE internal QA set: findings are fix-before-issue."
+      ? "Run an internal coordination QA review of a SPECIFIC set for " + label + ": review the folder \"" + (issuedSets.some(s => s.set === selSet) ? "Outgoing/" + selSet : selSet) + "\" - pass it as the subfolder to search_drawings and extract_sheet_index exactly as written, and treat it as the deliverable under review. A path under the QAQC folder is a PRE-ISSUANCE internal QA set: findings are fix-before-issue."
       : "Run an internal coordination QA review of the current issued drawing set for " + label + ".",
     "",
-    "Use the Setty PMS connector: back-check this project's open ledger findings first (list_qa_findings), then run the full checklist review (get_qa_checklist with the phase derived from the set) and record new findings with record_qa_findings for my sign-off here. When the report is done, file it with file_qa_report into a new dated folder under Design Reports and Narratives and give me the folder link.",
+    "Use the Setty PMS connector and the qa-coordination-review skill, in its run order: back-check this project's open ledger findings first (list_qa_findings), then the three passes - the checklist item by item (get_qa_checklist with the phase derived from the set), the knowledge layer, and the engineering review - and give me the punch list grouped by discipline. Record the new findings with record_qa_findings (each with its discipline) so they show here for my sign-off, then file the report with file_qa_report (pass the reviewIds) into a new dated folder under Design Reports and Narratives and give me the folder link.",
   ].join("\n"));
 
   const responsesUrl = "https://claude.ai/new?q=" + encodeURIComponent([
@@ -16161,8 +16325,55 @@ function ProjectQAReviewsView({ project, onChange }) {
     "Use the Setty PMS connector and the qa-coordination-review skill: find each file (read_email on the filed message, or find_document docType 'Comment Log' for the SharePoint copy), read every comment, and record them with record_qa_findings kind:'comment-log' with sourceDoc set to the file name, one row per comment with externalRef = the comment number and source naming the commenter. Apply the prime/sub scope rule. Then tell me what was ingested and what could not be read.",
   ].join("\n"));
 
-  function FindingRow({ f }) {
+  function renderEditor(f) {
+    const ed = editor;
+    if (!ed || ed.id !== f.id) return null;
+    const busy = busyId === f.id;
+    const box = { background: P.card, color: P.text, border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, padding: "6px 8px", fontFamily: "inherit" };
+    const patch = v => setEditor(cur => (cur && cur.id === f.id ? { ...cur, ...v, err: "" } : cur));
+    return (
+      <div style={{ border: "1px solid " + P.accent, borderRadius: 6, padding: "8px 10px", marginBottom: 6, background: P.bg }}>
+        {ed.kind === "assign" ? (
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <label style={{ fontSize: 11, color: P.textDim, display: "flex", flexDirection: "column", gap: 3 }}>
+              Discipline (who fixes it)
+              <select value={ed.discipline} onChange={e => patch({ discipline: e.target.value })} style={{ ...box, minWidth: 180 }}>
+                <option value="">Not set</option>
+                {[...new Set([...disciplineChoices, ed.discipline].filter(Boolean))].map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </label>
+            <label style={{ fontSize: 11, color: P.textDim, display: "flex", flexDirection: "column", gap: 3 }}>
+              Assigned to (optional)
+              <input value={ed.assignee} list={"qa-team-" + f.id} placeholder="Name" onChange={e => patch({ assignee: e.target.value })}
+                onKeyDown={e => { if (e.key === "Enter") saveEditor(f); }} style={{ ...box, minWidth: 200 }} />
+              <datalist id={"qa-team-" + f.id}>{teamNames.map(n => <option key={n} value={n} />)}</datalist>
+            </label>
+          </div>
+        ) : (
+          <div>
+            <div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>{ed.label}</div>
+            {ed.kind === "response" && (
+              <select value={ed.disposition || ""} onChange={e => patch({ disposition: e.target.value })} style={{ ...box, marginBottom: 6 }} aria-label="Disposition">
+                <option value="">Disposition (optional)</option>
+                {Object.keys(QA_DISPOSITION_LABEL).map(k => <option key={k} value={k}>{QA_DISPOSITION_LABEL[k]}</option>)}
+              </select>
+            )}
+            <textarea autoFocus value={ed.text} rows={ed.kind === "response" ? 7 : 3} onChange={e => patch({ text: e.target.value })}
+              style={{ ...box, width: "100%", boxSizing: "border-box", resize: "vertical", lineHeight: 1.5, display: "block" }} />
+          </div>
+        )}
+        {ed.err && <div style={{ color: "var(--c-e5534b)", fontSize: 11.5, marginTop: 6 }}>{ed.err}</div>}
+        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+          <Btn variant="primary" small disabled={busy} onClick={() => saveEditor(f)}>{busy ? "Saving..." : "Save"}</Btn>
+          <Btn variant="ghost" small disabled={busy} onClick={() => setEditor(null)}>Cancel</Btn>
+        </div>
+      </div>
+    );
+  }
+
+  function renderFinding(f) {
     const external = !!QA_EXTERNAL_SRC[f.source];
+    const disc = qaFindingDiscipline(f);
     const sevColor = QA_SEV_COLOR[f.severity];
     const isOpen = f.status === "open" || f.status === "ready_to_backcheck";
     const ex = expanded[f.id];
@@ -16179,7 +16390,7 @@ function ProjectQAReviewsView({ project, onChange }) {
       : (f.source === "ripple" ? "Ripple check" : (QA_CA_SRC[f.source] || "Coordination review")) + (QA_CA_SRC[f.source] ? "" : (f.review_id ? " #" + f.review_id : ""))
         + (rev && (rev.source_doc || rev.set_name) ? " - " + (rev.source_doc || rev.set_name) : "");
     return (
-      <div style={{ border: "1px solid " + (external && isOpen ? "var(--c-8957e5)" : P.border), borderRadius: 8, padding: "10px 12px", marginBottom: 8, background: P.card }}>
+      <div key={f.id} style={{ border: "1px solid " + (external && isOpen ? "var(--c-8957e5)" : P.border), borderRadius: 8, padding: "10px 12px", marginBottom: 8, background: P.card }}>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
           {f.severity && <QAChip text={f.severity} color={sevColor} solid={f.severity === "life-safety"} />}
           <QAChip text={external ? (QA_EXTERNAL_SRC[f.source] + (f.external_ref ? " #" + f.external_ref : "")) : (f.source === "ripple" ? "ripple" : (QA_CA_SRC[f.source] ? QA_CA_SRC[f.source] + (f.external_ref ? " " + f.external_ref : "") : "internal QA"))} color={external ? "var(--c-8957e5)" : undefined} />
@@ -16193,7 +16404,11 @@ function ProjectQAReviewsView({ project, onChange }) {
           <span style={{ fontSize: 10, color: P.textMuted }}>{String(f.created_at || "").slice(0, 10)}</span>
         </div>
         <div style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 4 }}>{f.title}</div>
-        <div style={{ fontSize: 10.5, color: P.textMuted, marginBottom: 4 }}>{provenance}</div>
+        <div style={{ fontSize: 10.5, color: P.textMuted, marginBottom: 4 }}>
+          {provenance}
+          {disc.name !== QA_DISCIPLINE_NONE && <span>{"  \u00b7  "}{disc.name}{disc.inferred ? " (inferred from the sheets)" : ""}</span>}
+          {f.assignee && <span>{"  \u00b7  "}assigned to <b style={{ color: P.text }}>{f.assignee}</b></span>}
+        </div>
         {Array.isArray(f.sheets) && f.sheets.length > 0 && (
           <div style={{ fontSize: 11, color: P.accentLight, marginBottom: 4 }}>{f.sheets.join("  ·  ")}</div>
         )}
@@ -16233,16 +16448,18 @@ function ProjectQAReviewsView({ project, onChange }) {
             )}
           </div>
         )}
+        {renderEditor(f)}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {(f.evidence || f.action || (ai && ai.evidence)) && <Btn variant="ghost" small onClick={() => setExpanded(x => ({ ...x, [f.id]: !ex }))}>{ex ? "Less" : "Evidence"}</Btn>}
-          {external && ai && !f.response && <Btn variant="primary" small disabled={busyId === f.id} title="Accepts Claude's draft as the response, under your name" onClick={() => setResponse(f, ai.responseText, ai.disposition, false)}>Accept response</Btn>}
-          {external && ai && !f.response && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => setResponse(f, ai.responseText, ai.disposition, true)}>Edit &amp; accept</Btn>}
-          {external && !ai && !f.response && <Btn variant="ghost" small disabled={busyId === f.id} title="Record the response that goes back to the reviewer" onClick={() => setResponse(f, "", null, true)}>Write response</Btn>}
-          {external && f.response && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => setResponse(f, f.response, f.response_disposition, true)}>Edit response</Btn>}
-          {isOpen && <Btn variant="primary" small disabled={busyId === f.id} title={f.status === "ready_to_backcheck" ? "Confirms the backcheck evidence on the row - no note needed" : undefined} onClick={() => moveStatus(f, "closed")}>{f.status === "ready_to_backcheck" ? "Confirm & close" : "Resolved - close"}</Btn>}
-          {f.status === "open" && <Btn variant="ghost" small disabled={busyId === f.id} title="The fix appears on the drawings (or a response came in) - marks the row ready for a person to backcheck and close" onClick={() => moveStatus(f, "ready_to_backcheck")}>Ready to backcheck</Btn>}
-          {isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => moveStatus(f, "dismissed")}>Dismiss</Btn>}
-          {!isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => moveStatus(f, "open")}>Reopen</Btn>}
+          {external && ai && !f.response && <Btn variant="primary" small disabled={busyId === f.id} title="Accepts Claude's draft as the response, under your name" onClick={() => commitResponse(f, ai.responseText, ai.disposition)}>Accept response</Btn>}
+          {external && ai && !f.response && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => openResponseEditor(f, ai.responseText, ai.disposition)}>Edit &amp; accept</Btn>}
+          {external && !ai && !f.response && <Btn variant="ghost" small disabled={busyId === f.id} title="Record the response that goes back to the reviewer" onClick={() => openResponseEditor(f, "", null)}>Write response</Btn>}
+          {external && f.response && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => openResponseEditor(f, f.response, f.response_disposition)}>Edit response</Btn>}
+          {isOpen && <Btn variant="primary" small disabled={busyId === f.id} title={f.status === "ready_to_backcheck" ? "Confirms the backcheck evidence on the row - no note needed" : undefined} onClick={() => openStatusEditor(f, "closed")}>{f.status === "ready_to_backcheck" ? "Confirm & close" : "Resolved - close"}</Btn>}
+          {f.status === "open" && <Btn variant="ghost" small disabled={busyId === f.id} title="The fix appears on the drawings (or a response came in) - marks the row ready for a person to backcheck and close" onClick={() => openStatusEditor(f, "ready_to_backcheck")}>Ready to backcheck</Btn>}
+          {isOpen && <Btn variant="ghost" small disabled={busyId === f.id} title="Set the discipline that fixes this, and optionally the person" onClick={() => openAssignEditor(f)}>{f.assignee ? "Reassign" : "Assign"}</Btn>}
+          {isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => openStatusEditor(f, "dismissed")}>Dismiss</Btn>}
+          {!isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => openStatusEditor(f, "open")}>Reopen</Btn>}
         </div>
       </div>
     );
@@ -16254,40 +16471,53 @@ function ProjectQAReviewsView({ project, onChange }) {
         <div>
           <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 2 }}>QA Reviews</div>
           <div style={{ fontSize: 12, color: P.textDim, lineHeight: 1.5, maxWidth: 640 }}>
-            The findings ledger: coordination-review findings and external reviewer comments (Dr.Checks / owner / architect),
-            each traced to the review run or comment log it came from. External comments close only by a person; auto-backchecked
-            rows show the machine evidence and close with one confirming click. Reviewer comments also carry the response that goes back:
-            Claude drafts it, you accept or edit it here. Reports, narratives and comment-response registers file to Design Reports and Narratives/&lt;date&gt;_&lt;title&gt;.
+            This project&apos;s QA punch list: review findings and reviewer comments, grouped by the discipline that fixes them.
+            Claude drafts and back-checks; a person assigns, answers and closes. Findings stay on this project.
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        {issuedSets.length > 0 && (
-          <select value={issuedSets.some(s => s.set === selSet) || selSet === "" ? selSet : "__typed__"} onChange={e => {
-            // Internal QA runs 1-2 weeks BEFORE issuance, so the set under
-            // review is not in the register yet - and it must NOT sit in
-            // Outgoing, which is reserved for what actually went out (per
-            // Sara). Convention: a top-level QAQC folder with dated
-            // subfolders (e.g. "QAQC/2026-09-22_100% CD QAQC"). The drawing
-            // crawler resolves an explicit subfolder from the PROJECT ROOT,
-            // so this needs no connector change and can never be mistaken
-            // for an issued set.
-            if (e.target.value === "__other__") {
-              const f = window.prompt("QAQC folder path from the project root (e.g. QAQC/2026-09-22_100% CD QAQC):", "QAQC/");
-              if (f && f.trim() && f.trim() !== "QAQC/") setSelSet(f.trim());
-            } else if (e.target.value !== "__typed__") setSelSet(e.target.value);
+          {/* Always shown: internal QA runs 1-2 weeks BEFORE issuance, when
+              nothing is in the register yet, and that set must NOT sit in
+              Outgoing (reserved for what actually went out, per Sara). It
+              lives in the project's QAQC folder; the connector resolves an
+              explicit subfolder from the PROJECT ROOT exactly as spelled, so
+              a QAQC path can never be mistaken for an issued set. */}
+          <select value={knownSet ? selSet : "__typed__"} onChange={e => {
+            if (e.target.value === "__other__") setCustomSet(!knownSet ? selSet : (qaqcRoot || "09 \u2705 QAQC") + "/");
+            else if (e.target.value !== "__typed__") { setSelSet(e.target.value); setCustomSet(null); }
           }}
-            title="Which drawings the review examines - the current composed set, or one specific issue from the transmittal register"
+            aria-label="Set to review"
+            title="Which drawings the review examines - the current issued set, a pre-issuance set in the QAQC folder, or one specific issue from the transmittal register"
             style={{ background: P.card, color: P.text, border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, padding: "6px 8px", maxWidth: 280 }}>
             <option value="">Current issued set (default)</option>
-            {issuedSets.map(s => <option key={s.set} value={s.set}>{s.set}</option>)}
-            <option value="__other__">Other folder (pre-issuance QAQC set)&hellip;</option>
+            {qaqcSets.length > 0 && (
+              <optgroup label="Pre-issuance (QAQC folder)">
+                {qaqcSets.map(pth => <option key={pth} value={pth}>{pth.split("/").pop()}</option>)}
+              </optgroup>
+            )}
+            {issuedSets.length > 0 && (
+              <optgroup label="Issued sets">
+                {issuedSets.map(st => <option key={st.set} value={st.set}>{st.set}</option>)}
+              </optgroup>
+            )}
+            {!knownSet && <option value="__typed__">{selSet}</option>}
+            <option value="__other__">Other folder&hellip;</option>
           </select>
-        )}
+          {customSet !== null && (
+            <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+              <input autoFocus value={customSet} onChange={e => setCustomSet(e.target.value)} aria-label="Folder path from the project root"
+                placeholder="Folder path from the project root"
+                onKeyDown={e => { if (e.key === "Enter") { const v = customSet.trim().replace(/^\/+|\/+$/g, ""); if (v) setSelSet(v); setCustomSet(null); } if (e.key === "Escape") setCustomSet(null); }}
+                style={{ background: P.card, color: P.text, border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, padding: "6px 8px", width: 260 }} />
+              <Btn small variant="primary" onClick={() => { const v = customSet.trim().replace(/^\/+|\/+$/g, ""); if (v) setSelSet(v); setCustomSet(null); }}>Use</Btn>
+              <Btn small variant="ghost" onClick={() => setCustomSet(null)}>Cancel</Btn>
+            </span>
+          )}
         <a href={reviewUrl} target="_blank" rel="noreferrer"
           style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
             border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, fontWeight: 600,
             color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}
-          title="Opens your Claude seat with the coordination review prefilled - backchecks open findings, runs the checklist against the current set, and records new findings here for your sign-off">
+          title="Opens your Claude seat with the QA review prefilled - backchecks open findings, runs the checklist, knowledge and engineering passes on the selected set, and records the punch list here for your sign-off">
           {"🤖"} Run Coordination Review
         </a>
         {awaitingResponse > 0 && (
@@ -16301,6 +16531,14 @@ function ProjectQAReviewsView({ project, onChange }) {
         )}
         </div>
       </div>
+
+      {reviews !== null && issuedSets.length === 0 && !selSet && (
+        <div style={{ border: "1px dashed " + P.border, borderRadius: 8, padding: "8px 12px", marginBottom: 14, fontSize: 12, color: P.textDim }}>
+          Nothing has been issued through the transmittal tool on this project yet, so there is no &quot;current issued set&quot;.
+          For a review before issuance, pick the set from the QAQC folder in the list above
+          {qaqcSets.length === 0 ? " (none found there yet - put the PDFs in a dated folder under the project's QAQC folder, or choose Other folder)" : ""}.
+        </div>
+      )}
 
       {pendingLogs.length > 0 && (
         <div style={{ border: "1px solid var(--c-8957e5)", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: P.text, background: P.card }}>
@@ -16330,7 +16568,7 @@ function ProjectQAReviewsView({ project, onChange }) {
         // A set issued AFTER the last recorded review, with findings still
         // open, means the open rows have not been checked against the newest
         // drawings - surface it instead of waiting for someone to notice.
-        const latestRun = (reviews || [])[0];
+        const latestRun = (reviews || []).find(qaIsSetReview);
         const newestIssue = issuedSets[0];
         const openCount = findings.filter(f => f.status === "open" || f.status === "ready_to_backcheck").length;
         if (!latestRun || !newestIssue || !openCount) return null;
@@ -16356,11 +16594,15 @@ function ProjectQAReviewsView({ project, onChange }) {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
           {reviews.map(r => (
             <div key={r.id} style={{ border: "1px solid " + P.border, borderRadius: 8, padding: "8px 12px", fontSize: 11.5, minWidth: 220, background: P.card }}>
-              <div style={{ fontWeight: 600, marginBottom: 2 }}>{r.kind === "comment-log" ? "Comment log" : r.kind === "backcheck" ? "Back-check" : "Review"} #{r.id}{r.phase ? " · " + r.phase : ""}</div>
-              {r.set_name && <div style={{ color: P.textDim, marginBottom: 2 }}>{r.set_name}</div>}
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>{QA_REVIEW_KIND_LABEL[r.kind] || "Review"} #{r.id}{r.phase ? " · " + r.phase : ""}</div>
+              {(r.set_name || r.source_doc) && <div style={{ color: P.textDim, marginBottom: 2 }}>{r.set_name || r.source_doc}</div>}
               <div style={{ color: P.textMuted }}>{String(r.run_at || "").slice(0, 10)} · {r.run_by}</div>
               <div style={{ color: P.textMuted }}>{(countsByReview[r.id] || { open: 0, total: 0 }).open} open / {(countsByReview[r.id] || { total: 0 }).total} findings</div>
               {r.coverage && <div style={{ color: P.textMuted, marginTop: 2, fontSize: 10.5 }}>{r.coverage}</div>}
+              {r.report_url && /^https:\/\//i.test(String(r.report_url)) && (
+                <a href={r.report_url} target="_blank" rel="noreferrer" style={{ display: "inline-block", marginTop: 4, fontSize: 11, color: P.accentLight }}
+                  title="Opens the folder in SharePoint where this review's report was filed">Open the filed report</a>
+              )}
             </div>
           ))}
         </div>
@@ -16368,8 +16610,44 @@ function ProjectQAReviewsView({ project, onChange }) {
 
       {openRows.length > 0 && (
         <div style={{ marginBottom: 18 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Open ({openRows.length})</div>
-          {openRows.map(f => <FindingRow key={f.id} f={f} />)}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+            <div style={{ fontWeight: 700, fontSize: 13 }}>
+              Punch list &mdash; {filtersOn ? shownOpen.length + " of " + openRows.length : openRows.length} open
+            </div>
+            <span style={{ flex: 1 }} />
+            {(() => {
+              const sel = { background: P.card, color: P.text, border: "1px solid " + P.border, borderRadius: 6, fontSize: 11.5, padding: "4px 6px" };
+              return (
+                <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <select value={fDisc} onChange={e => setFDisc(e.target.value)} style={sel} aria-label="Filter by discipline">
+                    <option value="">All disciplines</option>
+                    {[...new Set([...openDisciplines, fDisc].filter(Boolean))].map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                  <select value={fSev} onChange={e => setFSev(e.target.value)} style={sel} aria-label="Filter by severity">
+                    <option value="">All severities</option>
+                    {[...new Set([...openSeverities, fSev].filter(Boolean))].map(sv => <option key={sv} value={sv}>{sv}</option>)}
+                  </select>
+                  <select value={fWho} onChange={e => setFWho(e.target.value)} style={sel} aria-label="Filter by assignee">
+                    <option value="">Anyone</option>
+                    <option value="__none__">Unassigned</option>
+                    {[...new Set([...openAssignees, fWho === "__none__" ? "" : fWho].filter(Boolean))].map(w => <option key={w} value={w}>{w}</option>)}
+                  </select>
+                  {filtersOn && <Btn small variant="ghost" onClick={() => { setFDisc(""); setFSev(""); setFWho(""); }}>Clear</Btn>}
+                  <Btn small variant="ghost" disabled={!shownOpen.length} onClick={() => exportPunchList("csv")} title="Download the punch list as shown (filters applied) as a spreadsheet that opens in Excel">{"\u2b07"} Excel</Btn>
+                  <Btn small variant="ghost" disabled={!shownOpen.length} onClick={() => exportPunchList("pdf")} title="Open a print-ready copy of the punch list as shown (choose Save as PDF)">{"\ud83d\udda8"} PDF</Btn>
+                </span>
+              );
+            })()}
+          </div>
+          {shownOpen.length === 0 && <div style={{ color: P.textDim, fontSize: 12, marginBottom: 8 }}>No open items match these filters.</div>}
+          {openGroups.map(g => (
+            <div key={g.name} style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", color: g.name === QA_DISCIPLINE_NONE ? P.textMuted : P.textDim, borderBottom: "1px solid " + P.border, paddingBottom: 4, marginBottom: 8 }}>
+                {g.name} ({g.rows.length})
+              </div>
+              {g.rows.map(f => renderFinding(f))}
+            </div>
+          ))}
         </div>
       )}
 
@@ -16378,7 +16656,7 @@ function ProjectQAReviewsView({ project, onChange }) {
           <Btn variant="ghost" small onClick={() => setShowResolved(s => !s)}>
             {showResolved ? "Hide" : "Show"} resolved ({resolvedRows.length})
           </Btn>
-          {showResolved && <div style={{ marginTop: 8 }}>{resolvedRows.map(f => <FindingRow key={f.id} f={f} />)}</div>}
+          {showResolved && <div style={{ marginTop: 8 }}>{resolvedRows.map(f => renderFinding(f))}</div>}
         </div>
       )}
 
@@ -16386,7 +16664,7 @@ function ProjectQAReviewsView({ project, onChange }) {
         <div style={{ border: "1px solid " + P.border, borderRadius: 10, padding: 14, marginBottom: 18, background: P.card }}>
           <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>Reviewer&apos;s own checks &mdash; review #{latest.id}</div>
           <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 10 }}>
-            The judgment-only items no machine can do (lineweights, plot integrity, ceiling congestion). Checking one records your name.
+            The checklist items marked for the reviewer alone. Checking one records your name against this review.
           </div>
           {manualItems.map(mi => {
             const st = manualState[mi.item_id];
@@ -16482,25 +16760,8 @@ function ProjectChecklistsView({ project, onChange }) {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          {/* Launches the qa-coordination-review skill on the user's own Claude
-              seat (same claude.ai/new pattern as the Ask Claude menu): Claude runs
-              the checklist against the current set via the PMS connector and
-              records findings to the ledger. The review never checks items off
-              here - this tab stays the human sign-off record. */}
-          <a href={"https://claude.ai/new?q=" + encodeURIComponent([
-              "Run an internal coordination QA review of the current issued drawing set for " + [project.projectNumber, project.name].filter(Boolean).join(" - ") + ".",
-              "",
-              "Use the Setty PMS connector: identify the current set and derive its phase, fetch the QA Deliverables Checklist (get_qa_checklist), confirm drawing index coverage, run the automated checks (equipment tags vs schedules, voltage/power coordination, placeholders, revision integrity), spot-check the riskiest assisted items, and pull the open items log and lessons learned.",
-              "",
-              "If the findings ledger already has open findings for this project (list_qa_findings), back-check those against the newest revisions first. Report findings by checklist item id with sheet-level evidence for my sign-off, then record them with record_qa_findings.",
-            ].join("\n"))}
-            target="_blank" rel="noreferrer"
-            style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
-              border: `1px solid ${P.border}`, borderRadius: 6, fontSize: 12, fontWeight: 600,
-              color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}
-            title="Opens your Claude seat with the coordination review prefilled - checks the current set against this checklist, the open items log and lessons learned, and records findings to the QA ledger for your sign-off">
-            🤖 Run Coordination Review
-          </a>
+          {/* The review is launched from the QA Reviews tab header (one
+              prompt, one place); this legacy view is history only. */}
           <Btn variant="primary" onClick={() => setShowPicker(true)}>+ Add Checklist</Btn>
         </div>
       </div>

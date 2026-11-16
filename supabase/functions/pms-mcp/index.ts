@@ -1423,7 +1423,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-13-titled-filename-sheets";
+const BUILD = "2026-11-16-qa-punch-list-discipline";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -9579,6 +9579,34 @@ const qaFindingRank = (r: { severity?: string | null; source?: string | null }) 
 const QA_FINDING_STATUSES = ["open", "ready_to_backcheck", "closed", "dismissed"] as const;
 const QA_FINDINGS_MAX_PER_CALL = 50;
 
+// Responsible discipline on a finding (2026-11-16): what the punch list groups
+// by. Free text in the table because PRIME jobs carry subconsultant
+// disciplines; the usual spellings and sheet-prefix abbreviations fold to one
+// name so "M", "mech" and "Mechanical" land in the same group in the tab.
+// Keep in step with QA_DISCIPLINE_ALIASES in SettyPMS.html.
+const QA_DISCIPLINE_ALIASES: Record<string, string> = {
+  m: "Mechanical", mech: "Mechanical", mechanical: "Mechanical", hvac: "Mechanical",
+  e: "Electrical", elec: "Electrical", electrical: "Electrical",
+  p: "Plumbing", plbg: "Plumbing", plumbing: "Plumbing",
+  fp: "Fire Protection", "fire protection": "Fire Protection", sprinkler: "Fire Protection",
+  fa: "Fire Alarm", "fire alarm": "Fire Alarm",
+  multi: "Multi-discipline", "multi-discipline": "Multi-discipline", multidiscipline: "Multi-discipline",
+  coordination: "Multi-discipline", mepfp: "Multi-discipline",
+  pm: "PM / Project", project: "PM / Project", "pm / project": "PM / Project", "pm/project": "PM / Project",
+  s: "Structural", structural: "Structural", a: "Architectural", arch: "Architectural", architectural: "Architectural",
+  c: "Civil", civil: "Civil",
+};
+function qaNormalizeDiscipline(v: unknown): string | null {
+  const t = String(v ?? "").replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  return QA_DISCIPLINE_ALIASES[t.toLowerCase()] ?? t.slice(0, 80);
+}
+// Duplicate guard for record_qa_findings: the same finding recorded twice
+// (a re-run of the review on the same set) would put two rows on the punch
+// list. Titles compare on letters and digits only, so spacing, case and
+// punctuation changes do not hide a repeat.
+const qaTitleKey = (t: unknown) => String(t ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
 async function sbPatch(path: string, body: Record<string, unknown>): Promise<any> {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method: "PATCH",
@@ -9619,8 +9647,15 @@ mcp.tool("record_qa_findings", {
     "'open'. Severity vocabulary, worst first: life-safety, agency (rejection risk), cost (significant cost " +
     "exposure — mandatory consideration on any POST-BID review: after bid issuance every change is a potential " +
     "change order, so bulletin findings state their cost consequence), rfi-bait (contractor confusion), " +
-    "polish. Every row is stamped with the signed-in caller. Recording findings does NOT mark anything " +
-    "resolved — update_qa_finding moves status, and list_qa_findings reads the ledger.",
+    "polish. Give each finding its responsible `discipline` (Mechanical, Electrical, Plumbing, Fire Protection, " +
+    "Fire Alarm, Multi-discipline, PM / Project, or a subconsultant discipline on prime jobs): the QA Reviews " +
+    "tab groups the punch list by it; a person, not this tool, assigns a name. A finding whose title matches a " +
+    "row that is still open on the project is SKIPPED (returned in skippedDuplicates) so a re-run does not " +
+    "double the punch list; pass allowDuplicates only when the repeat is deliberate. A review that found " +
+    "nothing new still records its review row (findings may be empty) so the run and its coverage are on " +
+    "record. Every row is stamped with the signed-in caller. Recording findings does NOT mark anything " +
+    "resolved — update_qa_finding moves status, and list_qa_findings reads the ledger. Results show ONLY in " +
+    "this project's QA Reviews tab; they are not added to the firm knowledge layer.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number OR name."),
     setName: z.string().optional().describe("The deliverable/set reviewed, e.g. '2024-10-24_Revised 100% CD Submission + bulletins through 8/19'."),
@@ -9637,9 +9672,11 @@ mcp.tool("record_qa_findings", {
       evidence: z.string().optional().describe("The text/values supporting it."),
       action: z.string().optional().describe("Suggested action."),
       externalRef: z.string().optional().describe("Comment number / DrChecks id for external rows."),
-    })).min(1).max(QA_FINDINGS_MAX_PER_CALL),
+      discipline: z.string().optional().describe("Responsible discipline — who fixes it: Mechanical, Electrical, Plumbing, Fire Protection, Fire Alarm, Multi-discipline (name each in the action), PM / Project, or a subconsultant discipline on prime jobs. The QA tab groups the punch list by this."),
+    })).max(QA_FINDINGS_MAX_PER_CALL).describe("Up to 50 per call; send more as further calls with the same setName and phase. May be empty to record a review run that found nothing new."),
+    allowDuplicates: z.boolean().optional().describe("Record findings even when an open row with the same title already exists on the project (default false: they are skipped)."),
   }),
-  handler: async ({ projectNumber, setName, phase, kind, sourceDoc, coverage, findings }) => {
+  handler: async ({ projectNumber, setName, phase, kind, sourceDoc, coverage, findings, allowDuplicates }) => {
     const who = qaLedgerCaller();
     if (!who.ok) return who.response;
     // Every reviewer comment must trace to the log it was pulled from —
@@ -9662,18 +9699,38 @@ mcp.tool("record_qa_findings", {
     } catch (e) {
       return asText({ error: `Could not open the review record: ${String((e as any)?.message ?? e)}` });
     }
+    // Open rows already on the project, keyed by title: a re-run must not
+    // put the same item on the punch list twice. Advisory read — if it
+    // fails, record everything rather than lose findings.
+    const openByTitle = new Map<string, number>();
+    if (!allowDuplicates && findings.length) {
+      try {
+        const open: any[] = await sbGetAll("pms_qa_findings?select=id,title&project=eq." + encodeURIComponent(project) +
+          "&status=in.(open,ready_to_backcheck)&order=id");
+        for (const r of open) { const k = qaTitleKey(r.title); if (k && !openByTitle.has(k)) openByTitle.set(k, r.id); }
+      } catch { /* dedupe is a guard, not a gate */ }
+    }
     const recorded: Array<{ id: number; title: string }> = [];
     const failed: Array<{ title: string; reason: string }> = [];
+    const skippedDuplicates: Array<{ title: string; existingId: number }> = [];
     for (const f of findings) {
+      const key = qaTitleKey(f.title);
+      const dup = openByTitle.get(key);
+      if (dup !== undefined) { skippedDuplicates.push({ title: f.title, existingId: dup }); continue; }
       try {
+        const discipline = qaNormalizeDiscipline(f.discipline);
         const row = await sbInsert("pms_qa_findings", {
           review_id: review.id, project,
           item_id: f.itemId ?? null, source: f.source ?? "qa", severity: f.severity ?? null,
           title: f.title, sheets: f.sheets ?? null, evidence: f.evidence ?? null,
           action: f.action ?? null, external_ref: f.externalRef ?? null,
+          // Only sent when given, so a database that has not run the
+          // discipline migration yet still accepts the row.
+          ...(discipline ? { discipline } : {}),
           created_by: who.email,
         });
         recorded.push({ id: row.id, title: f.title });
+        if (key) openByTitle.set(key, row.id);
       } catch (e) {
         failed.push({ title: f.title, reason: String((e as any)?.message ?? e).slice(0, 150) });
       }
@@ -9681,6 +9738,11 @@ mcp.tool("record_qa_findings", {
     return asText({
       project, reviewId: review.id, recorded: recorded.length, findingIds: recorded,
       ...(failed.length ? { failed } : {}),
+      ...(skippedDuplicates.length ? {
+        skippedDuplicates,
+        skippedNote: "These match rows that are still open on the project and were NOT recorded again. Back-check the existing rows (update_qa_finding) instead; pass allowDuplicates:true only if the repeat is deliberate.",
+      } : {}),
+      reportLinkNote: "When you file the report, pass reviewIds: [" + review.id + "] to file_qa_report so the QA Reviews tab links it from this review.",
       note: (kind === "comment-log"
         ? "Comment rows are status 'open' with no response yet. Next: draft the responses (review-comment-responses skill, save_comment_responses) so the register can go back; list_qa_findings needsResponse:true lists what is still unanswered. "
         : "Rows are status 'open'. ")
@@ -9705,26 +9767,34 @@ mcp.tool("list_qa_findings", {
     status: z.string().optional().describe("open (default: open + ready_to_backcheck), or one of open/ready_to_backcheck/closed/dismissed, or 'all'."),
     source: z.enum(QA_FINDING_SOURCES).optional().describe("Only rows from one source."),
     needsResponse: z.boolean().optional().describe("Only EXTERNAL comment rows (drchecks/owner/architect/agency/other) with no accepted human response yet: the work list for drafting the comments-and-responses register."),
-    limit: z.number().optional().describe("Max rows (default 50, max 200)."),
+    discipline: z.string().optional().describe("Only rows for one responsible discipline, e.g. 'Electrical' (rows recorded before 2026-11-16 may have none)."),
+    limit: z.number().optional().describe("Max rows (default 200, max 500). The newest rows are returned; `truncated` says when older ones were left out."),
   }),
-  handler: async ({ projectNumber, status, source, needsResponse, limit }) => {
+  handler: async ({ projectNumber, status, source, needsResponse, discipline, limit }) => {
     const pid = await resolveProjectId(projectNumber);
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    const lim = Math.min(Math.max(limit ?? 50, 1), 200);
-    let path = "pms_qa_findings?select=id,review_id,item_id,source,severity,title,sheets,evidence,action,status,status_note,status_by,status_at,external_ref,created_by,created_at," +
-      "ai_response,response,response_disposition,response_by,response_at" +
-      "&project=eq." + encodeURIComponent(project) + "&order=created_at.desc&limit=" + lim;
+    const lim = Math.min(Math.max(Math.round(limit ?? 200), 1), 500);
+    // select=*: reads discipline/assignee once those columns exist and still
+    // works on a database that has not run that migration. One row past the
+    // limit is fetched so a cut-off list can say so.
+    let path = "pms_qa_findings?select=*" +
+      "&project=eq." + encodeURIComponent(project) + "&order=created_at.desc&limit=" + (lim + 1);
     const st = (status ?? "open").trim().toLowerCase();
     if (st === "open") path += "&status=in.(open,ready_to_backcheck)";
     else if (st !== "all") path += "&status=eq." + encodeURIComponent(st);
     if (source) path += "&source=eq." + source;
     if (needsResponse) path += "&source=in.(" + [...QA_RESPONSE_EXTERNAL_SOURCES].join(",") + ")&response=is.null";
+    const wantDiscipline = qaNormalizeDiscipline(discipline);
+    if (wantDiscipline) path += "&discipline=ilike." + encodeURIComponent(wantDiscipline);
     let rows: any[];
-    try { rows = await sbGetAll(path); } catch (e) {
+    try { rows = await sbGet(path); } catch (e) {
       return asText({ project, error: `Could not read the ledger: ${String((e as any)?.message ?? e)}` });
     }
+    if (!Array.isArray(rows)) rows = [];
+    const truncated = rows.length > lim;
+    if (truncated) rows = rows.slice(0, lim);
     // Comment registers that arrived by email but were never ingested. This is
     // the on-demand half of the comment-log watcher; the scheduled half is
     // blocked (routine-fired sessions get no connectors, proven 2026-09-08), so
@@ -9746,7 +9816,12 @@ mcp.tool("list_qa_findings", {
     const counts = rows.reduce((m: Record<string, number>, r) => ((m[r.status] = (m[r.status] || 0) + 1), m), {});
     const unanswered = rows.filter((r) => QA_RESPONSE_EXTERNAL_SOURCES.has(String(r.source)) && !r.response).length;
     return asText({
-      project, count: rows.length, byStatus: counts, ...(unanswered ? { externalAwaitingResponse: unanswered } : {}), findings: rows,
+      project, count: rows.length, byStatus: counts, ...(unanswered ? { externalAwaitingResponse: unanswered } : {}),
+      ...(truncated ? {
+        truncated: true,
+        truncatedNote: `More than ${lim} rows match; only the newest ${lim} are listed, so OLDER rows are missing from this result. Narrow with status, source or discipline, or raise limit (max 500), before treating the list as complete.`,
+      } : {}),
+      findings: rows,
       ...(notIngested.length ? {
         commentLogsNotIngested: notIngested,
         commentLogsNote: "These attachments look like review comment registers and no comment-log review names them as sourceDoc. Read each (read_email recordId, or find_document docType 'Comment Log' for the filed copy) and ingest with record_qa_findings kind:'comment-log', sourceDoc = the attachment name; a false positive (a Setty-issued responses register, a forwarded duplicate) needs no action.",
@@ -10864,8 +10939,9 @@ mcp.tool("file_qa_report", {
       contentText: z.string().optional().describe("Text content (markdown/html/csv/plain). Exactly one of contentText/contentBase64."),
       contentBase64: z.string().optional().describe("Base64 content for binaries (docx/xlsx/pdf)."),
     })).min(1).max(QA_REPORT_MAX_FILES),
+    reviewIds: z.array(z.number()).max(10).optional().describe("The reviewId(s) record_qa_findings returned for this review. The filed folder's link is saved on those review rows so the QA Reviews tab shows a 'Report' link."),
   }),
-  handler: async ({ projectNumber, title, date, files }) => {
+  handler: async ({ projectNumber, title, date, files, reviewIds }) => {
     const who = qaLedgerCaller();
     if (!who.ok) return who.response;
     const pid = await resolveProjectId(projectNumber);
@@ -10915,9 +10991,34 @@ mcp.tool("file_qa_report", {
           f.bytes as unknown as BodyInit, "application/octet-stream");
         uploaded.push({ name: f.name, webUrl: item.webUrl ?? null, bytes: f.bytes.byteLength });
       }
+      // Link the filed folder from the review rows it reports on, so the QA
+      // Reviews tab can open it. Scoped to THIS project's reviews; a failure
+      // here is reported, never allowed to make a successful filing look
+      // failed.
+      let reportLink: Record<string, unknown> | undefined;
+      const ids = [...new Set((reviewIds ?? []).map((n) => Math.round(n)).filter((n) => Number.isFinite(n) && n > 0))];
+      if (ids.length && dated.webUrl) {
+        try {
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/pms_qa_reviews?id=in.(${ids.join(",")})&project=eq.${encodeURIComponent(String(project))}`, {
+            method: "PATCH",
+            headers: {
+              apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+              "Content-Type": "application/json", Prefer: "return=representation",
+            },
+            body: JSON.stringify({ report_url: dated.webUrl }),
+          });
+          if (!res.ok) throw new Error(`Supabase patch ${res.status}: ${(await res.text()).slice(0, 200)}`);
+          const linked = ((await res.json()) as any[]).map((r) => r.id);
+          const missing = ids.filter((i) => !linked.includes(i));
+          reportLink = { linkedReviewIds: linked, ...(missing.length ? { notLinked: missing, notLinkedReason: "No review with that id on this project." } : {}) };
+        } catch (e) {
+          reportLink = { linkError: `The report was filed, but its link could not be saved on the review rows: ${String((e as any)?.message ?? e).slice(0, 200)}` };
+        }
+      }
       return asText({
         project, filedBy: who.email, folder: `${QA_REPORTS_FOLDER}/${folderName}`,
         folderWebUrl: dated.webUrl ?? null, files: uploaded,
+        ...(reportLink ? { reportLink } : (reviewIds === undefined ? { reportLinkHint: "Pass reviewIds (from record_qa_findings) to link this folder from the QA Reviews tab." } : {})),
         note: "Filed to the project record. Hand the folder link to the user; the QA Reviews tab and future narratives reference documents here.",
       });
     } catch (e) {

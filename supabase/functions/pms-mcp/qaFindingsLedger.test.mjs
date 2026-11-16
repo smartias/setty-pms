@@ -111,4 +111,48 @@ assert.ok(src.includes("const qaFindingRank"), "index.ts lost qaFindingRank");
 const cost = readFileSync(join(here, "../../migrations/20260907150000_qa_severity_cost.sql"), "utf8");
 assert.ok(cost.includes("check (severity in ('life-safety','agency','cost','rfi-bait','polish'))"), "cost migration lost the vocabulary");
 
+// Punch list (2026-11-16): findings carry the responsible discipline, a
+// re-run does not double the list, a cut-off read says so, and a filed
+// report is linked from its review row.
+for (const anchor of [
+  "function qaNormalizeDiscipline",
+  "...(discipline ? { discipline } : {})",
+  "skippedDuplicates.push({ title: f.title, existingId: dup })",
+  "allowDuplicates: z.boolean().optional()",
+  '"&order=created_at.desc&limit=" + (lim + 1)',
+  "truncated: true,",
+  "reviewIds: z.array(z.number()).max(10).optional()",
+  "body: JSON.stringify({ report_url: dated.webUrl })",
+  // The link write is scoped to the project's own review rows.
+  "&project=eq.${encodeURIComponent(String(project))}",
+]) {
+  assert.ok(src.includes(anchor), `index.ts lost anchor: ${anchor}`);
+}
+// A review that found nothing new can still be recorded: no .min(1).
+assert.ok(!/externalRef:[\s\S]{0,900}\}\)\)\.min\(1\)/.test(src), "record_qa_findings requires at least one finding again");
+const punch = readFileSync(join(here, "../../migrations/20261116120000_qa_findings_discipline_assignee.sql"), "utf8");
+for (const anchor of [
+  "add column if not exists discipline  text",
+  "add column if not exists assignee    text",
+  "add column if not exists report_url text",
+  "create or replace function public.pms_qa_finding_set_assignment(p_id bigint, p_discipline text, p_assignee text)",
+  "sign-in required: the ledger records who assigned each row",
+  "grant execute on function public.pms_qa_finding_set_assignment(bigint, text, text) to authenticated;",
+  "revoke all on function public.pms_qa_finding_set_assignment(bigint, text, text) from anon;",
+]) {
+  assert.ok(punch.includes(anchor), `punch-list migration lost anchor: ${anchor}`);
+}
+// Copies of the two pure helpers, exercised.
+const ALIASES = Object.fromEntries([...src.match(/const QA_DISCIPLINE_ALIASES: Record<string, string> = \{([\s\S]*?)\n\};/)[1]
+  .matchAll(/(?:"([^"]+)"|([a-z]+)):\s*"([^"]+)"/g)].map((m) => [m[1] ?? m[2], m[3]]));
+const normDisc = (v) => { const t = String(v ?? "").replace(/\s+/g, " ").trim(); return t ? (ALIASES[t.toLowerCase()] ?? t.slice(0, 80)) : null; };
+assert.equal(normDisc(" m "), "Mechanical");
+assert.equal(normDisc("FP"), "Fire Protection");
+assert.equal(normDisc("pm"), "PM / Project");
+assert.equal(normDisc("Landscape"), "Landscape");
+assert.equal(normDisc("  "), null);
+const titleKey = (t) => String(t ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+assert.equal(titleKey("EF-7:  1 HP -> 2 HP (M-601)."), titleKey("ef 7 1 hp 2 hp m 601"));
+assert.notEqual(titleKey("EF-7 upsized"), titleKey("EF-8 upsized"));
+
 console.log("qaFindingsLedger.test.mjs: all assertions passed");
