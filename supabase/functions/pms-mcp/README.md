@@ -438,6 +438,30 @@ those `pms_qa_reviews` rows (`report_url`, this project's rows only) so the tab
 links the report. Findings appear only in the project's QA Reviews tab; nothing
 here writes to the knowledge layer.
 
+**The ledger in CA reviews (2026-11-16).** `list_qa_findings` takes `sheets`
+and `mentions` (equipment tags) and returns only the rows that cite or name
+them, each with `matchedOn` (`qaLedgerMatch.ts`: sheet references reduce to a
+key, tags match hyphen/space-tolerantly and word-bounded). `read_rfi_submittal`
+returns `sheetRefs`, the PM-confirmed sheet links stored on the item, and
+`qaLedger`: open findings on those sheets plus answered owner/agency/architect
+comments, whose responses stay binding after the row closes. The
+submittal-rfi-review skill reads both in Step 1. The ledger is internal: it
+informs `internalNotes` and `redFlags`, never the text that goes to the
+contractor.
+
+**Pre-issuance QA copies (2026-11-16).** QA runs a few days before a set is
+transmitted, on PDFs in the project's QAQC folder; reviewing that set indexes
+it, and the issued copy under Outgoing is indexed again later. Index readers
+that answer "what do the drawings say" leave rows under a `*qaqc*` folder out
+unless the caller names that folder (`isPreIssuePath`): `search_drawings`
+without `subfolder`, `find_equipment` (new `subfolder` input; enumeration goes
+through `pms_equipment_tags_scoped`, migration `20261116140000`, falling back
+to the unscoped RPC with a note until it is applied), `view_drawing` /
+`read_drawing_schedule` sheet mode (an issued copy wins; a QA copy is used only
+when `set` names it or nothing was issued, and is marked `preIssueCopy`), and
+the index-derived current set on drive projects. `trace_references` still
+counts a QA copy as proof a sheet number exists, which is harmless.
+
 `list_qa_findings` now returns the response columns, takes `needsResponse:true`
 (external rows with no accepted response, the drafting work list), and reports
 `commentLogsNotIngested`: attachments in the project's filed emails

@@ -58,6 +58,7 @@ import { pickRecordedFolderName, matchRecordedFolder } from "./recordedFolder.ts
 import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OLD } from "./sheetFromFilename.ts";
 // set_project_fee: what may be written into the Fee Calculator and what is
 // refused. Pure; see feeCalculator.test.mjs.
+import { buildLedgerMatcher } from "./qaLedgerMatch.ts";
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
@@ -1423,7 +1424,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-qa-punch-list-discipline";
+const BUILD = "2026-11-16-qa-ledger-in-ca-reviews";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3976,7 +3977,9 @@ mcp.tool("search_rfis_submittals", {
 mcp.tool("read_rfi_submittal", {
   description:
     "Read one RFI or submittal in full — the complete question and response (RFI) or description " +
-    "and review comments (submittal), plus metadata. Identify it by project + number. For a project " +
+    "and review comments (submittal), plus metadata. Identify it by project + number. Also returns `sheetRefs` " +
+    "(the sheets a person confirmed the item refers to) and `qaLedger`: what the QA ledger holds on those sheets — " +
+    "open internal findings and owner/agency review comments with the responses Setty gave. For a project " +
     "whose files live on the office network drive, `driveFiled` lists the item's folder(s) under CA on " +
     "the drive with their files (open any with read_document).",
   inputSchema: z.object({
@@ -4007,6 +4010,38 @@ mcp.tool("read_rfi_submittal", {
       // read_document, render the marked page with view_drawing DIRECT mode.
       ...(item.spFolderUrl ? { spFolderUrl: item.spFolderUrl, filesNote: "The contractor's attachments (cut sheet, markups) are filed in spFolderUrl — list it with list_project_documents {projectNumber, folderUrl: spFolderUrl} (look under IN), read a PDF with read_document, and render the marked page with view_drawing DIRECT mode. Ask the reviewer to attach the PDF only if it is not there." } : { filesNote: "No SharePoint folder is linked on this record; ask the reviewer where the contractor's files are, or to attach the PDF." }),
       ...(item.intake && item.intake.formUrl ? { intakeFormUrl: item.intake.formUrl } : {}),
+      // The sheets a person CONFIRMED this item refers to (the sheet chips in
+      // the PMS modal), and what the QA ledger already holds on them: open
+      // findings, and owner/agency comments with the responses Setty gave.
+      ...(await (async () => {
+        const confirmed = (Array.isArray(item.sheetRefs) ? item.sheetRefs : []).filter((x: any) => x && x.status === "confirmed" && x.sheet);
+        if (!confirmed.length) {
+          return { qaLedgerHint: "No sheet links are confirmed on this item. Once you know the sheets and equipment tags it touches, call list_qa_findings with sheets/mentions and status:'all' for the known QA findings and the owner/agency comments on them." };
+        }
+        const sheetRefs = confirmed.map((x: any) => ({ sheet: x.sheet, ...(x.discipline ? { discipline: x.discipline } : {}), ...(x.by ? { confirmedBy: x.by } : {}) }));
+        try {
+          const rows = await qaLedgerFor(String(p?.projectNumber || projectNumber), { sheets: confirmed.map((x: any) => String(x.sheet)) }, { relevantOnly: true });
+          return {
+            sheetRefs,
+            qaLedger: {
+              count: rows.length,
+              rows: rows.slice(0, 15).map((r: any) => ({
+                id: r.id, source: r.source, severity: r.severity ?? null, status: r.status, title: r.title,
+                sheets: r.sheets ?? null, ...(r.discipline ? { discipline: r.discipline } : {}),
+                ...(r.external_ref ? { externalRef: r.external_ref } : {}),
+                ...(r.action ? { action: r.action } : {}),
+                ...(r.response ? { response: r.response, responseDisposition: r.response_disposition ?? null } : {}),
+                matchedOn: r.matchedOn,
+              })),
+              note: rows.length
+                ? "Ledger rows on the confirmed sheets: still-open findings, and reviewer comments Setty has answered. Add equipment tags with list_qa_findings mentions:[...]. " + QA_LEDGER_CA_NOTE
+                : "Nothing open in the QA ledger on the confirmed sheets, and no answered reviewer comment names them. Check equipment tags too: list_qa_findings mentions:[...] status:'all'.",
+            },
+          };
+        } catch (e) {
+          return { sheetRefs, qaLedgerError: `Could not read the QA ledger: ${String((e as any)?.message ?? e).slice(0, 160)}` };
+        }
+      })()),
       ...(() => {
         const links = outgoingLinks(p, item);
         const linkedFrom = incomingLinks(p, type, item.id);
@@ -7446,6 +7481,22 @@ function drawingQueryPatterns(query: string): string[] {
 // The set a file belongs to, read off its path: "Outgoing/2025-04-10_Bulletin #1/…"
 // → "2025-04-10_Bulletin #1". Anything not under a set folder reports its top
 // folder instead.
+// PRE-ISSUE copies (2026-11-16). Internal QA runs a few days BEFORE a set is
+// transmitted, on PDFs in the project's QAQC folder ("09 ✅ QAQC/<dated>").
+// Reviewing that set indexes it, so the drawing index then holds a sheet twice:
+// the QA copy and, days later, the issued copy under Outgoing. A QA copy is
+// NOT what went to the client. Readers of the index that answer "what do the
+// drawings say" (current set on drive projects, newest revision of a sheet,
+// equipment tags, drawing search) therefore leave pre-issue rows out unless
+// the caller names that folder; only then is a QA copy what was asked for.
+const PRE_ISSUE_FOLDER_RE = /(^|\/)[^/]*qaqc[^/]*(\/|$)/i;
+const isPreIssuePath = (folderPath: unknown): boolean => PRE_ISSUE_FOLDER_RE.test(String(folderPath || ""));
+// POSIX form of the same test for the SQL side (pms_equipment_tags_scoped).
+const PRE_ISSUE_FOLDER_SQL_RE = "(^|/)[^/]*qaqc[^/]*(/|$)";
+const PRE_ISSUE_NOTE =
+  "Pre-issuance QA copies (the project's QAQC folder) are left out: they are not what was transmitted. " +
+  "To read a QA set, pass its folder as subfolder (or set), spelled as list_project_documents reports it.";
+
 function drawingSetOf(folderPath: string): string {
   const parts = String(folderPath || "").split("/").filter(Boolean);
   const i = parts.findIndex((p) => p.toLowerCase().includes("outgoing"));
@@ -7559,6 +7610,8 @@ async function indexDerivedSet(numPrefix: string): Promise<{
     "&project_prefix=eq." + encodeURIComponent(numPrefix) + "&sheet_no=not.is.null&order=item_id,page");
   const best = new Map<string, any>();
   for (const r of rows) {
+    // The current set is what was ISSUED: a QA copy never competes for newest.
+    if (isPreIssuePath(r.folder_path)) continue;
     const key = normSheetToken(r.sheet_no);
     if (!key) continue;
     const cur = best.get(key);
@@ -8260,12 +8313,21 @@ mcp.tool("search_drawings", {
     // ── 5. Search ─────────────────────────────────────────────────────────────
     let hits: any[];
     try {
+      // Without a subfolder the search is over what was ISSUED: pre-issuance
+      // QA copies are dropped after the query, so twice the rows are fetched
+      // to keep 120 real hits when a QA set matches too.
       hits = await sbRpc("pms_drawing_search", {
         p_prefix: numPrefix, p_patterns: patterns,
-        p_folder: subfolder ? String(subfolder).replace(/^\/+|\/+$/g, "") : null, p_limit: 120,
+        p_folder: subfolder ? String(subfolder).replace(/^\/+|\/+$/g, "") : null, p_limit: subfolder ? 120 : 240,
       });
     } catch (e) {
       return asText({ project, query, coverage, error: `Search failed: ${String((e as any)?.message ?? e)}` });
+    }
+    if (!subfolder) {
+      const all = hits || [];
+      hits = all.filter((h: any) => !isPreIssuePath(h.folder_path)).slice(0, 120);
+      const dropped = all.length - all.filter((h: any) => !isPreIssuePath(h.folder_path)).length;
+      if (dropped) (coverage as any).preIssueCopiesExcluded = { pages: dropped, note: PRE_ISSUE_NOTE };
     }
 
     // Group by sheet, newest revision first, one entry per (revision, set). A set
@@ -8303,6 +8365,7 @@ mcp.tool("search_drawings", {
           "&order=item_id,page",
         );
         for (const r of rows) {
+          if (!subfolder && isPreIssuePath(r.folder_path)) continue;
           const list = indexedBySheet.get(r.sheet_no) || [];
           list.push({ revision: r.revision, revisionDate: r.revision_date, revisionDescription: r.revision_description, set: drawingSetOf(r.folder_path) });
           indexedBySheet.set(r.sheet_no, list);
@@ -9017,6 +9080,7 @@ mcp.tool("view_drawing", {
         set: drawingSetOf(chosen.folder_path), file: chosen.file_name, pageInFile: chosen.page,
         region: reg, renderedPixels: `${out.width}x${out.height}`,
         ...(otherRevisions.length ? { otherIndexedRevisions: otherRevisions } : {}),
+        ...(picked.preIssue ? { preIssueCopy: PRE_ISSUE_COPY_NOTE } : {}),
         webUrl: chosen.web_url ?? null,
         note: (reg === "full"
           ? "Full sheet — good for layout; small text may not be legible. Call again with a region (top-left/top-right/bottom-left/bottom-right/center) to zoom in. "
@@ -9036,6 +9100,10 @@ mcp.tool("view_drawing", {
 });
 
 // Distinct (revision, set) labels, order preserved.
+const PRE_ISSUE_COPY_NOTE =
+  "This is a PRE-ISSUANCE QA copy (QAQC folder), not a transmitted sheet: either that set was named, or no issued " +
+  "copy of this sheet is indexed. Do not cite it as what the client or contractor holds.";
+
 function dedupeRevs(revs: Array<{ revision: string | null; revisionDate: string | null; revisionDescription: string | null; set: string }>) {
   const seen = new Set<string>();
   return revs.filter((r) => { const k = `${r.revision ?? ""}|${r.set}`; if (seen.has(k)) return false; seen.add(k); return true; });
@@ -9048,7 +9116,7 @@ function dedupeRevs(revs: Array<{ revision: string | null; revisionDate: string 
 // download), then the lowest page. Errors come back as ready-to-return
 // responses so callers stay one-liner thin.
 type IndexedSheetPick =
-  | { ok: true; project: string; chosen: any; otherRevisions: Array<{ revision: string | null; revisionDate: string | null; revisionDescription: string | null; set: string }> }
+  | { ok: true; project: string; chosen: any; preIssue: boolean; otherRevisions: Array<{ revision: string | null; revisionDate: string | null; revisionDescription: string | null; set: string }> }
   | { ok: false; response: { content: Array<{ type: "text"; text: string }> } };
 
 async function resolveIndexedSheet(projectNumber: string | undefined, sheet: string | undefined, revision: string | undefined, set: string | undefined): Promise<IndexedSheetPick> {
@@ -9121,6 +9189,12 @@ async function resolveIndexedSheet(projectNumber: string | undefined, sheet: str
       return fail({ project, sheet: matches[0].sheet_no, error: `No indexed copy of this sheet in a set matching "${set}".`, indexedRevisions: dedupeRevs(pool.map(revLabel)) });
     }
     pool = filtered;
+  } else {
+    // No set named: the answer is the ISSUED sheet. A pre-issuance QA copy is
+    // used only when the sheet has never been issued (the first QA of a new
+    // set), and the result says so.
+    const issued = pool.filter((r) => !isPreIssuePath(r.folder_path));
+    if (issued.length) pool = issued;
   }
 
   pool = [...pool].sort((a, b) =>
@@ -9130,7 +9204,7 @@ async function resolveIndexedSheet(projectNumber: string | undefined, sheet: str
   const chosen = pool[0];
   const chosenKey = drawingRevKey(revOf(chosen));
   const otherRevisions = dedupeRevs(matches.map(revLabel)).filter((r) => `${r.revision ?? ""}|${r.set}` !== chosenKey);
-  return { ok: true, project, chosen, otherRevisions };
+  return { ok: true, project, chosen, preIssue: isPreIssuePath(chosen.folder_path), otherRevisions };
 }
 
 // ── read_drawing_schedule: schedules as structured rows (phase 5 slice) ──────
@@ -9274,6 +9348,7 @@ mcp.tool("read_drawing_schedule", {
         revisionDescription: c.revision_description ?? null,
         set: drawingSetOf(c.folder_path), file: c.file_name, pageInFile: c.page,
         ...(picked.otherRevisions.length ? { otherIndexedRevisions: picked.otherRevisions } : {}),
+        ...(picked.preIssue ? { preIssueCopy: PRE_ISSUE_COPY_NOTE } : {}),
         webUrl: c.web_url ?? null,
       };
     }
@@ -9361,13 +9436,17 @@ mcp.tool("find_equipment", {
     "is reported; fill with search_drawings indexOnly:true) and enumerates hyphenated tags only — a tag " +
     "written 'FCU11' on the sheet will not enumerate, though tag mode still finds it (hyphen, space, or " +
     "nothing are interchangeable there). Title-block boilerplate and sheet-number lookalikes (M-501) are " +
-    "filtered from enumeration. Read-only.",
+    "filtered from enumeration. By default both modes read the ISSUED drawings only: pre-issuance QA copies " +
+    "(the QAQC folder) are left out so a sheet is not counted twice. To work a pre-issuance QA set — or any " +
+    "one set — pass its folder as subfolder. Read-only.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number OR project name."),
     tag: z.string().optional().describe("One equipment tag, e.g. 'FCU-11'. Omit to enumerate all tags on the project."),
     minHits: z.number().optional().describe("Enumeration mode: only tags with at least this many text hits (default 3)."),
+    subfolder: z.string().optional().describe("Limit to ONE set folder, spelled as list_project_documents reports it, e.g. '09 ✅ QAQC/2026-11-10_100% CD QAQC' or 'Outgoing/2026-04-17_Bulletin #13'. Required to see a pre-issuance QA set; omit for the issued drawings."),
   }),
-  handler: async ({ projectNumber, tag, minHits }) => {
+  handler: async ({ projectNumber, tag, minHits, subfolder }) => {
+    const folder = subfolder?.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "") : null;
     const pid = await resolveProjectId(projectNumber);
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
@@ -9385,16 +9464,30 @@ mcp.tool("find_equipment", {
     // ── Enumeration mode ───────────────────────────────────────────────────
     if (!tag?.trim()) {
       let rows: any[];
+      let scopeNote: string | undefined = folder ? `Tags from "${folder}" only.` : PRE_ISSUE_NOTE;
+      const minH = Math.max(1, Math.round(minHits ?? 3));
       try {
-        rows = (await sbRpc("pms_equipment_tags", { p_prefix: numPrefix, p_min_hits: Math.max(1, Math.round(minHits ?? 3)) })) || [];
+        rows = (await sbRpc("pms_equipment_tags_scoped", {
+          p_prefix: numPrefix, p_min_hits: minH, p_folder: folder, p_exclude: folder ? null : PRE_ISSUE_FOLDER_SQL_RE,
+        })) || [];
       } catch (e) {
-        return asText({ project, error: `Tag enumeration failed: ${String((e as any)?.message ?? e)}` });
+        // The scoped function ships in migration 20261116140000. Until it is
+        // applied the whole-project enumeration still answers — but it cannot
+        // honor a folder, and it counts QA copies, so say which one this is.
+        if (folder) return asText({ project, error: `Tag enumeration for one folder failed: ${String((e as any)?.message ?? e)}`, nextStep: "search_drawings with the same subfolder still finds specific tags." });
+        try {
+          rows = (await sbRpc("pms_equipment_tags", { p_prefix: numPrefix, p_min_hits: minH })) || [];
+          scopeNote = "Counted over EVERY indexed folder, including any pre-issuance QA copies (the scoped enumeration is not available yet), so sheet counts may be doubled where a QA set was indexed.";
+        } catch (e2) {
+          return asText({ project, error: `Tag enumeration failed: ${String((e2 as any)?.message ?? e2)}` });
+        }
       }
       if (!rows.length) {
         return asText({
           project, coverage, families: [],
           reason: indexedFiles === 0 ? "Nothing is indexed for this project yet." : "No hyphenated tags recur on the indexed sheets.",
-          nextStep: indexedFiles === 0 ? "Run search_drawings with indexOnly:true first." : "search_drawings finds specific text either way.",
+          nextStep: indexedFiles === 0 ? "Run search_drawings with indexOnly:true first."
+            : (folder ? "search_drawings finds specific text either way." : "search_drawings finds specific text either way. If the set under review is a pre-issuance QA set, pass its folder as subfolder: QA copies are left out by default."),
         });
       }
       const totalSheets = Number(rows[0]?.total_sheets ?? 0);
@@ -9410,6 +9503,7 @@ mcp.tool("find_equipment", {
         .sort((a, b) => b.totalHits - a.totalHits);
       return asText({
         project, coverage, indexedSheets: totalSheets, tagCount: kept.length, families,
+        ...(scopeNote ? { scope: scopeNote } : {}),
         note: "Derived from the drawing text index at query time. Pass tag:'FCU-11' for one unit's sheets + CA record; family prefixes map to equipment types (FCU fan coil, EF exhaust fan, CHWP chilled water pump, ...).",
       });
     }
@@ -9419,9 +9513,15 @@ mcp.tool("find_equipment", {
     if (!patterns.length) return asText({ error: `"${tag}" is not a tag.` });
     let hits: any[] = [];
     try {
-      hits = (await sbRpc("pms_drawing_search", { p_prefix: numPrefix, p_patterns: patterns, p_folder: null, p_limit: 120 })) || [];
+      hits = (await sbRpc("pms_drawing_search", { p_prefix: numPrefix, p_patterns: patterns, p_folder: folder, p_limit: folder ? 120 : 240 })) || [];
     } catch (e) {
       return asText({ project, tag, coverage, error: `Drawing search failed: ${String((e as any)?.message ?? e)}` });
+    }
+    let preIssueDropped = 0;
+    if (!folder) {
+      const issued = hits.filter((h: any) => !isPreIssuePath(h.folder_path));
+      preIssueDropped = hits.length - issued.length;
+      hits = issued.slice(0, 120);
     }
     const bySheet = new Map<string, any>();
     for (const h of hits) {
@@ -9460,6 +9560,8 @@ mcp.tool("find_equipment", {
       project, tag: tag.trim().toUpperCase(), coverage,
       sheetCount: sheets.length, sheets: sheets.slice(0, 40),
       caCount: ca.length, caRecord: ca.slice(0, 30),
+      ...(folder ? { scope: `Sheets from "${folder}" only.` } : {}),
+      ...(preIssueDropped ? { preIssueCopiesExcluded: { pages: preIssueDropped, note: PRE_ISSUE_NOTE } } : {}),
       ...(sheets.length === 0 && ca.length === 0 ? {
         reason: "No indexed sheet and no CA record mentions it.",
         nextStep: filesPending > 0 ? "Index incomplete — search_drawings indexOnly:true, then retry." : "Check the spelling; enumeration mode (omit tag) lists what exists.",
@@ -9751,6 +9853,42 @@ mcp.tool("record_qa_findings", {
   },
 });
 
+// What the ledger holds on given sheets / equipment tags: the join the CA
+// reviews need (qaLedgerMatch.ts). Reads every row of the project in the
+// asked statuses and filters in memory; a project's ledger is hundreds of
+// rows, not thousands. `relevantOnly` is the CA default: rows still open, plus
+// external comments that carry an accepted response whatever their status,
+// because a response is a commitment Setty made to the reviewer and stays
+// binding after the row is closed.
+async function qaLedgerFor(project: string, q: { sheets?: string[]; mentions?: string[] }, opts: { status?: string; relevantOnly?: boolean } = {}): Promise<any[]> {
+  const matcher = buildLedgerMatcher(q);
+  if (!matcher.active) return [];
+  let path = "pms_qa_findings?select=*&project=eq." + encodeURIComponent(project) + "&order=id";
+  const st = (opts.status ?? "all").trim().toLowerCase();
+  if (st === "open") path += "&status=in.(open,ready_to_backcheck)";
+  else if (st !== "all") path += "&status=eq." + encodeURIComponent(st);
+  const rows: any[] = await sbGetAll(path);
+  const out: any[] = [];
+  for (const r of rows) {
+    if (opts.relevantOnly) {
+      const live = r.status === "open" || r.status === "ready_to_backcheck";
+      const commitment = QA_RESPONSE_EXTERNAL_SOURCES.has(String(r.source)) && !!r.response;
+      if (!live && !commitment) continue;
+    }
+    const m = matcher.match(r);
+    if (m) out.push({ ...r, matchedOn: m });
+  }
+  out.sort((a, b) => qaFindingRank(a) - qaFindingRank(b) || String(b.created_at).localeCompare(String(a.created_at)));
+  return out;
+}
+const QA_LEDGER_CA_NOTE =
+  "How to use these in an RFI or submittal review: an OPEN internal finding is a known problem on that sheet or " +
+  "equipment — check whether this item touches it, and say so in the internal notes. An EXTERNAL row (owner, " +
+  "agency, architect, DrChecks) is a reviewer's comment; its `response` is what Setty told them, so a suggested " +
+  "response or stamp must not contradict it, and a submittal or RFI answer that departs from it is a red flag for " +
+  "the engineer. External rows with no response yet are unanswered comments: do not answer them here. The ledger " +
+  "is internal: never quote a finding or a comment response to the contractor.";
+
 mcp.tool("list_qa_findings", {
   description:
     "Read the QA FINDINGS LEDGER — internal review findings and ingested external comments (DrChecks/owner/" +
@@ -9760,7 +9898,11 @@ mcp.tool("list_qa_findings", {
     "(closed/dismissed rows keep their note and who moved them). External rows also carry the RESPONSE side of the " +
     "register: ai_response (Claude's draft from save_comment_responses) and response/response_disposition (what a " +
     "signed-in person accepted in the QA Reviews tab); needsResponse:true lists the external comments nobody has " +
-    "answered yet. The result also names comment registers that arrived by email but were never ingested " +
+    "answered yet. Pass sheets and/or mentions to get ONLY the rows that concern given sheets or equipment tags " +
+    "(e.g. sheets:['E-610'], mentions:['EF-7']) — the lookup an RFI or submittal review makes to see the known " +
+    "findings and the owner/agency comments, with Setty's responses, on what the item touches; use status:'all' " +
+    "there so answered and closed comments are included. " +
+    "The result also names comment registers that arrived by email but were never ingested " +
     "(commentLogsNotIngested), so a log sitting in the inbox is not silently missing from the ledger.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number OR name."),
@@ -9768,14 +9910,38 @@ mcp.tool("list_qa_findings", {
     source: z.enum(QA_FINDING_SOURCES).optional().describe("Only rows from one source."),
     needsResponse: z.boolean().optional().describe("Only EXTERNAL comment rows (drchecks/owner/architect/agency/other) with no accepted human response yet: the work list for drafting the comments-and-responses register."),
     discipline: z.string().optional().describe("Only rows for one responsible discipline, e.g. 'Electrical' (rows recorded before 2026-11-16 may have none)."),
+    sheets: z.array(z.string()).max(40).optional().describe("Only rows that cite or name any of these sheets, revision ignored: ['E-610', 'M601']."),
+    mentions: z.array(z.string()).max(20).optional().describe("Only rows whose text mentions any of these terms, typically equipment tags: ['EF-7', 'RTU-1']. Hyphen, space or nothing between the parts all match; EF-7 does not match EF-70."),
     limit: z.number().optional().describe("Max rows (default 200, max 500). The newest rows are returned; `truncated` says when older ones were left out."),
   }),
-  handler: async ({ projectNumber, status, source, needsResponse, discipline, limit }) => {
+  handler: async ({ projectNumber, status, source, needsResponse, discipline, sheets, mentions, limit }) => {
     const pid = await resolveProjectId(projectNumber);
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
     const lim = Math.min(Math.max(Math.round(limit ?? 200), 1), 500);
+    // Sheet / tag lookup: its own path, because the match is on free text and
+    // has to see every row before any limit applies.
+    if ((sheets && sheets.length) || (mentions && mentions.length)) {
+      let hits: any[];
+      try { hits = await qaLedgerFor(String(project), { sheets, mentions }, { status: status ?? "open" }); } catch (e) {
+        return asText({ project, error: `Could not read the ledger: ${String((e as any)?.message ?? e)}` });
+      }
+      if (source) hits = hits.filter((r) => r.source === source);
+      const wantD = qaNormalizeDiscipline(discipline);
+      if (wantD) hits = hits.filter((r) => String(r.discipline || "").toLowerCase() === wantD.toLowerCase());
+      if (needsResponse) hits = hits.filter((r) => QA_RESPONSE_EXTERNAL_SOURCES.has(String(r.source)) && !r.response);
+      const cut = hits.length > lim;
+      return asText({
+        project, lookedFor: { ...(sheets?.length ? { sheets } : {}), ...(mentions?.length ? { mentions } : {}) },
+        statusScope: (status ?? "open").trim().toLowerCase() === "open" ? "open + ready_to_backcheck (pass status:'all' to include answered and closed rows)" : status,
+        count: Math.min(hits.length, lim), ...(cut ? { truncated: true, truncatedNote: `${hits.length} rows match; the ${lim} worst are listed.` } : {}),
+        findings: hits.slice(0, lim),
+        note: hits.length
+          ? "Each row's matchedOn says which sheet or term it matched. Matching is on the sheets a row cites and on sheet numbers and terms in its text, so read the row before relying on it. " + QA_LEDGER_CA_NOTE
+          : "No ledger row cites or mentions these. That is not a clean bill: findings are only as complete as the reviews that were run and recorded.",
+      });
+    }
     // select=*: reads discipline/assignee once those columns exist and still
     // works on a database that has not run that migration. One row past the
     // limit is fetched so a cut-off list can say so.

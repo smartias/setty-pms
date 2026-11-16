@@ -148,6 +148,15 @@ EVERYTHING and for coordinating everyone, so:
      set, that folder is the deliverable under review — pass it as
      `subfolder` to `search_drawings` / `extract_sheet_index` and say so in
      the report header. Default remains the composed current set.
+   - **A pre-issuance QAQC set must be named on EVERY drawing call.** The
+     drawing tools answer from the ISSUED drawings by default and leave QA
+     copies out, so that a QA copy is never mistaken for what the client
+     holds. When the set under review is in the QAQC folder, pass that
+     folder as `subfolder` to `search_drawings`, `extract_sheet_index` and
+     `find_equipment`, and as `set` to `view_drawing` and
+     `read_drawing_schedule`. Without it you would be reviewing the previous
+     issue. A result marked `preIssueCopy` confirms you are on the QA copy;
+     `preIssueCopiesExcluded` on a result means you forgot to name it.
    - **If the register comes back EMPTY** (`extract_sheet_index` with no
      subfolder says no set was ever logged as a transmittal — common on
      small CA jobs and on a first internal QA), that is NOT the end of the
@@ -521,7 +530,9 @@ condition is `rfi-bait`.
 it is organized by who fixes it, not by how it was found:
 
 - **One list, numbered once** (P-1, P-2 ...), merging Step 1 carry-overs
-  and the findings and flags of all three passes. The same problem found by
+  and the findings and flags of all three passes. Carry-overs include every
+  open OWNER, agency and architect comment: the team works those from the
+  same list as the internal findings, never from a separate document. The same problem found by
   two passes is ONE item naming both.
 - **Grouped by discipline** — Mechanical, Electrical, Plumbing, Fire
   Protection, Fire Alarm, then **Multi-discipline / coordination** (name
@@ -615,9 +626,13 @@ quietly dies.
   `action`. Never name a person: the PM assigns people in the tab.
 - Check the result's `failed` list and report any row that did not save.
 
-External comment logs ingest the same way (`kind:'comment-log'`, one row
-per comment, `externalRef` = comment number, `source` naming the
-commenter) with two hard rules:
+External comment logs — the owner's, the agency's, the architect's — ingest
+the same way (`kind:'comment-log'`, one row per comment, `externalRef` =
+comment number, `source` naming the commenter: `owner`, `agency`,
+`architect`, `drchecks`). Each row carries its `discipline` like any other
+finding, and its `sheets` wherever the comment names them, so the comment
+sits on the punch list under the discipline that has to act and is found
+later by the RFI and submittal reviews of those sheets. Two hard rules:
 
 - **`sourceDoc` is REQUIRED** — the comment log's file name (e.g.
   "2026-08-12_SBU Code Review Comments.pdf"). The QA tab shows it as each
