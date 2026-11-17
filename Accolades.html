@@ -1929,7 +1929,7 @@ async function loadCands() {
   } catch (e) {
     cands = []; candState = "error";
     const d = e.detail || {};
-    candError = d.code === "57014" ? "It ran out of time on the database. Applying the email search migration (20261111180000) fixes this."
+    candError = d.code === "57014" ? "It ran out of time on the database. Migration 20261117020000 (pms_accolade_email_hits) makes this search instant; apply it if it is not on yet."
       : (d.code === "PGRST202" || e.status === 404) ? "The search function is missing from the database. Apply the pms_accolades migrations."
       : "Details for whoever looks after the PMS: " + [d.code, d.message || ("HTTP " + (e.status || "error"))].filter(Boolean).join(" \u2014 ");
   }
