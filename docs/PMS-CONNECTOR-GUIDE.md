@@ -137,7 +137,7 @@ Photos from the Field Photos app are searchable by project, phase and date.
 
 ## Bigger jobs Claude knows how to run
 
-Four workflows are written as skills in the firm's Claude skill library. Ask in plain words; with the skill loaded, Claude follows the firm's procedure and produces a draft for your review. It never files, sends or closes anything on its own.
+Five workflows are written as skills in the firm's Claude skill library. Ask in plain words; with the skill loaded, Claude follows the firm's procedure and produces a draft for your review. It never files, sends or closes anything on its own.
 
 Check the skill is on your seat before relying on it: type / in a chat and look for its name. If it is missing, ask Sara. The tools still answer without it, but Claude then improvises the method instead of following the firm's evidence and review steps, which matters most for QA and submittal reviews.
 
@@ -148,6 +148,8 @@ Check the skill is on your seat before relying on it: type / in a chat and look 
 **Review comment responses.** "Respond to the DrChecks comments on SIPX268014.00" drafts a disposition and response for every open comment and builds the register that goes back to the reviewer. You approve each one.
 
 **Submittal and RFI review.** "Review the VAV submittal against the drawings" checks the marked selection on the cut sheet against the schedule and spec, suggests a stamp and response, and flags cost or scope red flags.
+
+**Project risk review.** "Risk review on Tabler" rates the project Red, Yellow or Green on schedule and deliverables, the construction-administration backlog, QA and technical risk, and client or scope signals, with the records behind each rating. It is a triage report for the PM or director. It only reads: it never changes the PMS, closes or reassigns anything, or contacts anyone.
 
 ## What to expect
 

@@ -1448,7 +1448,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-16-qa-stale-client-fields";
+const BUILD = "2026-11-17-how-to-use-risk-review";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3420,7 +3420,7 @@ const HOW_TO_USE_RULES = [
   "Follow-up questions keep the project context.",
   "\"Save that\" writes a finding to the shared project knowledge.",
 ];
-// The four skills live in the firm's claude.ai skill library, uploaded by an
+// The five skills live in the firm's claude.ai skill library, uploaded by an
 // Organization Owner (Admin Console → Skill library sync). A seat without
 // them still gets a useful answer from the tools, but not the firm's
 // procedure, so the guide says how to check rather than promising them.
@@ -3433,6 +3433,7 @@ const HOW_TO_USE_WORKFLOWS = [
   { name: "QA coordination review", ask: "Run QA on the 100% CD set for the Thrive Center", does: "Works the QA Deliverables Checklist against the set and open items; findings go to the ledger keyed to checklist items." },
   { name: "Review comment responses", ask: "Respond to the DrChecks comments on SIPX268014.00", does: "Drafts a disposition and response per open comment and builds the register that goes back to the reviewer." },
   { name: "Submittal and RFI review", ask: "Review the VAV submittal against the drawings", does: "Checks the marked selection against schedule and spec, suggests a stamp and response, flags cost or scope issues." },
+  { name: "Project risk review", ask: "Risk review on Tabler", does: "Rates schedule, CA backlog, QA and client or scope risk Red, Yellow or Green with the records behind each rating. Read-only triage for the PM or director." },
 ];
 const HOW_TO_USE_LIMITS = [
   "Only what your PMS role allows: fee fields are hidden without the fees permission; a project you cannot see does not exist here. A PMS admin can change access.",
