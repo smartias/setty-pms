@@ -2994,9 +2994,15 @@ function renderMcp() {
         <tr><td><code>submittal-rfi-review</code></td><td>PMS → RFI / Submittal modal → <b>Send to Claude for review</b>, <b>Pull reply from email</b>, and the log's <b>Backload from PDF/email</b> links</td>
             <td><code>.claude/skills/submittal-rfi-review/SKILL.md</code></td>
             <td><span class="pill warn">Needs Owner</span> <span style="color:var(--muted);font-size:11.5px">reviewer feedback (search_review_feedback, 1.19.0) is read by the skill, so stale copies miss it</span></td></tr>
+        <tr><td><code>review-comment-responses</code></td><td>PMS → project QA Reviews tab → <b>Draft comment responses (N)</b>; also asked for by name in chat</td>
+            <td><code>.claude/skills/review-comment-responses/SKILL.md</code></td>
+            <td><span class="pill warn">Needs Owner</span> <span style="color:var(--muted);font-size:11.5px">drafts are saved with save_comment_responses; re-upload after every skill PR</span></td></tr>
         <tr><td><code>design-narrative</code></td><td>No PMS button yet; asked for by name in chat</td>
             <td><code>.claude/skills/design-narrative/SKILL.md</code></td>
             <td><span class="pill warn">Needs Owner</span></td></tr>
+        <tr><td><code>project-risk-review</code></td><td>No PMS button yet; asked for by name in chat ("risk review on Tabler")</td>
+            <td><code>.claude/skills/project-risk-review/SKILL.md</code></td>
+            <td><span class="pill warn">Needs Owner</span> <span style="color:var(--muted);font-size:11.5px">new skill, not in the library yet; read-only, writes nothing to the PMS</span></td></tr>
       </tbody></table>
       <p style="font-size:12px;color:var(--muted)"><b>How to check:</b> open a fresh claude.ai chat, type <code>/</code> and look
         for the skill name; or press a PMS button and confirm the session follows the skill's steps (checklist by item id, ledger
