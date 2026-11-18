@@ -77,6 +77,7 @@ import { retryingRange, httpRange, openRangedPdf, type RangedPdf } from "./pdfRa
 // Why an RFI was asked and which QA check would have caught it. Pure; see its tests.
 import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses } from "./rfiRootCause.ts";
 import { isIssuedSetRow, notASetReason } from "./issuedSet.ts";
+import { needsOcr, ocrPage, ocrNote, OCR_SYSTEM_PROMPT, OCR_MAX_PAGES_PER_CALL } from "./ocrPages.ts";
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
@@ -1448,7 +1449,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-18-revision-status-received";
+const BUILD = "2026-11-18-read-document-ocr";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -5305,7 +5306,9 @@ mcp.tool("read_document", {
     "'Dr. Checks' / DrChecks is the same thing under the agencies' review-system name, so 'Dr. Checks " +
     "comments' means AGENCY review comments. These are often Excel comment logs / registers or DrChecks " +
     "exports — read them in full and note the specific comments and their responses. Large files and other " +
-    "binaries (drawings, images, .doc/.ppt) return metadata + a webUrl. This is a TEXT extraction: to get the " +
+    "binaries (drawings, images, .doc/.ppt) return metadata + a webUrl. PDF pages with NO text layer (scans, " +
+    "image-only sheets) are read by OCR, up to 6 pages per call, and marked [OCR]; treat OCR'd values as " +
+    "needing a check against the sheet (view_drawing). This is a TEXT extraction: to get the " +
     "actual file (edit an .xlsx and keep its formulas/dropdowns/formatting, forward a PDF), use download_document; " +
     "to write an edited file back into the project record, upload_document.",
   inputSchema: z.object({
@@ -5379,15 +5382,25 @@ mcp.tool("read_document", {
           const total: number = pdf.numPages;
           const MAX_PAGES = 50;
           const textEntry = pdfPageTexts(pdfCacheKey);
+          // Pages with no text layer (scans, image exports) are OCR'd, a few per call.
+          const ocrDone: number[] = []; let ocrSkipped = 0; let ocrFailed: string | null = null;
           const pageText = async (i: number): Promise<string> => {
             const memo = textEntry.pages.get(i);
-            if (memo !== undefined) return memo;
+            if (memo !== undefined) { if (memo.startsWith("[OCR] ") && !ocrDone.includes(i)) ocrDone.push(i); return memo; }
             const pg = await pdf.getPage(i);
             const tc = await pg.getTextContent();
-            const t = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+            let t = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+            if (needsOcr(t)) {
+              if (ocrFailed || ocrDone.length >= OCR_MAX_PAGES_PER_CALL) { ocrSkipped++; return t; }
+              try {
+                const o = await ocrPdfPage(pdfBytes!, i);
+                if (o) { t = "[OCR] " + o; ocrDone.push(i); }
+              } catch (e) { ocrFailed = String((e as any)?.message ?? e).slice(0, 160); ocrSkipped++; return t; }
+            }
             pdfPageTextPut(textEntry, i, t);
             return t;
           };
+          const withOcrNote = (n: string) => { const o = ocrNote(ocrDone, ocrSkipped, ocrFailed); return o ? `${n} ${o}` : n; };
           const capPdf = (t: string) => t.length > MAX_DOC_CHARS ? t.slice(0, MAX_DOC_CHARS) + "\n…[truncated]" : t;
           if (find && String(find).trim()) {
             const term = String(find).trim().toLowerCase();
@@ -5398,13 +5411,13 @@ mcp.tool("read_document", {
             }
             if (!hits.length) {
               return asText({ ...base, ext, totalPages: total,
-                note: `\"${find}\" not found in the extractable text of the first ${scanCap} of ${total} page(s). It may be a scanned/image-only section — open via webUrl, or try pages:\"X-Y\".` });
+                note: withOcrNote(`\"${find}\" not found in the extractable text of the first ${scanCap} of ${total} page(s). It may be a scanned/image-only section — open via webUrl, or try pages:\"X-Y\".`) });
             }
             const parts: string[] = [];
             for (const i of hits) parts.push(`[p.${i}]\n` + (await pageText(i)));
             const body = parts.join("\n\n");
             return asText({ ...base, ext, totalPages: total, matchedPages: hits,
-              note: `Found \"${find}\" on page(s) ${hits.join(", ")}${total > scanCap ? ` (scanned first ${scanCap})` : ""}. Use pages:\"X-Y\" to read around them.`,
+              note: withOcrNote(`Found \"${find}\" on page(s) ${hits.join(", ")}${total > scanCap ? ` (scanned first ${scanCap})` : ""}. Use pages:\"X-Y\" to read around them.`),
               chars: body.length, truncated: body.length > MAX_DOC_CHARS, text: capPdf(body) });
           }
           let startP = 1, endP = total;
@@ -5420,7 +5433,7 @@ mcp.tool("read_document", {
           const body = parts.join("\n\n");
           const partial = startP > 1 || endP < total;
           return asText({ ...base, ext, totalPages: total, pagesShown: `${startP}-${endP}`,
-            note: partial ? `Showing pages ${startP}-${endP} of ${total}. Use find:\"keyword\" to jump to a section, or pages:\"X-Y\" for another range.` : `${total} page(s).`,
+            note: withOcrNote(partial ? `Showing pages ${startP}-${endP} of ${total}. Use find:\"keyword\" to jump to a section, or pages:\"X-Y\" for another range.` : `${total} page(s).`),
             chars: body.length, truncated: body.length > MAX_DOC_CHARS, text: capPdf(body) });
         } catch (e) {
           return asText({ ...base, error: "PDF text extraction failed: " + String((e as any)?.message ?? e) });
@@ -9202,6 +9215,30 @@ async function drawingItemMeta(itemId: string): Promise<{ name: string; size: nu
   if (bar <= 0) throw new Error("itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it, or an 'az:' drive id.");
   const meta = await graphGet(`/drives/${itemId.slice(0, bar)}/items/${encodeURIComponent(itemId.slice(bar + 1))}?$select=id,name,size,webUrl,file`);
   return { name: String(meta?.name || ""), size: Number(meta?.size || 0), webUrl: meta?.webUrl ?? null };
+}
+
+// OCR for a page with no text layer (see ocrPages.ts). Declared with the render
+// helpers it uses; read_document calls it at request time.
+const OCR_MODEL = "claude-sonnet-5-5";
+async function ocrPdfPage(pdfBytes: Uint8Array, page: number): Promise<string> {
+  const apiKey = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY not configured");
+  const anthropic = new Anthropic({ apiKey });
+  return await ocrPage(
+    async (region) => { const r = await renderDrawingPage(pdfBytes, page, region); return { b64: r.b64, mimeType: r.mimeType }; },
+    async (images) => {
+      const response: any = await (anthropic as any).messages.create({
+        model: OCR_MODEL,
+        max_tokens: 8000,
+        system: OCR_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: [
+          ...images.map((im) => ({ type: "image", source: { type: "base64", media_type: im.mimeType, data: im.b64 } })),
+          { type: "text", text: "Transcribe the text on this page." },
+        ] }],
+      });
+      return (response.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
+    },
+  );
 }
 
 mcp.tool("view_drawing", {
