@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-11-05-intel-v38-knowledge-multi-discipline";
+    window.__appVersion = "2026-11-18-intel-v39-fire-alarm-add-export";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -275,7 +275,7 @@ async function sb(method, path, body, prefer) {
 }
 
 // Controlled vocabularies (kept small and editable in one place).
-const DISCIPLINES = ["Mechanical","Electrical","Plumbing","Fire Protection","Structural","Architectural","Civil","Technology/Telecom","Commissioning","General"];
+const DISCIPLINES = ["Mechanical","Electrical","Plumbing","Fire Protection","Fire Alarm","Structural","Architectural","Civil","Technology/Telecom","Commissioning","General"];
 const ISSUE_TYPES  = ["Coordination","Constructability","Design conflict","Code / AHJ","Utility / Service","Schedule","Cost / Estimating","Submittal","RFI","Owner requirement","Other"];
 const CONFIDENCE    = ["low","medium","high"];
 
@@ -320,7 +320,7 @@ const state = {
   selS: new Set(),           // bulk-selected engineering-standard ids
   graph: { rows: [], loaded: false, loading: false, f: { q: "", discipline: "", agency: "", kind: "", view: "people" } },
   heat: { rows: [], asof: {}, blocked: {}, loaded: false, loading: false, f: { agency: "", quiet: false } },
-  prefs: { rows: [], loaded: false, loading: false, f: { q: "", agency: "", type: "", status: "" } },
+  prefs: { rows: [], loaded: false, loading: false, f: { q: "", agency: "", discipline: "", type: "", status: "" } },
   stds: { rows: [], loaded: false, loading: false, f: { q: "", discipline: "", basis: "", status: "" } },
   meetingItems: { rows: [], loaded: false, loading: false, f: { project: "", type: "", status: "pending", q: "" } },
 };
@@ -1183,6 +1183,125 @@ function wireHeatmap() {
   document.querySelectorAll(".hm-open").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); open(b.dataset.num); }));
 }
 
+// ── Fire Alarm routing, Excel export and report (tech-director requests, Nov 2026) ──
+// Fire Alarm is Division 28 (28 31 00 Fire Detection and Alarm). Sprinkler,
+// standpipe and fire pump items stay Fire Protection (Division 21). Existing
+// rows were all folded into Fire Protection before Fire Alarm existed, so the
+// discipline filters offer "Possible Fire Alarm (not yet tagged)": rows whose
+// text uses these terms and that are not tagged Fire Alarm yet. A director
+// opens the entry and ticks Fire Alarm; nothing is retagged automatically.
+const FIRE_ALARM_RE = /\b(facp|fire alarm|fire detection|notification appliances?|(?:horn|speaker)[\s\/,-]*strobes?|strobes?|smoke (?:detector|detection)s?|heat detectors?|(?:manual )?pull stations?|addressable (?:devices?|fire|smoke|detectors?|panels?)|initiating device|nfpa[\s-]*72|duct detectors?|battery calculations?|annunciators?|28 31 00)\b/i;
+const FA_CANDIDATES = "__fa_candidates";
+function knowledgeText(r) {
+  return [r.title, r.practice_text, r.lesson_summary, r.reusable_prompt, r.standard_text, r.requirement_or_preference, r.system, r.notes, r.applies_to].filter(Boolean).join(" ");
+}
+function isFireAlarmCandidate(r) {
+  return !knowledgeDisciplines(r).includes("Fire Alarm") && FIRE_ALARM_RE.test(knowledgeText(r));
+}
+function matchesDiscipline(r, sel) {
+  return sel === FA_CANDIDATES ? isFireAlarmCandidate(r) : knowledgeDisciplines(r).includes(sel);
+}
+// Options for every Discipline filter. Fire Alarm is always offered, even
+// before any row carries it, plus the review list of untagged candidates.
+function discFilterOptions(fromData, sel) {
+  const list = [...new Set([...fromData, "Fire Alarm"])].sort();
+  return list.map(a => `<option value="${esc(a)}" ${a === sel ? "selected" : ""}>${esc(a)}</option>`).join("")
+    + `<option value="${FA_CANDIDATES}" ${sel === FA_CANDIDATES ? "selected" : ""}>🔔 Possible Fire Alarm (not yet tagged)</option>`;
+}
+
+// What each tab exports: the rows currently shown (filters applied), the
+// columns for the Excel sheet, and the headline used in the printable report.
+const _kd = r => knowledgeDisciplines(r).join("; ");
+const _kdate = r => (r.date_added || "").slice(0, 10);
+const KNOWLEDGE_EXPORTS = {
+  lessons: { title: "Project Knowledge", sheet: "Project Knowledge", rows: () => lessonsFiltered(), main: r => r.lesson_summary, skip: ["Disciplines", "Summary"], skip: ["Disciplines", "Summary"],
+    cols: [["Disciplines", _kd], ["Summary", r => r.lesson_summary], ["Project", r => r.project_id], ["Agency", r => r.agency], ["System", r => r.system],
+      ["Issue type", r => r.issue_type], ["Status", r => r.status], ["Confidence", r => r.confidence], ["Setty person", r => r.so_person],
+      ["Source", r => r.source_reference], ["Reusable prompt", r => r.reusable_prompt], ["Tags", r => (r.tags || []).join(", ")], ["Date added", _kdate]] },
+  practices: { title: "Best Practices", sheet: "Best Practices", rows: () => practicesFiltered(), main: r => (r.title ? r.title + ": " : "") + (r.practice_text || ""), skip: ["Disciplines", "Title", "Practice"], skip: ["Disciplines", "Title", "Practice"],
+    cols: [["Disciplines", _kd], ["Title", r => r.title], ["Practice", r => r.practice_text], ["Theme", r => r.coord_theme], ["System", r => r.system],
+      ["Type", r => r.issue_type], ["Status", r => r.status], ["Confidence", r => r.confidence], ["Approved by", r => r.approved_by], ["Date added", _kdate]] },
+  agencies: { title: "Agency Preferences", sheet: "Agency Preferences", rows: () => prefsFiltered(), main: r => r.requirement_or_preference, skip: ["Disciplines", "Requirement or preference"], skip: ["Disciplines", "Requirement or preference"],
+    cols: [["Agency", r => r.agency], ["Disciplines", _kd], ["Type", r => r.preference_type], ["Requirement or preference", r => r.requirement_or_preference],
+      ["Applies to", r => r.applies_to], ["Notes", r => r.notes], ["Source", r => r.source], ["Status", r => r.status], ["Date verified", r => r.date_verified], ["Date added", _kdate]] },
+  standards: { title: "Engineering Standards", sheet: "Engineering Standards", rows: () => standardsFiltered(), main: r => r.standard_text, skip: ["Disciplines", "Standard"], skip: ["Disciplines", "Standard"],
+    cols: [["Disciplines", _kd], ["System", r => r.system], ["Standard", r => r.standard_text], ["Basis", r => STD_BASIS[r.basis] || r.basis],
+      ["Source reference", r => r.source_reference], ["Status", r => r.status], ["Date verified", r => r.date_verified], ["Date added", _kdate]] },
+};
+function knowledgeToolsHTML(kind, addFn) {
+  return (addFn ? `<button class="btn btn-ghost" style="margin-left:auto" onclick="${addFn}()" title="Add an entry by hand. It goes into the review queue first.">＋ Add manually</button>` : "")
+    + `<button class="btn btn-ghost" ${addFn ? "" : 'style="margin-left:auto"'} onclick="exportKnowledge('${kind}')" title="Download the entries shown (current filters) as an Excel file">⬇ Export to Excel</button>`
+    + `<button class="btn btn-ghost" onclick="reportKnowledge('${kind}')" title="Open a printable report of the entries shown, grouped by discipline">📄 Generate report</button>`;
+}
+function knowledgeExportLabel(kind) {
+  const f = ({ lessons: state.filter, practices: state.pfilter, agencies: state.prefs.f, standards: state.stds.f })[kind] || {};
+  return f.discipline === FA_CANDIDATES ? "Possible Fire Alarm" : (f.discipline || "All disciplines");
+}
+function _download(blob, name) {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+let _sheetJsLoading = null;
+function loadSheetJS() {
+  if (window.XLSX) return Promise.resolve();
+  if (!_sheetJsLoading) _sheetJsLoading = new Promise((ok, no) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = ok; s.onerror = () => { _sheetJsLoading = null; no(new Error("could not load the Excel library")); };
+    document.head.appendChild(s);
+  });
+  return _sheetJsLoading;
+}
+async function exportKnowledge(kind) {
+  const cfg = KNOWLEDGE_EXPORTS[kind]; if (!cfg) return;
+  const rows = cfg.rows();
+  if (!rows.length) { toast("Nothing to export with the current filters.", "error"); return; }
+  const aoa = [cfg.cols.map(c => c[0]), ...rows.map(r => cfg.cols.map(c => { const v = c[1](r); return v == null ? "" : String(v); }))];
+  const name = `Setty ${cfg.title} - ${knowledgeExportLabel(kind).replace(/[\\/:*?"<>|]/g, "-")} - ${new Date().toISOString().slice(0, 10)}`;
+  try {
+    await loadSheetJS();
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = cfg.cols.map(c => ({ wch: /Summary|Practice|Standard|Requirement|prompt|Notes/.test(c[0]) ? 70 : 22 }));
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, cfg.sheet);
+    XLSX.writeFile(wb, name + ".xlsx");
+    toast(`Exported ${rows.length} ${cfg.title} entr${rows.length === 1 ? "y" : "ies"} to Excel.`, "success");
+  } catch (e) {
+    // The Excel library comes from a CDN; if it is blocked, a CSV still opens in Excel.
+    const q = v => '"' + v.replace(/"/g, '""') + '"';
+    _download(new Blob(["﻿" + aoa.map(r => r.map(q).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }), name + ".csv");
+    toast("Excel library unavailable (" + e.message + "). Downloaded a CSV instead; it opens in Excel.", "error");
+  }
+}
+// Printable report: entries grouped by discipline (an entry for two trades
+// appears under both), for lessons-learned sessions. Print / Save as PDF from
+// the report window.
+function reportKnowledge(kind) {
+  const cfg = KNOWLEDGE_EXPORTS[kind]; if (!cfg) return;
+  const rows = cfg.rows();
+  if (!rows.length) { toast("Nothing to report with the current filters.", "error"); return; }
+  const groups = {};
+  rows.forEach(r => { const ds = knowledgeDisciplines(r); (ds.length ? ds : ["General"]).forEach(d => (groups[d] = groups[d] || []).push(r)); });
+  const meta = cfg.cols.filter(c => !cfg.skip.includes(c[0]));
+  const entry = r => `<div class="e"><div class="t">${esc(cfg.main(r) || "")}</div><div class="m">${
+    meta.map(c => { const v = c[1](r); return v ? `<span><b>${esc(c[0])}:</b> ${esc(String(v))}</span>` : ""; }).filter(Boolean).join("")}</div></div>`;
+  const today = new Date().toISOString().slice(0, 10);
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Setty ${esc(cfg.title)} report</title><style>
+    body{font:13px/1.45 Calibri,Arial,sans-serif;color:#1a1a1a;margin:28px auto;max-width:900px;padding:0 18px}
+    h1{font-size:22px;margin:0 0 2px}.sub{color:#666;margin-bottom:18px}
+    h2{font-size:15px;margin:22px 0 6px;padding:4px 8px;background:#eef2f7;border-left:4px solid #2b5c8a;break-after:avoid}
+    .e{padding:7px 0;border-bottom:1px solid #ddd;break-inside:avoid}.t{font-weight:600}
+    .m{color:#555;font-size:11.5px;margin-top:3px}.m span{margin-right:14px;display:inline-block}
+    button{margin-bottom:14px;padding:6px 12px;font-size:13px}@media print{button{display:none}body{margin:0}}
+  </style></head><body><button onclick="window.print()">Print / Save as PDF</button>
+  <h1>Setty ${esc(cfg.title)}</h1>
+  <div class="sub">${esc(knowledgeExportLabel(kind))} · ${rows.length} entr${rows.length === 1 ? "y" : "ies"} · generated ${today}</div>
+  ${Object.keys(groups).sort().map(d => `<h2>${esc(d)} (${groups[d].length})</h2>${groups[d].map(entry).join("")}`).join("")}
+  </body></html>`;
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+  if (!window.open(url, "_blank")) toast("The report was blocked as a pop-up. Allow pop-ups for this page and try again.", "error");
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 // ── Best Practices module (review queue of auto-generated practices) ─────────
 async function loadPractices() {
   state.practicesLoading = true;
@@ -1261,7 +1380,7 @@ const PRACTICE_STATUSES = [
 function practicesFiltered() {
   const f = state.pfilter || (state.pfilter = {});
   return (state.practices || []).filter(p => {
-    if (f.discipline && !knowledgeDisciplines(p).includes(f.discipline)) return false;
+    if (f.discipline && !matchesDiscipline(p, f.discipline)) return false;
     if (f.theme && (p.coord_theme || "") !== f.theme) return false;
     if (f.status && (p.status || "") !== f.status) return false;
     if (f.type === "workflow" && p.issue_type !== "workflow") return false;
@@ -1290,7 +1409,7 @@ function renderPractices() {
       <div class="field">
         <label for="pfDiscipline">Discipline</label>
         <select id="pfDiscipline" onchange="state.pfilter.discipline=this.value; renderPracticeList()">
-          <option value="">All</option>${opt(disciplines, state.pfilter.discipline)}
+          <option value="">All</option>${discFilterOptions(disciplines, state.pfilter.discipline)}
         </select>
       </div>
       <div class="field">
@@ -1317,6 +1436,7 @@ function renderPractices() {
           <option value="archived" ${state.pfilter.status==="archived"?"selected":""}>Rejected</option>
         </select>
       </div>
+      ${knowledgeToolsHTML("practices", "openPracticeForm")}
     </div>
     <div id="pReviewNote"></div>
     <div id="bpList"></div>`;
@@ -1441,7 +1561,8 @@ async function setPracticeStatus(id, status) {
 // Mined practices sometimes land under the wrong discipline, or need the
 // direction tightened before they go live on briefs. Edit here, then approve.
 function openPracticeForm(id) {
-  const p = (state.practices || []).find(x => x.practice_id === id);
+  const isNew = !id;
+  const p = isNew ? {} : (state.practices || []).find(x => x.practice_id === id);
   if (!p) { toast("Practice not found — reload the tab.", "error"); return; }
   const sel = (arr, val) => `<option value=""></option>` + arr.map(a => `<option value="${esc(a)}" ${a===val?"selected":""}>${esc(a)}</option>`).join("");
   const themes = [...new Set((state.practices || []).map(x => x.coord_theme).filter(Boolean))].sort();
@@ -1449,7 +1570,7 @@ function openPracticeForm(id) {
   $("modalMount").innerHTML = `
     <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="practiceModalTitle">
-        <h3 id="practiceModalTitle">Edit Best Practice</h3>
+        <h3 id="practiceModalTitle">${isNew ? "New Best Practice" : "Edit Best Practice"}</h3>
         <div class="fieldset full">
           <label for="bp_title">Title *</label>
           <input id="bp_title" value="${esc(p.title||"")}"/>
@@ -1461,7 +1582,7 @@ function openPracticeForm(id) {
         ${disciplineFieldsetHTML(curDisc)}
         <div class="form-grid">
           <div>
-            ${statusSelectHTML("bp_status", PRACTICE_STATUSES, p.status || "draft")}
+            ${isNew ? '<label>Status</label><div style="font-size:13px;padding:8px 0">Needs review. A director approves it from the list.</div>' : statusSelectHTML("bp_status", PRACTICE_STATUSES, p.status || "draft")}
           </div>
           <div>
             <label for="bp_theme">Theme</label>
@@ -1484,8 +1605,8 @@ function openPracticeForm(id) {
         </div>
         <div class="modal-actions">
           <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-          ${p.status !== "approved" ? `<button class="btn btn-success" data-id="${esc(id)}" onclick="savePractice(this.dataset.id, true)">✓ Save &amp; approve</button>` : ""}
-          <button class="btn btn-primary" data-id="${esc(id)}" onclick="savePractice(this.dataset.id)">Save changes</button>
+          ${!isNew && p.status !== "approved" ? `<button class="btn btn-success" data-id="${esc(id)}" onclick="savePractice(this.dataset.id, true)">✓ Save &amp; approve</button>` : ""}
+          <button class="btn btn-primary" data-id="${esc(id || "")}" onclick="savePractice(this.dataset.id)">${isNew ? "Add for review" : "Save changes"}</button>
         </div>
       </div>
     </div>`;
@@ -1495,7 +1616,7 @@ function savePractice(id, approve) {
   const p = (state.practices || []).find(x => x.practice_id === id) || {};
   // Capture the fields BEFORE any name modal replaces the form in modalMount.
   const disciplines = readDisciplineCheckboxes(knowledgeDisciplines(p));
-  const status = approve ? "approved" : $("bp_status").value;
+  const status = approve ? "approved" : (id ? $("bp_status").value : "draft");
   const payload = {
     title: $("bp_title").value.trim(),
     practice_text: $("bp_text").value.trim(),
@@ -1509,6 +1630,8 @@ function savePractice(id, approve) {
     updated_at: new Date().toISOString(),
   };
   if (!payload.title || !payload.practice_text) { toast("Title and practice text are required.", "error"); return; }
+  // Added by hand: goes to the review queue ("Needs review"), never straight to approved.
+  if (!id) payload.trigger = { source: "manual", added_by: state.user || null };
   // Approving (by button or by the Status menu) records who approved, so it needs a name.
   const approving = status === "approved" && p.status !== "approved";
   if (approving && !state.user) { openNameModal(() => writePractice(id, payload, approving)); return; }
@@ -1516,11 +1639,11 @@ function savePractice(id, approve) {
 }
 async function writePractice(id, payload, approving) {
   if (approving) payload.approved_by = state.user || null;
-  const url = "/rest/v1/pms_best_practices?practice_id=eq." + encodeURIComponent(id);
+  const url = "/rest/v1/pms_best_practices" + (id ? "?practice_id=eq." + encodeURIComponent(id) : "");
   try {
-    await knowledgeWrite("PATCH", url, payload);
+    await knowledgeWrite(id ? "PATCH" : "POST", url, payload);
     const label = (PRACTICE_STATUSES.find(([v]) => v === payload.status) || [, payload.status])[1];
-    toast(approving ? "Saved & approved — QA and submittal reviews will apply it." : `Best practice saved (${label}).`, "success");
+    toast(!id ? "Best practice added. It is in the review queue (Needs review)." : approving ? "Saved & approved — QA and submittal reviews will apply it." : `Best practice saved (${label}).`, "success");
     closeModal();
     await loadPractices();
   } catch (e) { toast("Save failed: " + e.message, "error"); }
@@ -1544,6 +1667,7 @@ function prefsFiltered() {
   return state.prefs.rows.filter(p => {
     if (f.agency && (p.agency || "") !== f.agency) return false;
     if (f.type && (p.preference_type || "") !== f.type) return false;
+    if (f.discipline && !matchesDiscipline(p, f.discipline)) return false;
     if (f.status && (p.status || "") !== f.status) return false;
     if (f.q) {
       const hay = [p.requirement_or_preference, p.notes, p.source, ...knowledgeDisciplines(p), p.applies_to].join(" ").toLowerCase();
@@ -1558,6 +1682,7 @@ function renderAgencyPrefs() {
   const all = state.prefs.rows;
   const agencies = [...new Set(all.map(p => p.agency).filter(Boolean))].sort();
   const types = [...new Set(all.map(p => p.preference_type).filter(Boolean))].sort();
+  const disciplines = [...new Set(all.flatMap(knowledgeDisciplines))].sort();
   const opt = (arr, sel) => arr.map(a => `<option value="${esc(a)}" ${a===sel?"selected":""}>${esc(a)}</option>`).join("");
   const pending = all.filter(p => p.status === "suggested").length;
   $("view").innerHTML = `
@@ -1568,6 +1693,8 @@ function renderAgencyPrefs() {
           oninput="state.prefs.f.q=this.value; renderPrefList()"/></div>
       <div class="field"><label for="apAgency">Agency</label>
         <select id="apAgency" onchange="state.prefs.f.agency=this.value; renderPrefList()"><option value="">All</option>${opt(agencies, state.prefs.f.agency)}</select></div>
+      <div class="field"><label for="apDisc">Discipline</label>
+        <select id="apDisc" onchange="state.prefs.f.discipline=this.value; renderPrefList()"><option value="">All</option>${discFilterOptions(disciplines, state.prefs.f.discipline)}</select></div>
       <div class="field"><label for="apType">Type</label>
         <select id="apType" onchange="state.prefs.f.type=this.value; renderPrefList()"><option value="">All</option>${opt(types, state.prefs.f.type)}</select></div>
       <div class="field"><label for="apStatus">Status</label>
@@ -1578,6 +1705,7 @@ function renderAgencyPrefs() {
           <option value="archived" ${state.prefs.f.status==="archived"?"selected":""}>Rejected</option>
         </select></div>
       <button class="btn btn-ghost" style="margin-left:auto" onclick="state.prefs.loaded=false; render()">↻ Refresh</button>
+      ${knowledgeToolsHTML("agencies")}
     </div>
     <div id="apList"></div>`;
   renderPrefList();
@@ -1661,7 +1789,7 @@ async function loadStandards() {
 function standardsFiltered() {
   const f = state.stds.f;
   return state.stds.rows.filter(r => {
-    if (f.discipline && !knowledgeDisciplines(r).includes(f.discipline)) return false;
+    if (f.discipline && !matchesDiscipline(r, f.discipline)) return false;
     if (f.basis && (r.basis || "") !== f.basis) return false;
     if (f.status && (r.status || "") !== f.status) return false;
     if (f.q) {
@@ -1686,7 +1814,7 @@ function renderStandards() {
       '<div class="grow"><label for="sdQ">Search</label>' +
         '<input id="sdQ" placeholder="standard, system, code reference…" value="' + esc(f.q || "") + '" oninput="state.stds.f.q=this.value; renderStandardsList()"/></div>' +
       '<div class="field"><label for="sdDisc">Discipline</label>' +
-        '<select id="sdDisc" onchange="state.stds.f.discipline=this.value; renderStandardsList()"><option value="">All</option>' + opt(disciplines, f.discipline) + '</select></div>' +
+        '<select id="sdDisc" onchange="state.stds.f.discipline=this.value; renderStandardsList()"><option value="">All</option>' + discFilterOptions(disciplines, f.discipline) + '</select></div>' +
       '<div class="field"><label for="sdBasis">Basis</label>' +
         '<select id="sdBasis" onchange="state.stds.f.basis=this.value; renderStandardsList()"><option value="">All</option>' +
           Object.keys(STD_BASIS).map(k => '<option value="' + k + '" ' + (f.basis === k ? "selected" : "") + '>' + STD_BASIS[k] + '</option>').join("") + '</select></div>' +
@@ -1698,6 +1826,7 @@ function renderStandards() {
           '<option value="superseded" ' + (f.status === "superseded" ? "selected" : "") + '>Superseded</option>' +
         '</select></div>' +
       '<button class="btn btn-ghost" style="margin-left:auto" onclick="state.stds.loaded=false; render()">↻ Refresh</button>' +
+      knowledgeToolsHTML("standards", "openStandardForm") +
     '</div><div id="sdList"></div>';
   renderStandardsList();
 }
@@ -1759,23 +1888,24 @@ async function setStdStatus(id, status) {
 }
 // Edit-only (no create): tighten wording, fix the source, or re-key a mined row.
 function openStandardForm(id) {
-  const r = state.stds.rows.find(x => x.standard_id === id); if (!r) return;
+  const isNew = !id;
+  const r = isNew ? {} : state.stds.rows.find(x => x.standard_id === id); if (!r) return;
   $("modalMount").innerHTML =
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
       '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="stdModalTitle">' +
-        '<h3 id="stdModalTitle">Edit engineering standard</h3>' +
+        '<h3 id="stdModalTitle">' + (isNew ? 'New engineering standard' : 'Edit engineering standard') + '</h3>' +
         '<div class="fieldset full"><label for="sf_text">Standard *</label>' +
           '<textarea id="sf_text" rows="5">' + esc(r.standard_text || "") + '</textarea></div>' +
         disciplineFieldsetHTML(knowledgeDisciplines(r)) +
         '<div class="form-grid">' +
-          '<div>' + statusSelectHTML("sf_status", STANDARD_STATUSES, r.status || "suggested") + '</div>' +
+          '<div>' + (isNew ? '<label>Status</label><div style="font-size:13px;padding:8px 0">Suggested. A director approves it from the list.</div>' : statusSelectHTML("sf_status", STANDARD_STATUSES, r.status || "suggested")) + '</div>' +
           '<div><label for="sf_basis">Basis</label><select id="sf_basis">' +
             Object.keys(STD_BASIS).map(k => '<option value="' + k + '" ' + ((r.basis || "firm") === k ? "selected" : "") + '>' + STD_BASIS[k] + '</option>').join("") + '</select></div>' +
           '<div class="full"><label for="sf_system">System</label><input id="sf_system" value="' + esc(r.system || "") + '" placeholder="e.g. Chilled water, Emergency power"/></div>' +
           '<div class="full"><label for="sf_source">Source reference</label><input id="sf_source" value="' + esc(r.source_reference || "") + '" placeholder="e.g. NEC 110.26; ASHRAE 62.1 Table 5-1"/></div>' +
         '</div>' +
         '<div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button>' +
-          '<button class="btn btn-primary" data-id="' + esc(id) + '" onclick="saveStandard(this.dataset.id)">Save changes</button></div>' +
+          '<button class="btn btn-primary" data-id="' + esc(id || "") + '" onclick="saveStandard(this.dataset.id)">' + (isNew ? "Add for review" : "Save changes") + '</button></div>' +
       '</div></div>';
   focusModal();
 }
@@ -1784,7 +1914,7 @@ async function saveStandard(id) {
   if (!text) { toast("The standard text can't be empty.", "error"); return; }
   const r = state.stds.rows.find(x => x.standard_id === id) || {};
   const disciplines = readDisciplineCheckboxes(knowledgeDisciplines(r));
-  const status = $("sf_status").value;
+  const status = id ? $("sf_status").value : "suggested";
   const payload = {
     standard_text: text,
     disciplines,
@@ -1797,6 +1927,14 @@ async function saveStandard(id) {
     updated_at: new Date().toISOString(),
   };
   try {
+    // Added by hand: goes to the review queue (suggested), never straight to active.
+    if (!id) {
+      await knowledgeWrite("POST", "/rest/v1/pms_engineering_standards", payload);
+      closeModal();
+      toast("Standard added. It is in the review queue (Suggested).", "success");
+      await loadStandards();
+      return;
+    }
     const done = await knowledgeWrite("PATCH", "/rest/v1/pms_engineering_standards?standard_id=eq." + encodeURIComponent(id), payload);
     if (!done || !done.length) { toast("No rows changed. You may lack the knowledge.review permission (ask an admin).", "error"); return; }
     closeModal();
@@ -2149,7 +2287,7 @@ function lessonsFiltered() {
   const f = state.filter;
   return state.lessons.filter(l => {
     if (f.agency && (l.agency || "") !== f.agency) return false;
-    if (f.discipline && !knowledgeDisciplines(l).includes(f.discipline)) return false;
+    if (f.discipline && !matchesDiscipline(l, f.discipline)) return false;
     // "pending" is a combined view: mined lessons arrive as 'suggested', manual
     // ones as 'draft' — both are awaiting review.
     if (f.status === "pending") { if ((l.status || "") !== "draft" && (l.status || "") !== "suggested") return false; }
@@ -2183,7 +2321,7 @@ function renderLessons() {
       <div class="field">
         <label for="lfDiscipline">Discipline</label>
         <select id="lfDiscipline" onchange="state.filter.discipline=this.value; renderLessonList()">
-          <option value="">All</option>${opt(DISCIPLINES, state.filter.discipline)}
+          <option value="">All</option>${discFilterOptions(DISCIPLINES, state.filter.discipline)}
         </select>
       </div>
       <div class="field">
@@ -2209,6 +2347,7 @@ function renderLessons() {
       </div>
       <button class="btn btn-primary" onclick="openMineModal()">🤖 Mine for lessons</button>
       <button class="btn btn-ghost" onclick="openLessonForm()" title="Rarely needed — the system mines lessons automatically">＋ Add manually</button>
+      ${knowledgeToolsHTML("lessons")}
     </div>
     <div id="reviewNote"></div>
     <div id="lessonList"></div>`;
