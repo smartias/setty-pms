@@ -68,5 +68,6 @@ test("drift: index.ts wires the OCR fallback into read_document", () => {
   assert.match(idx, /from "\.\/ocrPages\.ts"/);
   assert.match(idx, /needsOcr\(t\)/);
   assert.match(idx, /ocrPdfPage\(pdfBytes!, i\)/);
-  assert.match(idx, /const BUILD = "2026-11-18-read-document-ocr"/);
+  assert.match(idx, /const BUILD = "2026-11-18-drawing-index-ocr"/);
+  assert.match(idx, /ocrPdfPage\(buf, i\)/);
 });
