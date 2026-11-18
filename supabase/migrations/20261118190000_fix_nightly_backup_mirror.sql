@@ -24,6 +24,10 @@
 -- Idempotent (create or replace): safe to re-run. The function was originally
 -- created directly in the database and had no migration in this repo.
 
+-- The backups schema was also created by hand; a database built only from this
+-- repo's migrations (preview branches) needs it for the function to install.
+create schema if not exists backups;
+
 create or replace function backups.snapshot_daily()
  returns text
  language plpgsql
