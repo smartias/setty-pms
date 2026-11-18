@@ -61,6 +61,36 @@ A combined book can still be produced for the contractor, but it goes in a
 folder named for it (the PMS already recognizes combined folders and skips a
 book that duplicates individual files). The individual sheets are the record.
 
+## Revit versions and model hosting
+
+Offices run a mix of Revit versions, and models are either hosted in Autodesk
+Construction Cloud (ACC) or kept on the network, depending on the project.
+
+**Hosting does not change the export.** The script runs inside Revit on the
+user's machine with the model open, so it reads sheets and revisions from the
+open model whether that model came from ACC or a network drive. Hosting only
+matters for filing, and filing always goes to the project's Outgoing folder in
+SharePoint or on the mapped drive, never back to ACC. Autodesk's cloud APIs are
+not needed, and a project does not have to be on ACC for any of this to work.
+
+**Version does change the export.** Revit's built-in PDF export only exists in
+newer versions (2022 and later). Older versions can only print to a PDF driver.
+So the script has two export paths:
+
+| Revit version | Export path | Risk |
+|---|---|---|
+| 2022 and later | Built-in PDF export, vector, one file per sheet | Low |
+| Earlier than 2022 | Print to the firm's standard PDF driver, one file per sheet | Driver settings can rasterize or flatten |
+
+The verification step (step 3) is what makes the older path safe: a sheet that
+comes out as an image fails the text check and the set is not filed. Whichever
+path is used, the manifest records it (`generatedBy.revit` and `exportPath`).
+
+Because pyRevit runs on a wide range of Revit versions, it stays the
+recommended host. Before building, confirm the oldest version still in use. If
+a version is too old for pyRevit, that office needs the manual checklist until
+the model is upgraded.
+
 ## Manifest
 
 A small JSON file named `issue-manifest.json` in the set folder.
@@ -71,7 +101,7 @@ A small JSON file named `issue-manifest.json` in the set folder.
   "schemaVersion": 1,
   "project": { "number": "SAPX000000.00", "name": "Project name" },
   "issue": { "name": "Bulletin #13", "date": "2026-11-18", "phase": "CD" },
-  "generatedBy": { "tool": "revit-publish", "version": "0.1", "revit": "2025" },
+  "generatedBy": { "tool": "revit-publish", "version": "0.1", "revit": "2025", "exportPath": "native-pdf" },
   "sheets": [
     {
       "sheetNumber": "E651.00",
@@ -149,8 +179,10 @@ on one real project, then decide whether to harden it into an add-in.
 
 ## Open questions
 
-1. Which Revit versions, and are models worksharing-hosted, local, or in
-   Autodesk Construction Cloud?
+1. Answered: a mix of Revit versions, with models in Autodesk Construction
+   Cloud or on the network depending on the project. Still needed: the OLDEST
+   version in use, which PDF driver the older versions use today, and whether
+   any version is too old for pyRevit.
 2. What is the exact set-folder naming convention under Outgoing in each office?
 3. Do offices already have a sheet parameter that marks what is being issued?
 4. Is there a Graph or SharePoint sync pattern already approved for scripts to
