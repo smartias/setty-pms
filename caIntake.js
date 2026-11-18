@@ -14,7 +14,6 @@
 /* ---------- status vocab (mirrors SettyPMS.html) ---------- */
 export const RFI_EVENT_STATUS = { "New RFI": "Open", "Response to RFI": "Responded", "Status Update on RFI": "Responded", "RFI Closed": "Closed" };
 export const FORMA_SUB_STATUS = { "open": "Received", "required": "Received", "closed": "Returned", "void": "Void" };
-export const SUB_REVISION_STATUS = "Resubmittal Required";
 export const SUB_STAMPS = ["Approved", "Approved as Noted", "Revise and Resubmit", "Rejected"];
 
 /* ---------- helpers ---------- */
@@ -310,7 +309,10 @@ export function collapse(events, kind) {
     };
     const rev = Math.max(...evs.map((e) => e.rev));
     // Procore events carry their own status; Forma's comes from its Status field.
-    const status = last.status || (last.isRev ? SUB_REVISION_STATUS : (FORMA_SUB_STATUS[(last.formaStatus || "").toLowerCase()] || "Received"));
+    // A new REVISION arriving is a fresh item for us to review: "Received", not
+    // "Resubmittal Required" (that is the status Setty's own stamp sets on the
+    // PREVIOUS revision, and it hides the Log Review / Claude buttons).
+    const status = last.status || FORMA_SUB_STATUS[(last.formaStatus || "").toLowerCase()] || "Received";
     const stamp = [...evs].reverse().map((e) => e.stamp).find(Boolean) || "";
     return {
       extNum: num, title: last.title || first.title, specSection: last.specSection || first.specSection, rev, status, stamp,

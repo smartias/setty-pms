@@ -262,6 +262,19 @@ test("Autodesk Forma: final response becomes the stamp; summaries are skipped", 
   assert.deepEqual([row.status, row.stamp], ["Returned", "Approved as Noted"]);
 });
 
+test("a new revision is Received (needs our review), never Resubmittal Required", () => {
+  const forma = { from_address: "no-reply@mail.forma.autodesk.com" };
+  const f = parseForma(mail("Submittal #291 new revision", "Item #291 (Rev 1) Emergency Exit Lighting\nItem Details\nStatus\nOpen\n", forma));
+  assert.equal(f.isRev, true);
+  assert.equal(collapse([f], "submittal")[0].status, "Received");
+  // A closed Forma revision still reads as Returned.
+  const c = parseForma(mail("Submittal #292 new revision", "Item #292 (Rev 1) X\nItem Details\nStatus\nClosed\n", forma));
+  assert.equal(collapse([c], "submittal")[0].status, "Returned");
+  // A Newforma forward of revision 1 (isRev, no explicit status) is Received too.
+  const n = collapse([{ extNum: "265213-001", isRev: true, rev: 1, status: "", title: "Emergency Lighting", date: "2026-11-18" }], "submittal")[0];
+  assert.equal(n.status, "Received");
+});
+
 test("matching: follow-ups stay separate; Forma #N finds spec-based and SUB-N log numbers", async () => {
   const { matchRFI, matchSub } = await import("./caIntake.js");
   const log = [{ number: "121", title: "Bathroom water closet" }, { number: "053.1", title: "Follow Up To RFI-053 (R&S-RFI 15)" }];
