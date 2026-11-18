@@ -77,6 +77,7 @@ import { retryingRange, httpRange, openRangedPdf, type RangedPdf } from "./pdfRa
 // Why an RFI was asked and which QA check would have caught it. Pure; see its tests.
 import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses } from "./rfiRootCause.ts";
 import { isIssuedSetRow, notASetReason } from "./issuedSet.ts";
+import { needsOcr, ocrPage, ocrNote, OCR_SYSTEM_PROMPT, OCR_MAX_PAGES_PER_CALL } from "./ocrPages.ts";
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
@@ -1448,7 +1449,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-18-revision-status-received";
+const BUILD = "2026-11-18-drawing-index-ocr";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -5305,7 +5306,9 @@ mcp.tool("read_document", {
     "'Dr. Checks' / DrChecks is the same thing under the agencies' review-system name, so 'Dr. Checks " +
     "comments' means AGENCY review comments. These are often Excel comment logs / registers or DrChecks " +
     "exports — read them in full and note the specific comments and their responses. Large files and other " +
-    "binaries (drawings, images, .doc/.ppt) return metadata + a webUrl. This is a TEXT extraction: to get the " +
+    "binaries (drawings, images, .doc/.ppt) return metadata + a webUrl. PDF pages with NO text layer (scans, " +
+    "image-only sheets) are read by OCR, up to 6 pages per call, and marked [OCR]; treat OCR'd values as " +
+    "needing a check against the sheet (view_drawing). This is a TEXT extraction: to get the " +
     "actual file (edit an .xlsx and keep its formulas/dropdowns/formatting, forward a PDF), use download_document; " +
     "to write an edited file back into the project record, upload_document.",
   inputSchema: z.object({
@@ -5379,15 +5382,25 @@ mcp.tool("read_document", {
           const total: number = pdf.numPages;
           const MAX_PAGES = 50;
           const textEntry = pdfPageTexts(pdfCacheKey);
+          // Pages with no text layer (scans, image exports) are OCR'd, a few per call.
+          const ocrDone: number[] = []; let ocrSkipped = 0; let ocrFailed: string | null = null;
           const pageText = async (i: number): Promise<string> => {
             const memo = textEntry.pages.get(i);
-            if (memo !== undefined) return memo;
+            if (memo !== undefined) { if (memo.startsWith("[OCR] ") && !ocrDone.includes(i)) ocrDone.push(i); return memo; }
             const pg = await pdf.getPage(i);
             const tc = await pg.getTextContent();
-            const t = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+            let t = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+            if (needsOcr(t)) {
+              if (ocrFailed || ocrDone.length >= OCR_MAX_PAGES_PER_CALL) { ocrSkipped++; return t; }
+              try {
+                const o = await ocrPdfPage(pdfBytes!, i);
+                if (o) { t = "[OCR] " + o; ocrDone.push(i); }
+              } catch (e) { ocrFailed = String((e as any)?.message ?? e).slice(0, 160); ocrSkipped++; return t; }
+            }
             pdfPageTextPut(textEntry, i, t);
             return t;
           };
+          const withOcrNote = (n: string) => { const o = ocrNote(ocrDone, ocrSkipped, ocrFailed); return o ? `${n} ${o}` : n; };
           const capPdf = (t: string) => t.length > MAX_DOC_CHARS ? t.slice(0, MAX_DOC_CHARS) + "\n…[truncated]" : t;
           if (find && String(find).trim()) {
             const term = String(find).trim().toLowerCase();
@@ -5398,13 +5411,13 @@ mcp.tool("read_document", {
             }
             if (!hits.length) {
               return asText({ ...base, ext, totalPages: total,
-                note: `\"${find}\" not found in the extractable text of the first ${scanCap} of ${total} page(s). It may be a scanned/image-only section — open via webUrl, or try pages:\"X-Y\".` });
+                note: withOcrNote(`\"${find}\" not found in the extractable text of the first ${scanCap} of ${total} page(s). It may be a scanned/image-only section — open via webUrl, or try pages:\"X-Y\".`) });
             }
             const parts: string[] = [];
             for (const i of hits) parts.push(`[p.${i}]\n` + (await pageText(i)));
             const body = parts.join("\n\n");
             return asText({ ...base, ext, totalPages: total, matchedPages: hits,
-              note: `Found \"${find}\" on page(s) ${hits.join(", ")}${total > scanCap ? ` (scanned first ${scanCap})` : ""}. Use pages:\"X-Y\" to read around them.`,
+              note: withOcrNote(`Found \"${find}\" on page(s) ${hits.join(", ")}${total > scanCap ? ` (scanned first ${scanCap})` : ""}. Use pages:\"X-Y\" to read around them.`),
               chars: body.length, truncated: body.length > MAX_DOC_CHARS, text: capPdf(body) });
           }
           let startP = 1, endP = total;
@@ -5420,7 +5433,7 @@ mcp.tool("read_document", {
           const body = parts.join("\n\n");
           const partial = startP > 1 || endP < total;
           return asText({ ...base, ext, totalPages: total, pagesShown: `${startP}-${endP}`,
-            note: partial ? `Showing pages ${startP}-${endP} of ${total}. Use find:\"keyword\" to jump to a section, or pages:\"X-Y\" for another range.` : `${total} page(s).`,
+            note: withOcrNote(partial ? `Showing pages ${startP}-${endP} of ${total}. Use find:\"keyword\" to jump to a section, or pages:\"X-Y\" for another range.` : `${total} page(s).`),
             chars: body.length, truncated: body.length > MAX_DOC_CHARS, text: capPdf(body) });
         } catch (e) {
           return asText({ ...base, error: "PDF text extraction failed: " + String((e as any)?.message ?? e) });
@@ -7283,6 +7296,9 @@ mcp.tool("extract_sheet_index", {
       });
     }
 
+    // OCR budget for image-only pages in this call (each costs a model call).
+    let ocrLeft = 3, ocrOff = false, ocrError: string | null = null, ocrSkippedBlank = 0;
+    const ocrPageList: { file: string; page: number }[] = [];
     const sheets: any[] = [];
     // Sheets named by a cover sheet's drawing list. Kept separate from parsed
     // title blocks because a listed sheet is EVIDENCE THE SET CONTAINS IT, not a
@@ -7376,7 +7392,18 @@ mcp.tool("extract_sheet_index", {
           // comment export) and Postgres rejects them ("\u0000 cannot be
           // converted to text", 22P05), leaving the file permanently
           // unindexable. Strip them before anything downstream sees the text.
-          const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/\u0000/g, " ").replace(/ +/g, " ").trim();
+          let text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/\u0000/g, " ").replace(/ +/g, " ").trim();
+          // An image-only sheet has no text layer: OCR it (a few per call) so
+          // its title block can still be read. See ocrPages.ts.
+          if (needsOcr(text) && !ocrOff) {
+            if (ocrLeft > 0) {
+              ocrLeft--;
+              try {
+                const o = await ocrPdfPage(buf, i);
+                if (o) { text = o.replace(/\u0000/g, " ").replace(/ +/g, " ").trim(); ocrPageList.push({ file: f.name, page: i }); }
+              } catch (e) { ocrOff = true; ocrError = String((e as any)?.message ?? e).slice(0, 160); }
+            } else ocrSkippedBlank++;
+          }
           // A cover sheet names the whole set in one table, whatever the
           // architect. Harvest it even when this page's own title block parses.
           for (const row of parseDrawingList(text)) {
@@ -7450,6 +7477,13 @@ mcp.tool("extract_sheet_index", {
       byDiscipline,
       isPartialIssue,
       ...(partialDisciplines.length ? { partialDisciplines } : {}),
+      ...(ocrPageList.length || ocrSkippedBlank || ocrError ? {
+        ocr: {
+          pagesRead: ocrPageList,
+          ...(ocrSkippedBlank ? { blankPagesNotRead: ocrSkippedBlank, note: "Image-only pages beyond the per-call OCR limit (3) were not read; they appear under unparsed. Call again with a later offset or fewer files to read more." } : {}),
+          ...(ocrError ? { unavailable: ocrError } : {}),
+        },
+      } : {}),
       scanned: {
         pdfs: pdfs.length, filesOpened, pagesParsed, duplicatesCollapsed: duplicates,
         // Where the rows came from. A set that is all drawing-list means no
@@ -7552,6 +7586,7 @@ const DRAWING_INDEX_RANGED_PAGE_WINDOW = 400;             // upper bound; bytes 
 // read 1.0s where the process had used 1.75s (other threads, GC), and the
 // rest of the request spends CPU too. Hence 600, not 2000.
 const DRAWING_INDEX_CPU_BUDGET_MS = 600;
+const DRAWING_INDEX_OCR_PAGES = 2; // image-only pages OCR'd per indexing call
 const RANGED_RETRY_NOTE = "reading in ranges after a whole-file read died";
 const DRAWING_INDEX_RANGED_FLUSH_EVERY = 5;               // pages per progress write for a ranged file
 const DRAWING_INDEX_RANGED_BYTE_BUDGET = 64 * 1024 * 1024; // stop the window once this much has been fetched
@@ -8132,6 +8167,9 @@ async function indexDrawingFiles(a: {
   const { numPrefix, pending, knownById, fileBudget, t0, deadlineMs } = a;
   // Estimated CPU spent parsing in THIS call, across files (see DRAWING_INDEX_CPU_BUDGET_MS).
   let cpuMs = 0;
+  // OCR for image-only pages (ocrPages.ts). Per call, because the call has a
+  // 28s deadline and each OCR is a render plus a model call.
+  let ocrLeft = DRAWING_INDEX_OCR_PAGES, ocrOff = false, ocrError: string | null = null, ocrIndexed = 0;
   const timed = async <T>(work: () => Promise<T>, rp: RangedPdf | null): Promise<T> => {
     const w0 = Date.now(), n0 = rp ? rp.fetchBusyMs() : 0;
     try { return await work(); }
@@ -8257,8 +8295,23 @@ async function indexDrawingFiles(a: {
         // comment export) and Postgres rejects them ("\u0000 cannot be
         // converted to text", 22P05), leaving the file permanently
         // unindexable. Strip them before anything downstream sees the text.
-        const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/\u0000/g, " ").replace(/ +/g, " ").trim();
+        let text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/\u0000/g, " ").replace(/ +/g, " ").trim();
         if (typeof pg.cleanup === "function") pg.cleanup();
+        // Image-only page in a file we hold whole: OCR it so it is searchable.
+        // Over the per-call budget, stop here (the page is retried next call)
+        // rather than index it blank for good. The first page of a window
+        // always proceeds so a call can never stall.
+        if (needsOcr(text) && buf && !ocrOff) {
+          if (ocrLeft <= 0) {
+            if (i > startPage) break;
+          } else {
+            ocrLeft--;
+            try {
+              const o = await ocrPdfPage(buf, i);
+              if (o) { text = o.replace(/\u0000/g, " ").replace(/ +/g, " ").trim(); ocrIndexed++; }
+            } catch (e) { ocrOff = true; ocrError = String((e as any)?.message ?? e).slice(0, 160); }
+          }
+        }
         if (text.length >= 50) textPages++;
         const tb = text.length >= 50 ? titleBlockFor(text, f.name, total) : null;
         if (tb?.sheetNo) sheetsSeen.add(tb.sheetNo);
@@ -8301,7 +8354,7 @@ async function indexDrawingFiles(a: {
         { ...base, status: "failed", attempts, error: msg }, "resolution=merge-duplicates,return=minimal").catch(() => {});
     }
   }
-  return { indexedNow, skippedNow, failedNow, opened };
+  return { indexedNow, skippedNow, failedNow, opened, ocr: { pagesIndexed: ocrIndexed, error: ocrError } };
 }
 
 mcp.tool("search_drawings", {
@@ -8324,7 +8377,8 @@ mcp.tool("search_drawings", {
     "revision block's own description (BULLETIN #13). " +
     "Query semantics: all words must appear on the same page (AND); quote a phrase to keep it together; " +
     "hyphens and spaces inside a tag are interchangeable (FCU-11 finds 'FCU 11' and 'FCU11'). Case-insensitive. " +
-    "This reads text layers only: a scanned or image-only sheet indexes as empty and is reported under " +
+    "This reads text layers, and OCRs image-only sheets (a few pages per call, marked [OCR]; a file with more " +
+    "image-only pages than that finishes over several calls). If OCR is unavailable they index as empty and are reported under " +
     "coverage.textlessFiles. Projects whose issued sets live on the NYSharesite site (reached through a " +
     "'Setty Deliverables (NYSharesite)' shortcut in the project folder) are crawled there automatically — " +
     "coverage.scope names the site when that happens. Projects whose files live on an office network drive " +
@@ -8404,7 +8458,7 @@ mcp.tool("search_drawings", {
     } catch (e) {
       return asText({ project, error: String((e as any)?.message ?? e) });
     }
-    const { indexedNow, skippedNow, failedNow } = run;
+    const { indexedNow, skippedNow, failedNow, ocr: ocrRun } = run;
 
     // ── 4. Coverage, from the scope list and the (now updated) file table ────
     const doneIds = new Set(known.filter((k) => k.status === "done").map((k) => k.item_id));
@@ -8449,6 +8503,7 @@ mcp.tool("search_drawings", {
       ...(givenUp.length ? { filesGivenUp: givenUp.map((f) => ({ file: f.name, folderPath: f.folderPath, lastError: knownById.get(f.itemId)?.error })) } : {}),
       ...(textless.length ? { textlessFiles: textless } : {}),
       indexedThisCall: indexedNow,
+      ...(ocrRun.pagesIndexed || ocrRun.error ? { ocr: { pagesRead: ocrRun.pagesIndexed, ...(ocrRun.error ? { unavailable: ocrRun.error } : {}) } } : {}),
       // Pages already in the index that gained a sheet number from their file
       // name on this call (sheetFromFilename.ts). Reported so the change is visible.
       ...(sheetNumbersBackfilled ? { sheetNumbersBackfilled } : {}),
@@ -9202,6 +9257,30 @@ async function drawingItemMeta(itemId: string): Promise<{ name: string; size: nu
   if (bar <= 0) throw new Error("itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it, or an 'az:' drive id.");
   const meta = await graphGet(`/drives/${itemId.slice(0, bar)}/items/${encodeURIComponent(itemId.slice(bar + 1))}?$select=id,name,size,webUrl,file`);
   return { name: String(meta?.name || ""), size: Number(meta?.size || 0), webUrl: meta?.webUrl ?? null };
+}
+
+// OCR for a page with no text layer (see ocrPages.ts). Declared with the render
+// helpers it uses; read_document calls it at request time.
+const OCR_MODEL = "claude-sonnet-5-5";
+async function ocrPdfPage(pdfBytes: Uint8Array, page: number): Promise<string> {
+  const apiKey = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY not configured");
+  const anthropic = new Anthropic({ apiKey });
+  return await ocrPage(
+    async (region) => { const r = await renderDrawingPage(pdfBytes, page, region); return { b64: r.b64, mimeType: r.mimeType }; },
+    async (images) => {
+      const response: any = await (anthropic as any).messages.create({
+        model: OCR_MODEL,
+        max_tokens: 8000,
+        system: OCR_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: [
+          ...images.map((im) => ({ type: "image", source: { type: "base64", media_type: im.mimeType, data: im.b64 } })),
+          { type: "text", text: "Transcribe the text on this page." },
+        ] }],
+      });
+      return (response.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
+    },
+  );
 }
 
 mcp.tool("view_drawing", {
