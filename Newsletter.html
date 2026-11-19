@@ -1673,18 +1673,24 @@ async function showBatchRecipients(id){
 /* ── Pick my people ───────────────────────────────────────────────────────── */
 let PICK_POOL = [];          // [{email,name,company}] everyone in a not-yet-taken batch
 let PICK_SELECTED = new Set();
+let PICK_CAMPAIGN = null;    // the campaign PICK_POOL was loaded for
 const PICK_SHOW_MAX = 200;   // rows rendered at once; search narrows a long list
+const PICK_MAX = 400;        // one draft's worth: same ceiling as the largest batch size
 
 function closePickPeople(){
   document.getElementById("pickPanel").classList.add("hidden");
-  PICK_POOL = []; PICK_SELECTED = new Set();
+  PICK_POOL = []; PICK_SELECTED = new Set(); PICK_CAMPAIGN = null;
 }
 async function openPickPeople(){
-  if (!OPEN_CAMPAIGN) return;
+  const campaignId = OPEN_CAMPAIGN;
+  if (!campaignId) return;
   if (!currentUser()){ log("Sign in with Microsoft first.", "err"); return; }
+  PICK_CAMPAIGN = campaignId;
   try {
-    const rows = await sbAll("/rest/v1/newsletter_campaign_batches?campaign_id=eq." + OPEN_CAMPAIGN + "&status=eq.pending&select=recipients&order=idx");
+    const rows = await sbAll("/rest/v1/newsletter_campaign_batches?campaign_id=eq." + campaignId + "&status=eq.pending&select=recipients&order=idx");
     await loadSubscribers(); // so anyone who has since unsubscribed isn't offered
+    // The panel was closed or another campaign opened while this loaded: drop the result.
+    if (OPEN_CAMPAIGN !== campaignId || PICK_CAMPAIGN !== campaignId) return;
     const byEmail = {};
     for (const p of DIRECTORY) byEmail[String(p.email).toLowerCase()] = p;
     const seen = new Set();
@@ -1706,6 +1712,11 @@ async function openPickPeople(){
   } catch(e){ log("Couldn't load the people available to pick: " + e.message, "err"); }
 }
 function togglePick(box){
+  if (box.checked && PICK_SELECTED.size >= PICK_MAX){
+    box.checked = false;
+    log("One draft can hold at most " + PICK_MAX + " people. Create this draft, then pick again for the rest.", "err");
+    return;
+  }
   if (box.checked) PICK_SELECTED.add(box.value); else PICK_SELECTED.delete(box.value);
   paintPickCount();
 }
@@ -1730,13 +1741,16 @@ function renderPickList(){
   paintPickCount(shown.length, matches.length);
 }
 async function confirmPickPeople(){
-  const emails = [...PICK_SELECTED];
-  if (!emails.length || !OPEN_CAMPAIGN) return;
+  const emails = [...PICK_SELECTED].slice(0, PICK_MAX);
+  const campaignId = PICK_CAMPAIGN;
+  if (!emails.length || !campaignId) return;
+  // The ticks were made against one campaign's people: never apply them to another.
+  if (OPEN_CAMPAIGN !== campaignId){ closePickPeople(); log("The campaign changed — open “Pick my people” again.", "err"); return; }
   const btn = document.getElementById("pickGoBtn"); btn.disabled = true;
   try {
     // One database transaction moves them out of the untaken batches into a new
     // batch, so two people picking at the same moment can't both get the same person.
-    const row = await sb("POST", "/rest/v1/rpc/newsletter_pick_people", { p_campaign: OPEN_CAMPAIGN, p_emails: emails });
+    const row = await sb("POST", "/rest/v1/rpc/newsletter_pick_people", { p_campaign: campaignId, p_emails: emails });
     if (!row || !row.id){
       log("None of those people are still available — they were taken while you were choosing.", "err");
       await refreshBatches(); await openPickPeople(); return;
