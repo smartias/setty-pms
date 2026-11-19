@@ -51,3 +51,7 @@ test("migration only changes the Fire Alarm mapping", () => {
   assert.ok(mig.includes("('fire protection/fuel','fire/life safety') then 'Fire Protection'"));
   assert.ok(!/update public\./i.test(mig) && !/delete from/i.test(mig), "no data is rewritten");
 });
+
+test("CSV fallback neutralizes formula-leading cells", () => {
+  assert.ok(page.includes("/^[=+\\-@\\t\\r]/.test(v) ? \"'\" + v : v"));
+});

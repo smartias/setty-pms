@@ -1267,7 +1267,8 @@ async function exportKnowledge(kind) {
     toast(`Exported ${rows.length} ${cfg.title} entr${rows.length === 1 ? "y" : "ies"} to Excel.`, "success");
   } catch (e) {
     // The Excel library comes from a CDN; if it is blocked, a CSV still opens in Excel.
-    const q = v => '"' + v.replace(/"/g, '""') + '"';
+    // A leading = + - @ (or tab/CR) would run as a formula in Excel: prefix an apostrophe so it stays text.
+    const q = v => '"' + (/^[=+\-@\t\r]/.test(v) ? "'" + v : v).replace(/"/g, '""') + '"';
     _download(new Blob(["﻿" + aoa.map(r => r.map(q).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }), name + ".csv");
     toast("Excel library unavailable (" + e.message + "). Downloaded a CSV instead; it opens in Excel.", "error");
   }
