@@ -101,6 +101,11 @@ import {
   FOLLOWUP_KINDS, FOLLOWUP_SOURCES, FOLLOWUP_CADENCE_DAYS, type FollowupKind,
   addDays, nextFollowupAfter, toneForReminder, daysOutstanding, isDue,
 } from "./followups.ts";
+// file_meeting_minutes: validation, owner resolution and the note text. Pure; see its tests.
+import {
+  MEETING_ITEM_TYPES, MEETING_KINDS, MEETING_NOTE_CATEGORY, isIsoDate, cleanMinutesItems,
+  minutesSourceRef, resolveOwner, minutesNoteBody, dateAtNoonUtc,
+} from "./meetingMinutes.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -1449,7 +1454,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-18-drawing-index-ocr";
+const BUILD = "2026-11-19-file-meeting-minutes";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3394,6 +3399,7 @@ const HOW_TO_USE_TOPICS: Record<string, { title: string; summary: string; prompt
     { ask: "Summarize the last two weeks of email on SAPX239010.00", note: "Full bodies, newest first." },
     { ask: "Find the email where the owner approved the chiller substitution", note: "Subject, sender, body and attachment names." },
     { ask: "What did we agree with the architect at the last site meeting on the UMD Thrive Center?", note: "Meeting notes and action items, with the OneNote link." },
+    { ask: "File minutes for today's coordination meeting on SAPX256014.00. Here is my voice memo: ...", note: "Claude drafts the minutes; once you approve, decisions and action items are filed to the project and what others owe you goes on your follow-up list." },
   ]},
   people: { title: "People and firms", summary: "About 2,600 outside contacts and the staff roster.", prompts: [
     { ask: "Get me Daniel H from Dattner's email", note: "First name plus an initial is enough." },
@@ -3421,7 +3427,7 @@ const HOW_TO_USE_RULES = [
   "Follow-up questions keep the project context.",
   "\"Save that\" writes a finding to the shared project knowledge.",
 ];
-// The five skills live in the firm's claude.ai skill library, uploaded by an
+// The six skills live in the firm's claude.ai skill library, uploaded by an
 // Organization Owner (Admin Console → Skill library sync). A seat without
 // them still gets a useful answer from the tools, but not the firm's
 // procedure, so the guide says how to check rather than promising them.
@@ -3435,6 +3441,7 @@ const HOW_TO_USE_WORKFLOWS = [
   { name: "Review comment responses", ask: "Respond to the DrChecks comments on SIPX268014.00", does: "Drafts a disposition and response per open comment and builds the register that goes back to the reviewer." },
   { name: "Submittal and RFI review", ask: "Review the VAV submittal against the drawings", does: "Checks the marked selection against schedule and spec, suggests a stamp and response, flags cost or scope issues." },
   { name: "Project risk review", ask: "Risk review on Tabler", does: "Rates schedule, CA backlog, QA and client or scope risk Red, Yellow or Green with the records behind each rating. Read-only triage for the PM or director." },
+  { name: "Meeting minutes", ask: "File minutes for the OAC meeting on Tabler. Here is my voice memo: ...", does: "Turns a voice memo transcript or rough notes into minutes in the firm's format. Filed only after you approve the draft: Setty action items become tracked, what others owe goes on your follow-up list. Nothing is emailed." },
 ];
 const HOW_TO_USE_LIMITS = [
   "Only what your PMS role allows: fee fields are hidden without the fees permission; a project you cannot see does not exist here. A PMS admin can change access.",
@@ -3457,7 +3464,7 @@ mcp.tool("how_to_use", {
     "with it) can do, how to use it, what to ask, says 'help', or asks a question too vague to route (no " +
     "project, no task). Returns the ways to ask, example prompts grouped by task (catch-up, documents, " +
     "drawings, RFIs and submittals, QA, email and notes, people and firms, knowledge and standards, " +
-    "proposals and templates, field photos), the four bigger workflows, what to expect, and troubleshooting. " +
+    "proposals and templates, field photos), the bigger workflows, what to expect, and troubleshooting. " +
     "Pass topic to get one group. Then show the user 3-5 prompts that fit what they seem to want, in their " +
     "words, rather than the whole list. Reads no project data.",
   inputSchema: z.object({
@@ -11019,6 +11026,312 @@ mcp.tool("resolve_followup", {
     } catch (e) {
       return asText({ error: `Update failed: ${String((e as any)?.message ?? e)}` });
     }
+  },
+});
+
+// ─── FILE MEETING MINUTES ───────────────────────────────────────────────────
+// The by-hand way into pms_meetings / pms_meeting_items (issue #291, source
+// 'manual'). The SharePoint sweep covers minutes that arrive as a file; this
+// covers the meeting nobody wrote up: a person dictates or types what was
+// decided, Claude drafts the minutes, the person approves them in chat, and
+// this files them. Rules and validation live in meetingMinutes.ts.
+//
+// Three writes, ordered so a failure part-way leaves something a re-run fixes:
+//   1. the full minutes as ONE note in project.notes[] (search_notes finds it),
+//      keyed by a deterministic id so a retry never doubles it;
+//   2. the meeting row and its items, items in ONE insert so they land together
+//      (a failed insert removes the meeting row again);
+//   3. on `confirmed`, one PATCH to 'confirmed', which fires
+//      pms_meeting_item_confirm_cascade: Setty-owned action items become tracked
+//      action items and carried-forward items supersede their predecessors.
+// Confirming follows the save_knowledge precedent (Sara, 2026-09-01): for one
+// project, the user's yes in conversation is the approval. It still needs the
+// meeting_items.review capability the Intelligence console's Confirm button
+// needs; without it the items wait there as suggested.
+async function sbInsertMany(table: string, rows: Record<string, unknown>[]): Promise<any[]> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: "POST",
+    headers: {
+      apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+      "Content-Type": "application/json", Prefer: "return=representation",
+    },
+    body: JSON.stringify(rows),
+  });
+  if (!res.ok) throw new Error(`Supabase insert ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const back = await res.json();
+  return Array.isArray(back) ? back : [back];
+}
+async function sbPatchMany(path: string, body: Record<string, unknown>): Promise<any[]> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    method: "PATCH",
+    headers: {
+      apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+      "Content-Type": "application/json", Prefer: "return=representation",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Supabase patch ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const back = await res.json();
+  return Array.isArray(back) ? back : [back];
+}
+async function sbDelete(path: string): Promise<void> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    method: "DELETE",
+    headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+  });
+  if (!res.ok) throw new Error(`Supabase delete ${res.status}: ${(await res.text()).slice(0, 300)}`);
+}
+
+mcp.tool("file_meeting_minutes", {
+  description:
+    "File the minutes of ONE meeting to a project: the meeting, its decisions, action items and open items, " +
+    "and the full minutes as a project note. Use when the user dictated or typed what happened in a meeting " +
+    "(a voice memo transcript, rough notes) and has seen your drafted minutes. CALL IT ONLY AFTER THE USER " +
+    "HAS READ THE DRAFT AND SAID TO FILE IT, and pass confirmed:true only then. With confirmed:true (and the " +
+    "meeting_items.review permission) the items go live: each action item owned by Setty staff becomes a " +
+    "tracked action item on the project, and each action item owned by someone OUTSIDE Setty (architect, " +
+    "owner, contractor) becomes a follow-up on the caller's own list so they are reminded to chase it. " +
+    "Without confirmed, or without the permission, the items are held as SUGGESTED for review in the " +
+    "Intelligence console (Meeting Items) and nothing is tracked yet. Filing the same meeting again (same " +
+    "project, date and title) returns the first filing instead of duplicating it. This tool sends nothing: " +
+    "it does not email the minutes to attendees. Report what the response says happened, exactly: held for " +
+    "review is not the same as tracked.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR name."),
+    meetingDate: z.string().describe("The day the meeting happened, YYYY-MM-DD. Ask if the user did not say."),
+    title: z.string().min(3).max(120).describe("What the meeting was, e.g. 'Design coordination meeting with Dattner', 'OAC meeting 12'."),
+    meetingType: z.enum(MEETING_KINDS).optional().describe("client (default; any meeting with outside parties), internal (Setty only), or site (a site visit)."),
+    attendees: z.array(z.string()).optional().describe("Who was there, as 'Name (Firm)' where known."),
+    minutes: z.string().max(40000).describe("The full minutes text the user approved: discussion summary by topic. The items are listed separately in `items`; do not leave them out of there."),
+    items: z.array(z.object({
+      type: z.enum(MEETING_ITEM_TYPES).describe("decision = something settled; action_item = someone owes something; open_question = unresolved, nobody committed yet."),
+      text: z.string().describe("One item, self-contained: readable without the rest of the minutes."),
+      owner: z.string().optional().describe("Who owns it: a person's name, 'me' for the caller, or a firm ('Dattner', 'Owner'). A first name is enough for Setty staff when only one person has it."),
+      ownerIsSetty: z.boolean().optional().describe("Set true when the owner is Setty staff but the name may not match the staff directory. Leave unset otherwise."),
+      dueDate: z.string().optional().describe("YYYY-MM-DD, only when a date was actually stated or agreed."),
+      itemNumber: z.string().optional().describe("The printed item number, when the minutes have one."),
+    })).describe("Every decision, action item and open item. May be empty for a meeting that produced none."),
+    confirmed: z.boolean().optional().describe("True ONLY when the user read these items in this conversation and said to file them. Leave false for anything extracted without the user reading it."),
+    trackExternal: z.boolean().optional().describe("Create a follow-up for each confirmed action item owned by someone outside Setty (default true)."),
+  }),
+  handler: async (a) => {
+    const caller = currentCaller();
+    if (caller.kind !== "user" || !caller.email) {
+      return asText({
+        error: "file_meeting_minutes requires a signed-in user: the minutes and their items carry the name of the person who filed them.",
+        nextStep: "Reconnect the Setty PMS connector (sign in with your Setty account) and retry.",
+      });
+    }
+    const email = caller.email.toLowerCase();
+
+    const pid = await resolveProjectId(a.projectNumber);
+    const project = pid ? await getProjectById(pid) : null;
+    if (!pid || !project) {
+      return asText({ error: `No project matching "${a.projectNumber}"`, nextStep: "search_projects finds projects by number or name." });
+    }
+    const pn: string | null = project.projectNumber || null;
+    if (!pn) {
+      return asText({
+        error: "This project has no project number yet (a proposal or pursuit), and meeting records are kept by project number.",
+        nextStep: "File the minutes once the job has a number, or save the gist with save_knowledge.",
+      });
+    }
+    const caps = await resolveCaps();
+    if (!capFor(caps, "projects.edit", pn)) {
+      return asText({
+        error: `Your role does not have the projects.edit capability for project ${pn}; filing minutes adds a note to the project.`,
+        nextStep: "An admin can grant it on the Users & Roles tab of the Admin console.",
+      });
+    }
+
+    if (!isIsoDate(a.meetingDate)) return asText({ error: `meetingDate must be a real date written YYYY-MM-DD, got "${a.meetingDate}".` });
+    const title = a.title.replace(/\s+/g, " ").trim();
+    const { items, problems } = cleanMinutesItems(a.items);
+    if (problems.length) return asText({ error: "Nothing was filed: the items need fixing.", problems });
+    const attendees = (a.attendees ?? []).map((s) => String(s).trim()).filter(Boolean).slice(0, 60);
+    const wantConfirm = a.confirmed === true;
+    const canReview = capFor(caps, "meeting_items.review", pn);
+
+    const sourceRef = minutesSourceRef(a.meetingDate, title);
+    let prior: any[];
+    try {
+      prior = await sbGet(
+        "pms_meetings?select=id,meeting_date,source_name,created_at&project_number=eq." + encodeURIComponent(pn) +
+        "&source_ref=eq." + encodeURIComponent(sourceRef),
+      );
+    } catch (e) { return asText({ error: `Could not check for an earlier filing: ${String((e as any)?.message ?? e)}` }); }
+    if (prior?.length) {
+      const had = await sbGet("pms_meeting_items?select=id,item_type,text,status&meeting_id=eq." + prior[0].id).catch(() => [] as any[]);
+      return asText({
+        alreadyFiled: true, project: pn, meetingId: prior[0].id, filedAt: prior[0].created_at,
+        items: had,
+        note: "Nothing was written: minutes for this project, date and title are already filed. " +
+          "If this is a DIFFERENT meeting on the same day, give it a distinct title and retry. " +
+          "To change filed items, a reviewer edits or rejects them in the Intelligence console (Meeting Items).",
+      });
+    }
+
+    // Owners: the staff directory decides who is Setty (see resolveOwner).
+    const staff = staffOf(await getAppMeta())
+      .filter((s: any) => s?.name && s?.email)
+      .map((s: any) => ({ name: String(s.name).trim(), email: String(s.email).trim() }));
+    const owners = items.map((it) => resolveOwner(it.owner, staff, { name: caller.name, email }, it.ownerIsSetty));
+
+    // 1) The minutes as a project note. Deterministic id, so a retry after a
+    //    later step failed does not add the note twice.
+    const noteId = "minutes-" + sourceRef.replace(/[^a-z0-9]+/g, "-");
+    const now = new Date().toISOString();
+    const filedBy = caller.name || email;
+    try {
+      await updateProjectRecord(pid, (proj) => {
+        const notes = Array.isArray(proj.notes) ? proj.notes : [];
+        if (notes.some((n: any) => n?.id === noteId)) return proj;
+        const note = {
+          id: noteId,
+          body: minutesNoteBody({
+            title, meetingDate: a.meetingDate, attendees, minutes: a.minutes,
+            items: items.map((it, i) => ({ ...it, owner: owners[i].name })),
+          }),
+          category: MEETING_NOTE_CATEGORY[a.meetingType ?? "client"],
+          actionItem: false, actionOwner: "", actionDueDate: "", actionStatus: "open",
+          ...(a.meetingType === "site" ? { visitDate: a.meetingDate } : {}),
+          author: filedBy, createdAt: dateAtNoonUtc(a.meetingDate), updatedAt: now,
+          oneNoteUrl: "", links: [],
+        };
+        return { ...proj, notes: [note, ...notes] };
+      });
+    } catch (e) {
+      return asText({ error: `Nothing was filed: could not save the minutes note. ${String((e as any)?.message ?? e)}`, nextStep: "Retry; a save in the PMS at the same moment is the usual cause." });
+    }
+
+    // 2) The meeting and its items.
+    let meeting: any;
+    try {
+      meeting = await sbInsert("pms_meetings", {
+        project_number: pn, meeting_date: a.meetingDate, source: "manual", source_ref: sourceRef,
+        source_name: title, attendees, raw_text_chars: a.minutes.length, status: "processed",
+      });
+    } catch (e) {
+      return asText({ error: `The minutes note was saved (noteId ${noteId}) but the meeting record was not: ${String((e as any)?.message ?? e)}`, nextStep: "Retry the same call; the note will not be duplicated." });
+    }
+
+    let rows: any[] = [];
+    if (items.length) {
+      try {
+        const open = (await sbGetAll(
+          "pms_meeting_items?project_number=eq." + encodeURIComponent(pn) +
+          "&select=id,item_number,text,item_type,first_seen_meeting_id,carry_count" +
+          "&status=in.(suggested,confirmed)&superseded_by=is.null",
+        )).map((r: any): OpenMeetingItem => ({
+          id: r.id, itemNumber: r.item_number, text: r.text, itemType: r.item_type,
+          firstSeenMeetingId: r.first_seen_meeting_id, carryCount: r.carry_count,
+        }));
+        const payload = items.map((it, i) => {
+          const match = carryForwardMatch({ itemNumber: it.itemNumber, text: it.text, itemType: it.type }, open);
+          if (match) open.splice(open.findIndex((o) => o.id === match.id), 1); // one prior item per new item
+          return {
+            meeting_id: meeting.id, project_number: pn,
+            item_type: it.type, item_number: it.itemNumber, text: it.text,
+            owner_name: owners[i].name, owner_email: owners[i].email, owner_is_setty: owners[i].isSetty,
+            due_date: it.dueDate, status: "suggested", links: [],
+            carried_from_item_id: match?.id ?? null,
+            first_seen_meeting_id: match?.firstSeenMeetingId ?? meeting.id,
+            carry_count: match ? match.carryCount + 1 : 1,
+          };
+        });
+        rows = await sbInsertMany("pms_meeting_items", payload);
+      } catch (e) {
+        // Leave nothing half-filed: without its items the meeting row would
+        // make the retry report "already filed".
+        const undone = await sbDelete("pms_meetings?id=eq." + meeting.id).then(() => true).catch(() => false);
+        return asText({
+          error: `The minutes note was saved (noteId ${noteId}) but the items were not: ${String((e as any)?.message ?? e)}`,
+          nextStep: undone ? "Retry the same call; the note will not be duplicated."
+            : "The meeting record could not be removed either, so a retry will report it as already filed. Tell a PMS admin the meetingId.",
+          ...(undone ? {} : { meetingId: meeting.id }),
+        });
+      }
+    }
+
+    // 3) Confirm. One statement, so the items go live together or not at all.
+    //    An item matched to an earlier open one is NOT confirmed here: confirming
+    //    it retires the earlier item, and the user never saw that match. The
+    //    schema's rule is that a carry-forward match goes live only when a
+    //    reviewer looks at it, so those wait in the console.
+    const carried = rows.filter((r: any) => r.carried_from_item_id).length;
+    let confirmedCount = 0;
+    let confirmError: string | null = null;
+    if (wantConfirm && canReview && rows.length > carried) {
+      try {
+        const done = await sbPatchMany(
+          "pms_meeting_items?meeting_id=eq." + meeting.id + "&carried_from_item_id=is.null",
+          { status: "confirmed", reviewed_by: filedBy, reviewed_at: now, updated_at: now },
+        );
+        const byId = new Map(done.map((r: any) => [r.id, r]));
+        rows = rows.map((r: any) => byId.get(r.id) ?? r);
+        confirmedCount = done.length;
+        _projCache = null; // the cascade wrote action items into project.notes[]
+      } catch (e) { confirmError = String((e as any)?.message ?? e); }
+    }
+
+    // 4) Follow-ups for what outside parties owe. The caller's own list, so it
+    //    needs their yes (confirmed) but not the review capability.
+    const followups: any[] = [];
+    const followupErrors: string[] = [];
+    if (wantConfirm && a.trackExternal !== false) {
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i], o = owners[i];
+        if (it.type !== "action_item" || o.isSetty || !o.name) continue;
+        // Match by content, not position: the insert's return order is not a promise.
+        const row = rows.find((r: any) => r.item_type === it.type && r.text === it.text);
+        if (row?.carried_from_item_id) continue; // likely already being chased from the earlier meeting
+        try {
+          const sentAt = dateAtNoonUtc(a.meetingDate);
+          const row = await sbInsert("pms_followups", {
+            kind: "info", label: "Meeting action item", subject: it.text.slice(0, 300), project_number: pn,
+            counterpart_name: o.name, sent_at: sentAt,
+            next_followup_at: it.dueDate ? dateAtNoonUtc(it.dueDate) : nextFollowupAfter("info", sentAt, 0),
+            source: "manual", notes: `From the minutes of "${title}" (${a.meetingDate}).`,
+            owner_email: email, created_by: email,
+          });
+          followups.push({ id: row.id, subject: row.subject, counterpart: o.name, nextFollowupAt: row.next_followup_at });
+        } catch (e) { followupErrors.push(`${o.name}: ${String((e as any)?.message ?? e).slice(0, 200)}`); }
+      }
+    }
+
+    const tracked = rows.filter((r: any) => r.pushed_action_item).length;
+    const unownedActions = items.filter((it, i) => it.type === "action_item" && !owners[i].name).length;
+    const held = rows.length - confirmedCount;
+    const why = !held ? null
+      : !wantConfirm ? "Held as suggested because confirmed was not set."
+      : !canReview ? "Held as suggested: your role does not have the meeting_items.review permission, so someone who does must confirm them."
+      : confirmError ? `Held as suggested: confirming failed (${confirmError}).`
+      : `${carried} item(s) look like a continuation of an item still open from an earlier meeting. They are held as suggested so a ` +
+        "reviewer can check the match: confirming one retires the earlier item.";
+    return asText({
+      filed: true, project: pn, meetingId: meeting.id, noteId,
+      itemStatus: !rows.length ? "no items" : !held ? "confirmed" : !confirmedCount ? "suggested" : "mixed: see each item",
+      counts: {
+        decisions: items.filter((it) => it.type === "decision").length,
+        actionItems: items.filter((it) => it.type === "action_item").length,
+        openQuestions: items.filter((it) => it.type === "open_question").length,
+        trackedActionItems: tracked,
+        followupsCreated: followups.length,
+        carriedForward: carried,
+        heldForReview: held,
+      },
+      items: rows.map((r: any) => ({
+        id: r.id, type: r.item_type, text: r.text, owner: r.owner_name, ownerIsSetty: r.owner_is_setty,
+        dueDate: r.due_date, status: r.status, trackedAsActionItem: !!r.pushed_action_item,
+        carriedForward: !!r.carried_from_item_id,
+      })),
+      ...(followups.length ? { followups } : {}),
+      ...(followupErrors.length ? { followupErrors } : {}),
+      ...(why ? { heldForReview: why, reviewWhere: "Intelligence console, Meeting Items tab." } : {}),
+      ...(unownedActions ? { unowned: `${unownedActions} action item(s) have no owner, so nothing tracks them. Ask the user who owns each.` } : {}),
+      note: "The full minutes are a project note (search_notes / read_note). Nothing was emailed: sending the minutes to attendees is the user's step. " +
+        "Open PMS tabs on this project should be refreshed before the next save there.",
+    });
   },
 });
 

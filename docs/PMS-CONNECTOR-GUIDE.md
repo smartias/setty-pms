@@ -93,6 +93,8 @@ Filed project email and OneNote notes are searchable.
   Searches subject, sender, body and attachment names.
 - `What did we agree with the architect at the last site meeting on the UMD Thrive Center?`  
   Meeting notes and action items, with the OneNote link.
+- `File minutes for today's coordination meeting on SAPX256014.00. Here is my voice memo: ...`  
+  Claude drafts the minutes for you to check. Once you approve, the decisions and action items are filed to the project and what others owe you goes on your follow-up list.
 
 ### People and firms
 
@@ -137,7 +139,7 @@ Photos from the Field Photos app are searchable by project, phase and date.
 
 ## Bigger jobs Claude knows how to run
 
-Five workflows are written as skills in the firm's Claude skill library. Ask in plain words; with the skill loaded, Claude follows the firm's procedure and produces a draft for your review. It never files, sends or closes anything on its own.
+Six workflows are written as skills in the firm's Claude skill library. Ask in plain words; with the skill loaded, Claude follows the firm's procedure and produces a draft for your review. It never files, sends or closes anything on its own.
 
 Check the skill is on your seat before relying on it: type / in a chat and look for its name. If it is missing, ask Sara. The tools still answer without it, but Claude then improvises the method instead of following the firm's evidence and review steps, which matters most for QA and submittal reviews.
 
@@ -150,6 +152,8 @@ Check the skill is on your seat before relying on it: type / in a chat and look 
 **Submittal and RFI review.** "Review the VAV submittal against the drawings" checks the marked selection on the cut sheet against the schedule and spec, suggests a stamp and response, and flags cost or scope red flags.
 
 **Project risk review.** "Risk review on Tabler" rates the project Red, Yellow or Green on schedule and deliverables, the construction-administration backlog, QA and technical risk, and client or scope signals, with the records behind each rating. It is a triage report for the PM or director. It only reads: it never changes the PMS, closes or reassigns anything, or contacts anyone.
+
+**Meeting minutes.** "File minutes for the OAC meeting on Tabler" turns a voice memo transcript or rough notes into minutes in the firm's format: decisions, action items with an owner and date, open items. You check the draft; only then is it filed. Action items owned by Setty staff become tracked action items, and what an outside party owes you goes on your follow-up list. Nothing is emailed to attendees; sending the minutes is your step.
 
 ## What to expect
 
