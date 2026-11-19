@@ -101,8 +101,8 @@ browser (PMS pages) or from the connector (app permissions).
 
 ## Edge function deploys
 
-- `supabase/config.toml` lists all three functions (`pms-mcp`,
-  `proposal-draft`, `pms-user-emails`). Supabase's
+- `supabase/config.toml` lists all four functions (`pms-mcp`,
+  `proposal-draft`, `pms-user-emails`, `unsubscribe`). Supabase's
   GitHub integration builds listed functions on every PR preview and
   **deploys them to production on every merge to `main`** ("Deploy to
   production" is on; the same option applies migrations). There is no health
@@ -113,6 +113,10 @@ browser (PMS pages) or from the connector (app permissions).
   pg_cron). The "Deploy pms-user-emails" workflow redeploys it and checks it
   answers, but cannot check the email itself: after changing it, test with an
   admin call to `/digest?dryRun=1` before Monday.
+- **An edge function cannot serve an HTML page.** Supabase returns its
+  responses as `text/plain` in a CSP sandbox, so the browser shows raw source.
+  Put the page in the repo (`Unsubscribe.html`) and have it call the function
+  for JSON (`unsubscribe`; `?health=1` reports its `BUILD`).
 - Still bump `BUILD` in `pms-mcp/index.ts` with every change to it: it is the
   only way to tell which copy is live.
 

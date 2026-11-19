@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Unsubscribe · Setty &amp; Associates</title>
+<!--
+  Public page: the "Unsubscribe from these mailings" link in every newsletter
+  lands here. No sign-in. It POSTs JSON to the `unsubscribe` edge function,
+  which cannot serve this page itself (Supabase delivers edge-function HTML as
+  plain text).
+-->
+<style>
+  body{margin:0;font-family:"Segoe UI",Arial,sans-serif;background:#0F172A;color:#E2E8F0;
+       display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px;box-sizing:border-box}
+  .card{background:#1E293B;border:1px solid #334155;border-radius:12px;max-width:480px;
+        width:100%;padding:32px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,.4)}
+  h1{font-size:20px;margin:0 0 12px}
+  p{font-size:14px;line-height:1.6;color:#CBD5E1;margin:0 0 20px}
+  .who{color:#E2E8F0;font-weight:600;overflow-wrap:anywhere}
+  label{display:block;text-align:left;font-size:12px;color:#CBD5E1;margin:0 0 6px}
+  input{font:inherit;font-size:14px;width:100%;box-sizing:border-box;padding:10px 12px;
+        border-radius:8px;border:1px solid #475569;background:#0F172A;color:#E2E8F0;margin-bottom:14px}
+  button{font:inherit;font-size:14px;font-weight:600;cursor:pointer;border:0;border-radius:8px;
+         padding:11px 22px;background:#DC2626;color:#fff;width:100%}
+  button:hover{background:#B91C1C}
+  button:disabled{opacity:.6;cursor:default}
+  input:focus-visible,button:focus-visible{outline:2px solid #93C5FD;outline-offset:2px}
+  .err{color:#FCA5A5;font-size:13px;margin:14px 0 0;min-height:1em}
+  .brand{margin-top:24px;font-size:12px;color:#94A3B8}
+</style>
+</head>
+<body>
+<main class="card">
+  <div id="formView">
+    <h1>Unsubscribe from mailings</h1>
+    <p id="intro">Enter your email to stop receiving newsletters and event invites from Setty &amp; Associates.</p>
+    <form id="unsubForm" novalidate>
+      <div id="emailField">
+        <label for="email">Email address</label>
+        <input type="email" id="email" name="email" placeholder="you@example.com" autocomplete="email" required>
+      </div>
+      <button type="submit" id="submitBtn">Unsubscribe me</button>
+    </form>
+    <p class="err" id="err" role="alert"></p>
+  </div>
+  <div id="doneView" hidden tabindex="-1">
+    <h1>You’re unsubscribed</h1>
+    <p id="doneText"></p>
+  </div>
+  <div class="brand">Setty &amp; Associates</div>
+</main>
+<script>
+const UNSUB_API = "https://khxmgjilwhdguuepbhne.supabase.co/functions/v1/unsubscribe";
+const token = new URLSearchParams(location.search).get("token") || "";
+
+const form = document.getElementById("unsubForm");
+const btn = document.getElementById("submitBtn");
+const err = document.getElementById("err");
+const emailInput = document.getElementById("email");
+
+// A personal link (?token=) already identifies the address: no need to type it.
+if (token){
+  document.getElementById("emailField").hidden = true;
+  emailInput.required = false;
+  document.getElementById("intro").textContent =
+    "Confirm that you no longer want newsletters or event invites from Setty & Associates.";
+}
+
+function showDone(email){
+  const p = document.getElementById("doneText");
+  p.textContent = "";
+  if (email){
+    const who = document.createElement("span");
+    who.className = "who"; who.textContent = email;
+    if (token){
+      p.append(who, " won’t receive further mailings.");
+    } else {
+      p.append("If ", who, " was on our list, it has been removed from newsletters and event invites.");
+    }
+  } else {
+    p.textContent = "You won’t receive further mailings.";
+  }
+  p.append(" Changed your mind? Reply to a past email and we’ll add you back.");
+  document.getElementById("formView").hidden = true;
+  const done = document.getElementById("doneView");
+  done.hidden = false; done.focus();
+}
+
+form.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  err.textContent = "";
+  const email = emailInput.value.trim();
+  if (!token && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+    err.textContent = "Please enter a valid email address.";
+    emailInput.focus();
+    return;
+  }
+  btn.disabled = true; btn.textContent = "Unsubscribing…";
+  try {
+    const res = await fetch(UNSUB_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(token ? { token } : { email }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok){ showDone(data.email || email); return; }
+    err.textContent =
+      data.error === "not_found" ? "We couldn’t find that link. It may have expired — reply to any of our emails and ask to be removed."
+      : data.error === "invalid_email" ? "Please enter a valid email address."
+      : "Something went wrong and you have not been unsubscribed. Please try again, or reply to any of our emails and ask to be removed.";
+  } catch (e){
+    err.textContent = "We couldn’t reach the server, so you have not been unsubscribed. Check your connection and try again, or reply to any of our emails and ask to be removed.";
+  }
+  btn.disabled = false; btn.textContent = "Unsubscribe me";
+});
+</script>
+</body>
+</html>
