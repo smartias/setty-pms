@@ -13,7 +13,7 @@ function knowledgeDisciplines(p) {
   if (Array.isArray(p.disciplines) && p.disciplines.length) return p.disciplines;
   return p.discipline ? [p.discipline] : [];
 }
-const DISCIPLINES = ["Mechanical","Electrical","Plumbing","Fire Protection","Structural","Architectural","Civil","Technology/Telecom","Commissioning","General"];
+const DISCIPLINES = ["Mechanical","Electrical","Plumbing","Fire Protection","Fire Alarm","Structural","Architectural","Civil","Technology/Telecom","Commissioning","General"];
 // readDisciplineCheckboxes without the DOM: `checked` is what the boxes return.
 function orderDisciplines(checked, current) {
   const extra = current.filter(d => !DISCIPLINES.includes(d));
@@ -57,7 +57,7 @@ test("shipped page still contains the tested logic and wiring", () => {
   // Calls, not the definition (`disciplineFieldsetHTML(current)`).
   assert.equal((page.match(/disciplineFieldsetHTML\((?!current\))/g) || []).length, 3, "trade picker in all three editors");
   // Filters match ANY trade, not just the primary.
-  assert.equal((page.match(/!knowledgeDisciplines\([lpr]\)\.includes\(f\.discipline\)/g) || []).length, 3, "practice, lesson and standard filters match any trade");
+  assert.equal((page.match(/!matchesDiscipline\([lpr], f\.discipline\)/g) || []).length, 4, "practice, lesson, standard and agency filters match any trade");
 });
 
 test("migration keeps its safety properties", () => {
