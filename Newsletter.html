@@ -8,7 +8,7 @@
   // Version marker + self-update banner (same pattern as SettyIntelligence.html):
   // an open tab re-fetches this file and offers a reload when the marker changes.
   // Bump it in every PR that changes this file, or open tabs are never told.
-  window.__appVersion = "2026-11-19-news-v004-sanitise-drafts";
+  window.__appVersion = "2026-11-19-news-v005-recipients-per-draft";
   async function _checkForUpdate() {
     try {
       const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -320,6 +320,17 @@
         This creates <strong>draft(s) in Outlook</strong> with everyone on <strong>BCC</strong> (recipients can't see each other).
         Large lists are split into multiple drafts. Nothing sends automatically — you open each draft, review it, and click Send.
       </div>
+      <div style="max-width:320px;margin-bottom:14px">
+        <label for="batchSize">Recipients per draft</label>
+        <select id="batchSize" onchange="setBatchSize(this.value)">
+          <option value="50">50 — most drafts, gentlest on spam filters</option>
+          <option value="100">100</option>
+          <option value="150">150 (recommended)</option>
+          <option value="250">250</option>
+          <option value="400">400 — fewest drafts</option>
+        </select>
+        <div class="hint">Smaller drafts, sent a few at a time over a day or two, are less likely to be treated as spam.</div>
+      </div>
       <button id="draftBtn" onclick="createDraft()" disabled><span aria-hidden="true">✉️</span> Create Outlook draft(s) for <span id="draftCount">0</span> recipients</button>
       <div class="hint" id="batchHint" role="status" style="margin-top:8px"></div>
       <div class="hint" id="draftStatus" role="status" style="margin-top:8px"></div>
@@ -423,7 +434,21 @@ const FROM_NAME = "Setty & Associates";
 const FOOTER_ADDRESS = "Setty &amp; Associates, P.C.";
 // Outlook/Exchange caps recipients per message (~500 by default). Sends larger than
 // this are auto-split into multiple BCC drafts, each one you review and send.
-const BATCH_SIZE = 400;
+// Recipients per Outlook draft. Chosen in step 3 and remembered per browser.
+// Smaller drafts sent over a day or two look less like a bulk blast to spam
+// filters and keep the sender's mailbox clear of Microsoft's sending throttles.
+// 400 is the ceiling (Outlook caps recipients per message at about 500).
+const BATCH_CHOICES = [50, 100, 150, 250, 400];
+const BATCH_DEFAULT = 150;
+let BATCH_SIZE = BATCH_DEFAULT;
+try { const v = Number(localStorage.getItem("newsletter-batch-size")); if (BATCH_CHOICES.includes(v)) BATCH_SIZE = v; } catch(e){}
+function setBatchSize(v){
+  v = Number(v);
+  if (!BATCH_CHOICES.includes(v)) return;
+  BATCH_SIZE = v;
+  try { localStorage.setItem("newsletter-batch-size", String(v)); } catch(e){}
+  updateCounts();
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    STATE
@@ -846,7 +871,9 @@ function updateCounts(){
   document.getElementById("recipNote").textContent = sel + " selected";
   const batches = Math.ceil(sel / BATCH_SIZE);
   document.getElementById("batchHint").textContent =
-    batches > 1 ? ("Will be split into " + batches + " drafts of up to " + BATCH_SIZE + " (Outlook caps recipients per message).") : "";
+    batches > 1 ? ("Will be split into " + batches + " drafts of up to " + BATCH_SIZE + " recipients each. Send them a few at a time, 15–30 minutes apart, rather than all at once.") : "";
+  const pick = document.getElementById("batchSize");
+  if (pick && pick.value !== String(BATCH_SIZE)) pick.value = String(BATCH_SIZE);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
