@@ -8,7 +8,7 @@
   // Version marker + self-update banner (same pattern as SettyIntelligence.html):
   // an open tab re-fetches this file and offers a reload when the marker changes.
   // Bump it in every PR that changes this file, or open tabs are never told.
-  window.__appVersion = "2026-11-19-news-v003-saved-drafts-live-staff";
+  window.__appVersion = "2026-11-19-news-v004-sanitise-drafts";
   async function _checkForUpdate() {
     try {
       const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -310,7 +310,7 @@
       </div>
       <div style="margin-top:14px">
         <label>Live preview (with auto-added footer)</label>
-        <iframe id="preview" class="preview-frame" title="Email preview"></iframe>
+        <iframe id="preview" class="preview-frame" title="Email preview" sandbox=""></iframe>
       </div>
     </div>
 
@@ -889,6 +889,27 @@ function composeDirty(){
   const c = composeState();
   return composeKey(c) !== COMPOSE_BASELINE && !(COMPOSE_BASELINE === "" && composeIsEmpty(c));
 }
+// A saved draft is HTML written by someone else and is put into this page's own
+// DOM (the visual editor), so anything that can run script is removed first:
+// script-capable elements, on* handlers and javascript:/non-image data: URLs.
+// Parsed with DOMParser, which never executes what it parses.
+function sanitizeDraftHtml(html){
+  const doc = new DOMParser().parseFromString("<!doctype html><body>" + String(html || ""), "text/html");
+  doc.querySelectorAll("script,iframe,frame,frameset,object,embed,link,meta,base,form,noscript,template").forEach(el => el.remove());
+  const URL_ATTRS = ["href", "src", "xlink:href", "action", "formaction", "background", "poster"];
+  doc.body.querySelectorAll("*").forEach(el => {
+    for (const a of [...el.attributes]){
+      const name = a.name.toLowerCase();
+      if (name.startsWith("on") || name === "srcdoc"){ el.removeAttribute(a.name); continue; }
+      if (URL_ATTRS.includes(name)){
+        const v = a.value.replace(/[\u0000-\u0020]/g, "").toLowerCase();
+        const dataImage = name === "src" && /^data:image\/(png|jpe?g|gif|webp|bmp);/.test(v);
+        if (/^(javascript|vbscript):/.test(v) || (v.startsWith("data:") && !dataImage)) el.removeAttribute(a.name);
+      }
+    }
+  });
+  return doc.body.innerHTML;
+}
 function draftWho(){ try { return (settyAuth.email && settyAuth.email()) || currentUser() || null; } catch { return currentUser(); } }
 
 function paintDraftButtons(){
@@ -967,8 +988,9 @@ async function openDraft(){
     if (!d) throw new Error("that draft no longer exists");
     document.getElementById("subject").value = d.subject || "";
     if ([...document.getElementById("campType").options].some(o => o.value === d.type)) document.getElementById("campType").value = d.type;
-    document.getElementById("bodyHtml").value = d.body_html || "";
-    document.getElementById("bodyVisual").innerHTML = d.body_html || "";
+    const safeBody = sanitizeDraftHtml(d.body_html);
+    document.getElementById("bodyHtml").value = safeBody;
+    document.getElementById("bodyVisual").innerHTML = safeBody;
     renderPreview();
     CURRENT_DRAFT = { id: d.id, name: d.name };
     COMPOSE_BASELINE = composeKey(composeState());
