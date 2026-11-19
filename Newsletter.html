@@ -8,7 +8,7 @@
   // Version marker + self-update banner (same pattern as SettyIntelligence.html):
   // an open tab re-fetches this file and offers a reload when the marker changes.
   // Bump it in every PR that changes this file, or open tabs are never told.
-  window.__appVersion = "2026-11-19-news-v002-staff-from-live-list";
+  window.__appVersion = "2026-11-19-news-v003-saved-drafts-live-staff";
   async function _checkForUpdate() {
     try {
       const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -28,7 +28,7 @@
     banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:linear-gradient(90deg,#1F3864,#2563EB);color:white;padding:10px 16px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:12px;box-shadow:0 2px 12px rgba(0,0,0,0.4);";
     const msg = document.createElement("span");
     // Reloading clears the compose box, so say so before anyone clicks.
-    msg.textContent = "🔄 New version available (" + remote + "). Reloading clears an unsent email in the compose box — copy it first.";
+    msg.textContent = "🔄 New version available (" + remote + "). Reloading clears the compose box — click Save draft first.";
     const btn = document.createElement("button");
     btn.id = "__updateBtn"; btn.type = "button"; btn.textContent = "Reload now";
     btn.style.cssText = "background:white;color:#1F3864;border:none;border-radius:6px;padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer;flex:none";
@@ -248,6 +248,19 @@
 
     <div class="card">
       <h2>2 · Compose</h2>
+      <!-- Saved drafts: the subject, type and body, stored in Supabase so they can be
+           reopened later or by a colleague. Recipients are not part of a draft. -->
+      <div class="row" style="align-items:flex-end;gap:8px;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--line)">
+        <div style="flex:1;min-width:220px;max-width:420px">
+          <label for="draftPick">Saved drafts</label>
+          <select id="draftPick" onchange="paintDraftButtons()"><option value="">Loading…</option></select>
+        </div>
+        <button type="button" class="ghost" id="draftOpenBtn" onclick="openDraft()" disabled>Open</button>
+        <button type="button" id="draftSaveBtn" onclick="saveDraft()"><span aria-hidden="true">💾</span> Save draft</button>
+        <button type="button" class="ghost" id="draftSaveAsBtn" onclick="saveDraft(true)" disabled>Save as new…</button>
+        <button type="button" class="ghost" id="draftDeleteBtn" onclick="deleteDraft()" disabled>Delete</button>
+        <div class="hint" id="draftState" role="status" style="flex-basis:100%;margin-top:0"></div>
+      </div>
       <div class="row">
         <div style="max-width:220px">
           <label for="campType">Campaign type</label>
@@ -852,6 +865,139 @@ function buildEmailHtml(innerHtml, subject){
       <div style="max-width:640px;margin:0 auto;padding:24px;background:#fff">${innerHtml || ""}${footer}</div>
     </body></html>`;
 }
+/* ═══════════════════════════════════════════════════════════════════════════
+   SAVED DRAFTS  (newsletter_drafts — subject, type and body; not recipients)
+   ═══════════════════════════════════════════════════════════════════════════ */
+let DRAFTS = [];            // [{id,name,subject,type,updated_by,updated_at}] — no bodies
+let CURRENT_DRAFT = null;   // {id,name} of the draft loaded in the compose box, or null
+let COMPOSE_BASELINE = "";  // compose content as last saved/opened, to detect unsaved edits
+
+// The compose content, with any pending visual-editor edits folded in first.
+function composeState(){
+  if (document.getElementById("visualWrap").style.display !== "none"){
+    document.getElementById("bodyHtml").value = document.getElementById("bodyVisual").innerHTML;
+  }
+  return {
+    subject: document.getElementById("subject").value,
+    type: document.getElementById("campType").value,
+    body_html: document.getElementById("bodyHtml").value,
+  };
+}
+function composeKey(c){ return JSON.stringify([c.subject, c.type, c.body_html]); }
+function composeIsEmpty(c){ return !c.subject.trim() && !c.body_html.replace(/<br\s*\/?>/gi, "").trim(); }
+function composeDirty(){
+  const c = composeState();
+  return composeKey(c) !== COMPOSE_BASELINE && !(COMPOSE_BASELINE === "" && composeIsEmpty(c));
+}
+function draftWho(){ try { return (settyAuth.email && settyAuth.email()) || currentUser() || null; } catch { return currentUser(); } }
+
+function paintDraftButtons(){
+  const picked = document.getElementById("draftPick").value;
+  document.getElementById("draftOpenBtn").disabled = !picked;
+  document.getElementById("draftDeleteBtn").disabled = !picked;
+  document.getElementById("draftSaveAsBtn").disabled = !CURRENT_DRAFT;
+  document.getElementById("draftSaveBtn").lastChild.textContent = CURRENT_DRAFT ? " Save changes" : " Save draft";
+}
+function paintDraftState(msg){
+  document.getElementById("draftState").textContent = msg ||
+    (CURRENT_DRAFT ? "Editing saved draft “" + CURRENT_DRAFT.name + "”. Recipients are not saved with a draft."
+                   : "Not saved yet — Save draft keeps the subject and body so you or a colleague can reopen it later.");
+}
+function renderDraftPick(){
+  const sel = document.getElementById("draftPick");
+  const keep = CURRENT_DRAFT ? CURRENT_DRAFT.id : sel.value;
+  sel.textContent = "";
+  const first = document.createElement("option");
+  first.value = ""; first.textContent = DRAFTS.length ? "Choose a saved draft…" : "No saved drafts yet";
+  sel.appendChild(first);
+  for (const d of DRAFTS){
+    const o = document.createElement("option");
+    o.value = d.id;
+    o.textContent = d.name + " — " + new Date(d.updated_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) +
+      (d.updated_by ? " · " + String(d.updated_by).split("@")[0] : "");
+    sel.appendChild(o);
+  }
+  if (keep && DRAFTS.some(d => d.id === keep)) sel.value = keep;
+  paintDraftButtons();
+}
+async function loadDrafts(){
+  try {
+    DRAFTS = (await sb("GET", "/rest/v1/newsletter_drafts?select=id,name,subject,type,updated_by,updated_at&order=updated_at.desc&limit=200")) || [];
+  } catch(e){
+    DRAFTS = [];
+    log("Couldn't load saved drafts: " + e.message, "err");
+  }
+  renderDraftPick(); paintDraftState();
+}
+async function saveDraft(asNew){
+  const c = composeState();
+  if (composeIsEmpty(c)){ log("Nothing to save yet — add a subject or some body content first.", "err"); return; }
+  const btn = document.getElementById("draftSaveBtn"); btn.disabled = true;
+  try {
+    const who = draftWho(), now = new Date().toISOString();
+    if (CURRENT_DRAFT && !asNew){
+      const rows = await sb("PATCH", "/rest/v1/newsletter_drafts?id=eq." + CURRENT_DRAFT.id,
+        { ...c, updated_by: who, updated_at: now }, "return=representation");
+      // No row back = it was deleted by someone else (or the write was refused).
+      if (!rows || !rows.length) throw new Error("that draft no longer exists (someone may have deleted it). Use “Save as new…” to keep your work");
+    } else {
+      const name = (prompt("Name this draft:", asNew && CURRENT_DRAFT ? CURRENT_DRAFT.name + " (copy)" : (c.subject.trim() || "Untitled draft")) || "").trim();
+      if (!name) return;
+      const rows = await sb("POST", "/rest/v1/newsletter_drafts",
+        { ...c, name: name.slice(0, 200), created_by: who, updated_by: who }, "return=representation");
+      if (!rows || !rows[0] || !rows[0].id) throw new Error("the draft was not saved (no confirmation came back)");
+      CURRENT_DRAFT = { id: rows[0].id, name: rows[0].name };
+    }
+    COMPOSE_BASELINE = composeKey(c);
+    await loadDrafts();
+    paintDraftState("Saved “" + CURRENT_DRAFT.name + "” at " + new Date().toLocaleTimeString() + ". Recipients are not saved with a draft.");
+    log("Draft “" + CURRENT_DRAFT.name + "” saved.", "ok");
+  } catch(e){
+    log("Draft NOT saved: " + e.message, "err");
+    paintDraftState("⚠️ Draft not saved — see the log at the bottom of the page.");
+  } finally { btn.disabled = false; }
+}
+async function openDraft(){
+  const id = document.getElementById("draftPick").value;
+  if (!id) return;
+  if (composeDirty() && !confirm("Opening a draft replaces what is in the compose box, and your current changes are not saved. Continue?")) return;
+  try {
+    const rows = await sb("GET", "/rest/v1/newsletter_drafts?id=eq." + id + "&select=*");
+    const d = rows && rows[0];
+    if (!d) throw new Error("that draft no longer exists");
+    document.getElementById("subject").value = d.subject || "";
+    if ([...document.getElementById("campType").options].some(o => o.value === d.type)) document.getElementById("campType").value = d.type;
+    document.getElementById("bodyHtml").value = d.body_html || "";
+    document.getElementById("bodyVisual").innerHTML = d.body_html || "";
+    renderPreview();
+    CURRENT_DRAFT = { id: d.id, name: d.name };
+    COMPOSE_BASELINE = composeKey(composeState());
+    paintDraftButtons(); paintDraftState();
+    log("Opened draft “" + d.name + "”.", "ok");
+  } catch(e){
+    log("Couldn't open the draft: " + e.message, "err");
+    await loadDrafts();
+  }
+}
+async function deleteDraft(){
+  const id = document.getElementById("draftPick").value;
+  const d = DRAFTS.find(x => x.id === id);
+  if (!d || !confirm("Delete the saved draft “" + d.name + "” for everyone? This cannot be undone.")) return;
+  try {
+    const rows = await sb("DELETE", "/rest/v1/newsletter_drafts?id=eq." + id, null, "return=representation");
+    if (!rows || !rows.length) throw new Error("it was not deleted (already gone, or not permitted)");
+    if (CURRENT_DRAFT && CURRENT_DRAFT.id === id){ CURRENT_DRAFT = null; COMPOSE_BASELINE = ""; }
+    log("Draft “" + d.name + "” deleted.", "ok");
+  } catch(e){ log("Couldn't delete the draft: " + e.message, "err"); }
+  await loadDrafts();
+}
+// Leaving or reloading with unsaved compose changes asks first (the browser shows its own wording).
+window.addEventListener("beforeunload", (ev) => {
+  let dirty = false;
+  try { dirty = composeDirty(); } catch(e){}
+  if (dirty){ ev.preventDefault(); ev.returnValue = ""; }
+});
+
 function renderPreview(){
   const html = buildEmailHtml(document.getElementById("bodyHtml").value, document.getElementById("subject").value);
   document.getElementById("preview").srcdoc = html;
@@ -1368,6 +1514,7 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c => ({"&":"&amp
   // ↻ button above stays as the manual refresh; refreshAll() reports its own
   // failures, the outer catch just keeps boot alive.
   list.innerHTML = '<div class="muted" style="padding:18px">Loading the directory…</div>';
+  loadDrafts();
   try { await refreshAll(); } catch(e){ log("Auto-load failed: " + e.message, "err"); }
 })();
 </script>
