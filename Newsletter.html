@@ -8,7 +8,7 @@
   // Version marker + self-update banner (same pattern as SettyIntelligence.html):
   // an open tab re-fetches this file and offers a reload when the marker changes.
   // Bump it in every PR that changes this file, or open tabs are never told.
-  window.__appVersion = "2026-11-19-news-v006-team-send";
+  window.__appVersion = "2026-11-19-news-v007-pick-my-people";
   async function _checkForUpdate() {
     try {
       const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -395,6 +395,7 @@
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
         <h2 style="margin:0" id="batchTitle" tabindex="-1">Team send</h2>
         <div class="row" style="gap:8px">
+          <button type="button" class="sm" id="pickOpenBtn" onclick="openPickPeople()">Pick my people…</button>
           <button type="button" class="ghost sm" onclick="checkMyBatches()">Check my drafts in Outlook</button>
           <button type="button" class="ghost sm" onclick="refreshBatches()">↻ Refresh</button>
           <button type="button" class="ghost sm" onclick="closeBatches()">Close</button>
@@ -408,6 +409,21 @@
         </table>
       </div>
       <div id="batchRecips" class="hint" style="margin-top:10px"></div>
+      <!-- Pick my people: choose specific recipients nobody has taken yet and get a draft with just them. -->
+      <div id="pickPanel" class="hidden" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+        <h2 style="margin:0 0 6px" id="pickTitle" tabindex="-1">Pick my people</h2>
+        <p class="muted" style="margin:0 0 10px">Tick the people you want to send to yourself. They come out of the batches nobody has taken yet and go into one draft in your Outlook. Everyone else stays in the ordinary batches.</p>
+        <div class="row" style="align-items:flex-end;margin-bottom:8px">
+          <div style="flex:1;min-width:220px;max-width:420px">
+            <label for="pickSearch">Search by name, firm or email</label>
+            <input type="text" id="pickSearch" placeholder="start typing…" oninput="renderPickList()">
+          </div>
+          <button type="button" id="pickGoBtn" onclick="confirmPickPeople()" disabled>Create my draft</button>
+          <button type="button" class="ghost" onclick="closePickPeople()">Cancel</button>
+        </div>
+        <div class="hint" id="pickCount" role="status" style="margin:0 0 8px"></div>
+        <div class="scroll" id="pickList" style="max-height:320px"></div>
+      </div>
     </div>
   </section>
 </main>
@@ -1566,7 +1582,7 @@ function renderHistory(){
 let BATCHES = [];           // every batch row, without its recipient list
 let BATCHES_OK = true;      // false when the table isn't there (feature hides)
 let OPEN_CAMPAIGN = null;   // id of the campaign shown in the batch panel
-const BATCH_COLS = "id,campaign_id,idx,recipient_count,status,claimed_by,drafted_at,message_id,web_link,sent_at";
+const BATCH_COLS = "id,campaign_id,idx,recipient_count,status,claimed_by,drafted_at,message_id,web_link,sent_at,picked_by";
 const IMMUTABLE_ID = { Prefer: 'IdType="ImmutableId"' }; // the id survives Drafts -> Sent Items
 
 function sameUser(a, b){ return !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase(); }
@@ -1590,6 +1606,7 @@ function batchProgressCell(c){
   return `<button type="button" class="ghost sm" onclick="openBatches('${esc(c.id)}')">${sent} of ${live} sent · open</button>`;
 }
 function openBatches(id){
+  if (OPEN_CAMPAIGN !== id) closePickPeople();
   OPEN_CAMPAIGN = id;
   document.getElementById("batchCard").classList.remove("hidden");
   document.getElementById("batchRecips").textContent = "";
@@ -1598,6 +1615,7 @@ function openBatches(id){
   t.scrollIntoView({ block: "nearest" }); t.focus();
 }
 function closeBatches(){
+  closePickPeople();
   OPEN_CAMPAIGN = null;
   document.getElementById("batchCard").classList.add("hidden");
 }
@@ -1618,7 +1636,9 @@ function renderBatches(){
     n("pending").length + " not taken yet (" + people("pending") + ")." +
     (me ? "" : " Sign in with Microsoft to take a batch.");
   const PILL = { pending: ["bounced", "Not taken"], drafted: ["staff", "Draft in Outlook"], sent: ["sub", "Sent"], skipped: ["unsub", "Skipped"] };
-  document.getElementById("batchBody").innerHTML = rows.map(b => {
+  document.getElementById("pickOpenBtn").disabled = !me || !n("pending").length;
+  // Batches emptied by hand-picking (or by unsubscribes) have nobody left to mail: don't list them.
+  document.getElementById("batchBody").innerHTML = rows.filter(b => !(b.status === "skipped" && !b.recipient_count)).map(b => {
     const mine = sameUser(b.claimed_by, me);
     const pill = PILL[b.status] || ["staff", b.status];
     const when = b.status === "sent" ? b.sent_at : b.drafted_at;
@@ -1632,7 +1652,7 @@ function renderBatches(){
         `<button type="button" class="ghost sm" onclick="releaseBatch('${esc(b.id)}')">Give back</button> ` + act;
     }
     return `<tr>
-      <td>${b.idx + 1}</td>
+      <td>${b.idx + 1}${b.picked_by ? ' <span class="muted">· hand-picked</span>' : ""}</td>
       <td>${b.recipient_count}</td>
       <td><span class="pill ${pill[0]}">${pill[1]}</span></td>
       <td class="muted">${b.claimed_by ? esc(shortUser(b.claimed_by)) + (mine ? " (you)" : "") : "—"}${when ? " · " + new Date(when).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : ""}</td>
@@ -1648,6 +1668,88 @@ async function showBatchRecipients(id){
     if (!r) throw new Error("that batch no longer exists");
     box.textContent = "Batch " + (r.idx + 1) + " — " + (r.recipients || []).length + " recipients: " + (r.recipients || []).join(", ");
   } catch(e){ box.textContent = ""; log("Couldn't load that batch's recipients: " + e.message, "err"); }
+}
+
+/* ── Pick my people ───────────────────────────────────────────────────────── */
+let PICK_POOL = [];          // [{email,name,company}] everyone in a not-yet-taken batch
+let PICK_SELECTED = new Set();
+const PICK_SHOW_MAX = 200;   // rows rendered at once; search narrows a long list
+
+function closePickPeople(){
+  document.getElementById("pickPanel").classList.add("hidden");
+  PICK_POOL = []; PICK_SELECTED = new Set();
+}
+async function openPickPeople(){
+  if (!OPEN_CAMPAIGN) return;
+  if (!currentUser()){ log("Sign in with Microsoft first.", "err"); return; }
+  try {
+    const rows = await sbAll("/rest/v1/newsletter_campaign_batches?campaign_id=eq." + OPEN_CAMPAIGN + "&status=eq.pending&select=recipients&order=idx");
+    await loadSubscribers(); // so anyone who has since unsubscribed isn't offered
+    const byEmail = {};
+    for (const p of DIRECTORY) byEmail[String(p.email).toLowerCase()] = p;
+    const seen = new Set();
+    PICK_POOL = [];
+    for (const r of rows) for (const e of (r.recipients || [])){
+      const k = String(e).toLowerCase();
+      if (seen.has(k) || isBlocked(e)) continue;
+      seen.add(k);
+      const d = byEmail[k] || SUBS[e] || {};
+      PICK_POOL.push({ email: e, name: d.name || "", company: d.company || "" });
+    }
+    PICK_POOL.sort((a, b) => (a.company + a.name + a.email).localeCompare(b.company + b.name + b.email));
+    PICK_SELECTED = new Set();
+    document.getElementById("pickSearch").value = "";
+    document.getElementById("pickPanel").classList.remove("hidden");
+    renderPickList();
+    const t = document.getElementById("pickTitle"); t.scrollIntoView({ block: "nearest" }); t.focus();
+    if (!PICK_POOL.length) log("Nobody is left to pick — every batch has been taken.", "err");
+  } catch(e){ log("Couldn't load the people available to pick: " + e.message, "err"); }
+}
+function togglePick(box){
+  if (box.checked) PICK_SELECTED.add(box.value); else PICK_SELECTED.delete(box.value);
+  paintPickCount();
+}
+function paintPickCount(shown, matches){
+  const n = PICK_SELECTED.size;
+  document.getElementById("pickGoBtn").disabled = !n;
+  document.getElementById("pickGoBtn").textContent = n ? "Create my draft with " + n + (n === 1 ? " person" : " people") : "Create my draft";
+  if (shown != null) document.getElementById("pickCount").dataset.list =
+    matches > shown ? "Showing the first " + shown + " of " + matches + " matches — search to narrow it down." : matches + " available.";
+  document.getElementById("pickCount").textContent = (document.getElementById("pickCount").dataset.list || "") + (n ? " " + n + " ticked." : "");
+}
+function renderPickList(){
+  const q = document.getElementById("pickSearch").value.trim().toLowerCase();
+  const matches = q ? PICK_POOL.filter(p => (p.name + " " + p.company + " " + p.email).toLowerCase().includes(q)) : PICK_POOL;
+  const shown = matches.slice(0, PICK_SHOW_MAX);
+  document.getElementById("pickList").innerHTML = shown.map(p => `
+    <label class="person" style="padding-left:12px">
+      <input type="checkbox" value="${esc(p.email)}" ${PICK_SELECTED.has(p.email) ? "checked" : ""} onchange="togglePick(this)">
+      <span>${esc(p.name || p.email)}</span>
+      <span class="em">${esc(p.company)}${p.name ? " · " + esc(p.email) : ""}</span>
+    </label>`).join("") || '<div class="muted" style="padding:14px">No one matches that search.</div>';
+  paintPickCount(shown.length, matches.length);
+}
+async function confirmPickPeople(){
+  const emails = [...PICK_SELECTED];
+  if (!emails.length || !OPEN_CAMPAIGN) return;
+  const btn = document.getElementById("pickGoBtn"); btn.disabled = true;
+  try {
+    // One database transaction moves them out of the untaken batches into a new
+    // batch, so two people picking at the same moment can't both get the same person.
+    const row = await sb("POST", "/rest/v1/rpc/newsletter_pick_people", { p_campaign: OPEN_CAMPAIGN, p_emails: emails });
+    if (!row || !row.id){
+      log("None of those people are still available — they were taken while you were choosing.", "err");
+      await refreshBatches(); await openPickPeople(); return;
+    }
+    const got = row.recipient_count || 0;
+    if (got < emails.length) log((emails.length - got) + " of the " + emails.length + " people you ticked had just been taken by someone else; your draft has the other " + got + ".", "err");
+    closePickPeople();
+    await loadBatches(); renderHistory();
+    await takeBatch(row.id); // claims the new batch and creates the draft, like any other
+  } catch(e){
+    log("Couldn't pick those people: " + e.message, "err");
+    btn.disabled = false;
+  }
 }
 
 // Step 3's second button: save the campaign and its batches, create no drafts.
