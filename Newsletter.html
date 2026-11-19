@@ -4,6 +4,48 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Setty Newsletter &amp; Invites</title>
+<script>
+  // Version marker + self-update banner (same pattern as SettyIntelligence.html):
+  // an open tab re-fetches this file and offers a reload when the marker changes.
+  // Bump it in every PR that changes this file, or open tabs are never told.
+  window.__appVersion = "2026-11-19-news-v001-light-theme-unsubscribe-page";
+  async function _checkForUpdate() {
+    try {
+      const res = await fetch(location.pathname + "?_v=" + Date.now(),
+        { cache: "no-store", headers: { "Cache-Control": "no-cache" } });
+      if (!res.ok) return;
+      const text = await res.text();
+      const match = text.match(/window\.__appVersion\s*=\s*["']([^"']+)["']/);
+      const remote = match ? match[1] : null;
+      if (remote && remote !== window.__appVersion) _showUpdateBanner(remote);
+    } catch (e) { console.warn("[updater]", e.message); }
+  }
+  function _showUpdateBanner(remote) {
+    if (document.getElementById("__updateBanner")) return;
+    const banner = document.createElement("div");
+    banner.id = "__updateBanner";
+    banner.setAttribute("role", "status");
+    banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:linear-gradient(90deg,#1F3864,#2563EB);color:white;padding:10px 16px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:12px;box-shadow:0 2px 12px rgba(0,0,0,0.4);";
+    const msg = document.createElement("span");
+    // Reloading clears the compose box, so say so before anyone clicks.
+    msg.textContent = "🔄 New version available (" + remote + "). Reloading clears an unsent email in the compose box — copy it first.";
+    const btn = document.createElement("button");
+    btn.id = "__updateBtn"; btn.type = "button"; btn.textContent = "Reload now";
+    btn.style.cssText = "background:white;color:#1F3864;border:none;border-radius:6px;padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer;flex:none";
+    btn.onclick = () => location.reload();
+    banner.append(msg, btn);
+    document.body.appendChild(banner);
+  }
+  window.addEventListener("load", () => {
+    setTimeout(_checkForUpdate, 3000);
+    setInterval(_checkForUpdate, 10 * 60 * 1000);
+  });
+</script>
+<script>
+  // Theme preference: "system" (default, follows the OS), "light" or "dark".
+  // Shared key with SettyPMS.html; applied before first paint (no flash).
+  (function(){try{var t=localStorage.getItem("pms-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();
+</script>
 <!-- MSAL — exact same library + app registration the PMS uses, so sign-in/consent is shared -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
 <style>
@@ -11,10 +53,28 @@
     --bg:#0F172A; --panel:#1E293B; --panel2:#172033; --line:#334155;
     --ink:#E2E8F0; --muted:#94A3B8; --faint:#8b98ab;
     --accent:#2563EB; --accent2:#1D4ED8; --good:#16A34A; --bad:#DC2626; --warn:#D97706;
+    --link:#93C5FD; --sel:#60A5FA; --ok-ink:#4ADE80; --bad-ink:#F87171; --warn-ink:#FBBF24; --info-ink:#93C5FD;
+    --log-bg:#0B1220; --log-ink:#9CA3AF; --hair:rgba(51,65,85,.5); color-scheme:dark;
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="dark"]){
+      --bg:#F3F5F9; --panel:#FFFFFF; --panel2:#F1F5F9; --line:#CBD5E1;
+      --ink:#1E293B; --muted:#475569; --faint:#64748B;
+      --accent:#2563EB; --accent2:#1D4ED8; --good:#15803D; --bad:#B91C1C; --warn:#B45309;
+      --link:#1D4ED8; --sel:#1D4ED8; --ok-ink:#15803D; --bad-ink:#B91C1C; --warn-ink:#92400E; --info-ink:#1D4ED8;
+      --log-bg:#FFFFFF; --log-ink:#475569; --hair:rgba(148,163,184,.45); color-scheme:light;
+    }
+  }
+  :root[data-theme="light"]{
+      --bg:#F3F5F9; --panel:#FFFFFF; --panel2:#F1F5F9; --line:#CBD5E1;
+      --ink:#1E293B; --muted:#475569; --faint:#64748B;
+      --accent:#2563EB; --accent2:#1D4ED8; --good:#15803D; --bad:#B91C1C; --warn:#B45309;
+      --link:#1D4ED8; --sel:#1D4ED8; --ok-ink:#15803D; --bad-ink:#B91C1C; --warn-ink:#92400E; --info-ink:#1D4ED8;
+      --log-bg:#FFFFFF; --log-ink:#475569; --hair:rgba(148,163,184,.45); color-scheme:light;
   }
   *{box-sizing:border-box}
   body{margin:0;font-family:"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
-  a{color:#93C5FD}
+  a{color:var(--link)}
   header{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel2);position:sticky;top:0;z-index:10}
   header h1{font-size:16px;margin:0;font-weight:700}
   header .sub{font-size:12px;color:var(--muted)}
@@ -51,42 +111,42 @@
   .stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 16px;min-width:110px}
   .stat .n{font-size:22px;font-weight:700}
   .stat .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
-  .stat.sel .n{color:#60A5FA}
-  .stat.unsub .n{color:#F87171}
+  .stat.sel .n{color:var(--sel)}
+  .stat.unsub .n{color:var(--bad-ink)}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
   th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;position:sticky;top:0;background:var(--panel)}
   .scroll{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:10px}
   .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;font-weight:600}
-  .pill.sub{background:rgba(22,163,74,.18);color:#4ADE80}
-  .pill.unsub{background:rgba(220,38,38,.18);color:#F87171}
-  .pill.bounced{background:rgba(217,119,6,.18);color:#FBBF24}
-  .pill.staff{background:rgba(37,99,235,.18);color:#93C5FD}
-  .pill.client{background:rgba(217,119,6,.18);color:#FBBF24}
+  .pill.sub{background:rgba(22,163,74,.18);color:var(--ok-ink)}
+  .pill.unsub{background:rgba(220,38,38,.18);color:var(--bad-ink)}
+  .pill.bounced{background:rgba(217,119,6,.18);color:var(--warn-ink)}
+  .pill.staff{background:rgba(37,99,235,.18);color:var(--info-ink)}
+  .pill.client{background:rgba(217,119,6,.18);color:var(--warn-ink)}
   .preview-frame{width:100%;height:360px;border:1px solid var(--line);border-radius:10px;background:#fff}
   .muted{color:var(--muted)}
   .hint{font-size:12px;color:var(--faint);margin-top:6px}
-  #log{position:fixed;bottom:0;left:0;right:0;max-height:140px;overflow:auto;background:#0B1220;border-top:1px solid var(--line);
-       font-family:"Consolas",monospace;font-size:11px;padding:8px 16px;color:#9CA3AF;display:none}
+  #log{position:fixed;bottom:0;left:0;right:0;max-height:140px;overflow:auto;background:var(--log-bg);border-top:1px solid var(--line);
+       font-family:"Consolas",monospace;font-size:11px;padding:8px 16px;color:var(--log-ink);display:none}
   #log.show{display:block}
   /* The log is pinned over the bottom of the window. While it shows, leave room
      under the page so the last card (the Create-draft button) can scroll clear of it. */
   body.has-log{padding-bottom:160px}
   #logClose{position:sticky;top:0;float:right;margin-left:12px;padding:2px 10px;font-size:11px}
-  .logline.err{color:#F87171}
-  .logline.ok{color:#4ADE80}
+  .logline.err{color:var(--bad-ink)}
+  .logline.ok{color:var(--ok-ink)}
   .banner{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:14px}
-  .banner.warn{background:rgba(217,119,6,.15);border:1px solid rgba(217,119,6,.4);color:#FBBF24}
+  .banner.warn{background:rgba(217,119,6,.15);border:1px solid rgba(217,119,6,.4);color:var(--warn-ink)}
   .type-grp{border-bottom:1px solid var(--line)}
   .type-head{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--panel2);position:sticky;top:0;z-index:2}
-  .firm-head{display:flex;align-items:center;gap:10px;padding:6px 12px 6px 30px;background:var(--panel);border-top:1px solid rgba(51,65,85,.5)}
+  .firm-head{display:flex;align-items:center;gap:10px;padding:6px 12px 6px 30px;background:var(--panel);border-top:1px solid var(--hair)}
   .cnt{margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap}
   .grp-name{font-weight:600;cursor:pointer;user-select:none}
   .firm-name{cursor:pointer;user-select:none}
   button.grp-name,button.firm-name{font:inherit;background:transparent;border:0;padding:0;color:inherit;text-align:left;cursor:pointer;user-select:none}
   button.grp-name{font-weight:600}
   button.grp-name:hover,button.firm-name:hover{background:transparent}
-  .person{display:flex;align-items:center;gap:10px;padding:5px 12px 5px 52px;border-top:1px solid rgba(51,65,85,.4);cursor:pointer;margin:0}
+  .person{display:flex;align-items:center;gap:10px;padding:5px 12px 5px 52px;border-top:1px solid var(--hair);cursor:pointer;margin:0}
   .person:hover{background:var(--panel2)}
   .person.dis{opacity:.75;cursor:default}
   .person .em{color:var(--muted);font-size:12px}
@@ -103,9 +163,33 @@
     <div class="sub">Sends to the live PMS directory · honors unsubscribes</div>
   </div>
   <div class="spacer"></div>
+  <button type="button" class="ghost sm" id="themeToggle"></button>
   <span class="who" id="whoami"></span>
   <button id="signInBtn" class="ghost" onclick="signIn()">Sign in with Microsoft</button>
 </header>
+<script>
+  // System -> Light -> Dark. Saved in localStorage ("pms-theme", shared with the PMS).
+  (function () {
+    var modes = [{ k: "system", i: "🖥", l: "System" }, { k: "light", i: "☀️", l: "Light" }, { k: "dark", i: "🌙", l: "Dark" }];
+    var btn = document.getElementById("themeToggle");
+    function read() { try { var t = localStorage.getItem("pms-theme"); return t === "light" || t === "dark" ? t : "system"; } catch (e) { return "system"; } }
+    var cur = read();
+    function paint() {
+      var m = modes.filter(function (x) { return x.k === cur; })[0], n = modes[(modes.indexOf(m) + 1) % 3];
+      btn.textContent = m.i + " " + m.l;
+      btn.title = "Theme: " + m.l + ". Click for " + n.l + ".";
+      btn.setAttribute("aria-label", "Theme: " + m.l + ". Switch to " + n.l + ".");
+    }
+    btn.addEventListener("click", function () {
+      var m = modes.filter(function (x) { return x.k === cur; })[0];
+      cur = modes[(modes.indexOf(m) + 1) % 3].k;
+      if (cur === "system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", cur);
+      try { if (cur === "system") localStorage.removeItem("pms-theme"); else localStorage.setItem("pms-theme", cur); } catch (e) {}
+      paint();
+    });
+    paint();
+  })();
+</script>
 
 <div class="tabs">
   <button type="button" class="tab active" data-tab="send" onclick="showTab('send')">Compose &amp; Send</button>
@@ -201,7 +285,7 @@
             <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('removeFormat')" title="Clear formatting">✕ Clear</button>
           </div>
           <div id="bodyVisual" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="bodyLabel" oninput="syncFromVisual()"
-               style="min-height:220px;border:1px solid var(--line);border-radius:8px;padding:14px;background:#fff;overflow:auto;line-height:1.5"></div>
+               style="min-height:220px;border:1px solid var(--line);border-radius:8px;padding:14px;background:#fff;color:#1F2937;overflow:auto;line-height:1.5"></div>
           <div class="hint">Type here, or simply <strong>paste</strong> (Ctrl+V) a designed email straight from Publisher, Word, Outlook, or a web page — the formatting comes with it. An unsubscribe footer is added automatically.</div>
         </div>
 
@@ -317,7 +401,10 @@ const SIGNIN_SCOPES = ["User.Read"];
 const MAIL_SCOPES   = ["User.Read", SEND_MAILBOX ? "Mail.ReadWrite.Shared" : "Mail.ReadWrite"]; // create drafts
 const BOUNCE_SCOPES = ["User.Read", SEND_MAILBOX ? "Mail.Read.Shared"      : "Mail.Read"];      // read NDRs
 
-const UNSUB_URL = SUPABASE_URL + "/functions/v1/unsubscribe";
+// The unsubscribe link in the footer. It must be a page on this site: the
+// `unsubscribe` edge function cannot serve HTML itself (Supabase delivers it as
+// plain text, so recipients saw raw source). Unsubscribe.html posts to the function.
+const UNSUB_URL = new URL("Unsubscribe.html", MSAL_REDIRECT_URI).href;
 const FROM_NAME = "Setty & Associates";
 // Physical address shown in the footer (good practice / CAN-SPAM). Edit to taste.
 const FOOTER_ADDRESS = "Setty &amp; Associates, P.C.";

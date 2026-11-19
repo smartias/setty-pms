@@ -42,3 +42,8 @@ verify_jwt = true
 # Production deploy: .github/workflows/deploy-pms-user-emails.yml (--no-verify-jwt).
 [functions.pms-user-emails]
 verify_jwt = false
+
+# Newsletter unsubscribe API, called by Unsubscribe.html. Public: recipients
+# arrive from an email link with no sign-in, so the JWT gate must stay off.
+[functions.unsubscribe]
+verify_jwt = false
