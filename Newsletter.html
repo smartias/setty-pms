@@ -8,7 +8,7 @@
   // Version marker + self-update banner (same pattern as SettyIntelligence.html):
   // an open tab re-fetches this file and offers a reload when the marker changes.
   // Bump it in every PR that changes this file, or open tabs are never told.
-  window.__appVersion = "2026-11-19-news-v001-light-theme-unsubscribe-page";
+  window.__appVersion = "2026-11-19-news-v002-staff-from-live-list";
   async function _checkForUpdate() {
     try {
       const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -539,9 +539,11 @@ function paintUser(){
 async function loadDirectory(){
   // External contacts live nested inside pms_clients.client.contacts[]
   const clients = await sbAll("/rest/v1/pms_clients?select=id,client&order=id"); // id = pms_clients row id
-  // Internal staff live in the pms_data singleton
-  const data = await sb("GET", "/rest/v1/pms_data?id=eq.singleton&select=staff");
-  const staff = (data && data[0] && data[0].staff) || [];
+  // Internal staff: the PMS's live staff list is pms_meta (id app_meta) -> data.staff.
+  // The pms_data singleton is the legacy copy and stopped being updated, so it
+  // held only a fraction of the firm. Staff marked inactive in the PMS are skipped.
+  const data = await sb("GET", "/rest/v1/pms_meta?id=eq.app_meta&select=staff:data->staff");
+  const staff = ((data && data[0] && data[0].staff) || []).filter(s => s && !s.inactive);
 
   const people = [];
   const seen = new Set();
