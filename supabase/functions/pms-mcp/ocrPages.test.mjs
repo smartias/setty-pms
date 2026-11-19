@@ -68,6 +68,7 @@ test("drift: index.ts wires the OCR fallback into read_document", () => {
   assert.match(idx, /from "\.\/ocrPages\.ts"/);
   assert.match(idx, /needsOcr\(t\)/);
   assert.match(idx, /ocrPdfPage\(pdfBytes!, i\)/);
-  assert.match(idx, /const BUILD = "2026-11-18-drawing-index-ocr"/);
+  // BUILD must be a dated slug; which one is whatever change shipped last.
+  assert.match(idx, /const BUILD = "\d{4}-\d{2}-\d{2}-[a-z0-9-]+"/);
   assert.match(idx, /ocrPdfPage\(buf, i\)/);
 });
