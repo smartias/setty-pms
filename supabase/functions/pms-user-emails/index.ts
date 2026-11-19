@@ -1,6 +1,6 @@
 // pms-user-emails — Supabase Edge Function.
 //
-// Two routes, both sending via Resend:
+// Three routes, all sending via Resend:
 //   POST /welcome  — admin-only (JWT checked against my_pms_role). Called by
 //                    the Admin Console right after a user is added to
 //                    pms_user_roles. Sends the "you've been added" email.
@@ -13,6 +13,16 @@
 //                    Also callable by an admin JWT for testing:
 //                      ?dryRun=1   — build everything, send nothing, report
 //                      ?only=a@b   — restrict recipients (testing)
+//   POST /cron-alert — "a scheduled job is failing" email to CRON_ALERT_TO.
+//                    Called every 15 minutes by pg_cron (job pms-cron-alert,
+//                    same x-pms-cron key). Asks public.pms_cron_problems()
+//                    what is wrong right now (a job whose last run failed, a
+//                    stale nightly backup, a burst of failed background
+//                    calls), emails the ones not alerted in the last 20 hours,
+//                    and records them in pms_cron_alerts. Sends nothing when
+//                    all is well. Admin JWT for testing: ?dryRun=1 reports and
+//                    sends nothing. See migration
+//                    20261120100000_cron_failure_alerts.sql.
 //
 // Digest item rules ported from the never-deployed weekly-digest draft
 // (confirmed by Sara 2026-05-29): RFI open = status "Open"; submittal open =
@@ -116,6 +126,79 @@ async function sendEmail(to: string, subject: string, html: string) {
     body: JSON.stringify({ from: FROM_EMAIL, to, subject, html }),
   });
   if (!res.ok) throw new Error(`Resend ${res.status}: ${(await res.text()).slice(0, 200)}`);
+}
+
+// ── Scheduled-job failure alert ──────────────────────────────────────────────
+// Who is told. Same default as the connector's unrostered-caller alert; set the
+// CRON_ALERT_TO secret (comma-separated for several people) to change it.
+const CRON_ALERT_TO = (Deno.env.get("CRON_ALERT_TO") || Deno.env.get("UNROSTERED_ALERT_TO") || "sara.arias@setty.com")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+// One email per problem per this many hours, however often the job fails.
+const CRON_ALERT_REPEAT_HOURS = 20;
+
+type CronProblem = { key: string; title: string; detail?: string; since?: string; schedule?: string; fails_24h?: number };
+
+function cronAlertHtml(fresh: CronProblem[], ongoing: CronProblem[], today: Date): string {
+  const row = (p: CronProblem) => `<tr><td style="padding:10px 0;border-bottom:1px solid #e5e7eb">
+    <div style="font-weight:700;color:#b91c1c">${esc(p.title)}</div>
+    ${p.since ? `<div style="color:#6b7280;font-size:12px">Last failed run: ${esc(String(p.since))}${p.schedule ? ` · schedule ${esc(p.schedule)}` : ""}${p.fails_24h ? ` · ${p.fails_24h} failure${p.fails_24h === 1 ? "" : "s"} in 24 h` : ""}</div>` : ""}
+    ${p.detail ? `<pre style="white-space:pre-wrap;font-family:Consolas,monospace;font-size:12px;background:#f9fafb;padding:8px;margin:6px 0 0">${esc(p.detail)}</pre>` : ""}
+  </td></tr>`;
+  const inner = `<h2 style="margin:0 0 12px;font-size:18px;color:#111827">A scheduled PMS job is failing</h2>
+  <p>The PMS checks its scheduled background jobs every 15 minutes. ${fresh.length === 1 ? "This needs" : "These need"} a look:</p>
+  <table style="width:100%;border-collapse:collapse">${fresh.map(row).join("")}</table>
+  ${ongoing.length ? `<p style="color:#6b7280;font-size:12px">Still failing, already reported in the last ${CRON_ALERT_REPEAT_HOURS} hours: ${ongoing.map((p) => esc(p.key)).join(", ")}.</p>` : ""}
+  <p style="color:#6b7280;font-size:12px">Each problem is emailed at most once every ${CRON_ALERT_REPEAT_HOURS} hours while it lasts. Run history: Supabase → Integrations → Cron, or <code>cron.job_run_details</code>.</p>`;
+  return shell("A scheduled job is failing", inner, today);
+}
+
+async function runCronAlert(opts: { dryRun: boolean }) {
+  const rpc = await fetch(SUPABASE_URL + "/rest/v1/rpc/pms_cron_problems", {
+    method: "POST",
+    headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (!rpc.ok) throw new Error(`pms_cron_problems → ${rpc.status}: ${(await rpc.text()).slice(0, 200)}`);
+  const problems: CronProblem[] = (await rpc.json()) || [];
+  if (!problems.length) return { ok: true, problems: 0, sent: false };
+
+  const cutoff = Date.now() - CRON_ALERT_REPEAT_HOURS * 3600 * 1000;
+  const recent = new Set(
+    (await svcAll("/pms_cron_alerts?select=key,last_alerted_at"))
+      .filter((r: any) => new Date(r.last_alerted_at).getTime() > cutoff)
+      .map((r: any) => String(r.key)),
+  );
+  const fresh = problems.filter((p) => !recent.has(p.key));
+  const ongoing = problems.filter((p) => recent.has(p.key));
+  const report = { ok: true, problems: problems.length, fresh: fresh.map((p) => p.key), ongoing: ongoing.map((p) => p.key), to: CRON_ALERT_TO };
+  if (opts.dryRun) return { ...report, dryRun: true, sent: false, detail: problems };
+  if (!fresh.length) return { ...report, sent: false };
+
+  if (!RESEND_API_KEY) throw new Error("RESEND_API_KEY not configured: the alert cannot be sent.");
+  const subject = fresh.length === 1 ? `PMS alert: ${fresh[0].title}` : `PMS alert: ${fresh.length} scheduled-job problems`;
+  // Send first; record only after it went out, so a failed send retries on the
+  // next run instead of silencing the problem for 20 hours.
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ from: FROM_EMAIL, to: CRON_ALERT_TO, subject: subject.slice(0, 200), html: cronAlertHtml(fresh, ongoing, new Date()) }),
+  });
+  if (!res.ok) throw new Error(`Resend ${res.status}: ${(await res.text()).slice(0, 200)}`);
+
+  const now = new Date().toISOString();
+  const mark = await fetch(SUPABASE_URL + "/rest/v1/pms_cron_alerts?on_conflict=key", {
+    method: "POST",
+    headers: {
+      apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+      "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify(fresh.map((p) => ({
+      key: p.key, last_alerted_at: now, alerted_to: CRON_ALERT_TO.join(", "), detail: (p.detail || p.title || "").slice(0, 600),
+    }))),
+  });
+  // The email went out; failing to record it means a repeat in 15 minutes.
+  if (!mark.ok) throw new Error(`Alert sent but pms_cron_alerts write failed (${mark.status}): ${(await mark.text()).slice(0, 200)}`);
+  return { ...report, sent: true };
 }
 
 // ── Shared HTML bits (plain tables + inline styles for Outlook) ──────────────
@@ -595,7 +678,13 @@ Deno.serve(async (req) => {
         only: url.searchParams.get("only"),
       }));
     }
-    return json({ error: "Unknown route", routes: ["POST /welcome", "POST /digest"] }, 404);
+    if (req.method === "POST" && path.endsWith("/cron-alert")) {
+      if (!(await cronKeyValid(req)) && !(await callerIsAdmin(req))) {
+        return json({ error: "Not authorized (cron key or admin JWT required)" }, 403);
+      }
+      return json(await runCronAlert({ dryRun: new URL(req.url).searchParams.get("dryRun") === "1" }));
+    }
+    return json({ error: "Unknown route", routes: ["POST /welcome", "POST /digest", "POST /cron-alert"] }, 404);
   } catch (e: any) {
     console.error("pms-user-emails failed:", e);
     return json({ error: e?.message || String(e) }, 500);

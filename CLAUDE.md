@@ -29,6 +29,9 @@ browser (PMS pages) or from the connector (app permissions).
    `@babel/parser` (`plugins: ["jsx"]`); `node --check` cannot read JSX. Run
    the unit tests with `node --test *.test.mjs` (repo root) and
    `node --test supabase/functions/pms-mcp/*.test.mjs`.
+   The "Tests" workflow (`.github/workflows/tests.yml`) runs the same three
+   things on every PR, plus a CRLF/LF check
+   (`.github/scripts/check-source.mjs`); a red run means do not merge.
 
 ## SharePoint / Graph rules (PMS pages)
 
@@ -56,6 +59,13 @@ browser (PMS pages) or from the connector (app permissions).
   the client is still running the old cached build (rule 1 above).
 - Supabase edge logs show the browser's PostgREST calls; the connector logs
   are under `function_edge_logs`.
+- Scheduled jobs: `pms-cron-alert` (pg_cron, every 15 min) calls
+  `pms-user-emails/cron-alert`, which emails `CRON_ALERT_TO` when a job's last
+  run failed, the nightly backup is stale, or background calls fail in bulk
+  (`public.pms_cron_problems()`; one email per problem per 20 h, remembered in
+  `pms_cron_alerts`). An admin call to `/cron-alert?dryRun=1` shows what it
+  sees and sends nothing. pg_cron marks an HTTP job "succeeded" once the call
+  is queued, so a job's own status says nothing about the function's answer.
 - "The Outlook pane is slow / hung": read `pms_addin_telemetry` (one row per
   pane save: `total_ms`, `steps`, per-request `calls`). The migration that
   creates it carries the two queries worth running first.
