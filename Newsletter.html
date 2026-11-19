@@ -8,7 +8,7 @@
   // Version marker + self-update banner (same pattern as SettyIntelligence.html):
   // an open tab re-fetches this file and offers a reload when the marker changes.
   // Bump it in every PR that changes this file, or open tabs are never told.
-  window.__appVersion = "2026-11-19-news-v005-recipients-per-draft";
+  window.__appVersion = "2026-11-19-news-v006-team-send";
   async function _checkForUpdate() {
     try {
       const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -333,6 +333,11 @@
       </div>
       <button id="draftBtn" onclick="createDraft()" disabled><span aria-hidden="true">✉️</span> Create Outlook draft(s) for <span id="draftCount">0</span> recipients</button>
       <div class="hint" id="batchHint" role="status" style="margin-top:8px"></div>
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+        <button type="button" class="ghost" id="teamBtn" onclick="planTeamSend()" disabled><span aria-hidden="true">👥</span> Or plan a team send — share the batches</button>
+        <div class="hint">Saves the email and splits the recipients into batches without creating any drafts. Then each person opens the
+          <strong>History</strong> tab, takes a few batches into their own Outlook and sends them. Everyone sees which batches are taken and which have gone out.</div>
+      </div>
       <div class="hint" id="draftStatus" role="status" style="margin-top:8px"></div>
     </div>
   </section>
@@ -381,10 +386,28 @@
       <h2>Send history</h2>
       <div class="scroll">
         <table>
-          <thead><tr><th scope="col">Sent</th><th scope="col">Type</th><th scope="col">Subject</th><th scope="col">Recipients</th><th scope="col">By</th></tr></thead>
+          <thead><tr><th scope="col">Sent</th><th scope="col">Type</th><th scope="col">Subject</th><th scope="col">Recipients</th><th scope="col">By</th><th scope="col">Progress</th></tr></thead>
           <tbody id="histBody"></tbody>
         </table>
       </div>
+    </div>
+    <div class="card hidden" id="batchCard">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h2 style="margin:0" id="batchTitle" tabindex="-1">Team send</h2>
+        <div class="row" style="gap:8px">
+          <button type="button" class="ghost sm" onclick="checkMyBatches()">Check my drafts in Outlook</button>
+          <button type="button" class="ghost sm" onclick="refreshBatches()">↻ Refresh</button>
+          <button type="button" class="ghost sm" onclick="closeBatches()">Close</button>
+        </div>
+      </div>
+      <p class="muted" id="batchSummary" role="status" style="margin:0 0 12px"></p>
+      <div class="scroll" style="max-height:460px">
+        <table>
+          <thead><tr><th scope="col">Batch</th><th scope="col">Recipients</th><th scope="col">Status</th><th scope="col">Who</th><th scope="col">Actions</th></tr></thead>
+          <tbody id="batchBody"></tbody>
+        </table>
+      </div>
+      <div id="batchRecips" class="hint" style="margin-top:10px"></div>
     </div>
   </section>
 </main>
@@ -636,6 +659,7 @@ async function refreshAll(){
     await Promise.all([loadDirectory(), loadSubscribers()]);
     const added = await syncOverlay();
     await loadCampaigns();
+    await loadBatches();
     document.getElementById("loadedAt").textContent =
       "Loaded " + DIRECTORY.length + " people at " + new Date().toLocaleTimeString() +
       (added ? (" · " + added + " new added to overlay") : "");
@@ -868,6 +892,7 @@ function updateCounts(){
   document.getElementById("stSelected").textContent = sel;
   document.getElementById("draftCount").textContent = sel;
   document.getElementById("draftBtn").disabled = !(currentUser() && sel);
+  document.getElementById("teamBtn").disabled = !(currentUser() && sel && BATCHES_OK);
   document.getElementById("recipNote").textContent = sel + " selected";
   const batches = Math.ceil(sel / BATCH_SIZE);
   document.getElementById("batchHint").textContent =
@@ -1525,7 +1550,282 @@ function renderHistory(){
       <td>${esc(c.subject)}</td>
       <td>${c.recipient_count}</td>
       <td class="muted">${esc(c.sent_by)||"—"}</td>
-    </tr>`).join("") || '<tr><td colspan="5" class="muted" style="padding:18px">No campaigns sent yet.</td></tr>';
+      <td>${batchProgressCell(c)}</td>
+    </tr>`).join("") || '<tr><td colspan="6" class="muted" style="padding:18px">No campaigns sent yet.</td></tr>';
+  if (OPEN_CAMPAIGN) renderBatches();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TEAM SEND  (newsletter_campaign_batches)
+   A campaign is split into batches up front. Each batch is taken by ONE person,
+   drafted in THEIR Outlook, and marked sent once Outlook confirms it:
+     pending -> drafted (claimed_by, message_id) -> sent
+   Taking a batch is a conditional update (only while it is still pending), so
+   two people can never both draft the same recipients.
+   ═══════════════════════════════════════════════════════════════════════════ */
+let BATCHES = [];           // every batch row, without its recipient list
+let BATCHES_OK = true;      // false when the table isn't there (feature hides)
+let OPEN_CAMPAIGN = null;   // id of the campaign shown in the batch panel
+const BATCH_COLS = "id,campaign_id,idx,recipient_count,status,claimed_by,drafted_at,message_id,web_link,sent_at";
+const IMMUTABLE_ID = { Prefer: 'IdType="ImmutableId"' }; // the id survives Drafts -> Sent Items
+
+function sameUser(a, b){ return !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase(); }
+function shortUser(e){ return e ? String(e).split("@")[0] : "—"; }
+function campaignBatches(id){ return BATCHES.filter(b => b.campaign_id === id).sort((a, b) => a.idx - b.idx); }
+
+async function loadBatches(){
+  try {
+    BATCHES = (await sbAll("/rest/v1/newsletter_campaign_batches?select=" + BATCH_COLS + "&order=campaign_id,idx")) || [];
+    BATCHES_OK = true;
+  } catch(e){
+    BATCHES = []; BATCHES_OK = false;
+    console.warn("[team send] batches unavailable:", e.message);
+  }
+}
+function batchProgressCell(c){
+  const rows = campaignBatches(c.id);
+  if (!rows.length) return '<span class="muted">—</span>';
+  const sent = rows.filter(b => b.status === "sent").length;
+  const live = rows.filter(b => b.status !== "skipped").length;
+  return `<button type="button" class="ghost sm" onclick="openBatches('${esc(c.id)}')">${sent} of ${live} sent · open</button>`;
+}
+function openBatches(id){
+  OPEN_CAMPAIGN = id;
+  document.getElementById("batchCard").classList.remove("hidden");
+  document.getElementById("batchRecips").textContent = "";
+  renderBatches();
+  const t = document.getElementById("batchTitle");
+  t.scrollIntoView({ block: "nearest" }); t.focus();
+}
+function closeBatches(){
+  OPEN_CAMPAIGN = null;
+  document.getElementById("batchCard").classList.add("hidden");
+}
+async function refreshBatches(){
+  await loadBatches();
+  renderHistory();
+}
+function renderBatches(){
+  const c = CAMPAIGNS.find(x => x.id === OPEN_CAMPAIGN);
+  if (!c){ closeBatches(); return; }
+  const rows = campaignBatches(c.id), me = currentUser();
+  document.getElementById("batchTitle").textContent = "Team send — " + (c.subject || "(no subject)");
+  const n = st => rows.filter(b => b.status === st);
+  const people = st => n(st).reduce((a, b) => a + (b.recipient_count || 0), 0);
+  document.getElementById("batchSummary").textContent =
+    n("sent").length + " sent (" + people("sent") + " people) · " +
+    n("drafted").length + " in someone's Outlook drafts (" + people("drafted") + ") · " +
+    n("pending").length + " not taken yet (" + people("pending") + ")." +
+    (me ? "" : " Sign in with Microsoft to take a batch.");
+  const PILL = { pending: ["bounced", "Not taken"], drafted: ["staff", "Draft in Outlook"], sent: ["sub", "Sent"], skipped: ["unsub", "Skipped"] };
+  document.getElementById("batchBody").innerHTML = rows.map(b => {
+    const mine = sameUser(b.claimed_by, me);
+    const pill = PILL[b.status] || ["staff", b.status];
+    const when = b.status === "sent" ? b.sent_at : b.drafted_at;
+    let act = `<button type="button" class="ghost sm" onclick="showBatchRecipients('${esc(b.id)}')">Who's in it</button>`;
+    if (b.status === "pending"){
+      act = `<button type="button" class="sm" onclick="takeBatch('${esc(b.id)}')" ${me ? "" : "disabled"}>Create draft in my Outlook</button> ` + act;
+    } else if (b.status === "drafted" && mine){
+      const link = /^https:\/\//i.test(b.web_link || "") ? `<a href="${esc(b.web_link)}" target="_blank" rel="noopener">Open draft<span class="sr-only"> (opens in a new tab)</span></a> ` : "";
+      act = link +
+        `<button type="button" class="ghost sm" onclick="checkBatch('${esc(b.id)}')">Check if sent</button> ` +
+        `<button type="button" class="ghost sm" onclick="releaseBatch('${esc(b.id)}')">Give back</button> ` + act;
+    }
+    return `<tr>
+      <td>${b.idx + 1}</td>
+      <td>${b.recipient_count}</td>
+      <td><span class="pill ${pill[0]}">${pill[1]}</span></td>
+      <td class="muted">${b.claimed_by ? esc(shortUser(b.claimed_by)) + (mine ? " (you)" : "") : "—"}${when ? " · " + new Date(when).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : ""}</td>
+      <td>${act}</td>
+    </tr>`;
+  }).join("") || '<tr><td colspan="5" class="muted" style="padding:18px">This campaign has no batches.</td></tr>';
+}
+async function showBatchRecipients(id){
+  const box = document.getElementById("batchRecips");
+  try {
+    const rows = await sb("GET", "/rest/v1/newsletter_campaign_batches?id=eq." + id + "&select=idx,recipients");
+    const r = rows && rows[0];
+    if (!r) throw new Error("that batch no longer exists");
+    box.textContent = "Batch " + (r.idx + 1) + " — " + (r.recipients || []).length + " recipients: " + (r.recipients || []).join(", ");
+  } catch(e){ box.textContent = ""; log("Couldn't load that batch's recipients: " + e.message, "err"); }
+}
+
+// Step 3's second button: save the campaign and its batches, create no drafts.
+async function planTeamSend(){
+  if (!BATCHES_OK){ log("Team send isn't available: the batches table is missing in the database.", "err"); return; }
+  const subject = document.getElementById("subject").value.trim();
+  const innerHtml = composeState().body_html.trim();
+  const type = document.getElementById("campType").value;
+  if (!subject){ log("Add a subject first.", "err"); return; }
+  if (!innerHtml){ log("Add some body content first.", "err"); return; }
+  const recips = DIRECTORY.filter(p => SELECTED.has(p.email) && !isBlocked(p.email)).map(p => p.email);
+  if (!recips.length){ log("No recipients selected.", "err"); return; }
+  const me = currentUser();
+  if (!me){ log("Sign in with Microsoft first.", "err"); return; }
+  const groups = [];
+  for (let i = 0; i < recips.length; i += BATCH_SIZE) groups.push(recips.slice(i, i + BATCH_SIZE));
+  if (!confirm("Plan a team send of “" + subject + "” to " + recips.length + " recipients in " + groups.length +
+      " batch" + (groups.length > 1 ? "es" : "") + " of up to " + BATCH_SIZE + "?\n\nNo drafts are created now. The email and recipient list are locked in as they are at this moment; each person then takes batches from the History tab.")) return;
+  const btn = document.getElementById("teamBtn"); btn.disabled = true;
+  let campaignId = null;
+  try {
+    const rows = await sb("POST", "/rest/v1/newsletter_campaigns", {
+      type, subject, body_html: buildEmailHtml(innerHtml, subject),
+      recipients: recips, recipient_count: recips.length, sent_by: me,
+    }, "return=representation");
+    campaignId = rows && rows[0] && rows[0].id;
+    if (!campaignId) throw new Error("the campaign was not saved (no confirmation came back)");
+    const made = await sb("POST", "/rest/v1/newsletter_campaign_batches",
+      groups.map((g, i) => ({ campaign_id: campaignId, idx: i, recipients: g, recipient_count: g.length })),
+      "return=representation");
+    if (!made || made.length !== groups.length) throw new Error("only " + ((made && made.length) || 0) + " of " + groups.length + " batches were saved");
+    await Promise.all([loadCampaigns(), loadBatches()]);
+    renderHistory();
+    showTab("hist"); openBatches(campaignId);
+    log("Team send planned: " + groups.length + " batches for " + recips.length + " recipients. Take batches from the History tab.", "ok");
+  } catch(e){
+    log("Team send NOT fully planned: " + e.message + (campaignId ? ". A campaign row was saved without all of its batches — don't send from it; plan it again." : ""), "err");
+    try { await Promise.all([loadCampaigns(), loadBatches()]); renderHistory(); } catch(_){}
+  } finally { updateCounts(); }
+}
+
+async function patchBatch(id, patch, onlyIf){
+  return await sb("PATCH", "/rest/v1/newsletter_campaign_batches?id=eq." + id + (onlyIf || ""),
+    { ...patch, updated_at: new Date().toISOString() }, "return=representation");
+}
+// Take one pending batch: claim it, then create its draft in the signed-in user's Outlook.
+async function takeBatch(id){
+  const me = currentUser();
+  if (!me){ log("Sign in with Microsoft first.", "err"); return; }
+  let claimed = false;
+  try {
+    const token = await getToken(MAIL_SCOPES); paintUser();
+    // The claim only succeeds while the batch is still pending, so it is exclusive.
+    const got = await patchBatch(id, { status: "drafted", claimed_by: me, drafted_at: new Date().toISOString() }, "&status=eq.pending");
+    if (!got || !got.length){
+      log("That batch was just taken by someone else — pick another.", "err");
+      await refreshBatches(); return;
+    }
+    claimed = true;
+    const full = (await sb("GET", "/rest/v1/newsletter_campaign_batches?id=eq." + id + "&select=*"))[0];
+    const camp = (await sb("GET", "/rest/v1/newsletter_campaigns?id=eq." + full.campaign_id + "&select=subject,body_html,type"))[0];
+    if (!camp || !camp.body_html) throw new Error("the campaign's saved email could not be loaded");
+    // Anyone who unsubscribed or bounced since the send was planned is dropped now.
+    await loadSubscribers();
+    const emails = (full.recipients || []).filter(e => !isBlocked(e));
+    if (!emails.length){
+      await patchBatch(id, { status: "skipped", claimed_by: null, drafted_at: null, recipients: [], recipient_count: 0 });
+      claimed = false;
+      log("Batch " + (full.idx + 1) + " skipped — everyone in it has since unsubscribed or bounced.", "ok");
+      await refreshBatches(); return;
+    }
+    const { html: sendHtml, attachments } = extractInlineImages(camp.body_html);
+    const toAddr = SEND_MAILBOX || me;
+    const mailboxPath = SEND_MAILBOX ? "/users/" + encodeURIComponent(SEND_MAILBOX) : "/me";
+    const draft = {
+      subject: camp.subject,
+      body: { contentType: "HTML", content: sendHtml },
+      toRecipients: [{ emailAddress: { address: toAddr } }],
+      bccRecipients: emails.map(e => ({ emailAddress: { address: e } })),
+    };
+    if (attachments.length) draft.attachments = attachments;
+    if (SEND_MAILBOX) draft.from = { emailAddress: { address: SEND_MAILBOX } };
+    const res = await fetch("https://graph.microsoft.com/v1.0" + mailboxPath + "/messages", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json", ...IMMUTABLE_ID },
+      body: JSON.stringify(draft),
+    });
+    if (!res.ok){ const e = await res.json().catch(()=>({})); throw new Error(e?.error?.message || ("Graph " + res.status)); }
+    const msg = await res.json();
+    if (!msg || !msg.id) throw new Error("Outlook did not confirm the draft");
+    // The draft now exists, so from here the batch must stay claimed.
+    claimed = false;
+    const saved = await patchBatch(id, { message_id: msg.id, web_link: msg.webLink || null, recipients: emails, recipient_count: emails.length });
+    if (!saved || !saved.length) log("The draft was created, but saving its link failed. It is in your Outlook Drafts; use “Check if sent” won't work for it, so tell the team once you send it.", "err");
+    else log("Batch " + (full.idx + 1) + " is in your Outlook Drafts (" + emails.length + " recipients). Open it, review, and Send.", "ok");
+  } catch(e){
+    log("Couldn't create that draft: " + e.message, "err");
+    if (claimed){
+      // No draft was made — hand the batch back so it isn't stuck against this user.
+      try { await patchBatch(id, { status: "pending", claimed_by: null, drafted_at: null }, "&status=eq.drafted&message_id=is.null"); }
+      catch(_){ log("…and the batch could not be handed back automatically. Use “Give back” on it.", "err"); }
+    }
+  }
+  await refreshBatches();
+}
+// Ask Outlook what became of a batch's draft. Returns "sent" | "draft" | "gone".
+async function lookupBatchDraft(b, token){
+  if (!b.message_id) return { state: "gone" };
+  const mailboxPath = SEND_MAILBOX ? "/users/" + encodeURIComponent(SEND_MAILBOX) : "/me";
+  const res = await fetch("https://graph.microsoft.com/v1.0" + mailboxPath + "/messages/" + encodeURIComponent(b.message_id) + "?$select=isDraft,sentDateTime",
+    { headers: { Authorization: "Bearer " + token, ...IMMUTABLE_ID } });
+  if (res.status === 404) return { state: "gone" };
+  if (!res.ok){ const e = await res.json().catch(()=>({})); throw new Error(e?.error?.message || ("Graph " + res.status)); }
+  const m = await res.json();
+  return m.isDraft === false ? { state: "sent", at: m.sentDateTime || new Date().toISOString() } : { state: "draft" };
+}
+async function markBatchSent(b, at){
+  const rows = await patchBatch(b.id, { status: "sent", sent_at: at }, "&status=eq.drafted");
+  if (!rows || !rows.length) return false;
+  const camp = CAMPAIGNS.find(c => c.id === b.campaign_id);
+  // "Last sent" on each person is stamped only now, when the email has really gone.
+  try { await stampLastSent(rows[0].recipients || [], (camp && camp.type) || "newsletter"); }
+  catch(e){ log("Batch " + (b.idx + 1) + " is marked sent, but stamping “last sent” on its recipients failed: " + e.message, "err"); }
+  return true;
+}
+async function checkBatch(id, quiet){
+  const b = BATCHES.find(x => x.id === id);
+  if (!b) return null;
+  try {
+    const token = await getToken(MAIL_SCOPES);
+    const r = await lookupBatchDraft(b, token);
+    if (r.state === "sent"){
+      await markBatchSent(b, r.at);
+      log("Batch " + (b.idx + 1) + " was sent — marked as sent for everyone.", "ok");
+    } else if (r.state === "draft"){
+      if (!quiet) log("Batch " + (b.idx + 1) + " is still in your Outlook Drafts — not sent yet.");
+    } else {
+      log("Batch " + (b.idx + 1) + ": its draft is no longer in your mailbox (deleted?). Use “Give back” so someone can take it again.", "err");
+    }
+    if (!quiet) await refreshBatches();
+    return r.state;
+  } catch(e){ log("Couldn't check batch " + (b.idx + 1) + ": " + e.message, "err"); return null; }
+}
+async function checkMyBatches(){
+  const me = currentUser();
+  if (!me){ log("Sign in with Microsoft first.", "err"); return; }
+  await loadBatches();
+  const mine = campaignBatches(OPEN_CAMPAIGN).filter(b => b.status === "drafted" && sameUser(b.claimed_by, me));
+  if (!mine.length){ log("You have no drafted batches in this campaign."); renderHistory(); return; }
+  let sent = 0;
+  for (const b of mine){ if ((await checkBatch(b.id, true)) === "sent") sent++; }
+  log("Checked " + mine.length + " of your batch(es): " + sent + " sent, " + (mine.length - sent) + " not sent yet.", "ok");
+  await refreshBatches();
+}
+// Hand a batch back. Never leaves a live draft behind: if Outlook still has the
+// draft it is deleted first, and if it was already sent the batch is marked sent.
+async function releaseBatch(id){
+  const b = BATCHES.find(x => x.id === id);
+  if (!b || !confirm("Give batch " + (b.idx + 1) + " back so someone else can take it? Its draft in your Outlook will be deleted.")) return;
+  try {
+    const token = await getToken(MAIL_SCOPES);
+    const r = await lookupBatchDraft(b, token);
+    if (r.state === "sent"){
+      await markBatchSent(b, r.at);
+      log("Batch " + (b.idx + 1) + " had already been sent — marked as sent instead.", "ok");
+    } else {
+      if (r.state === "draft"){
+        const mailboxPath = SEND_MAILBOX ? "/users/" + encodeURIComponent(SEND_MAILBOX) : "/me";
+        const del = await fetch("https://graph.microsoft.com/v1.0" + mailboxPath + "/messages/" + encodeURIComponent(b.message_id),
+          { method: "DELETE", headers: { Authorization: "Bearer " + token, ...IMMUTABLE_ID } });
+        if (!del.ok && del.status !== 404) throw new Error("the draft could not be deleted from Outlook (Graph " + del.status + "), so the batch was NOT given back");
+      }
+      const rows = await patchBatch(id, { status: "pending", claimed_by: null, drafted_at: null, message_id: null, web_link: null }, "&status=eq.drafted");
+      if (!rows || !rows.length) throw new Error("the batch changed while you were doing this — refresh and look again");
+      log("Batch " + (b.idx + 1) + " given back.", "ok");
+    }
+  } catch(e){ log("Couldn't give the batch back: " + e.message, "err"); }
+  await refreshBatches();
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
