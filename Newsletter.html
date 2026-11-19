@@ -69,6 +69,10 @@
   #log{position:fixed;bottom:0;left:0;right:0;max-height:140px;overflow:auto;background:#0B1220;border-top:1px solid var(--line);
        font-family:"Consolas",monospace;font-size:11px;padding:8px 16px;color:#9CA3AF;display:none}
   #log.show{display:block}
+  /* The log is pinned over the bottom of the window. While it shows, leave room
+     under the page so the last card (the Create-draft button) can scroll clear of it. */
+  body.has-log{padding-bottom:160px}
+  #logClose{position:sticky;top:0;float:right;margin-left:12px;padding:2px 10px;font-size:11px}
   .logline.err{color:#F87171}
   .logline.ok{color:#4ADE80}
   .banner{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:14px}
@@ -277,7 +281,7 @@
   </section>
 </main>
 
-<div id="log" role="log" aria-live="polite"></div>
+<div id="log" role="log" aria-live="polite"><button type="button" class="ghost sm" id="logClose" onclick="hideLog()">Hide log <span aria-hidden="true">✕</span></button></div>
 
 <script src="setty-auth.js"></script>
 <script>
@@ -339,10 +343,16 @@ let VISIBLE = [];            // people passing the current view filters (search/
 function log(msg, cls=""){
   const el = document.getElementById("log");
   el.classList.add("show");
+  document.body.classList.add("has-log");
   const line = document.createElement("div");
   line.className = "logline " + cls;
   line.textContent = new Date().toLocaleTimeString() + "  " + (cls === "err" ? "Error: " : "") + msg;
   el.appendChild(line); el.scrollTop = el.scrollHeight;
+}
+// Hides the log bar until the next message; the lines are kept.
+function hideLog(){
+  document.getElementById("log").classList.remove("show");
+  document.body.classList.remove("has-log");
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -365,7 +375,13 @@ async function sb(method, path, body, prefer){
   const res = await fetch(SUPABASE_URL + path, {
     method, headers, body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error("Supabase " + res.status + ": " + (await res.text()));
+  if (!res.ok){
+    const errText = await res.text();
+    // 42501 = row-level security refused the write: this signed-in user's PMS role
+    // lacks the Pipeline edit permission that newsletter writes require.
+    if (errText.includes('"42501"')) throw new Error("your PMS account isn't allowed to save newsletter data (it needs the \"Pipeline — edit\" permission; ask a PMS admin to grant it in the Admin Console). Details: " + errText);
+    throw new Error("Supabase " + res.status + ": " + errText);
+  }
   if (res.status === 204) return null;
   const txt = await res.text();
   return txt ? JSON.parse(txt) : null;
