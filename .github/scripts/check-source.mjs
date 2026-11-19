@@ -5,10 +5,13 @@
 //      for every user, and nothing else catches it before the deploy.
 //   2. Line endings are what CLAUDE.md rule 2 says they are. A text-mode
 //      rewrite of a CRLF file turns a 20-line change into a 33,000-line diff.
+//   3. Every <script> loaded from a public CDN names an exact version and
+//      carries an integrity hash, so the browser refuses a library file that
+//      is not byte-for-byte the one that was tested.
 //
 // Needs @babel/parser (the workflow installs it; there is no package.json):
 //   npm install --no-save @babel/parser@7 && node .github/scripts/check-source.mjs
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { parse } from "@babel/parser";
 
 const JSX_PAGES = ["SettyPMS.html", "ContractExtractor.html"];
@@ -54,6 +57,22 @@ for (const file of LF_FILES) {
   if (crlf > 0) problems.push(`${file}: must be LF, but ${crlf} line(s) end in CRLF.`);
   else console.log(`ok  ${file}: LF`);
 }
+
+// ── 3. CDN scripts are pinned and carry an integrity hash ────────────────────
+const CDN_TAG = /<script\b[^>]*?\bsrc=["'](https:\/\/(?:cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com|unpkg\.com)\/[^"']+)["'][^>]*>/g;
+let cdnTags = 0;
+for (const file of readdirSync(".").filter((f) => f.endsWith(".html"))) {
+  const html = readFileSync(file, "latin1");
+  for (const m of html.matchAll(CDN_TAG)) {
+    cdnTags++;
+    const [tag, url] = m;
+    if (!/\bintegrity=["']sha(256|384|512)-[A-Za-z0-9+/=]+["']/.test(tag)) problems.push(`${file}: ${url} has no integrity="sha384-..." attribute (see CLAUDE.md, "CDN libraries").`);
+    if (!/\bcrossorigin\b/.test(tag)) problems.push(`${file}: ${url} needs crossorigin="anonymous" or the integrity check cannot run.`);
+    // An exact version: @1.2.3 (jsdelivr/unpkg) or /1.2.3/ (cdnjs).
+    if (!/@\d+\.\d+\.\d+[^/]*\/|\/\d+\.\d+\.\d+[^/]*\//.test(url)) problems.push(`${file}: ${url} does not name an exact version.`);
+  }
+}
+console.log(`ok  ${cdnTags} CDN <script> tags checked for version + integrity`);
 
 if (problems.length) {
   console.error("\n" + problems.map((p) => "FAIL  " + p).join("\n"));

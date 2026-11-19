@@ -11,17 +11,17 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-07-25-extractor-v41-settyauth-phase4";
+    window.__appVersion = "2026-11-19-extractor-v42-cdn-integrity";
   </script>
 
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" integrity="sha384-tMH8h3BGESGckSAVGZ82T9n90ztNXxvdwvdM6UoR56cYcf+0iGXBliJ29D+wZ/x8"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" integrity="sha384-bm7MnzvK++ykSwVJ2tynSE5TRdN+xL418osEVF2DE/L/gfWHj91J2Sphe582B1Bh"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js" integrity="sha384-aGlMNK3U/x0wl4lEH5jD1PGhJlX9hApuPmIiA5gtiYCOQ1J8ejIdC0btaU/TMoBD" crossorigin="anonymous"></script>
 
   <!-- pdf.js 3.11.174 — last v3 release with reliable UMD `pdfjsLib` global.
        v4+ switched to ES-modules-first and doesn't expose `pdfjsLib` when
        loaded via plain <script src>, only via `type="module"` import. -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
   <script>
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -32,7 +32,7 @@
        extract embedded text; Tesseract reads pixels. Loaded eagerly so it's
        ready when needed, but only invoked when a dropped PDF has no
        extractable text. First OCR run downloads ~10MB English language data. -->
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/tesseract.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/tesseract.min.js" integrity="sha384-sZlPHqJ8Pk1GMyFXfg9vOgDjyUZZe7wE2c0NoPg2z1vs2fmI4wOC0O1ONVyr73qa" crossorigin="anonymous"></script>
   <!-- Suite sign-in (Phase 4: RLS requires authenticated reads). Absolute URL —
        this file's source of truth lives in OneDrive, not beside setty-auth.js.
        Opened from PMS (the Pages copy) the shared session Just Works; opened

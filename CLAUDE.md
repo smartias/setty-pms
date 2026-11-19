@@ -33,6 +33,19 @@ browser (PMS pages) or from the connector (app permissions).
    things on every PR, plus a CRLF/LF check
    (`.github/scripts/check-source.mjs`); a red run means do not merge.
 
+## CDN libraries (all pages)
+
+- Every `<script src>` from jsdelivr, cdnjs or unpkg names an exact version
+  and carries `integrity="sha384-..." crossorigin="anonymous"`. The browser
+  refuses the file if its bytes differ, so **changing a library version means
+  changing the hash in the same edit**, or that page stops loading the library:
+  `curl -s <url> | openssl dgst -sha384 -binary | openssl base64 -A`
+  (prefix the result with `sha384-`). The Tests workflow fails a tag that lacks
+  either; it cannot check the hash is right, so load the page once.
+- `supabase-js` is pinned (it used to float on `@2`). Scripts loaded lazily
+  from JS (confetti, the pdf.js worker and fallback, xlsx) and `office.js`
+  have no integrity attribute.
+
 ## SharePoint / Graph rules (PMS pages)
 
 - **Create folders with `ensureSpSubfolder(driveId, parentPath, name)`**

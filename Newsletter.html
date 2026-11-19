@@ -8,7 +8,7 @@
   // Version marker + self-update banner (same pattern as SettyIntelligence.html):
   // an open tab re-fetches this file and offers a reload when the marker changes.
   // Bump it in every PR that changes this file, or open tabs are never told.
-  window.__appVersion = "2026-11-19-news-v007-pick-my-people";
+  window.__appVersion = "2026-11-19-news-v008-cdn-integrity";
   async function _checkForUpdate() {
     try {
       const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -47,7 +47,7 @@
   (function(){try{var t=localStorage.getItem("pms-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();
 </script>
 <!-- MSAL — exact same library + app registration the PMS uses, so sign-in/consent is shared -->
-<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js" integrity="sha384-leLuz4IOcklwCqvHdLBqO4nJyhJRCq7ZMxv0Pxa8U91EHPzte5Z4l9cCIZDQ9PnN" crossorigin="anonymous"></script>
 <style>
   :root{
     --bg:#0F172A; --panel:#1E293B; --panel2:#172033; --line:#334155;
