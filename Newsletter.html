@@ -1689,6 +1689,34 @@ async function planTeamSend(){
   } finally { updateCounts(); }
 }
 
+// A claim is identified by who took the batch and when. Every change to a drafted
+// batch is conditional on that identity, so a stale tab can never undo or
+// overwrite a claim that has since been given back and taken again.
+function claimFilter(b){
+  return "&status=eq.drafted&claimed_by=eq." + encodeURIComponent(b.claimed_by || "") +
+         "&drafted_at=eq." + encodeURIComponent(b.drafted_at || "");
+}
+// Draft ids are also kept in this browser, keyed by claim. If saving the id to the
+// database fails after Outlook made the draft, this is how the draft is still found.
+const DRAFT_STASH_KEY = "newsletter-batch-drafts";
+function stashKey(b){ return b.id + "|" + (b.drafted_at || ""); }
+function readStash(){ try { return JSON.parse(localStorage.getItem(DRAFT_STASH_KEY) || "{}") || {}; } catch(e){ return {}; } }
+function stashDraft(b, messageId){ try { const m = readStash(); m[stashKey(b)] = messageId; localStorage.setItem(DRAFT_STASH_KEY, JSON.stringify(m)); } catch(e){} }
+function unstashDraft(b){ try { const m = readStash(); delete m[stashKey(b)]; localStorage.setItem(DRAFT_STASH_KEY, JSON.stringify(m)); } catch(e){} }
+function knownDraftId(b){ return b.message_id || readStash()[stashKey(b)] || null; }
+// The server's current copy of a batch, and whether it is still the claim this tab showed.
+async function freshBatch(id){
+  const rows = await sb("GET", "/rest/v1/newsletter_campaign_batches?id=eq." + id + "&select=" + BATCH_COLS);
+  return rows && rows[0];
+}
+function sameClaim(a, b){ return !!a && !!b && a.status === b.status && a.claimed_by === b.claimed_by && a.drafted_at === b.drafted_at; }
+async function deleteOutlookDraft(messageId, token){
+  const mailboxPath = SEND_MAILBOX ? "/users/" + encodeURIComponent(SEND_MAILBOX) : "/me";
+  const del = await fetch("https://graph.microsoft.com/v1.0" + mailboxPath + "/messages/" + encodeURIComponent(messageId),
+    { method: "DELETE", headers: { Authorization: "Bearer " + token, ...IMMUTABLE_ID } });
+  return del.ok || del.status === 404;
+}
+
 async function patchBatch(id, patch, onlyIf){
   return await sb("PATCH", "/rest/v1/newsletter_campaign_batches?id=eq." + id + (onlyIf || ""),
     { ...patch, updated_at: new Date().toISOString() }, "return=representation");
@@ -1697,7 +1725,7 @@ async function patchBatch(id, patch, onlyIf){
 async function takeBatch(id){
   const me = currentUser();
   if (!me){ log("Sign in with Microsoft first.", "err"); return; }
-  let claimed = false;
+  let claimed = false, claim = null;
   try {
     const token = await getToken(MAIL_SCOPES); paintUser();
     // The claim only succeeds while the batch is still pending, so it is exclusive.
@@ -1706,7 +1734,7 @@ async function takeBatch(id){
       log("That batch was just taken by someone else — pick another.", "err");
       await refreshBatches(); return;
     }
-    claimed = true;
+    claimed = true; claim = got[0];
     const full = (await sb("GET", "/rest/v1/newsletter_campaign_batches?id=eq." + id + "&select=*"))[0];
     const camp = (await sb("GET", "/rest/v1/newsletter_campaigns?id=eq." + full.campaign_id + "&select=subject,body_html,type"))[0];
     if (!camp || !camp.body_html) throw new Error("the campaign's saved email could not be loaded");
@@ -1714,7 +1742,7 @@ async function takeBatch(id){
     await loadSubscribers();
     const emails = (full.recipients || []).filter(e => !isBlocked(e));
     if (!emails.length){
-      await patchBatch(id, { status: "skipped", claimed_by: null, drafted_at: null, recipients: [], recipient_count: 0 });
+      await patchBatch(id, { status: "skipped", claimed_by: null, drafted_at: null, recipients: [], recipient_count: 0 }, claimFilter(claim));
       claimed = false;
       log("Batch " + (full.idx + 1) + " skipped — everyone in it has since unsubscribed or bounced.", "ok");
       await refreshBatches(); return;
@@ -1738,35 +1766,53 @@ async function takeBatch(id){
     if (!res.ok){ const e = await res.json().catch(()=>({})); throw new Error(e?.error?.message || ("Graph " + res.status)); }
     const msg = await res.json();
     if (!msg || !msg.id) throw new Error("Outlook did not confirm the draft");
-    // The draft now exists, so from here the batch must stay claimed.
+    // A live draft now exists. Remember its id in this browser BEFORE the database
+    // write, so it can always be found again, and never hand the batch back while it lives.
     claimed = false;
-    const saved = await patchBatch(id, { message_id: msg.id, web_link: msg.webLink || null, recipients: emails, recipient_count: emails.length });
-    if (!saved || !saved.length) log("The draft was created, but saving its link failed. It is in your Outlook Drafts; use “Check if sent” won't work for it, so tell the team once you send it.", "err");
-    else log("Batch " + (full.idx + 1) + " is in your Outlook Drafts (" + emails.length + " recipients). Open it, review, and Send.", "ok");
+    stashDraft(claim, msg.id);
+    let saved = null;
+    for (let attempt = 0; attempt < 3 && !(saved && saved.length); attempt++){
+      try { saved = await patchBatch(id, { message_id: msg.id, web_link: msg.webLink || null, recipients: emails, recipient_count: emails.length }, claimFilter(claim)); }
+      catch(_){ saved = null; }
+    }
+    if (saved && saved.length){
+      unstashDraft(claim);
+      log("Batch " + (full.idx + 1) + " is in your Outlook Drafts (" + emails.length + " recipients). Open it, review, and Send.", "ok");
+    } else if (await deleteOutlookDraft(msg.id, token).catch(() => false)){
+      // Couldn't record the draft, so remove it rather than leave an untracked one.
+      unstashDraft(claim);
+      try { await patchBatch(id, { status: "pending", claimed_by: null, drafted_at: null }, claimFilter(claim) + "&message_id=is.null"); } catch(_){}
+      log("Batch " + (full.idx + 1) + ": the draft was created but could not be recorded, so it was removed from your Outlook and the batch was handed back. Try again.", "err");
+    } else {
+      log("Batch " + (full.idx + 1) + ": a draft is in your Outlook Drafts but could not be recorded or removed. Do NOT give this batch back until you have sent or deleted that draft.", "err");
+    }
   } catch(e){
     log("Couldn't create that draft: " + e.message, "err");
     if (claimed){
       // No draft was made — hand the batch back so it isn't stuck against this user.
-      try { await patchBatch(id, { status: "pending", claimed_by: null, drafted_at: null }, "&status=eq.drafted&message_id=is.null"); }
+      try { await patchBatch(id, { status: "pending", claimed_by: null, drafted_at: null }, claimFilter(claim) + "&message_id=is.null"); }
       catch(_){ log("…and the batch could not be handed back automatically. Use “Give back” on it.", "err"); }
     }
   }
   await refreshBatches();
 }
-// Ask Outlook what became of a batch's draft. Returns "sent" | "draft" | "gone".
+// Ask Outlook what became of a batch's draft: "sent" | "draft" | "gone", or
+// "unknown" when no draft id is on record (never assumed to mean "no draft").
 async function lookupBatchDraft(b, token){
-  if (!b.message_id) return { state: "gone" };
+  const messageId = knownDraftId(b);
+  if (!messageId) return { state: "unknown" };
   const mailboxPath = SEND_MAILBOX ? "/users/" + encodeURIComponent(SEND_MAILBOX) : "/me";
-  const res = await fetch("https://graph.microsoft.com/v1.0" + mailboxPath + "/messages/" + encodeURIComponent(b.message_id) + "?$select=isDraft,sentDateTime",
+  const res = await fetch("https://graph.microsoft.com/v1.0" + mailboxPath + "/messages/" + encodeURIComponent(messageId) + "?$select=isDraft,sentDateTime",
     { headers: { Authorization: "Bearer " + token, ...IMMUTABLE_ID } });
   if (res.status === 404) return { state: "gone" };
   if (!res.ok){ const e = await res.json().catch(()=>({})); throw new Error(e?.error?.message || ("Graph " + res.status)); }
   const m = await res.json();
-  return m.isDraft === false ? { state: "sent", at: m.sentDateTime || new Date().toISOString() } : { state: "draft" };
+  return m.isDraft === false ? { state: "sent", at: m.sentDateTime || new Date().toISOString() } : { state: "draft", messageId };
 }
 async function markBatchSent(b, at){
-  const rows = await patchBatch(b.id, { status: "sent", sent_at: at }, "&status=eq.drafted");
+  const rows = await patchBatch(b.id, { status: "sent", sent_at: at }, claimFilter(b));
   if (!rows || !rows.length) return false;
+  unstashDraft(b);
   const camp = CAMPAIGNS.find(c => c.id === b.campaign_id);
   // "Last sent" on each person is stamped only now, when the email has really gone.
   try { await stampLastSent(rows[0].recipients || [], (camp && camp.type) || "newsletter"); }
@@ -1774,22 +1820,30 @@ async function markBatchSent(b, at){
   return true;
 }
 async function checkBatch(id, quiet){
-  const b = BATCHES.find(x => x.id === id);
-  if (!b) return null;
+  const shown = BATCHES.find(x => x.id === id);
+  if (!shown) return null;
   try {
+    const b = await freshBatch(id);
+    if (!sameClaim(shown, b) || !sameUser(b.claimed_by, currentUser())){
+      log("Batch " + (shown.idx + 1) + " has changed since this page loaded — refreshed.", "err");
+      if (!quiet) await refreshBatches();
+      return null;
+    }
     const token = await getToken(MAIL_SCOPES);
     const r = await lookupBatchDraft(b, token);
     if (r.state === "sent"){
-      await markBatchSent(b, r.at);
-      log("Batch " + (b.idx + 1) + " was sent — marked as sent for everyone.", "ok");
+      if (await markBatchSent(b, r.at)) log("Batch " + (b.idx + 1) + " was sent — marked as sent for everyone.", "ok");
+      else log("Batch " + (b.idx + 1) + " was sent, but marking it failed because the batch changed — refresh and check again.", "err");
     } else if (r.state === "draft"){
       if (!quiet) log("Batch " + (b.idx + 1) + " is still in your Outlook Drafts — not sent yet.");
+    } else if (r.state === "unknown"){
+      log("Batch " + (b.idx + 1) + ": this browser has no record of its draft, so it can't be checked from here. Check it from the browser you created it in.", "err");
     } else {
       log("Batch " + (b.idx + 1) + ": its draft is no longer in your mailbox (deleted?). Use “Give back” so someone can take it again.", "err");
     }
     if (!quiet) await refreshBatches();
     return r.state;
-  } catch(e){ log("Couldn't check batch " + (b.idx + 1) + ": " + e.message, "err"); return null; }
+  } catch(e){ log("Couldn't check batch " + (shown.idx + 1) + ": " + e.message, "err"); return null; }
 }
 async function checkMyBatches(){
   const me = currentUser();
@@ -1805,23 +1859,27 @@ async function checkMyBatches(){
 // Hand a batch back. Never leaves a live draft behind: if Outlook still has the
 // draft it is deleted first, and if it was already sent the batch is marked sent.
 async function releaseBatch(id){
-  const b = BATCHES.find(x => x.id === id);
-  if (!b || !confirm("Give batch " + (b.idx + 1) + " back so someone else can take it? Its draft in your Outlook will be deleted.")) return;
+  const shown = BATCHES.find(x => x.id === id);
+  if (!shown || !confirm("Give batch " + (shown.idx + 1) + " back so someone else can take it? Its draft in your Outlook will be deleted.")) return;
   try {
+    // Work from the server's current copy, and only if it is still the claim this tab showed.
+    const b = await freshBatch(id);
+    if (!sameClaim(shown, b) || !sameUser(b.claimed_by, currentUser()))
+      throw new Error("the batch has changed since this page loaded (it may have been given back and taken again) — refreshed, look again");
     const token = await getToken(MAIL_SCOPES);
     const r = await lookupBatchDraft(b, token);
     if (r.state === "sent"){
-      await markBatchSent(b, r.at);
-      log("Batch " + (b.idx + 1) + " had already been sent — marked as sent instead.", "ok");
+      if (await markBatchSent(b, r.at)) log("Batch " + (b.idx + 1) + " had already been sent — marked as sent instead.", "ok");
+      else throw new Error("it was already sent, but marking it failed because the batch changed — refresh and check again");
     } else {
-      if (r.state === "draft"){
-        const mailboxPath = SEND_MAILBOX ? "/users/" + encodeURIComponent(SEND_MAILBOX) : "/me";
-        const del = await fetch("https://graph.microsoft.com/v1.0" + mailboxPath + "/messages/" + encodeURIComponent(b.message_id),
-          { method: "DELETE", headers: { Authorization: "Bearer " + token, ...IMMUTABLE_ID } });
-        if (!del.ok && del.status !== 404) throw new Error("the draft could not be deleted from Outlook (Graph " + del.status + "), so the batch was NOT given back");
-      }
-      const rows = await patchBatch(id, { status: "pending", claimed_by: null, drafted_at: null, message_id: null, web_link: null }, "&status=eq.drafted");
+      if (r.state === "unknown" && !confirm("This browser has no record of the draft for batch " + (b.idx + 1) +
+          ", so it cannot be deleted automatically.\n\nOnly continue if you have ALREADY deleted that draft from your Outlook Drafts (and it was not sent). Otherwise those people could be emailed twice.\n\nHave you deleted it?")) return;
+      if (r.state === "draft" && !(await deleteOutlookDraft(r.messageId, token)))
+        throw new Error("the draft could not be deleted from Outlook, so the batch was NOT given back");
+      // Conditional on the same claim: a stale tab can't clear someone else's newer claim.
+      const rows = await patchBatch(id, { status: "pending", claimed_by: null, drafted_at: null, message_id: null, web_link: null }, claimFilter(b));
       if (!rows || !rows.length) throw new Error("the batch changed while you were doing this — refresh and look again");
+      unstashDraft(b);
       log("Batch " + (b.idx + 1) + " given back.", "ok");
     }
   } catch(e){ log("Couldn't give the batch back: " + e.message, "err"); }
