@@ -1,0 +1,49 @@
+# Runs the unit tests and source checks on every pull request and on main.
+#
+# Nothing here deploys. Vercel and Supabase deploy main on their own; this
+# workflow is what says whether a change is safe to merge. To make a red run
+# actually BLOCK the merge, the "test" check must be marked required:
+# GitHub -> repo Settings -> Branches (or Rules) -> main -> require status
+# checks -> add "test".
+#
+# What it runs (the same commands CLAUDE.md asks for before pushing):
+#   - node --test *.test.mjs                              (PMS page modules)
+#   - node --test supabase/functions/pms-mcp/*.test.mjs   (the connector)
+#   - .github/scripts/check-source.mjs                    (JSX parses; CRLF/LF)
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Unit tests (PMS page modules)
+        run: node --test *.test.mjs
+
+      - name: Unit tests (pms-mcp connector)
+        run: node --test supabase/functions/pms-mcp/*.test.mjs
+
+      - name: Source checks (JSX parses, line endings)
+        run: |
+          # No package.json in this repo: install the one tool the check needs.
+          npm install --no-save --no-audit --no-fund @babel/parser@7
+          node .github/scripts/check-source.mjs
