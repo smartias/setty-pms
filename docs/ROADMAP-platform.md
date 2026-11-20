@@ -45,6 +45,25 @@ are not: canvas-confetti, the pdf.js worker and its jsdelivr fallback, and
 xlsx in `SettyIntelligence.html`. Each needs `integrity` and `crossOrigin` set
 on the element (a worker needs a different approach). Small, page by page.
 
+### Retire the in-database backup copies (added 2026-11-20)
+
+Once the off-site backup has run cleanly for a couple of weeks and one real
+restore has been done from it, the `backups` schema (about 4.3 GB on
+2026-11-20, mostly `pms_project_emails_mirror`) can shrink: drop the mirror and
+keep a few days of dated snapshots. That frees the disk the database is close
+to filling. Needs its own decision; do not drop anything before the restore.
+
+### Off-site copy of Supabase Storage files (added 2026-11-20)
+
+The off-site backup covers the database only. Files in Supabase Storage (site
+report photos) need their own copy.
+
+### Prune old `core/` backup folders (added 2026-11-20)
+
+Each night adds a dated `core/` folder (tens of MB). Nothing deletes old ones
+yet; add pruning (for example keep 30 dailies and the 1st of each month) once
+the size is known.
+
 ## Done
 
 - 2026-11-19: tests and source checks on every pull request; email alert when
