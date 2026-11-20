@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-05-transmittal-v29-current-set-celebration";
+    window.__appVersion = "2026-11-19-transmittal-v30-cdn-integrity";
 
     // Theme, applied before the stylesheet paints so there is no flash of the
     // other scheme. Remembered per browser; first visit follows the OS setting.
@@ -62,10 +62,10 @@
       setInterval(_checkForUpdate, 10 * 60 * 1000);
     });
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
-  <script src="https://unpkg.com/docx@8.2.3/build/index.umd.js"></script>
-  <script src="https://unpkg.com/file-saver@2.0.5/dist/FileSaver.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js" integrity="sha384-leLuz4IOcklwCqvHdLBqO4nJyhJRCq7ZMxv0Pxa8U91EHPzte5Z4l9cCIZDQ9PnN" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/docx@8.2.3/build/index.umd.js" integrity="sha384-Q0Ynt576ix2KycMPIjsvrko1+xjN6y6M7dIfqwUIfTFptvoJjT17+gci4Ano9r+K" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/file-saver@2.0.5/dist/FileSaver.min.js" integrity="sha384-PlRSzpewlarQuj5alIadXwjNUX+2eNMKwr0f07ShWYLy8B6TjEbm7ZlcN/ScSbwy" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous"></script>
   <script>
     // Verify docx loaded correctly
     window.addEventListener("load", () => {

@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-16-pms-v208-qa-review-status";
+    window.__appVersion = "2026-11-19-pms-v209-cdn-integrity";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -51,17 +51,17 @@
       setInterval(_checkForUpdate, 10 * 60 * 1000);
     });
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js" integrity="sha384-leLuz4IOcklwCqvHdLBqO4nJyhJRCq7ZMxv0Pxa8U91EHPzte5Z4l9cCIZDQ9PnN" crossorigin="anonymous"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" integrity="sha384-tMH8h3BGESGckSAVGZ82T9n90ztNXxvdwvdM6UoR56cYcf+0iGXBliJ29D+wZ/x8"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" integrity="sha384-bm7MnzvK++ykSwVJ2tynSE5TRdN+xL418osEVF2DE/L/gfWHj91J2Sphe582B1Bh"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js" integrity="sha384-aGlMNK3U/x0wl4lEH5jD1PGhJlX9hApuPmIiA5gtiYCOQ1J8ejIdC0btaU/TMoBD" crossorigin="anonymous"></script>
   <!-- pako: zlib in JS — used to compress email HTML bodies before storing in Supabase -->
-  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js" integrity="sha384-rNlaE5fs9dGIjmxWDALQh/RBAaGRYT5ChrzHo6tRfgrZ36iRFAiquP5g41Jsv+0j" crossorigin="anonymous"></script>
   <!-- Realtime "project updated elsewhere" banner (Broadcast) — see
        supabase/migrations/20260918210000_pms_projects_broadcast_changes.sql.
        Guarded everywhere it is used: if this fails to load, the app runs
        exactly as before, the banner feature just silently no-ops. -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.1/dist/umd/supabase.js" integrity="sha384-2DeuFKyqIlpZfFmj+jl/+IbM3DwDM4vGKsvK0fI32E0ZDt24W33hB6pka4RAdbz2" crossorigin="anonymous"></script>
   <script src="setty-auth.js"></script>
 <!-- Browser .docx pipeline: zip + Word section drops + {{TOKEN}} fill.
      Loaded as a module and hung on window because the app's own code is
