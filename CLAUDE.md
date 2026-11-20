@@ -147,14 +147,6 @@ browser (PMS pages) or from the connector (app permissions).
   "Deploy pms-mcp" workflow (Actions tab, `main` selected), which redeploys
   and verifies. The other "Deploy ..." workflows do the same for
   `proposal-draft` and `pms-user-emails`.
-- **Merging a migration file applies it to production.** Don't also apply it
-  by hand. MCP `apply_migration` records a migration under the time it ran,
-  not the version in its file name, and the SQL editor records nothing.
-  Either way the integration then tries to run the file again, its migration
-  step fails, and a failed migration step skips the function deploy too. It broke auto-deploy
-  until 2026-11-20, when production's history was reset to match the repo (the
-  old rows are in `backups.schema_migrations_20261120`). If a hand-applied fix
-  is unavoidable, record it under the file's exact version.
 - `pms-user-emails` sends real email (welcome, and the Monday digest from
   pg_cron). The "Deploy pms-user-emails" workflow redeploys it and checks it
   answers, but cannot check the email itself: after changing it, test with an
