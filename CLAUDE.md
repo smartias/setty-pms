@@ -147,14 +147,6 @@ browser (PMS pages) or from the connector (app permissions).
   "Deploy pms-mcp" workflow (Actions tab, `main` selected), which redeploys
   and verifies. The other "Deploy ..." workflows do the same for
   `proposal-draft` and `pms-user-emails`.
-- **Merging a migration file applies it to production.** Don't also apply it
-  by hand. MCP `apply_migration` records a migration under the time it ran,
-  not the version in its file name, and the SQL editor records nothing.
-  Either way the integration then tries to run the file again, its migration
-  step fails, and a failed migration step skips the function deploy too. It broke auto-deploy
-  until 2026-11-20, when production's history was reset to match the repo (the
-  old rows are in `backups.schema_migrations_20261120`). If a hand-applied fix
-  is unavoidable, record it under the file's exact version.
 - `pms-user-emails` sends real email (welcome, and the Monday digest from
   pg_cron). The "Deploy pms-user-emails" workflow redeploys it and checks it
   answers, but cannot check the email itself: after changing it, test with an
@@ -168,15 +160,22 @@ browser (PMS pages) or from the connector (app permissions).
   MCP `apply_migration` tool and the dashboard SQL editor record their OWN
   timestamp (or none), not the file's. The list was rewritten to match the
   folder on 2026-11-20; the old rows are in `backups.schema_migrations_20261120`.
+  A new file's timestamp must sort after every migration already in
+  `supabase/migrations/` (some are dated ahead, e.g. `20261121100000`):
+  Supabase rejects a file older than the last one applied.
   So: never apply a migration by hand. Merge the file and let the integration
   apply it. If one truly must go in by hand, record it under the file's
   version afterwards:
   `insert into supabase_migrations.schema_migrations(version, name, statements)
   values ('<14-digit prefix>', '<rest of file name>', '{}');`
-- `20260918210000_pms_projects_broadcast_changes.sql` is recorded as applied
-  but was never run in production (its September spike was rolled back), so
-  the "project updated elsewhere" banner is off there on purpose. Turning it
-  on is a deliberate change: run the file's statements, don't just merge.
+- The "project updated elsewhere" banner (`subscribePmsProjectUpdates` in
+  `SettyPMS.html`) is driven by `20261121110000_pms_projects_broadcast_enable.sql`:
+  an UPDATE trigger on `pms_projects` sends `{ record: { id, version,
+  updated_by } }` to the private topic `pms_projects:<id>`, and a policy on
+  `realtime.messages` lets signed-in users read `pms_projects:*` topics. It
+  sends only those three fields on purpose (rows reach ~1 MB). The older
+  `20260918210000_pms_projects_broadcast_changes.sql` is recorded as applied
+  but was never run in production; the 20261121110000 migration supersedes it.
 - **An edge function cannot serve an HTML page.** Supabase returns its
   responses as `text/plain` in a CSP sandbox, so the browser shows raw source.
   Put the page in the repo (`Unsubscribe.html`) and have it call the function
