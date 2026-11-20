@@ -41,6 +41,8 @@ const KNOWLEDGE_SENSITIVE_TERMS = [
   ["subrogation", /\bsubrogation\b/i],
   ["deductible", /\bdeductibles?\b/i],
   ["claim notice", /\bclaims?\s+notice|\bnotice\s+of\s+claims?\b/i],
+  ["claim", /\bpre-?claims?\b|\b(?:insurance|carrier|legal|formal|potential|professional[\s-]liability)\s+claims?\b|\bclaims?\s+(?:numbers?|no\.|#|files?|handlers?|adjusters?)/i],
+  ["counsel", /\bcounsel\b/i],
   ["dispute", /\bdisput(?:e|es|ed|ing)\b/i],
   ["arbitration", /\barbitrat/i],
   ["litigation", /\blitigat/i],
@@ -120,6 +122,22 @@ check(publishStatus({ pn: "SAPX256014.00", isAutomated: false,
 check(knowledgeSensitiveTerm("Fire pump controller", "see contract value table") === "contract",
   "the returned label names the matched term");
 
+// ── 5b. The 2026-11-20 QC-memo finds: three mined General entries that were
+//         approved in July, before the gate existed. The pre-claim one carried
+//         no term on the original list ("outside counsel", "pre-claim"), which
+//         is why "claim" and "counsel" were added.
+const QC_MEMO_2026_11_20 = [
+  ["claim", "A lead-based-paint issue during CA at 10 Market Street escalated into a Travelers pre-claim (T2609333) handled through outside counsel (Goldstein Law). Early carrier notification, a dedicated internal legal file, counsel review of the position letter before sending, and continued attendance at regular project meetings de-escalated the matter."],
+  ["dispute", "The RFP required the project be 'designed to meet LEED Silver requirements,' but Local Law 51 was later interpreted as requiring formal LEED certification and expanded scope, triggering a fee dispute in CA phase."],
+  ["dispute", "Hours mistakenly timesheeted to PW-119 were caught by B&C's PM, disputed, and forced Setty to void invoice A2469162/9."],
+];
+for (const [label, t] of QC_MEMO_2026_11_20) {
+  check(knowledgeSensitiveTerm(t) === label, `QC-memo entry is caught as "${label}": ` + t.slice(0, 50));
+}
+check(knowledgeSensitiveTerm("Handled through outside counsel.") === "counsel", "counsel alone fires");
+check(knowledgeSensitiveTerm("Notify the insurance carrier; claim number T123.") !== null, "claim number fires");
+check(knowledgeSensitiveTerm("Claim # T2609333 opened.") === "claim", "claim # fires");
+
 // Each term the task names fires on its own.
 for (const [label, sample] of [
   ["contract", "The contract value increased by $40k with CO-3."],
@@ -146,6 +164,9 @@ const CLEAN = [
   "DASNY requires wet stamps on the fire protection narrative.",
   "Insulation on chilled water is 1.5 inch per the spec; insulate the condensate drain too.",
   "Phase 1 hydraulic constraint still governs Phase 3 riser sizing.",
+  "The Carrier AHU that DOAS-01 was based on was discontinued before submittal.",
+  "We claim no responsibility for the existing riser; the GC claimed the sleeve was missing.",
+  "Local Law 97 compliance drove the heat pump selection.",
 ];
 for (const t of CLEAN) {
   check(knowledgeSensitiveTerm(t) === null, "ordinary CA language is NOT caught: " + t.slice(0, 50));
@@ -188,6 +209,20 @@ has('"Queued as a SUGGESTION — NOT live. The text reads like contract, insuran
   }
   const shippedCount = (shippedTable.match(/^\s+\["/gm) || []).length;
   check(shippedCount === KNOWLEDGE_SENSITIVE_TERMS.length, `shipped table has ${shippedCount} terms, this copy has ${KNOWLEDGE_SENSITIVE_TERMS.length}`);
+}
+// The Intelligence console flags the same terms on its review cards and
+// before Approve, so its copy must match term for term too.
+{
+  const intel = readFileSync(new URL("../../../SettyIntelligence.html", import.meta.url), "utf8");
+  const start = intel.indexOf("const KNOWLEDGE_SENSITIVE_TERMS");
+  const end = intel.indexOf("];", start);
+  check(start > 0, "SettyIntelligence.html still carries KNOWLEDGE_SENSITIVE_TERMS");
+  const intelTable = intel.slice(start, end);
+  for (const [label, re] of KNOWLEDGE_SENSITIVE_TERMS) {
+    check(intelTable.includes(`["${label}", ${re.toString()}]`), `SettyIntelligence.html sensitive term "${label}" has DRIFTED from index.ts`);
+  }
+  const intelCount = (intelTable.match(/^\s+\["/gm) || []).length;
+  check(intelCount === KNOWLEDGE_SENSITIVE_TERMS.length, `SettyIntelligence.html has ${intelCount} terms, index.ts has ${KNOWLEDGE_SENSITIVE_TERMS.length}`);
 }
 has('origin: isAutomated ? "mined" : "connector",', "automated entries land as origin mined");
 has("const KNOWLEDGE_MAX_PENDING_AUTOMATED = 50;", "separate automated ceiling");

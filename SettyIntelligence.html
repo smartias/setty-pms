@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-11-18-intel-v39-fire-alarm-add-export";
+    window.__appVersion = "2026-11-20-intel-v40-sensitive-lesson-flag";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -1529,6 +1529,7 @@ async function bulkStatus(kind, status) {
   const set = bulkSelSet(kind);
   if (!set.size) return;
   if ((status === "approved" || status === "confirmed") && !state.user) { openNameModal(() => bulkStatus(kind, status)); return; }
+  if (isL && status === "approved" && !confirmSensitiveApprove(state.lessons.filter(l => set.has(l.lesson_id) && l.status !== "approved"))) return;
   const table = isL ? "pms_lessons" : isA ? "pms_agency_preferences" : isM ? "pms_meeting_items" : isS ? "pms_engineering_standards" : "pms_best_practices";
   const idcol = isL ? "lesson_id" : isA ? "pref_id" : isM ? "id" : isS ? "standard_id" : "practice_id";
   const payload = { status, updated_at: new Date().toISOString() };
@@ -2389,6 +2390,7 @@ function renderLessonCard(l) {
     : l.origin === "mined"
     ? `<span class="pill pill-purple" title="Extracted from the project record">🤖 mined</span>`
     : `<span class="pill pill-gray">✍ manual</span>`;
+  const sensitive = lessonSensitiveTerm(l);
   const authorPill = l.author_name || l.author_email
     ? `<span class="pill pill-gray" title="Contributor — who asked to save this">by ${esc(l.author_name || l.author_email)}</span>` : "";
   const srcType = l.source_type ? `<span class="pill pill-blue">${esc(l.source_type)}</span>` : "";
@@ -2399,6 +2401,7 @@ function renderLessonCard(l) {
     l.issue_type ? `<span class="pill pill-gray">${esc(l.issue_type)}</span>` : "",
     `<span class="pill ${confPill}">conf: ${esc(l.confidence||"—")}</span>`,
     `<span class="pill ${statusPill}">${esc(statusLabel)}</span>`,
+    sensitive ? `<span class="pill pill-red" title="Reads like contract, insurance or legal content (matched &quot;${esc(sensitive)}&quot;). Case-specific commercial or legal notes belong in restricted project notes, not the shared knowledge layer.">⚠ sensitive: ${esc(sensitive)}</span>` : "",
   ].filter(Boolean).join(" ");
   const srcChips = Array.isArray(l.linked_records) && l.linked_records.length
     ? `<div class="lesson-sub"><b>Evidence:</b> ` + l.linked_records.map(r =>
@@ -2701,6 +2704,7 @@ function saveLesson(id) {
   };
   // Approving through the Status menu records who approved, like the Approve button.
   const approving = status === "approved" && prev.status !== "approved";
+  if (approving && !confirmSensitiveApprove([payload])) return;
   if (approving && !state.user) { openNameModal(() => writeLesson(id, payload, prev)); return; }
   writeLesson(id, payload, prev);
 }
@@ -2724,8 +2728,66 @@ async function writeLesson(id, payload, prev) {
   } catch (e) { toast("Save failed: " + e.message, "error"); }
 }
 
+// Sensitive-terms flag (2026-11-20). The connector's save_knowledge holds
+// contract, insurance and legal language as 'suggested'
+// (KNOWLEDGE_SENSITIVE_TERMS in supabase/functions/pms-mcp/index.ts), but
+// mined batches are inserted straight into pms_lessons and reach the team only
+// through an Approve here, where nothing checked them: three mined July
+// entries (a carrier pre-claim, a fee dispute, a voided invoice) were approved
+// that way. This copy flags the same terms on the card and asks before
+// approving. It must match index.ts term for term; saveKnowledge.test.mjs
+// fails if it drifts. It reads more fields than the connector (the reusable
+// prompt and tags too), since a reviewer would rather see one extra flag.
+const KNOWLEDGE_SENSITIVE_TERMS = [
+  ["contract", /\bcontracts?\b(?!\s+(?:documents?|drawings?|dwgs?|sets?|specs?|specifications?|plans?)\b)/i],
+  ["contractual", /\bcontractual(?:ly)?\b/i],
+  ["MSA", /\bMSAs?\b/i],
+  ["subagreement", /\bsub-?agreements?\b/i],
+  ["agreement", /\b(?:master|services?|sub-?consultant|prime|teaming|consulting)\s+agreements?\b/i],
+  ["indemnification", /\bindemn/i],
+  ["liability", /\bliabilit(?:y|ies)\b|\bliable\b/i],
+  ["hold harmless", /\bhold\s+harmless\b/i],
+  ["insurance", /\binsur(?:ance|ed|ers?)\b/i],
+  ["subrogation", /\bsubrogation\b/i],
+  ["deductible", /\bdeductibles?\b/i],
+  ["claim notice", /\bclaims?\s+notice|\bnotice\s+of\s+claims?\b/i],
+  ["claim", /\bpre-?claims?\b|\b(?:insurance|carrier|legal|formal|potential|professional[\s-]liability)\s+claims?\b|\bclaims?\s+(?:numbers?|no\.|#|files?|handlers?|adjusters?)/i],
+  ["counsel", /\bcounsel\b/i],
+  ["dispute", /\bdisput(?:e|es|ed|ing)\b/i],
+  ["arbitration", /\barbitrat/i],
+  ["litigation", /\blitigat/i],
+  ["attorney", /\battorneys?\b|\blegal\s+counsel\b/i],
+  ["lien", /\bliens?\b/i],
+  ["NDA", /\bNDAs?\b|\bnon-?disclosure\b/i],
+  ["do not share", /\bdo\s+not\s+share\b|\bdon['\u2019]?t\s+share\b|\bnot\s+for\s+(?:distribution|circulation)\b|\binternal\s+(?:use\s+)?only\b/i],
+  ["confidential", /\bconfidential/i],
+  ["privileged", /\bprivileged\b/i],
+];
+function lessonSensitiveTerm(l) {
+  if (!l) return null;
+  const text = [l.lesson_summary, l.source_reference, l.reusable_prompt,
+    Array.isArray(l.tags) ? l.tags.join(" ") : ""].filter(Boolean).join(" ");
+  if (!text) return null;
+  for (const [label, re] of KNOWLEDGE_SENSITIVE_TERMS) if (re.test(text)) return label;
+  return null;
+}
+// Asks before a flagged lesson goes live. Returns true to go ahead.
+function confirmSensitiveApprove(lessons) {
+  const flagged = lessons.map(l => [l, lessonSensitiveTerm(l)]).filter(([, t]) => t);
+  if (!flagged.length) return true;
+  const lines = flagged.slice(0, 5).map(([l, t]) =>
+    "• " + (l.project_id || "firm-wide") + " (\"" + t + "\"): " + (l.lesson_summary || "").slice(0, 90));
+  return confirm(
+    (flagged.length === 1 ? "This lesson reads" : flagged.length + " of these lessons read") +
+    " like contract, insurance or legal content:\n\n" + lines.join("\n") +
+    (flagged.length > 5 ? "\n• …and " + (flagged.length - 5) + " more" : "") +
+    "\n\nApproving makes it visible to everyone through lessons search, briefings and QA reviews. " +
+    "Keep case-specific commercial or legal notes out of the knowledge layer. Approve anyway?");
+}
+
 async function approveLesson(id) {
   if (!state.user) { openNameModal(() => approveLesson(id)); return; }
+  if (!confirmSensitiveApprove([state.lessons.find(x => x.lesson_id === id)].filter(Boolean))) return;
   try {
     await sb("PATCH", "/rest/v1/pms_lessons?lesson_id=eq." + encodeURIComponent(id),
       { status: "approved", approved_by: state.user, reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() });

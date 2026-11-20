@@ -1454,7 +1454,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-19-file-meeting-minutes";
+const BUILD = "2026-11-20-sensitive-claim-counsel";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -13044,6 +13044,11 @@ function knowledgeOverlap(a: string, b: string): number {
 // reviewer one click in the Intelligence console; a false negative is the
 // incident above, so the list leans wide. Each entry is [label, pattern]; the
 // label goes back to the model so it can tell the user WHY the entry queued.
+// 2026-11-20: "claim" (pre-claim / insurance claim / claim number) and
+// "counsel" added after a mined entry about a carrier pre-claim handled by
+// outside counsel slipped past every term above. SettyIntelligence.html
+// carries an identical copy (KNOWLEDGE_SENSITIVE_TERMS) so reviewers see the
+// same flag before approving; saveKnowledge.test.mjs fails if they drift.
 const KNOWLEDGE_SENSITIVE_TERMS: ReadonlyArray<readonly [string, RegExp]> = [
   ["contract", /\bcontracts?\b(?!\s+(?:documents?|drawings?|dwgs?|sets?|specs?|specifications?|plans?)\b)/i],
   ["contractual", /\bcontractual(?:ly)?\b/i],
@@ -13057,6 +13062,8 @@ const KNOWLEDGE_SENSITIVE_TERMS: ReadonlyArray<readonly [string, RegExp]> = [
   ["subrogation", /\bsubrogation\b/i],
   ["deductible", /\bdeductibles?\b/i],
   ["claim notice", /\bclaims?\s+notice|\bnotice\s+of\s+claims?\b/i],
+  ["claim", /\bpre-?claims?\b|\b(?:insurance|carrier|legal|formal|potential|professional[\s-]liability)\s+claims?\b|\bclaims?\s+(?:numbers?|no\.|#|files?|handlers?|adjusters?)/i],
+  ["counsel", /\bcounsel\b/i],
   ["dispute", /\bdisput(?:e|es|ed|ing)\b/i],
   ["arbitration", /\barbitrat/i],
   ["litigation", /\blitigat/i],
