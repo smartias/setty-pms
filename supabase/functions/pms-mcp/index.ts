@@ -106,6 +106,10 @@ import {
   MEETING_ITEM_TYPES, MEETING_KINDS, MEETING_NOTE_CATEGORY, isIsoDate, cleanMinutesItems,
   minutesSourceRef, resolveOwner, minutesNoteBody, dateAtNoonUtc,
 } from "./meetingMinutes.ts";
+import {
+  resolveBackupRoot, createBackupUploadSession, listBackupFolder, BackupRequestError,
+  type BackupGraph, type BackupRoot,
+} from "./backupExport.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -1454,7 +1458,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-20-sensitive-claim-counsel";
+const BUILD = "2026-11-21-offsite-backup-uploads";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -14694,5 +14698,74 @@ app.post("/pms-mcp/admin/drawings-index", async (c) => {
     scanned: results.length + noWork, withWork: results.length, noWork, candidates: cands.length, elapsedMs: Date.now() - started, results,
   }, 200, DOCS_SYNC_CORS);
 });
+
+// ── Off-site backup uploads ──────────────────────────────────────────────────
+// The nightly GitHub Actions job (.github/workflows/backup.yml) dumps the
+// database and uploads the files to the SharePoint folder named by the
+// BACKUP_FOLDER_URL secret. It holds no Microsoft credentials: it asks these
+// routes for an upload session and PUTs the bytes to the pre-authenticated
+// uploadUrl. backupExport.ts decides which paths may be written. Callers
+// authenticate with the x-pms-backup header, whose value lives in
+// pms_integration_secrets (name 'backup-upload'); the job reads it with the
+// database connection it already holds, so GitHub stores one secret only.
+const BACKUP_FOLDER_URL = Deno.env.get("BACKUP_FOLDER_URL");
+let _backupToken: { token: string; at: number } | null = null;
+let _backupRoot: { root: BackupRoot; url: string; at: number } | null = null;
+
+async function backupTokenOk(given: string): Promise<boolean> {
+  if (!given) return false;
+  if (!_backupToken || Date.now() - _backupToken.at > 300_000) {
+    const rows = await sbGetAll("pms_integration_secrets?name=eq.backup-upload&select=token");
+    _backupToken = { token: String(rows[0]?.token || ""), at: Date.now() };
+  }
+  const want = _backupToken.token;
+  if (!want || want.length !== given.length) return false;
+  let diff = 0;
+  for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ given.charCodeAt(i);
+  return diff === 0;
+}
+
+const backupGraph: BackupGraph = {
+  async get(path) {
+    const res = await fetch("https://graph.microsoft.com/v1.0" + path, { headers: { Authorization: "Bearer " + (await graphToken()) } });
+    return { status: res.status, json: await res.json().catch(() => null) };
+  },
+  async post(path, body) {
+    const res = await fetch("https://graph.microsoft.com/v1.0" + path, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + (await graphToken()), "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, json: await res.json().catch(() => null) };
+  },
+};
+
+async function backupRoot(): Promise<BackupRoot> {
+  const url = BACKUP_FOLDER_URL || "";
+  if (_backupRoot && _backupRoot.url === url && Date.now() - _backupRoot.at < 3_600_000) return _backupRoot.root;
+  const root = await resolveBackupRoot(backupGraph, url);
+  _backupRoot = { root, url, at: Date.now() };
+  return root;
+}
+
+async function backupRoute(c: any, work: (body: any, root: BackupRoot) => Promise<unknown>) {
+  if (!(await backupTokenOk(c.req.header("x-pms-backup") || ""))) {
+    return c.json({ error: "A valid x-pms-backup header is required." }, 403);
+  }
+  let body: any = {};
+  try { body = await c.req.json(); } catch { /* validated below */ }
+  try {
+    return c.json(await work(body, await backupRoot()));
+  } catch (e: any) {
+    const status = e instanceof BackupRequestError ? 400 : 500;
+    console.error("[backup]", c.req.path, e?.message || e);
+    return c.json({ error: e?.message || String(e) }, status);
+  }
+}
+
+app.post("/pms-mcp/admin/backup/upload-session", (c) =>
+  backupRoute(c, (body, root) => createBackupUploadSession(backupGraph, root, body?.path, body?.size)));
+app.post("/pms-mcp/admin/backup/list", (c) =>
+  backupRoute(c, async (body, root) => ({ folder: body?.folder, files: await listBackupFolder(backupGraph, root, body?.folder) })));
 
 Deno.serve(app.fetch);

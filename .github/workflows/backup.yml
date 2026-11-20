@@ -1,0 +1,64 @@
+# Nightly off-site backup of the PMS database to SharePoint.
+#
+# What it writes and how to restore it: docs/RESTORE.md. The work is done by
+# .github/scripts/backup.sh; files are uploaded through the connector
+# (pms-mcp /admin/backup/*), which holds the Microsoft credentials and only
+# writes into the folder named by its BACKUP_FOLDER_URL secret.
+#
+# One-time setup:
+#   1. Repo secret SUPABASE_DB_URL: Supabase dashboard -> Connect -> "Session
+#      pooler" connection string, with the database password filled in. (The
+#      direct connection is IPv6-only; GitHub's runners need the pooler.)
+#   2. Edge Function secret BACKUP_FOLDER_URL on the Supabase project: the
+#      SharePoint folder's link. Then redeploy pms-mcp ("Deploy pms-mcp").
+#   3. Run this workflow once by hand (Actions -> "Off-site backup" -> Run).
+#      The first run uploads every month of email (several GB) and takes longest.
+#
+# A run that fails, or a night with no run, shows up as a 'backup-offsite-stale'
+# email from pms-cron-alert within 30 hours.
+name: Off-site backup
+
+on:
+  schedule:
+    - cron: "41 8 * * *"   # 08:41 UTC, after the 07:00 in-database snapshot
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offsite-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      PMS_MCP_URL: https://khxmgjilwhdguuepbhne.supabase.co/functions/v1/pms-mcp
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # pg_dump must be at least the server's major version (17).
+      - name: Install PostgreSQL 17 client
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then echo "Repo secret SUPABASE_DB_URL is not set (see the header of this file)" >&2; exit 1; fi
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+          echo /usr/lib/postgresql/17/bin >> "$GITHUB_PATH"
+
+      - name: Back up
+        run: |
+          pg_dump --version
+          bash .github/scripts/backup.sh

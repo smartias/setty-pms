@@ -79,6 +79,15 @@ browser (PMS pages) or from the connector (app permissions).
   `pms_cron_alerts`). An admin call to `/cron-alert?dryRun=1` shows what it
   sees and sends nothing. pg_cron marks an HTTP job "succeeded" once the call
   is queued, so a job's own status says nothing about the function's answer.
+- Off-site backup: the "Off-site backup" workflow (`.github/workflows/backup.yml`,
+  nightly 08:41 UTC) runs `.github/scripts/backup.sh`: `pg_dump` of `public`
+  plus monthly CSV files of emails and project history, uploaded to the
+  SharePoint folder in the `BACKUP_FOLDER_URL` secret through pms-mcp
+  `/admin/backup/*` (upload sessions; paths limited by `backupExport.ts`).
+  Runs are logged in `pms_backup_runs`; a missing night alerts as
+  `backup-offsite-stale`. Restore: `docs/RESTORE.md` and
+  `.github/scripts/restore.sh` (refuses a non-empty database). A new big table
+  with rebuildable data belongs in the `--exclude-table-data` list.
 - "The Outlook pane is slow / hung": read `pms_addin_telemetry` (one row per
   pane save: `total_ms`, `steps`, per-request `calls`). The migration that
   creates it carries the two queries worth running first.
