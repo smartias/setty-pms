@@ -124,14 +124,27 @@ browser (PMS pages) or from the connector (app permissions).
 
 ## Edge function deploys
 
-- `supabase/config.toml` lists all four functions (`pms-mcp`,
-  `proposal-draft`, `pms-user-emails`, `unsubscribe`). Supabase's
-  GitHub integration builds listed functions on every PR preview and
-  **deploys them to production on every merge to `main`** ("Deploy to
-  production" is on; the same option applies migrations). There is no health
-  check on that path: for `pms-mcp`, confirm `/health` reports the new
-  `BUILD`, or run the matching "Deploy ..." workflow (one per function),
-  which redeploys and verifies.
+- **Merging to `main` does not deploy edge functions to production.** After
+  merging any change to an edge function, run the matching "Deploy ..."
+  workflow from the Actions tab (one per function: "Deploy pms-mcp",
+  "Deploy proposal-draft", "Deploy pms-user-emails"; `main` selected). For
+  `pms-mcp`, the change is not live until
+  `https://khxmgjilwhdguuepbhne.supabase.co/functions/v1/pms-mcp/health`
+  reports the new `BUILD` (the workflow checks this and fails if it doesn't).
+  `unsubscribe` has no workflow: deploy it with
+  `supabase functions deploy unsubscribe --project-ref khxmgjilwhdguuepbhne --no-verify-jwt`
+  and check `?health=1`.
+- Why: `supabase/config.toml` lists all four functions, and Supabase's GitHub
+  integration does build them on every PR preview (the "Supabase Preview"
+  check). But its production run on `main` stops at the migration step, so
+  its function-deploy step never runs. Production's migration history was
+  written by hand-applied migrations whose version numbers differ from the
+  file names in `supabase/migrations/` (e.g. `newsletter_drafts` is
+  `20261119200000` in the repo but `20261119200220` in production), and the
+  integration's `main` branch shows `MIGRATIONS_FAILED`. Seen 2026-11-20:
+  PR #532 merged at 16:03 UTC, `/health` still showed the old build 13+
+  minutes later, and `pms-mcp` changed only when the workflow ran (16:15).
+  Until that history is repaired, treat the workflows as the only deploy path.
 - `pms-user-emails` sends real email (welcome, and the Monday digest from
   pg_cron). The "Deploy pms-user-emails" workflow redeploys it and checks it
   answers, but cannot check the email itself: after changing it, test with an

@@ -1445,12 +1445,12 @@ responsible trade, review comments and a dated history.
 
 ## Deploying
 
-**Since 2026-11-13 a merge to `main` deploys this function.** It is declared
-in `supabase/config.toml`, and Supabase's GitHub integration deploys declared
-functions when `main` changes (and builds them on every PR preview). That path
-has no health check, so after a merge that matters, check `/health` for the new
-`BUILD` or run the workflow below, which redeploys and verifies. Everything
-that follows still works and is the way to deploy by hand.
+**A merge to `main` does not deploy this function.** It is declared in
+`supabase/config.toml` and every PR preview builds it, but Supabase's
+production run on `main` stops at the migration step and never reaches the
+function deploy (see CLAUDE.md, "Edge function deploys"). After merging, run
+the `Deploy pms-mcp` workflow below and confirm `/health` reports the new
+`BUILD`.
 
 One-command version: `deploy.ps1` in this folder pulls main, reads the BUILD
 constant, deploys, and polls `/health` until that build answers (see the header
