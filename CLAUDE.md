@@ -124,27 +124,28 @@ browser (PMS pages) or from the connector (app permissions).
 
 ## Edge function deploys
 
-- **Merging to `main` does not deploy edge functions to production.** After
-  merging any change to an edge function, run the matching "Deploy ..."
-  workflow from the Actions tab (one per function: "Deploy pms-mcp",
-  "Deploy proposal-draft", "Deploy pms-user-emails"; `main` selected). For
-  `pms-mcp`, the change is not live until
+- **A merge to `main` deploys to production.** Supabase's GitHub integration
+  ("Deploy to production") runs on every merge: it applies new files in
+  `supabase/migrations/`, then deploys the four functions listed in
+  `supabase/config.toml` (`pms-mcp`, `proposal-draft`, `pms-user-emails`,
+  `unsubscribe`). PR previews build the same functions (the "Supabase
+  Preview" check). Working since 2026-11-20: PR #533 merged at 17:05:31 UTC
+  and all four functions redeployed at 17:06:15.
+- **That path has no health check.** After merging a change to `pms-mcp`,
+  confirm
   `https://khxmgjilwhdguuepbhne.supabase.co/functions/v1/pms-mcp/health`
-  reports the new `BUILD` (the workflow checks this and fails if it doesn't).
-  `unsubscribe` has no workflow: deploy it with
-  `supabase functions deploy unsubscribe --project-ref khxmgjilwhdguuepbhne --no-verify-jwt`
-  and check `?health=1`.
-- Why: `supabase/config.toml` lists all four functions, and Supabase's GitHub
-  integration does build them on every PR preview (the "Supabase Preview"
-  check). But its production run on `main` stops at the migration step, so
-  its function-deploy step never runs. Production's migration history was
-  written by hand-applied migrations whose version numbers differ from the
-  file names in `supabase/migrations/` (e.g. `newsletter_drafts` is
-  `20261119200000` in the repo but `20261119200220` in production), and the
-  integration's `main` branch shows `MIGRATIONS_FAILED`. Seen 2026-11-20:
-  PR #532 merged at 16:03 UTC, `/health` still showed the old build 13+
-  minutes later, and `pms-mcp` changed only when the workflow ran (16:15).
-  Until that history is repaired, treat the workflows as the only deploy path.
+  reports the new `BUILD` (allow a couple of minutes). If it doesn't, run the
+  "Deploy pms-mcp" workflow (Actions tab, `main` selected), which redeploys
+  and verifies. The other "Deploy ..." workflows do the same for
+  `proposal-draft` and `pms-user-emails`.
+- **Merging a migration file applies it to production.** Don't also apply it
+  by hand. MCP `apply_migration` records a migration under the time it ran,
+  not the version in its file name, and the SQL editor records nothing.
+  Either way the integration then tries to run the file again, its migration
+  step fails, and a failed migration step skips the function deploy too. It broke auto-deploy
+  until 2026-11-20, when production's history was reset to match the repo (the
+  old rows are in `backups.schema_migrations_20261120`). If a hand-applied fix
+  is unavoidable, record it under the file's exact version.
 - `pms-user-emails` sends real email (welcome, and the Monday digest from
   pg_cron). The "Deploy pms-user-emails" workflow redeploys it and checks it
   answers, but cannot check the email itself: after changing it, test with an
