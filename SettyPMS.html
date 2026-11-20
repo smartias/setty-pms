@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-19-pms-v209-cdn-integrity";
+    window.__appVersion = "2026-11-20-pms-v210-update-banner-baseline";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -58,7 +58,7 @@
   <!-- pako: zlib in JS — used to compress email HTML bodies before storing in Supabase -->
   <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js" integrity="sha384-rNlaE5fs9dGIjmxWDALQh/RBAaGRYT5ChrzHo6tRfgrZ36iRFAiquP5g41Jsv+0j" crossorigin="anonymous"></script>
   <!-- Realtime "project updated elsewhere" banner (Broadcast) — see
-       supabase/migrations/20260918210000_pms_projects_broadcast_changes.sql.
+       supabase/migrations/20261121110000_pms_projects_broadcast_enable.sql.
        Guarded everywhere it is used: if this fails to load, the app runs
        exactly as before, the banner feature just silently no-ops. -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.1/dist/umd/supabase.js" integrity="sha384-2DeuFKyqIlpZfFmj+jl/+IbM3DwDM4vGKsvK0fI32E0ZDt24W33hB6pka4RAdbz2" crossorigin="anonymous"></script>
@@ -21776,26 +21776,42 @@ function archiveBlockers(project) {
 
 // Realtime "this project was updated elsewhere" banner (Broadcast).
 // Subscribes to the per-project topic a database trigger broadcasts to on
-// every pms_projects UPDATE (see the migration referenced above). The
-// first event after subscribing just establishes the baseline version —
-// it is the state as of mount, not a change to flag. Informational only:
-// it does not merge remote changes in, it just prompts a refresh so a
-// second editor finds out sooner than at save-conflict time.
+// every pms_projects UPDATE (supabase/migrations/
+// 20261121110000_pms_projects_broadcast_enable.sql; payload is
+// { record: { id, version, updated_by } }). An event is flagged only when its
+// version is newer than the version this tab last loaded or saved
+// (window.__pmsKnownProjectVersion, backed by App's versionsRef), so the first
+// edit made elsewhere shows the banner and this tab's own saves do not. The
+// check waits PMS_UPDATE_BANNER_SETTLE_MS so an own save's new version is
+// recorded before it runs (the broadcast can arrive before the save's HTTP
+// response). Informational only: it does not merge remote changes in, it just
+// prompts a refresh so a second editor finds out sooner than at save-conflict
+// time.
+const PMS_UPDATE_BANNER_SETTLE_MS = 2000;
 function subscribePmsProjectUpdates(projectId) {
   if (!settyRealtime) return () => {};
   pmsSyncRealtimeAuth();
-  let baselineVersion = null;
+  const timers = new Set();
   const channel = settyRealtime
     .channel("pms_projects:" + projectId, { config: { private: true } })
     .on("broadcast", { event: "UPDATE" }, (payload) => {
       const row = payload.payload && payload.payload.record;
-      if (!row) return;
-      if (baselineVersion === null) { baselineVersion = row.version; return; }
-      if (row.version <= baselineVersion) return;
-      showProjectUpdateBanner(row.version, row.updated_by);
+      if (!row || typeof row.version !== "number") return;
+      const t = setTimeout(() => {
+        timers.delete(t);
+        const known = typeof window.__pmsKnownProjectVersion === "function"
+          ? window.__pmsKnownProjectVersion(projectId) : undefined;
+        if (typeof known !== "number") return;   // version unknown: don't guess
+        if (row.version <= known) return;        // this tab already has it (incl. own saves)
+        showProjectUpdateBanner(row.version, row.updated_by);
+      }, PMS_UPDATE_BANNER_SETTLE_MS);
+      timers.add(t);
     })
     .subscribe();
-  return () => { try { settyRealtime.removeChannel(channel); } catch (_) {} };
+  return () => {
+    timers.forEach(clearTimeout);
+    try { settyRealtime.removeChannel(channel); } catch (_) {}
+  };
 }
 
 // Mirrors _showUpdateBanner's styling (top of file, app-version banner) so
@@ -36511,6 +36527,8 @@ function App() {
 
   // V2 persistence refs — populated by loadStateV2, updated by performSaveV2
   const versionsRef = React.useRef({ projects: new Map(), clients: new Map() });
+  // Read by subscribePmsProjectUpdates to tell a remote edit from this tab's own.
+  window.__pmsKnownProjectVersion = (id) => versionsRef.current.projects.get(id);
   const lastSavedRef = React.useRef({ projects: new Map(), clients: new Map(), meta: "" });
 
   // Migration UI state
