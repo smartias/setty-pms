@@ -149,6 +149,24 @@ browser (PMS pages) or from the connector (app permissions).
   pg_cron). The "Deploy pms-user-emails" workflow redeploys it and checks it
   answers, but cannot check the email itself: after changing it, test with an
   admin call to `/digest?dryRun=1` before Monday.
+- **Database changes go in as files in `supabase/migrations/`, and production
+  records them under the file's own timestamp.** On merge, Supabase compares
+  the folder with production's `supabase_migrations.schema_migrations` and
+  applies only new files; if the two lists disagree it applies nothing and
+  shows the `main` branch as "migrations failed". That happened from
+  2026-09-30 to 2026-11-20 because changes were applied by hand: the Supabase
+  MCP `apply_migration` tool and the dashboard SQL editor record their OWN
+  timestamp (or none), not the file's. The list was rewritten to match the
+  folder on 2026-11-20; the old rows are in `backups.schema_migrations_20261120`.
+  So: never apply a migration by hand. Merge the file and let the integration
+  apply it. If one truly must go in by hand, record it under the file's
+  version afterwards:
+  `insert into supabase_migrations.schema_migrations(version, name, statements)
+  values ('<14-digit prefix>', '<rest of file name>', '{}');`
+- `20260918210000_pms_projects_broadcast_changes.sql` is recorded as applied
+  but was never run in production (its September spike was rolled back), so
+  the "project updated elsewhere" banner is off there on purpose. Turning it
+  on is a deliberate change: run the file's statements, don't just merge.
 - **An edge function cannot serve an HTML page.** Supabase returns its
   responses as `text/plain` in a CSP sandbox, so the browser shows raw source.
   Put the page in the repo (`Unsubscribe.html`) and have it call the function
