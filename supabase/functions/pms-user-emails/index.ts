@@ -1,6 +1,6 @@
 // pms-user-emails — Supabase Edge Function.
 //
-// Four routes, all sending via Resend:
+// Five routes, all sending via Resend:
 //   POST /welcome  — admin-only (JWT checked against my_pms_role). Called by
 //                    the Admin Console right after a user is added to
 //                    pms_user_roles. Sends the "you've been added" email.
@@ -32,6 +32,16 @@
 //                    (pms_accolade_notices). Admin JWT for testing: ?dryRun=1
 //                    reports who would be emailed and sends nothing. See
 //                    migration 20261123100000_pms_accolade_instant_emails.sql.
+//   POST /announce?key=<name> — a one-off announcement written in this file
+//                    (ANNOUNCEMENTS), to the people pms_announce_audience()
+//                    returns: on the roster, signed in at least once, and with
+//                    PMS email on. Cron key or admin JWT. Each person gets a
+//                    given announcement once (pms_announcement_sends).
+//                      ?dryRun=1   — list who would get it, send nothing
+//                      ?only=a@b   — a test copy to one @setty.com address;
+//                                    not recorded, so it does not use up that
+//                                    person's real copy
+//                    See migration 20261123120000_pms_announcements.sql.
 //
 // Digest item rules ported from the never-deployed weekly-digest draft
 // (confirmed by Sara 2026-05-29): RFI open = status "Open"; submittal open =
@@ -782,6 +792,91 @@ async function runAccoladeNotice(p: { kind?: string; accolade_id?: unknown; give
   return { kind, accolade_id: id, sent, alreadyTold: to.filter((e) => !claimed.some((c) => c.recipient === e)), failed };
 }
 
+// ── /announce ────────────────────────────────────────────────────────────────
+// Announcements are written here, not passed in, so the route cannot be used to
+// send arbitrary text to the firm.
+const ANNOUNCEMENTS: Record<string, { subject: string; html: (today: Date) => string }> = {
+  "accolade-launch": {
+    subject: "🏁 Start your engines: meet the Accolade-O-Meter",
+    html: (today) => {
+      const li = (emoji: string, title: string, text: string) =>
+        `<tr><td style="padding:6px 10px 6px 0;font-size:16pt;vertical-align:top">${emoji}</td>
+             <td style="padding:6px 0;font-size:11pt;color:#333"><b style="color:#1F3864">${title}</b> ${text}</td></tr>`;
+      return shell("Meet the Accolade-O-Meter", `
+        <div style="font-size:9pt;color:#047857;font-weight:700;letter-spacing:2px;text-transform:uppercase">New in the Setty PMS</div>
+        <div style="font-size:22pt;color:#1F3864;font-weight:700;margin-top:4px">🏁 Meet the Accolade-O-Meter</div>
+        <div style="font-size:11.5pt;color:#333;margin-top:12px">Good work gets noticed around here. Now it also gets a racetrack, a duck and a slot machine. 🦆</div>
+        <div style="font-size:11.5pt;color:#333;margin-top:8px">The Accolade-O-Meter is Setty's new home for kind words from clients and from each other.</div>
+        <div style="margin-top:18px">
+          <a href="${ACCOLADES_URL}" style="display:inline-block;background:#D8322B;color:#fff;font-weight:700;font-size:12pt;text-decoration:none;padding:11px 20px;border-radius:5px">Open the Accolade-O-Meter →</a>
+        </div>
+        <table style="border-collapse:collapse;margin-top:20px">
+          ${li("🙌", "Thank a teammate.", "It takes about twenty seconds. Add a gift if you like: flowers, coffee, cake, a trophy, applause or a high five.")}
+          ${li("🏆", "Log praise from a client.", "Got a “great job” email? Put it on the wall so the whole firm sees it.")}
+          ${li("📬", "Find out right away.", "When someone recognizes you or sends you a gift, you get an email the moment it happens.")}
+          ${li("🏎️", "Race for the season.", "Every accolade and every thank-you moves your car around the track. Pick your ride and your number.")}
+          ${li("🎰", "Pull the lever.", "One spin of the slot machine a day for bonus points. Line up three sevens for the 20-point jackpot. It is rare, and when someone hits it a plane tells the whole firm.")}
+          ${li("❓", "Play “Who earned it?”", "A daily guessing game with a real accolade.")}
+        </table>
+        <div style="font-size:11pt;color:#333;margin-top:14px">Keep an eye on the lobby screen too. A duck waddles by with the latest kudos, and now and then a little red plane flies over towing a banner with what was said. ✈️</div>
+        <div style="margin-top:20px;padding:12px 16px;background:#f0f7f4;border-left:4px solid #047857;border-radius:3px">
+          <div style="font-size:10pt;color:#047857;font-weight:700;letter-spacing:1.5px;text-transform:uppercase">Your first lap</div>
+          <div style="font-size:11pt;color:#222;margin-top:4px">Think of one person who made your week easier. Open the page, tell them, and send them a coffee. That's it. You are on the board.</div>
+        </div>
+        <div style="font-size:11pt;color:#333;margin-top:16px">Every accolade pushes the firm's needle toward this month's goal, so the more we notice each other, the further it goes.</div>
+        <div style="font-size:11pt;color:#333;margin-top:16px">See you at the track,<br/>Sara</div>
+        <div style="font-size:9pt;color:#999;margin-top:24px">You get this because PMS email is on for you in <a href="${PMS_URL}#myprojects" style="color:#1F3864">My Projects → ⚙ My Settings</a>.</div>
+      `, today);
+    },
+  },
+};
+
+async function runAnnounce(opts: { key: string; dryRun: boolean; only: string | null }) {
+  const a = ANNOUNCEMENTS[opts.key];
+  if (!a) return { error: "Unknown announcement", known: Object.keys(ANNOUNCEMENTS) };
+  const today = new Date();
+  // A test copy: one address, not recorded, whether or not they are in the audience.
+  if (opts.only) {
+    const to = lc(opts.only);
+    if (!SETTY_EMAIL.test(to)) return { error: "only= must be a @setty.com address" };
+    if (opts.dryRun) return { key: opts.key, test: true, dryRun: true, wouldSend: [to], subject: a.subject };
+    await sendEmail(to, a.subject, a.html(today));
+    return { key: opts.key, test: true, sent: [to] };
+  }
+  const audience: string[] = (await svcWrite("POST", "/rpc/pms_announce_audience", {}, "return=representation"))
+    .map((r: any) => lc(r.email ?? r)).filter((e: string) => SETTY_EMAIL.test(e));
+  if (opts.dryRun) {
+    const done = await svcAll(`/pms_announcement_sends?key=eq.${encodeURIComponent(opts.key)}&select=recipient`);
+    const told = new Set(done.map((r: any) => r.recipient));
+    return { key: opts.key, dryRun: true, subject: a.subject, audience: audience.length,
+             wouldSend: audience.filter((e) => !told.has(e)), alreadySent: audience.filter((e) => told.has(e)) };
+  }
+  if (!audience.length) return { key: opts.key, audience: 0, sent: [] };
+  // Claim before sending: only rows this call inserted are ours to send.
+  const claimed: { recipient: string }[] = await svcWrite(
+    "POST", "/pms_announcement_sends?on_conflict=key,recipient",
+    audience.map((recipient) => ({ key: opts.key, recipient })),
+    "resolution=ignore-duplicates,return=representation",
+  );
+  const html = a.html(today);
+  const sent: string[] = [];
+  const failed: { email: string; error: string }[] = [];
+  for (const c of claimed) {
+    let error: string | null = null;
+    try { await sendEmail(c.recipient, a.subject, html); sent.push(c.recipient); }
+    catch (e: any) { error = String(e?.message || e).slice(0, 500); failed.push({ email: c.recipient, error }); }
+    // A failed send gives its claim back, so calling the route again retries just that person.
+    const row = `/pms_announcement_sends?key=eq.${encodeURIComponent(opts.key)}&recipient=eq.${encodeURIComponent(c.recipient)}`;
+    await (error ? svcWrite("DELETE", row, undefined, "return=minimal")
+                 : svcWrite("PATCH", row, { sent_at: new Date().toISOString() }, "return=minimal"))
+      .catch((e) => console.warn("announce: send not recorded:", e?.message || e));
+    await new Promise((r) => setTimeout(r, 600));       // stay under Resend's per-second limit
+  }
+  if (failed.length) console.error("announce: send failed:", JSON.stringify(failed));
+  return { key: opts.key, audience: audience.length, sent, alreadySent: audience.length - claimed.length, failed,
+           note: failed.length ? "Call again to retry the failed ones; nobody already sent to is emailed twice." : undefined };
+}
+
 // ── Router ───────────────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
@@ -841,7 +936,19 @@ Deno.serve(async (req) => {
       }
       return json(await runAccoladeNotice(await req.json().catch(() => ({})), { dryRun }));
     }
-    return json({ error: "Unknown route", routes: ["POST /welcome", "POST /digest", "POST /cron-alert", "POST /accolade-notify"] }, 404);
+    if (req.method === "POST" && path.endsWith("/announce")) {
+      const url = new URL(req.url);
+      if (!(await cronKeyValid(req)) && !(await callerIsAdmin(req))) {
+        return json({ error: "Not authorized (cron key or admin JWT required)" }, 403);
+      }
+      const out = await runAnnounce({
+        key: url.searchParams.get("key") || "",
+        dryRun: url.searchParams.get("dryRun") === "1",
+        only: url.searchParams.get("only"),
+      });
+      return json(out, "error" in out ? 400 : 200);
+    }
+    return json({ error: "Unknown route", routes: ["POST /welcome", "POST /digest", "POST /cron-alert", "POST /accolade-notify", "POST /announce"] }, 404);
   } catch (e: any) {
     console.error("pms-user-emails failed:", e);
     return json({ error: e?.message || String(e) }, 500);

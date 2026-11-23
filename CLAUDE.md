@@ -140,6 +140,12 @@ browser (PMS pages) or from the connector (app permissions).
   `unsubscribe`). PR previews build the same functions (the "Supabase
   Preview" check). Working since 2026-11-20: PR #533 merged at 17:05:31 UTC
   and all four functions redeployed at 17:06:15.
+- One-off announcement emails: `pms-user-emails/announce?key=<name>`. The text
+  lives in `ANNOUNCEMENTS` in that function (nothing is passed in), and it goes
+  only to `pms_announce_audience()`: on the roster, signed in at least once,
+  weekly digest on. `?dryRun=1` lists who would get it; `?only=a@setty.com`
+  sends one unrecorded test copy; each person gets a given key once
+  (`pms_announcement_sends`).
 - **That path has no health check.** After merging a change to `pms-mcp`,
   confirm
   `https://khxmgjilwhdguuepbhne.supabase.co/functions/v1/pms-mcp/health`
