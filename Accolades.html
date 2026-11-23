@@ -1027,10 +1027,12 @@ function trophy() {
 // bottom, then next time a plane tows the banner across the top.
 let newsTurn = 0;
 // The plane's banner also carries the accolade itself: what was said and who said it.
-function flyby(msg, row) {
+// opts.plane sends the plane whatever's turn it is; opts.detail is a second line
+// that is not a quote. Returns whether anything took off (false while one is crossing).
+function flyby(msg, row, opts) {
   const d = $("duck"), p = $("plane");
-  if (reduced || d.classList.contains("go") || p.classList.contains("go")) return;
-  if (newsTurn++ % 2) {
+  if (reduced || d.classList.contains("go") || p.classList.contains("go")) return false;
+  if ((opts && opts.plane) || newsTurn++ % 2) {
     const b = $("planeMsg"); b.textContent = msg;
     let q = row ? String(row.quote || "").replace(/\s+/g, " ").trim() : "";
     if (q) {
@@ -1038,6 +1040,7 @@ function flyby(msg, row) {
       const who = row.kind === "internal" ? (row.created_by_name || row.from_name) : [row.from_name, row.from_company].filter(Boolean).join(", ");
       b.appendChild(h("span", { class: "q", text: "\u201C" + q + "\u201D" + (who ? " \u2014 " + who : "") }));
     }
+    if (opts && opts.detail) b.appendChild(h("span", { class: "q", text: opts.detail }));
     // more to read, slower pass
     p.style.setProperty("--flight", (11 + b.textContent.length / 16).toFixed(1) + "s");
     p.hidden = false; restart(p, "go"); sfx.prop();
@@ -1045,12 +1048,28 @@ function flyby(msg, row) {
     $("duckMsg").textContent = "QUACK! " + msg;
     d.hidden = false; restart(d, "go"); sfx.quack();
   }
+  return true;
+}
+// Three sevens on the daily spin is news for the whole firm, and it is the
+// plane's job. If something is already crossing, it waits its turn.
+const hitJackpot = (st) => A.pitPoints(st.email, st.stop_date) >= A.JACKPOT_POINTS;
+const stopKey = (st) => lower(st.email) + "|" + String(st.stop_date).slice(0, 10);
+function jackpotNews(st, tries) {
+  if (reduced) return;
+  const k = lower(st.email), who = k === me ? "You" : (nameOf[k] || k.split("@")[0]);
+  const up = flyby("\u{1F3B0} Jackpot! " + who + " hit three sevens", null, { plane: true, detail: "+" + A.JACKPOT_POINTS + " points on the daily spin. Have you pulled the lever today?" });
+  if (up) { sfx.bell(); tubeWild(); }
+  else if ((tries || 0) < 15) setTimeout(() => jackpotNews(st, (tries || 0) + 1), 4000);
 }
 for (const id of ["duck", "plane"]) $(id).addEventListener("animationend", (ev) => { if (ev.target === $(id)) { $(id).classList.remove("go"); $(id).hidden = true; } });
 on($("duck"), () => { sfx.quack(); burst($("duck"), "\u2728", 8); });
 on($("plane"), () => { sfx.prop(); burst($("plane"), "\u2728", 8); });
 function duckNews() {
-  if (document.hidden || !rows.length) return;
+  if (document.hidden) return;
+  // a jackpot hit today stays in the news for the rest of the day
+  const jp = stops.filter((st) => String(st.stop_date).slice(0, 10) === today() && hitJackpot(st));
+  if (jp.length && (!rows.length || Math.random() < .4)) { jackpotNews(jp[Math.floor(Math.random() * jp.length)], 99); return; }
+  if (!rows.length) return;
   const pool = rows.slice(0, 6), r = pool[Math.floor(Math.random() * pool.length)];
   flyby("Kudos to " + (r.recipients || ["the team"])[0], r);
 }
@@ -1734,6 +1753,7 @@ async function finishSpin() {
   if (pts >= 20) {            // three sevens: everything the page has, twice
     confetti(); setTimeout(confetti, 900); trophy(); tubeWild();
     sfx.bell(); sfx.coins(24); setTimeout(() => sfx.tada(), 1300);
+    setTimeout(() => jackpotNews({ email: me, stop_date: day }), 3500);
   } else if (pts === 3) { confetti(); sfx.tada(); sfx.coins(9); }
   else if (pts > 0) { sfx.ding(); sfx.coins(pts * 3); } else sfx.womp();
   fillTray(pts, true);
@@ -2140,11 +2160,13 @@ function markNew() {
 }
 async function refresh() {
   if (document.hidden) return;
-  const seen = new Set(rows.map((r) => r.id));
+  const seen = new Set(rows.map((r) => r.id)), seenStops = new Set(stops.map(stopKey));
   try { await Promise.all([loadRows(), loadCheers(), loadPlays(), loadSettings(), loadCars(), loadStops()]); renderAll(); } catch (_) { return; }
   // someone else logged one while this page was open
   const fresh = rows.filter((r) => !seen.has(r.id));
   if (fresh.length) { for (const r of fresh) newIds.add(r.id); renderAll(); tubeWild(); kick(); flyby("Kudos to " + (fresh[0].recipients || ["the team"])[0], fresh[0]); }
+  // someone else hit the jackpot while this page was open
+  for (const st of stops) if (!seenStops.has(stopKey(st)) && lower(st.email) !== me && hitJackpot(st)) jackpotNews(st);
 }
 
 let booted = false;
