@@ -1,6 +1,12 @@
 # Proposal: OneNote page import into PMS notes
 
-Status: scoping only. Nothing here is built.
+Status: the IMPORT described here is still not built. Since 2026-11-23 the
+connector can READ a notebook without it: `read_document` opens a section file
+(`.one`) straight from SharePoint and returns its pages (`oneNoteSection.ts`,
+README "OneNote sections"), and `search_notes` lists a project's sections. That
+covers "Claude cannot see what is in the notebook". What this proposal would
+still add is notes that live in `project.notes[]` and so appear in the PMS
+Notes tab and in `search_notes` keyword search.
 
 ## Problem
 

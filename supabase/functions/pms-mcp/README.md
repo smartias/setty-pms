@@ -930,6 +930,43 @@ on its own.
   A project already in the PMS keeps its PMS name; discovery never writes to
   `pms_projects` rows that exist.
 
+## OneNote sections (`read_document` on a `.one` file, 2026-11-23)
+
+Graph's OneNote API refuses app-only tokens (retired March 2025), so the
+connector cannot ask for a page's content. It reads the section FILE instead: a
+notebook on a SharePoint site is a folder of ordinary files, one `.one` per
+section, under `Notebooks/<number> — <name>/` in the site's Documents library.
+`oneNoteSection.ts` parses that file (the packaged MS-ONESTORE / MS-FSSHTTPB
+layout SharePoint stores) and returns each page's title, creation time and text.
+
+- **Finding a notebook.** `search_notes` with a `projectNumber` adds
+  `oneNoteSections` (section name, `itemId`, size) when a notebook folder
+  starting with the project's number exists. A notebook kept elsewhere (a Teams
+  channel's notebook, someone's OneDrive) is not found; its section file can
+  still be read by `itemId` if the connector can reach the drive.
+- **Reading.** `read_document` on a section returns `pageIndex` (every page) and
+  page text up to the usual 50,000 characters; `pages:'4-9'` and
+  `find:'keyword'` select pages, and `nextPages` says what to ask for next.
+- **Size does not matter.** The file is read in byte ranges and pictures,
+  printouts and attached files are jumped over: a 350MB section costs about 80
+  range requests and 24MB. The 25MB/60MB `read_document` limits do not apply.
+- **What is and is not read.** Typed and pasted text, tables, and the text
+  OneNote itself recognised in a picture or a printed PDF sheet (marked
+  `[text in image: <file>]`; it is OneNote's recognition and can be partial).
+  A picture of real size with no recognised text is marked `not read` and
+  counted (`imagesNotRead`). Attached files are named, not opened. Ink,
+  version history and conflict copies are not read.
+- **Visibility.** A section is gated on the project its notebook folder names
+  (`oneNoteNotebookFolder`), like the project's own folder.
+- **Not handled.** The desktop "revision store" layout of `.one` (a section
+  saved to a local disk by OneNote 2016); the error says so. Keyword search
+  ACROSS sections: `find` works inside one section per call. Nothing is cached
+  between isolates, so each call re-reads the section's object data.
+
+Tests: `oneNoteSection.test.mjs` builds a section byte by byte (no real notebook
+is in the repo). The parser was checked against three real sections of 22MB,
+81MB and 350MB on 2026-11-23.
+
 ## Raw file access (`download_document` / `upload_document`, 1.19.0)
 
 Every tool result is text on the way into the model, so `read_document` on an

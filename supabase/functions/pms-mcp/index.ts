@@ -74,6 +74,7 @@ import { cleanChecklistResults, checklistCountsLine, QA_CHECKLIST_RESULTS_MAX, Q
 import { isBackgroundPath, BACKGROUND_NOTE } from "./drawingTier.ts";
 // Reading a large PDF in byte ranges instead of downloading it whole. See its tests.
 import { retryingRange, httpRange, openRangedPdf, type RangedPdf } from "./pdfRanged.ts";
+import { readOneNoteSection, oneNoteReadResult, oneNoteNotebookFolder, type OneNoteSection } from "./oneNoteSection.ts";
 // Why an RFI was asked and which QA check would have caught it. Pure; see its tests.
 import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses } from "./rfiRootCause.ts";
 import { isIssuedSetRow, notASetReason } from "./issuedSet.ts";
@@ -1170,8 +1171,12 @@ function sharePointItemTopFolder(meta: any): string {
   // sharePointDriveIsKnownLibrary check entirely (Codex review on #294, P1).
   return path.endsWith("/root:") && meta?.folder ? String(meta?.name || "") : "";
 }
+// A project's OneNote notebook is a folder one level down, in the site's
+// Notebooks folder: "Notebooks/<number> — <name>/<section>.one". The project
+// number is therefore in the SECOND path segment, and a notebook is gated on
+// its project exactly as the project's own folder is.
 async function sharePointItemVisible(drive: string, meta: any): Promise<{ ok: true } | { ok: false; res: any }> {
-  const num = projectNumberOfFolder(sharePointItemTopFolder(meta));
+  const num = projectNumberOfFolder(sharePointItemTopFolder(meta)) || projectNumberOfFolder(oneNoteNotebookFolder(meta?.parentReference?.path || ""));
   if (!num) return (await sharePointDriveIsKnownLibrary(drive)) ? { ok: true } : spItemNotFound();
   if (!(await projectRefVisible(num))) return spItemNotFound();
   return { ok: true };
@@ -1458,7 +1463,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-21-offsite-backup-uploads";
+const BUILD = "2026-11-23-onenote-section-read";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3403,6 +3408,7 @@ const HOW_TO_USE_TOPICS: Record<string, { title: string; summary: string; prompt
     { ask: "Summarize the last two weeks of email on SAPX239010.00", note: "Full bodies, newest first." },
     { ask: "Find the email where the owner approved the chiller substitution", note: "Subject, sender, body and attachment names." },
     { ask: "What did we agree with the architect at the last site meeting on the UMD Thrive Center?", note: "Meeting notes and action items, with the OneNote link." },
+    { ask: "What is in the OneNote notebook for the MTA 149th and Tremont project? Read the correspondence section.", note: "Lists the notebook's sections and reads their pages, including text OneNote recognised in printed PDFs." },
     { ask: "File minutes for today's coordination meeting on SAPX256014.00. Here is my voice memo: ...", note: "Claude drafts the minutes; once you approve, decisions and action items are filed to the project and what others owe you goes on your follow-up list." },
   ]},
   people: { title: "People and firms", summary: "About 2,600 outside contacts and the staff roster.", prompts: [
@@ -3708,7 +3714,10 @@ mcp.tool("search_notes", {
   description:
     "Search project / meeting notes captured to OneNote (site visits, client meetings, calls) " +
     "plus logged action items. Returns text, author, date, OneNote link. Long notes truncated — " +
-    "use read_note for the full text.",
+    "use read_note for the full text. These are the notes saved through the PMS Notes tab. Pages written " +
+    "directly in the project's OneNote notebook (pasted emails, letters, printouts) are NOT in this search: " +
+    "with a projectNumber the result also lists the notebook's sections as oneNoteSections, and " +
+    "read_document on a section's itemId returns its pages (find:'keyword' searches inside one section).",
   inputSchema: z.object({
     query: z.string().optional().describe("Keywords in the note text (also matches category and author). Omit to list recent notes."),
     projectNumber: z.string().optional().describe("Scope to one project (number, id, or name)"),
@@ -3741,7 +3750,22 @@ mcp.tool("search_notes", {
       }
     }
     out.sort((a, b) => String(b.date ?? "").localeCompare(String(a.date ?? "")));
-    return asText({ count: out.length, returned: Math.min(out.length, lim), notes: out.slice(0, lim) });
+    // The project's own notebook, when it has one on the site: its pages are
+    // not in `notes`, so say where they are instead of answering "0 notes".
+    let notebook: Record<string, unknown> = {};
+    const one = pid ? projects[0] : null;
+    if (one?.projectNumber) {
+      try {
+        const sections = await projectOneNoteSections(String(one.projectNumber));
+        if (sections.length) notebook = {
+          oneNoteSections: sections,
+          oneNoteNote: "This project has a OneNote notebook whose pages are not included in `notes` and were not searched by `query`. Read a section with read_document (itemId from oneNoteSections): it returns the section's page list and text, and find:'keyword' returns the pages that contain a term.",
+        };
+      } catch (e) {
+        notebook = { oneNoteSectionsError: "Could not look for this project's OneNote notebook: " + String((e as any)?.message ?? e).slice(0, 200) };
+      }
+    }
+    return asText({ count: out.length, returned: Math.min(out.length, lim), notes: out.slice(0, lim), ...notebook });
   },
 });
 
@@ -5307,8 +5331,11 @@ mcp.tool("read_document", {
   description:
     "Extract the text of one document by its itemId from list_project_documents — a SharePoint item, or a file on a " +
     "region's network-drive share (ids starting 'az:'). " +
-    "Handles PDF, Word (.docx), Excel (.xlsx/.xls — each sheet rendered as rows), and " +
-    "plain-text/HTML/CSV. For LARGE PDFs (spec books / project manuals) extraction is " +
+    "Handles PDF, Word (.docx), Excel (.xlsx/.xls — each sheet rendered as rows), " +
+    "plain-text/HTML/CSV, and OneNote section files (.one, any size: returns a pageIndex of every page in the " +
+    "section plus page text; pages:'4-9' reads those pages, find:'keyword' the pages that contain it; text " +
+    "OneNote recognised in a printed PDF or picture is included and marked [text in image]; a project's sections " +
+    "are listed by search_notes as oneNoteSections). For LARGE PDFs (spec books / project manuals) extraction is " +
     "page-bounded from page 1 — pass find:'keyword' (e.g. a spec section '15230') to jump to " +
     "the page(s) containing it, or pages:'120-140' for a range (the result reports totalPages). " +
     "MEETING MINUTES and DRAWING REVIEW COMMENTS/RESPONSES are HIGH-VALUE. Any file whose NAME contains " +
@@ -5324,8 +5351,8 @@ mcp.tool("read_document", {
     "to write an edited file back into the project record, upload_document.",
   inputSchema: z.object({
     itemId: z.string().describe("Item id from list_project_documents: a SharePoint 'driveId|itemId' composite, or an 'az:TEAM.SHARE:path' id for a file on one of the region's network-drive shares"),
-    find: z.string().optional().describe("PDF only: jump to the page(s) whose text contains this keyword/phrase (case-insensitive), e.g. a spec section number '15230' or a term like 'DIRECT-BURIED'. The best way to reach a specific section of a large manual."),
-    pages: z.string().optional().describe("PDF only: extract an explicit page range, e.g. '120-140' or '75'. Use after seeing totalPages, or to read around a find hit."),
+    find: z.string().optional().describe("PDF (and OneNote section: returns the pages whose title or text contains it): jump to the page(s) whose text contains this keyword/phrase (case-insensitive), e.g. a spec section number '15230' or a term like 'DIRECT-BURIED'. The best way to reach a specific section of a large manual."),
+    pages: z.string().optional().describe("PDF (and OneNote section, where '2,5-7' also works): extract an explicit page range, e.g. '120-140' or '75'. Use after seeing totalPages, or to read around a find hit."),
   }),
   handler: async ({ itemId, find, pages }) => {
     try {
@@ -5368,6 +5395,17 @@ mcp.tool("read_document", {
         name = meta.name || "";
         const size = meta.size ?? 0;
         base = { itemId, name, size, webUrl: meta.webUrl };
+        // A OneNote section is read in byte ranges, whatever its size: its
+        // text is a few MB even when its printouts make the file 300MB.
+        if (extOf(name) === "one") {
+          try {
+            const section = await oneNoteSectionOf(itemId, `${size}:${meta.file?.hashes?.quickXorHash || ""}`);
+            return asText({ ...base, ...oneNoteReadResult(section, { find, pages, maxChars: MAX_DOC_CHARS }) });
+          } catch (e) {
+            return asText({ ...base, error: String((e as any)?.message ?? e), nextStep: "Open the section in OneNote through webUrl. If it has to be read here, export the section from OneNote to PDF or Word and file that in the project." });
+          }
+        }
+        if (extOf(name) === "onetoc2") return asText({ ...base, note: "This is a OneNote notebook's table of contents, which holds no pages. The pages are in the .one files beside it, one per section: read those (search_notes with the projectNumber lists them)." });
         if (size > readDocMaxBytes(name)) return asText({ ...base, note: `File too large to extract inline (over ${readDocMaxBytes(name) / 1048576}MB) — open via webUrl, or download_document for the bytes.` });
         pdfCacheKey = drive + "|" + realId;
         pdfBytes = extOf(name) === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
@@ -9206,6 +9244,64 @@ async function rangedPdfSource(itemId: string): Promise<{ size: number; fetchRan
       direct ? httpRange(direct, b, e, signal)
              : httpRange(contentUrl, b, e, signal, { Authorization: "Bearer " + (await graphToken()) })),
   };
+}
+
+// ── OneNote sections ────────────────────────────────────────────────────────
+// Graph's OneNote API refuses app-only tokens (retired March 2025), so page
+// content is read from the section FILE instead (oneNoteSection.ts). A parsed
+// section is kept for the life of the isolate, keyed by the file's size and
+// content hash, so paging through one section parses it once when the
+// isolate survives between calls.
+const _oneNoteSections = new Map<string, { stamp: string; section: OneNoteSection }>();
+async function oneNoteSectionOf(itemId: string, stamp: string): Promise<OneNoteSection> {
+  const hit = _oneNoteSections.get(itemId);
+  if (hit && hit.stamp === stamp) return hit.section;
+  const src = await rangedPdfSource(itemId);
+  const section = await readOneNoteSection(src.size, src.fetchRange);
+  _oneNoteSections.delete(itemId);
+  _oneNoteSections.set(itemId, { stamp, section });
+  while (_oneNoteSections.size > 6) _oneNoteSections.delete(_oneNoteSections.keys().next().value as string);
+  return section;
+}
+// The section files of a project's notebook: the folder named by the project
+// number in the Notebooks folder of the region's "Documents" library, where
+// notebooks made on the site live. One level of section groups (subfolders) is
+// followed. A notebook kept anywhere else (a Teams channel's notebook, a
+// personal OneDrive) is not found here.
+async function projectOneNoteSections(projectNumber: string): Promise<Array<{ section: string; itemId: string; sizeMB: number; modified: string | null; group?: string }>> {
+  const drives = await siteDrives(await teamForProject(projectNumber));
+  const out: Array<{ section: string; itemId: string; sizeMB: number; modified: string | null; group?: string }> = [];
+  const children = async (driveId: string, path: string): Promise<any[]> => {
+    const all: any[] = [];
+    let url = `/drives/${driveId}/${path}/children?$select=id,name,size,folder,file,lastModifiedDateTime&$top=200`;
+    while (url) {
+      const page = await graphGet(url);
+      all.push(...(page.value || []));
+      const next = page["@odata.nextLink"];
+      url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
+    }
+    return all;
+  };
+  // Every library is asked at once; a library with no Notebooks folder
+  // answers 404, which is not an error here.
+  const perDrive = await Promise.all(drives.map(async (dr) => {
+    try { return { dr, folders: await children(dr.id, "root:/Notebooks:") }; }
+    catch (e) { if (/Graph 404/.test(String((e as any)?.message ?? e))) return { dr, folders: [] as any[] }; throw e; }
+  }));
+  for (const { dr, folders } of perDrive) {
+    for (const nb of folders) {
+      if (!nb.folder || !numberPrefixMatches(nb.name, projectNumber.toLowerCase().trim())) continue;
+      const add = (it: any, group?: string) => {
+        if (!it.file || !/\.one$/i.test(it.name || "")) return;
+        out.push({ section: String(it.name).replace(/\.one$/i, ""), itemId: dr.id + "|" + it.id, sizeMB: Math.round(((it.size ?? 0) / 1048576) * 10) / 10, modified: it.lastModifiedDateTime || null, ...(group ? { group } : {}) });
+      };
+      for (const it of await children(dr.id, `items/${nb.id}`)) {
+        if (it.folder && !/^OneNote_RecycleBin/i.test(it.name || "")) for (const sub of await children(dr.id, `items/${it.id}`)) add(sub, it.name);
+        else add(it);
+      }
+    }
+  }
+  return out;
 }
 
 async function loadPdfBytes(itemId: string, maxBytes: number, opts: { cache?: boolean } = {}): Promise<Uint8Array> {
