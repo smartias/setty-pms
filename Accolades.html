@@ -918,7 +918,8 @@ const sfx = {
   tada() { [523, 659, 784, 1047].forEach((f, i) => tone(f, .16, "triangle", i * .09)); },
   pop() { tone(700, .08, "triangle", 0, 1100); },
   vroom() { tone(90, .7, "sawtooth", 0, 260); },
-  prop() { tone(120, 1.1, "sawtooth", 0, 170); tone(124, 1.1, "square", 0, 176); },
+  // a propeller plane going past: the drone climbs as it comes in, then drops away
+  prop() { tone(105, 1.2, "sawtooth", 0, 165); tone(109, 1.2, "square", 0, 171); tone(165, 1.5, "sawtooth", 1.15, 85); tone(171, 1.5, "square", 1.15, 89); },
 };
 function syncSoundBtn() { $("soundBtn").textContent = "Sound: " + (soundOn ? "on" : "off"); $("soundBtn").setAttribute("aria-pressed", String(soundOn)); }
 on($("soundBtn"), () => {
