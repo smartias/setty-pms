@@ -281,7 +281,7 @@ test("approving an email suggestion earns no spotter credit", () => {
   assert.equal(pts["bo@setty.com"], 2 * POINTS.recognized);      // the person praised still scores both
 });
 
-import { pitPoints, dailyNudge, NUDGES, slotReels, slotPays, SLOT_SYMBOLS, SLOT_LEMON, isCustomRide, STOCK_RIDE as STOCK } from "./accolades.js";
+import { pitPoints, dailyNudge, NUDGES, slotReels, slotPays, SLOT_SYMBOLS, SLOT_LEMON, SLOT_SEVEN, JACKPOT_POINTS, JACKPOT_ODDS, JACKPOT_FROM, isCustomRide, STOCK_RIDE as STOCK } from "./accolades.js";
 
 test("a daily spin pays 0 to 3, fixed for a person and day, and some days are lemons", () => {
   const seen = { 0: 0, 1: 0, 2: 0, 3: 0 };
@@ -292,6 +292,31 @@ test("a daily spin pays 0 to 3, fixed for a person and day, and some days are le
     seen[v]++;
   }
   assert.ok(seen[0] > 0 && seen[1] > 0 && seen[2] > 0 && seen[3] > 0 && seen[3] < seen[1], JSON.stringify(seen));
+});
+
+test("the jackpot is rare, pays 20 on three sevens, and never reaches back before it started", () => {
+  assert.equal(JACKPOT_POINTS, 20);
+  assert.equal(slotPays([SLOT_SEVEN, SLOT_SEVEN, SLOT_SEVEN]), 20);
+  assert.equal(slotPays([SLOT_SEVEN, SLOT_SEVEN, 2]), 2);                 // two sevens is only a pair
+  assert.equal(slotPays([SLOT_SEVEN, SLOT_SEVEN, SLOT_LEMON]), 0);
+  let hits = 0, pulls = 0;
+  for (let i = 0; i < 400; i++) for (let d = 1; d <= 28; d++) {
+    const who = "p" + i + "@setty.com", day = "2027-02-" + String(d).padStart(2, "0"), pts = pitPoints(who, day), reels = slotReels(who, day);
+    pulls++;
+    assert.ok([0, 1, 2, 3, 20].includes(pts));
+    assert.equal(slotPays(reels), pts, who + " " + day + " " + reels);
+    if (pts === 20) { hits++; assert.deepEqual(reels, [SLOT_SEVEN, SLOT_SEVEN, SLOT_SEVEN]); }
+    else assert.notDeepEqual(reels, [SLOT_SEVEN, SLOT_SEVEN, SLOT_SEVEN]);
+  }
+  // about one pull in JACKPOT_ODDS: 11,200 pulls should give roughly 56
+  assert.ok(hits > pulls / JACKPOT_ODDS / 2 && hits < pulls / JACKPOT_ODDS * 2, hits + " jackpots in " + pulls);
+  // before the start date: no jackpot and no seven on any reel, so old days pay and look as they did
+  assert.equal(JACKPOT_FROM, "2026-11-24");
+  for (let i = 0; i < 400; i++) for (const day of ["2026-10-05", "2026-11-11", "2026-11-23"]) {
+    const who = "p" + i + "@setty.com";
+    assert.ok(pitPoints(who, day) <= 3);
+    assert.ok(!slotReels(who, day).includes(SLOT_SEVEN));
+  }
 });
 
 test("pit stops add to the season and to past podiums", () => {

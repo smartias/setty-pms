@@ -10,7 +10,7 @@
 
 // Bump this, and the ?v= on the import in Accolades.html, on every change to
 // this file. The page compares the two to spot a stale cached copy.
-export const VERSION = "2026-11-11-14";
+export const VERSION = "2026-11-23-15";
 
 export function parseDay(str) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(str || ""));
@@ -523,32 +523,50 @@ export function packGrid(standings, meKey, top, around, lapPoints) {
 // A second reason to look in each day: one pull of a fruit machine. What a pull
 // pays is worked out from who and when, never stored or sent by the browser, so
 // the amount cannot be chosen. About one day in four is a lemon and pays
-// nothing; a jackpot is about one in ten. Small on purpose: being recognized
-// is worth 10.
+// nothing; three of a kind is about one in ten. Small on purpose: being
+// recognized is worth 10.
+//
+// The jackpot (three sevens) is the exception: JACKPOT_POINTS, on about one
+// pull in JACKPOT_ODDS. It has its own roll and exists only from JACKPOT_FROM
+// on. Points are never stored, they are worked out again from who and when on
+// every page load, so anything that changed what an earlier day paid would
+// move the standings of a season already under way. Do not move JACKPOT_FROM
+// back, and do not change JACKPOT_ODDS without also starting a new date.
+export const JACKPOT_POINTS = 20, JACKPOT_ODDS = 200, JACKPOT_FROM = "2026-11-24";
+const jackpotDay = (day) => String(day || "").slice(0, 10) >= JACKPOT_FROM;
 export function pitPoints(email, day) {
-  const roll = seedFrom("pit:" + String(email || "").trim().toLowerCase() + ":" + String(day || "").slice(0, 10)) % 20;
+  const who = String(email || "").trim().toLowerCase(), d = String(day || "").slice(0, 10);
+  if (jackpotDay(d) && seedFrom("jackpot:" + who + ":" + d) % JACKPOT_ODDS === 0) return JACKPOT_POINTS;
+  const roll = seedFrom("pit:" + who + ":" + d) % 20;
   return roll >= 18 ? 3 : roll >= 12 ? 2 : roll >= 5 ? 1 : 0;
 }
 
 // Where the three reels land for that person and day, as indexes into
 // SLOT_SYMBOLS. The reels always agree with pitPoints, by the machine's rules:
 //   any lemon          0   (and every 0 shows at least one lemon)
+//   three sevens       20  (the jackpot)
 //   three of a kind    3
 //   a pair             2
 //   a cherry           1   (no pair, no lemon)
-export const SLOT_SYMBOLS = ["\u{1F352}", "\u{1F34B}", "\u{1F514}", "\u{1F48E}", "\u{1F340}", "\u2B50"];
-export const SLOT_CHERRY = 0, SLOT_LEMON = 1;
+// The seven is last on purpose: days before JACKPOT_FROM draw from the first
+// six symbols only, so their reels land where they always did. From then on a
+// seven can turn up anywhere (two of them is a pair like any other, and a good
+// tease), but three in a row only ever means the jackpot.
+export const SLOT_SYMBOLS = ["\u{1F352}", "\u{1F34B}", "\u{1F514}", "\u{1F48E}", "\u{1F340}", "\u2B50", "7"];   // the page draws the 7 as a fat red one
+export const SLOT_CHERRY = 0, SLOT_LEMON = 1, SLOT_SEVEN = 6;
 export function slotPays(reels) {
   if (reels.includes(SLOT_LEMON)) return 0;
   const kinds = new Set(reels).size;
-  return kinds === 1 ? 3 : kinds === 2 ? 2 : reels.includes(SLOT_CHERRY) ? 1 : 0;
+  if (kinds === 1) return reels[0] === SLOT_SEVEN ? JACKPOT_POINTS : 3;
+  return kinds === 2 ? 2 : reels.includes(SLOT_CHERRY) ? 1 : 0;
 }
 export function slotReels(email, day) {
-  const pts = pitPoints(email, day), n = SLOT_SYMBOLS.length;
+  const pts = pitPoints(email, day), n = jackpotDay(day) ? SLOT_SYMBOLS.length : SLOT_SEVEN;
+  if (pts === JACKPOT_POINTS) return [SLOT_SEVEN, SLOT_SEVEN, SLOT_SEVEN];
   const rand = rng(seedFrom("reels:" + String(email || "").trim().toLowerCase() + ":" + String(day || "").slice(0, 10)));
   const pick = (skip) => { const pool = [...Array(n).keys()].filter((i) => !skip.includes(i)); return pool[Math.floor(rand() * pool.length)]; };
   const place = (vals) => { const at = Math.floor(rand() * 3); return [0, 1, 2].map((i) => vals[(i + at) % 3]); };
-  if (pts === 3) { const a = pick([SLOT_LEMON]); return [a, a, a]; }
+  if (pts === 3) { const a = pick([SLOT_LEMON, SLOT_SEVEN]); return [a, a, a]; }
   if (pts === 2) { const a = pick([SLOT_LEMON]); return place([a, a, pick([SLOT_LEMON, a])]); }
   if (pts === 1) { const a = pick([SLOT_LEMON, SLOT_CHERRY]); return place([SLOT_CHERRY, a, pick([SLOT_LEMON, SLOT_CHERRY, a])]); }
   return place([SLOT_LEMON, pick([]), pick([])]);                       // lemons may turn up more than once
