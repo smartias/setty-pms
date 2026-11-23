@@ -1,6 +1,6 @@
 // pms-user-emails — Supabase Edge Function.
 //
-// Three routes, all sending via Resend:
+// Four routes, all sending via Resend:
 //   POST /welcome  — admin-only (JWT checked against my_pms_role). Called by
 //                    the Admin Console right after a user is added to
 //                    pms_user_roles. Sends the "you've been added" email.
@@ -23,6 +23,15 @@
 //                    all is well. Admin JWT for testing: ?dryRun=1 reports and
 //                    sends nothing. See migration
 //                    20261120100000_cron_failure_alerts.sql.
+//   POST /accolade-notify — the instant "you were recognized" and "someone
+//                    sent you a gift" emails from the Accolade-O-Meter. Called
+//                    by database triggers on pms_accolades and
+//                    pms_accolade_cheers (x-pms-cron key) with
+//                    {kind: "accolade"|"gift", accolade_id, giver?}. Goes to
+//                    the @setty.com people the accolade names, once each
+//                    (pms_accolade_notices). Admin JWT for testing: ?dryRun=1
+//                    reports who would be emailed and sends nothing. See
+//                    migration 20261123100000_pms_accolade_instant_emails.sql.
 //
 // Digest item rules ported from the never-deployed weekly-digest draft
 // (confirmed by Sara 2026-05-29): RFI open = status "Open"; submittal open =
@@ -634,6 +643,145 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
   };
 }
 
+// ── /accolade-notify ─────────────────────────────────────────────────────────
+// Same six gifts as GIFTS in Accolades.html and the check constraint on
+// pms_accolade_cheers.gift.
+const GIFT_WORDS: Record<string, [string, string]> = {
+  clap: ["👏", "a round of applause"], flowers: ["💐", "flowers"], trophy: ["🏆", "a trophy"],
+  coffee: ["☕", "a coffee"], cake: ["🍰", "cake"], highfive: ["🙌", "a high five"],
+};
+const SETTY_EMAIL = /^[^@\s]+@setty\.com$/i;
+const lc = (s: unknown) => String(s || "").toLowerCase().trim();
+// "jane.doe@setty.com" -> "Jane Doe", for when the roster has no display name.
+const nameFromEmail = (email: string) =>
+  email.split("@")[0].split(/[._-]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
+
+async function svcWrite(method: string, path: string, body: unknown, prefer: string): Promise<any> {
+  const res = await fetch(SUPABASE_URL + "/rest/v1" + path, {
+    method,
+    headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json", Prefer: prefer },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`REST ${method} ${path} → ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return prefer.includes("return=representation") ? res.json() : null;
+}
+
+type Accolade = Kudo & { id: number; recipients: string[]; recipient_emails: string[]; created_by: string; created_at: string };
+
+function accoladeNoticeHtml(a: Accolade, o: { headline: string; lead: string; said: string }, today: Date): string {
+  const q = String(a.quote || "").trim();
+  const proj = [a.project_number, a.project_name].filter(Boolean).join(" ");
+  const others = (a.recipients || []).length > 1 ? `Recognized together: ${(a.recipients || []).join(", ")}.` : "";
+  return shell(o.headline, `
+    <div style="font-size:9pt;color:#047857;font-weight:700;letter-spacing:2px;text-transform:uppercase">Accolade-O-Meter</div>
+    <div style="font-size:19pt;color:#1F3864;font-weight:700;margin-top:4px">${esc(o.headline)}</div>
+    <div style="font-size:11pt;color:#333;margin-top:10px">${esc(o.lead)}</div>
+    <div style="margin-top:16px;padding:14px 18px;background:#f0f7f4;border-left:4px solid #047857;border-radius:3px">
+      <div style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:13pt;color:#222">“${esc(q.length > 600 ? q.slice(0, 597).trimEnd() + "…" : q)}”</div>
+      <div style="color:#666;font-size:9.5pt;margin-top:8px">— ${esc(o.said)}${proj ? ` · ${esc(proj)}` : ""}</div>
+    </div>
+    ${others ? `<div style="font-size:9.5pt;color:#666;margin-top:10px">${esc(others)}</div>` : ""}
+    <div style="margin-top:22px">
+      <a href="${ACCOLADES_URL}" style="display:inline-block;background:#047857;color:#fff;font-weight:700;font-size:11pt;text-decoration:none;padding:10px 18px;border-radius:5px">See it on the wall →</a>
+    </div>
+    <div style="font-size:10pt;color:#333;margin-top:18px">Pass it on: thanking a teammate takes about twenty seconds, and it moves you both up the season race.</div>
+    <div style="font-size:9pt;color:#999;margin-top:24px">You got this because you were named in an accolade on the Accolade-O-Meter.</div>
+  `, today);
+}
+
+async function runAccoladeNotice(p: { kind?: string; accolade_id?: unknown; giver?: string }, opts: { dryRun: boolean }) {
+  const kind = p?.kind === "gift" ? "gift" : "accolade";
+  const id = Number(p?.accolade_id);
+  if (!Number.isInteger(id) || id <= 0) return { sent: [], skipped: "accolade_id missing" };
+
+  const settings = await svc("/pms_accolade_settings?id=eq.1&select=instant_emails").catch(() => []);
+  if (settings[0] && settings[0].instant_emails === false) return { sent: [], skipped: "instant emails are switched off" };
+
+  const rows: Accolade[] = await svc(
+    `/pms_accolades?id=eq.${id}&removed_at=is.null` +
+    "&select=id,kind,quote,recipients,recipient_emails,from_name,from_company,created_by,created_by_name,created_at,project_number,project_name",
+  );
+  const a = rows[0];
+  if (!a) return { sent: [], skipped: "accolade not found (or taken down)" };
+
+  const creator = lc(a.created_by);
+  const giver = kind === "gift" ? lc(p.giver) : "";
+  const named = [...new Set((a.recipient_emails || []).map(lc))].filter((e) => SETTY_EMAIL.test(e));
+  // nobody is emailed about their own post or their own gift
+  const to = named.filter((e) => e !== (kind === "gift" ? giver : creator));
+  if (!to.length) return { sent: [], skipped: "nobody to tell" };
+
+  const displayName = async (email: string, fallback?: string) => {
+    if (fallback) return fallback;
+    const r = await svc(`/pms_user_roles?email=ilike.${encodeURIComponent(email)}&select=display_name`).catch(() => []);
+    return (r[0] && r[0].display_name) || nameFromEmail(email);
+  };
+  const giftOf = async (email: string) => {
+    const r = await svc(`/pms_accolade_cheers?accolade_id=eq.${id}&email=ilike.${encodeURIComponent(email)}&select=gift,created_at`).catch(() => []);
+    return r[0] as { gift?: string; created_at: string } | undefined;
+  };
+
+  let subject: string, html: string;
+  const today = new Date();
+  if (kind === "gift") {
+    if (!SETTY_EMAIL.test(giver)) return { sent: [], skipped: "giver missing" };
+    const cheer = await giftOf(giver);
+    if (!cheer) return { sent: [], skipped: "gift not found (taken back)" };
+    // A thank-you's own gift is posted seconds after it; the accolade email already carries it.
+    if (giver === creator && a.kind === "internal" &&
+        Math.abs(new Date(cheer.created_at).getTime() - new Date(a.created_at).getTime()) < 120000) {
+      return { sent: [], skipped: "gift rode along with the thank-you" };
+    }
+    const [emoji, word] = GIFT_WORDS[cheer.gift || "clap"] || GIFT_WORDS.clap;
+    const who = await displayName(giver, giver === creator ? a.created_by_name : undefined);
+    const said = a.kind === "internal"
+      ? (a.created_by_name || "A teammate")
+      : [a.from_name, a.from_company].filter(Boolean).join(", ") || "A client";
+    subject = `${emoji} ${who} sent you ${word}`;
+    html = accoladeNoticeHtml(a, { headline: `${emoji} ${who} sent you ${word}`, lead: "For this one:", said }, today);
+  } else if (a.kind === "internal") {
+    // Give the thank-you form a moment to post the gift that goes with it.
+    if (!opts.dryRun) await new Promise((r) => setTimeout(r, 2500));
+    const cheer = await giftOf(creator);
+    const g = cheer ? (GIFT_WORDS[cheer.gift || "clap"] || GIFT_WORDS.clap) : null;
+    const who = await displayName(creator, a.created_by_name);
+    subject = `${g ? g[0] : "🙌"} ${who} sent you a thank-you`;
+    html = accoladeNoticeHtml(a, {
+      headline: `${who} sent you a thank-you`,
+      lead: g ? `It came with ${g[0]} ${g[1]}.` : "A teammate noticed your work.",
+      said: who,
+    }, today);
+  } else {
+    const said = [a.from_name, a.from_company].filter(Boolean).join(", ") || "A client";
+    subject = `🏆 You earned an accolade${a.from_name ? ` from ${a.from_name}` : ""}`;
+    html = accoladeNoticeHtml(a, {
+      headline: "🏆 You earned an accolade",
+      lead: `${a.created_by_name || nameFromEmail(creator)} put it on the wall for the whole firm to see.`,
+      said,
+    }, today);
+  }
+  if (opts.dryRun) return { dryRun: true, kind, accolade_id: id, wouldSend: to, subject, html };
+
+  // Claim before sending: only rows this call inserted are ours to send.
+  const claimed: { id: number; recipient: string }[] = await svcWrite(
+    "POST", "/pms_accolade_notices?on_conflict=accolade_id,kind,giver,recipient",
+    to.map((recipient) => ({ accolade_id: id, kind, giver, recipient })),
+    "resolution=ignore-duplicates,return=representation",
+  );
+  const sent: string[] = [];
+  const failed: { email: string; error: string }[] = [];
+  for (const c of claimed) {
+    let error: string | null = null;
+    try { await sendEmail(c.recipient, subject, html); sent.push(c.recipient); }
+    catch (e: any) { error = String(e?.message || e).slice(0, 500); failed.push({ email: c.recipient, error }); }
+    await svcWrite("PATCH", `/pms_accolade_notices?id=eq.${c.id}`,
+      error ? { error } : { sent_at: new Date().toISOString() }, "return=minimal")
+      .catch((e) => console.warn("accolade-notify: notice not updated:", e?.message || e));
+  }
+  if (failed.length) console.error("accolade-notify: send failed:", JSON.stringify(failed));
+  return { kind, accolade_id: id, sent, alreadyTold: to.filter((e) => !claimed.some((c) => c.recipient === e)), failed };
+}
+
 // ── Router ───────────────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
@@ -684,7 +832,16 @@ Deno.serve(async (req) => {
       }
       return json(await runCronAlert({ dryRun: new URL(req.url).searchParams.get("dryRun") === "1" }));
     }
-    return json({ error: "Unknown route", routes: ["POST /welcome", "POST /digest", "POST /cron-alert"] }, 404);
+    if (req.method === "POST" && path.endsWith("/accolade-notify")) {
+      const dryRun = new URL(req.url).searchParams.get("dryRun") === "1";
+      // The triggers hold the cron key. An admin may only preview: a real send
+      // from a browser would let one person email on another's behalf.
+      if (!(await cronKeyValid(req)) && !(dryRun && (await callerIsAdmin(req)))) {
+        return json({ error: "Not authorized (cron key, or admin JWT with ?dryRun=1)" }, 403);
+      }
+      return json(await runAccoladeNotice(await req.json().catch(() => ({})), { dryRun }));
+    }
+    return json({ error: "Unknown route", routes: ["POST /welcome", "POST /digest", "POST /cron-alert", "POST /accolade-notify"] }, 404);
   } catch (e: any) {
     console.error("pms-user-emails failed:", e);
     return json({ error: e?.message || String(e) }, 500);

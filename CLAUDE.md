@@ -193,3 +193,10 @@ browser (PMS pages) or from the connector (app permissions).
 - Counting rules are in `accolades.js` (`accolades.test.mjs`). The page reaches
   Supabase tables `pms_accolade*`; later migrations are optional for it, and it
   hides the features whose tables or columns are missing.
+- Instant emails: insert triggers on `pms_accolades` and `pms_accolade_cheers`
+  (`pms_accolade_notify()`, pg_net) call `pms-user-emails/accolade-notify`,
+  which emails the @setty.com people an accolade names, once each
+  (`pms_accolade_notices`; its `error` column says why one did not send). Off
+  switch: `update pms_accolade_settings set instant_emails = false`. Turn it
+  off before loading accolades in bulk by SQL. An admin call with `?dryRun=1`
+  and `{"kind":"accolade","accolade_id":N}` previews one and sends nothing.
