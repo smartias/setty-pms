@@ -1463,7 +1463,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-23-onenote-section-read";
+const BUILD = "2026-11-23-onenote-sections-by-record-link";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3754,9 +3754,9 @@ mcp.tool("search_notes", {
     // not in `notes`, so say where they are instead of answering "0 notes".
     let notebook: Record<string, unknown> = {};
     const one = pid ? projects[0] : null;
-    if (one?.projectNumber) {
+    if (one) {
       try {
-        const sections = await projectOneNoteSections(String(one.projectNumber));
+        const sections = await projectOneNoteSections(one);
         if (sections.length) notebook = {
           oneNoteSections: sections,
           oneNoteNote: "This project has a OneNote notebook whose pages are not included in `notes` and were not searched by `query`. Read a section with read_document (itemId from oneNoteSections): it returns the section's page list and text, and find:'keyword' returns the pages that contain a term.",
@@ -9263,14 +9263,21 @@ async function oneNoteSectionOf(itemId: string, stamp: string): Promise<OneNoteS
   while (_oneNoteSections.size > 6) _oneNoteSections.delete(_oneNoteSections.keys().next().value as string);
   return section;
 }
-// The section files of a project's notebook: the folder named by the project
-// number in the Notebooks folder of the region's "Documents" library, where
-// notebooks made on the site live. One level of section groups (subfolders) is
-// followed. A notebook kept anywhere else (a Teams channel's notebook, a
-// personal OneDrive) is not found here.
-async function projectOneNoteSections(projectNumber: string): Promise<Array<{ section: string; itemId: string; sizeMB: number; modified: string | null; group?: string }>> {
-  const drives = await siteDrives(await teamForProject(projectNumber));
-  const out: Array<{ section: string; itemId: string; sizeMB: number; modified: string | null; group?: string }> = [];
+// The section files of a project's notebook. Two ways to find it:
+//   1. the notebook link the PMS record itself carries (teamsOneNoteUrl,
+//      oneNoteNotebookUrl, oneNoteUrl), resolved through Graph. This is the
+//      project's own statement of where its notebook is, and it works when the
+//      record's `team` points at another region's site (SAPX216004.00 was
+//      tagged BT while its notebook is on the NY site: the region scan below
+//      asked the Baltimore site and was refused).
+//   2. failing that, the folder named by the project number in the Notebooks
+//      folder of each library on the region's site.
+// One level of section groups (subfolders) is followed. A notebook the record
+// does not link and that is not on the region's site is not found.
+type OneNoteSectionRef = { section: string; itemId: string; sizeMB: number; modified: string | null; group?: string };
+async function projectOneNoteSections(project: any): Promise<OneNoteSectionRef[]> {
+  const projectNumber = String(project?.projectNumber || "");
+  const out: OneNoteSectionRef[] = [];
   const children = async (driveId: string, path: string): Promise<any[]> => {
     const all: any[] = [];
     let url = `/drives/${driveId}/${path}/children?$select=id,name,size,folder,file,lastModifiedDateTime&$top=200`;
@@ -9282,8 +9289,33 @@ async function projectOneNoteSections(projectNumber: string): Promise<Array<{ se
     }
     return all;
   };
-  // Every library is asked at once; a library with no Notebooks folder
-  // answers 404, which is not an error here.
+  const add = (driveId: string, it: any, group?: string) => {
+    if (!it.file || !/\.one$/i.test(it.name || "")) return;
+    out.push({ section: String(it.name).replace(/\.one$/i, ""), itemId: driveId + "|" + it.id, sizeMB: Math.round(((it.size ?? 0) / 1048576) * 10) / 10, modified: it.lastModifiedDateTime || null, ...(group ? { group } : {}) });
+  };
+  const addNotebook = async (driveId: string, folderId: string) => {
+    for (const it of await children(driveId, `items/${folderId}`)) {
+      if (it.folder && !/^OneNote_RecycleBin/i.test(it.name || "")) for (const sub of await children(driveId, `items/${it.id}`)) add(driveId, sub, it.name);
+      else add(driveId, it);
+    }
+  };
+  // 1. The record's own link. A link that does not resolve to a folder (a
+  // page link, a dead link, a site the connector cannot read) is passed over
+  // and the region scan gets its turn.
+  const links = [project?.teamsOneNoteUrl, project?.oneNoteNotebookUrl, project?.oneNoteUrl]
+    .map((u) => String(u || "").trim()).filter((u, i, a) => /^https:\/\//i.test(u) && a.indexOf(u) === i);
+  for (const url of links) {
+    let f: any = null;
+    try { f = await graphGet(`/shares/${encodeURIComponent(shareToken(url))}/driveItem?$select=id,name,folder,parentReference`); }
+    catch { continue; }
+    if (!f?.folder || !f?.parentReference?.driveId) continue;
+    await addNotebook(f.parentReference.driveId, f.id);
+    if (out.length) return out;
+  }
+  if (!projectNumber) return out;
+  // 2. The region's site. Every library is asked at once; a library with no
+  // Notebooks folder answers 404, which is not an error here.
+  const drives = await siteDrives(await teamForProject(projectNumber));
   const perDrive = await Promise.all(drives.map(async (dr) => {
     try { return { dr, folders: await children(dr.id, "root:/Notebooks:") }; }
     catch (e) { if (/Graph 404/.test(String((e as any)?.message ?? e))) return { dr, folders: [] as any[] }; throw e; }
@@ -9291,14 +9323,7 @@ async function projectOneNoteSections(projectNumber: string): Promise<Array<{ se
   for (const { dr, folders } of perDrive) {
     for (const nb of folders) {
       if (!nb.folder || !numberPrefixMatches(nb.name, projectNumber.toLowerCase().trim())) continue;
-      const add = (it: any, group?: string) => {
-        if (!it.file || !/\.one$/i.test(it.name || "")) return;
-        out.push({ section: String(it.name).replace(/\.one$/i, ""), itemId: dr.id + "|" + it.id, sizeMB: Math.round(((it.size ?? 0) / 1048576) * 10) / 10, modified: it.lastModifiedDateTime || null, ...(group ? { group } : {}) });
-      };
-      for (const it of await children(dr.id, `items/${nb.id}`)) {
-        if (it.folder && !/^OneNote_RecycleBin/i.test(it.name || "")) for (const sub of await children(dr.id, `items/${it.id}`)) add(sub, it.name);
-        else add(it);
-      }
+      await addNotebook(dr.id, nb.id);
     }
   }
   return out;
