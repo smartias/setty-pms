@@ -92,6 +92,16 @@ browser (PMS pages) or from the connector (app permissions).
   pane save: `total_ms`, `steps`, per-request `calls`). The migration that
   creates it carries the two queries worth running first.
 
+## OneNote (the connector reads the file, not the API)
+
+- Graph's OneNote API refuses the connector's app-only token, so pms-mcp reads
+  a section's `.one` FILE from SharePoint (`oneNoteSection.ts`; README "OneNote
+  sections"). `search_notes` lists a project's sections, `read_document` returns
+  their pages. Notes saved in the PMS Notes tab are a separate thing
+  (`project.notes[]`).
+- The parser's tests build their own section bytes. Never commit a real `.one`
+  file: notebooks hold privileged correspondence.
+
 ## Git / PR conventions
 
 - Merge commits (no squash) into `main`; PR titles are short imperative
