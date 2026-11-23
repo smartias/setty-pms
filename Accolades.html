@@ -258,21 +258,78 @@ body.review { padding-top: 12px; }
 body.review #pitStop, body.tv #pitStop { display: none !important; }
 .pitstop.done { border-color: var(--teal); }
 .pitstop .nudge { font-weight: 500; }
-.pitstop .fuel { font: 400 1.4rem/1 var(--display); color: var(--teal); white-space: nowrap; }
+.pitstop .fuel { font-size: .82rem; }
 .slot { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
-.machine { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; background: var(--dial); border: 2px solid var(--ink); border-radius: 14px; padding: 12px 14px; }
-.reels { display: flex; gap: 8px; }
+/* The daily spin is an old one-armed bandit: enamel cabinet, lit marquee, reels behind glass, a lever on the side. */
+.machine { display: flex; align-items: flex-end; flex: none; margin-left: 56px; }
+.cab { width: 252px; background: linear-gradient(90deg, #8E1B15, #D8322B 18%, #E2554B 50%, #D8322B 82%, #8E1B15); border: 3px solid #12211F; border-radius: 46px 46px 12px 12px; padding: 12px 14px 0; box-shadow: inset 0 0 0 3px #E9A800, 0 4px 0 #12211F; }
+.marquee { position: relative; text-align: center; font: 400 1.05rem/1 var(--display); letter-spacing: .06em; color: #6B4D00; background: linear-gradient(#FFF3C4, #F5C63A); border: 2px solid #12211F; border-radius: 30px 30px 6px 6px; padding: 16px 8px 9px; }
+.marquee::before { content: ""; position: absolute; left: 22px; right: 22px; top: 5px; height: 6px; background: radial-gradient(circle, #fff 0 2px, #D8322B 2.2px 3px, transparent 3.2px) 0 0 / 14px 6px repeat-x; }
+.glass { position: relative; margin-top: 10px; padding: 7px; background: linear-gradient(#C9CED0, #F4F6F6 40%, #8F979A); border: 2px solid #12211F; border-radius: 8px; }
+.reels { display: flex; gap: 3px; background: #12211F; border: 2px solid #12211F; border-radius: 4px; overflow: hidden; }
+.glass::after { content: ""; position: absolute; left: -6px; right: 3px; top: 50%; height: 2px; margin-top: -1px; background: #D8322B; opacity: .7; pointer-events: none; }
+.paytag { position: absolute; right: 100%; top: 50%; transform: translateY(-50%); margin-right: 4px; padding: 3px 10px 3px 6px; font: 500 .6rem/1.3 var(--mono); letter-spacing: .08em; color: #D8322B; background: #FFFDF3; border: 2px solid #D8322B; border-radius: 3px; clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%); z-index: 1; }
+.readouts { display: flex; gap: 8px; margin-top: 8px; }
+.readouts > div { flex: 1; min-width: 0; text-align: center; }
+.readouts > div:first-child { flex: 1.9; }
+.readouts small { display: block; font: 500 .56rem/1.6 var(--mono); letter-spacing: .1em; color: #FFE9A0; white-space: nowrap; }
+.readouts .box { display: grid; place-items: center; height: 30px; background: #FBF3D0; border: 2px solid #7A1410; border-radius: 3px; box-shadow: inset 0 2px 3px rgba(0,0,0,.25); font: 400 .95rem/1 var(--display); color: #B3261E; white-space: nowrap; overflow: hidden; }
+.tray { height: 20px; margin: 10px 26px 0; background: linear-gradient(#12211F, #3A4A47); border: 2px solid #12211F; border-bottom: 0; border-radius: 6px 6px 0 0; box-shadow: inset 0 5px 6px rgba(0,0,0,.6); }
+.lever { position: relative; flex: none; width: 46px; height: 150px; margin: 0 0 34px -2px; padding: 0; background: none; border: 0; }
+.lever .hub { position: absolute; left: 0; bottom: 0; width: 26px; height: 34px; background: linear-gradient(#F4F6F6, #8F979A); border: 2px solid #12211F; border-left: 0; border-radius: 0 10px 10px 0; }
+.lever .stick { position: absolute; left: 12px; bottom: 16px; width: 26px; height: 128px; transform-origin: 50% 100%; }
+.lever .stick::before { content: ""; position: absolute; left: 9px; bottom: 0; width: 8px; height: 104px; background: linear-gradient(90deg, #8F979A, #F4F6F6 45%, #8F979A); border: 2px solid #12211F; border-radius: 4px; }
+.lever .stick::after { content: ""; position: absolute; left: 0; top: 0; width: 26px; height: 26px; background: radial-gradient(circle at 35% 30%, #FF8A80, #D8322B 45%, #8E1B15); border: 2px solid #12211F; border-radius: 50%; box-sizing: border-box; }
+.lever:not(:disabled) { cursor: pointer; }
+.lever:not(:disabled):hover .stick { transform: scaleY(.93); }
+.lever:disabled .stick { transform: scaleY(.55); filter: saturate(.5); }
+.lever::before { content: "PULL"; position: absolute; left: 4px; top: -24px; font: 400 .7rem/1 var(--display); color: var(--on-needle); background: var(--needle); padding: 4px 6px; border-radius: 4px; display: none; }
+.machine.ready .lever::before { display: block; }
+.tray { display: flex; align-items: flex-end; justify-content: center; gap: 1px; font-size: .95rem; line-height: 1; overflow: hidden; }
+.tray span { display: inline-block; margin-bottom: -3px; }
+.lever:focus-visible { outline: 3px solid var(--teal); outline-offset: 2px; border-radius: 8px; }
 .carnum { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1.5px solid var(--ink); border-radius: 999px; font: 400 .72rem/1.5 var(--display); vertical-align: middle; }
 .paytable { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0 0; font-size: .85rem; color: var(--muted); }
 .paytable span { white-space: nowrap; }
 .paytable b { color: var(--ink); }
-.reel.sour { border-color: var(--line); filter: grayscale(.6); }
-.reel { width: 64px; height: 64px; display: grid; place-items: center; font-size: 2.2rem; line-height: 1; background: var(--panel); border: 2px solid var(--line); border-radius: 10px; }
-.reel.spinning { filter: blur(1.2px); border-color: var(--brass); }
-.reel.win { border-color: var(--teal); background: var(--teal-wash); }
-.pull { display: flex; flex-direction: column; gap: 8px; align-items: center; min-width: 96px; }
-@media (max-width: 440px) { .reel { width: 52px; height: 52px; font-size: 1.8rem; } }
-@media (prefers-reduced-motion: no-preference) { .reel.landed { animation: tada .5s; } }
+/* each reel is a drum: lit in the middle, falling into shadow at the top and bottom */
+/* the window is tall enough to see the symbols above and below the payline slide past */
+.reel { position: relative; flex: 1; height: 118px; display: grid; place-items: center; overflow: hidden; font-size: 2.5rem; line-height: 1; background: linear-gradient(#3F3F3F, #B9B9B9 12%, #FFFFFF 32%, #FFFFFF 68%, #B9B9B9 88%, #3F3F3F); }
+.reel i { position: absolute; left: 0; right: 0; text-align: center; font-style: normal; opacity: .75; }
+.reel i.up { top: -19px; } .reel i.dn { bottom: -19px; }
+/* the seven is a plain "7" drawn fat and red; the emoji symbols ignore these font settings */
+.reel span, .reel i, .paytable .seven { font-family: Georgia, "Times New Roman", serif; font-weight: 900; color: #D8322B; -webkit-text-stroke: 1.5px #12211F; }
+.reel span { font-size: 1.3em; }
+.paytable .seven { -webkit-text-stroke: .6px #12211F; font-size: 1.15em; letter-spacing: .04em; font-style: italic; }
+.reel.sour { filter: grayscale(.7); }
+.reel.win { background: linear-gradient(#5C4500, #E9C24A 12%, #FFF1BD 32%, #FFF1BD 68%, #E9C24A 88%, #5C4500); }
+@media (max-width: 440px) { .cab { width: 208px; } .reel { height: 96px; font-size: 2rem; } .machine { margin-left: 50px; } }
+@media (prefers-reduced-motion: no-preference) {
+  .reel.spinning span, .reel.spinning i { animation: reelroll .11s linear infinite; filter: blur(1.5px); }
+  .reel.landed span { animation: reelstop .35s cubic-bezier(.3, 1.6, .5, 1); }
+  .machine.live .marquee::before { animation: bulbs .3s steps(2) infinite; }
+  /* waiting to be played: the lights chase slowly and the lever bobs */
+  .machine.ready .marquee::before { animation: bulbs 1.1s steps(2) infinite; }
+  .machine.ready .lever .stick { animation: leverbob 1.6s ease-in-out infinite; }
+  .machine.ready .lever::before { animation: pulltag .8s ease-in-out infinite alternate; }
+  /* two the same and one reel still turning */
+  .machine.tense .marquee::before { animation-duration: .12s; }
+  .machine.tense .marquee { animation: tense .25s ease-in-out infinite alternate; }
+  .machine.paid .marquee { animation: paid .35s steps(2) 8; }
+  .machine.paid .marquee::before { animation: bulbs .18s steps(2) 16; }
+  .machine.paid .cab { animation: tada .7s; }
+  .tray span.fresh { animation: coindrop .5s cubic-bezier(.4, 1.5, .6, 1) backwards; }
+  .lever.pulled .stick { animation: leverpull .8s ease-out; }
+}
+@keyframes reelroll { from { transform: translateY(-85%); } to { transform: translateY(85%); } }
+@keyframes reelstop { from { transform: translateY(-45%); } to { transform: none; } }
+@keyframes bulbs { 50% { background-position: 7px 0; filter: brightness(1.6); } }
+@keyframes leverbob { 50% { transform: scaleY(.9); } }
+@keyframes pulltag { to { transform: translateY(-4px); } }
+@keyframes tense { to { background: linear-gradient(#FFF3C4, #FF9C3A); } }
+@keyframes paid { 50% { background: linear-gradient(#fff, #FFE9A0); color: #D8322B; } }
+@keyframes coindrop { from { transform: translateY(-60px) rotate(-90deg); opacity: 0; } }
+@keyframes leverpull { 0% { transform: scaleY(1); } 35% { transform: scaleY(-.55); } 60% { transform: scaleY(-.55); } 100% { transform: scaleY(.55); } }
 /* Lobby screen: the track and nothing else. No lists, labels or buttons to read. */
 body.tv #topRow, body.tv #lowerRow, body.tv #pit, body.tv #champs, body.tv #wallSection, body.tv .tagline, body.tv #meBox,
 body.tv #soundBtn, body.tv #raceTitle, body.tv .panel .chips, body.tv .race > div,
@@ -456,6 +513,7 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
           <h2 id="pitStopTitle">Daily spin</h2>
           <p class="meta" id="pitStopLine"></p>
           <p class="paytable" aria-label="What the machine pays">
+            <span><i class="seven">777</i> jackpot <b>20</b></span>
             <span>&#x1F514;&#x1F514;&#x1F514; three of a kind <b>3</b></span>
             <span>&#x1F48E;&#x1F48E; a pair <b>2</b></span>
             <span>&#x1F352; a cherry <b>1</b></span>
@@ -467,15 +525,23 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
           </div>
         </div>
         <div class="machine" role="group" aria-label="Fruit machine">
-          <div class="reels" aria-hidden="true">
-            <div class="reel" id="reel0">&#x1F352;</div>
-            <div class="reel" id="reel1">&#x1F514;</div>
-            <div class="reel" id="reel2">&#x2B50;</div>
+          <div class="cab">
+            <div class="marquee" id="marquee" aria-hidden="true">Daily spin</div>
+            <div class="glass" aria-hidden="true">
+              <span class="paytag">PAYLINE</span>
+              <div class="reels">
+                <div class="reel"><i class="up"></i><span id="reel0">&#x1F352;</span><i class="dn"></i></div>
+                <div class="reel"><i class="up"></i><span id="reel1">&#x1F514;</span><i class="dn"></i></div>
+                <div class="reel"><i class="up"></i><span id="reel2">&#x2B50;</span><i class="dn"></i></div>
+              </div>
+            </div>
+            <div class="readouts">
+              <div><small aria-hidden="true">WINNER PAID</small><span class="box"><span class="fuel" id="fuelGot" role="status"></span></span></div>
+              <div title="Points you have won on the machine so far"><small>CREDITS</small><span class="box" id="spinCredits">0</span></div>
+            </div>
+            <div class="tray" id="coinTray" aria-hidden="true"></div>
           </div>
-          <div class="pull">
-            <button class="btn" type="button" id="refuelBtn">Pull the lever</button>
-            <span class="fuel" id="fuelGot" role="status"></span>
-          </div>
+          <button class="lever" type="button" id="refuelBtn" aria-label="Pull the lever" title="Pull the lever"><span class="hub"></span><span class="stick"></span></button>
         </div>
       </div>
     </section>
@@ -753,8 +819,8 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
 // VERSION in that file). Browsers cache the module separately from this page;
 // a stale copy once left the page calling functions the old module lacked,
 // which blanked everything drawn after the first failure.
-import * as A from "./accolades.js?v=2026-11-11-14";
-const NEEDS_VERSION = "2026-11-11-14";
+import * as A from "./accolades.js?v=2026-11-23-15";
+const NEEDS_VERSION = "2026-11-23-15";
 // ?review=1 is the admin review screen the Admin Console embeds: only the
 // filed-email suggestions and the form that approves one onto the wall.
 const REVIEW = new URLSearchParams(location.search).get("review") === "1";
@@ -918,6 +984,12 @@ const sfx = {
   tada() { [523, 659, 784, 1047].forEach((f, i) => tone(f, .16, "triangle", i * .09)); },
   pop() { tone(700, .08, "triangle", 0, 1100); },
   vroom() { tone(90, .7, "sawtooth", 0, 260); },
+  // the fruit machine: lever, reels ticking round, a reel stopping, coins in the tray, the jackpot bell
+  clunk() { tone(150, .14, "square", 0, 55); tone(70, .2, "sawtooth", .1, 45); },
+  tick() { tone(1100, .025, "square"); },
+  thunk() { tone(190, .1, "square", 0, 90); },
+  coins(n) { for (let i = 0; i < n; i++) tone(1900 + (i % 3) * 250, .09, "triangle", i * .1, 2600); },
+  bell() { for (let i = 0; i < 10; i++) tone(i % 2 ? 1568 : 1319, .11, "square", i * .12); },
   // a propeller plane going past: the drone climbs as it comes in, then drops away
   prop() { tone(105, 1.2, "sawtooth", 0, 165); tone(109, 1.2, "square", 0, 171); tone(165, 1.5, "sawtooth", 1.15, 85); tone(171, 1.5, "square", 1.15, 89); },
 };
@@ -1574,31 +1646,59 @@ const reelEls = [0, 1, 2].map((i) => $("reel" + i));
 const PULL_LINE = "One pull a day. Line up the fruit for points. Watch out for lemons.";
 let spin = null;   // { day, final: [i, i, i], timers: [], left: reels still turning }
 const spunToday = () => stops.some((st) => lower(st.email) === me && String(st.stop_date).slice(0, 10) === today());
+// Each reel is a strip in SLOT_SYMBOLS order: the window shows the symbol on the
+// payline with its neighbours on the strip half in view above and below.
+function setReel(i, k) {
+  const n = A.SLOT_SYMBOLS.length, drum = reelEls[i].parentNode;
+  reelEls[i].textContent = A.SLOT_SYMBOLS[k];
+  drum.querySelector(".up").textContent = A.SLOT_SYMBOLS[(k + n - 1) % n];
+  drum.querySelector(".dn").textContent = A.SLOT_SYMBOLS[(k + 1) % n];
+}
 function showReels(final) {
   const pts = A.slotPays(final);
   reelEls.forEach((el, i) => {
-    el.textContent = A.SLOT_SYMBOLS[final[i]];
+    setReel(i, final[i]);
+    el = el.parentNode;                 // the drum carries the look; the span inside is the symbol
     el.classList.remove("spinning");
     // light up what paid: the matching reels, or the lone cherry
     el.classList.toggle("win", pts >= 2 ? final.filter((v) => v === final[i]).length > 1 : pts === 1 && final[i] === A.SLOT_CHERRY);
     el.classList.toggle("sour", pts === 0 && final[i] === A.SLOT_LEMON);
   });
 }
-const spinResult = (pts) => pts === 3 ? "+3 jackpot!" : pts === 0 ? "Lemon. +0" : "+" + pts;
+const marqueeFor = (pts) => pts >= 20 ? "Jackpot!!!" : pts === 3 ? "Triple!" : pts === 2 ? "Winner!" : pts === 1 ? "Cherry!" : "Lemon\u2026";
+// What it paid sits in the tray as coins. fresh = they have just dropped.
+function fillTray(pts, fresh) {
+  const t = $("coinTray"); t.textContent = "";
+  for (let i = 0; i < Math.min(pts * 3, 9); i++) {
+    const c = h("span", { class: fresh ? "fresh" : "", text: "\u{1FA99}" });
+    c.style.animationDelay = (i * 90) + "ms";
+    t.appendChild(c);
+  }
+}
+const spinResult = (pts) => pts >= 20 ? "+" + pts + " JACKPOT!" : pts === 3 ? "+3 triple!" : pts === 0 ? "Lemon +0" : "+" + pts;
 function renderPitStop() {
   $("pitStop").hidden = !pitOn;
   if (!pitOn || spin) return;                      // never redraw over reels that are turning
   const day = today(), done = spunToday();
   $("pitStop").classList.toggle("done", done);
-  $("refuelBtn").hidden = done;
+  $("refuelBtn").disabled = done;     // the lever stays on the machine, pulled down
+  const mc = $("pitStop").querySelector(".machine");
+  mc.classList.remove("live", "tense");
+  mc.classList.toggle("ready", !done);
+  $("spinCredits").textContent = stops.filter((st) => lower(st.email) === me).reduce((sum, st) => sum + A.pitPoints(me, st.stop_date), 0);
   if (done) {
     const pts = A.pitPoints(me, day);
     showReels(A.slotReels(me, day));
     $("fuelGot").textContent = spinResult(pts);
+    $("marquee").textContent = marqueeFor(pts);
+    if (!$("coinTray").childElementCount && pts) fillTray(pts, false);
     $("pitStopLine").textContent = pts === 0 ? "Sour luck today. The machine resets tomorrow." : "That was today's pull. Come back tomorrow for another.";
   } else {
-    for (const el of reelEls) el.classList.remove("win", "sour", "spinning");
+    for (const el of reelEls) el.parentNode.classList.remove("win", "sour", "spinning");
+    [0, 2, 5].forEach((k, i) => setReel(i, k));
     $("fuelGot").textContent = "";
+    $("marquee").textContent = "Daily spin"; fillTray(0);
+    mc.classList.remove("paid");
     $("pitStopLine").textContent = PULL_LINE;
   }
   $("nudgeRow").hidden = !done;
@@ -1608,11 +1708,16 @@ function landReel(i) {
   if (!spin) return;
   clearInterval(spin.timers[i]);
   const el = reelEls[i];
-  el.textContent = A.SLOT_SYMBOLS[spin.final[i]];
-  el.classList.remove("spinning");
-  restart(el, "landed");
-  sfx.pop();
-  if (--spin.left === 0) finishSpin();
+  setReel(i, spin.final[i]);
+  el.parentNode.classList.remove("spinning");
+  restart(el.parentNode, "landed");
+  sfx.thunk();
+  // two the same with one reel still turning: the machine holds its breath
+  if (i === 1 && spin.left > 1 && spin.final[0] === spin.final[1] && spin.final[0] !== A.SLOT_LEMON) {
+    $("pitStop").querySelector(".machine").classList.add("tense");
+    $("marquee").textContent = "Come on\u2026";
+  }
+  if (--spin.left === 0) { clearInterval(spin.tick); finishSpin(); }
 }
 async function finishSpin() {
   const day = spin.day;
@@ -1625,8 +1730,14 @@ async function finishSpin() {
     else { renderPitStop(); $("pitStopLine").textContent = "The pull could not be saved. Check your connection and try again."; return; }
   }
   const pts = A.pitPoints(me, day);
-  burst($("reel1"), pts === 3 ? "\u{1F3B0}" : pts === 0 ? "\u{1F34B}" : "\u2728", pts === 0 ? 4 : pts * 3);
-  if (pts === 3) { confetti(); sfx.tada(); } else if (pts > 0) sfx.ding(); else sfx.quack();
+  burst($("reel1"), pts >= 3 ? "\u{1F3B0}" : pts === 0 ? "\u{1F34B}" : "\u2728", pts === 0 ? 4 : Math.min(pts * 3, 14));
+  if (pts >= 20) {            // three sevens: everything the page has, twice
+    confetti(); setTimeout(confetti, 900); trophy(); tubeWild();
+    sfx.bell(); sfx.coins(24); setTimeout(() => sfx.tada(), 1300);
+  } else if (pts === 3) { confetti(); sfx.tada(); sfx.coins(9); }
+  else if (pts > 0) { sfx.ding(); sfx.coins(pts * 3); } else sfx.womp();
+  fillTray(pts, true);
+  if (pts > 0) { burst($("coinTray"), "\u{1FA99}", Math.min(pts * 3, 14)); restart($("pitStop").querySelector(".machine"), "paid"); }
   renderPitStop(); renderRace(); renderMe(); renderPit();
 }
 // One button. The reels turn and land on their own, left to right.
@@ -1634,16 +1745,22 @@ on($("refuelBtn"), () => {
   if (spin || spunToday()) return;
   const day = today();
   spin = { day, final: A.slotReels(me, day), timers: [], left: 3 };
-  $("refuelBtn").hidden = true;
+  $("refuelBtn").disabled = true; restart($("refuelBtn"), "pulled");
+  $("pitStop").querySelector(".machine").classList.add("live");
   $("pitStopLine").textContent = "Round and round...";
-  sfx.vroom();
+  $("marquee").textContent = "Good luck!";
+  $("pitStop").querySelector(".machine").classList.remove("ready");
+  sfx.clunk();
+  // two the same on the first two reels: the last one keeps everyone waiting
+  const tease = spin.final[0] === spin.final[1] && spin.final[0] !== A.SLOT_LEMON ? 1500 : 0;
   if (reduced) { [0, 1, 2].forEach(landReel); return; }    // no spinning: show where they land
+  spin.tick = setInterval(() => sfx.tick(), 85);
   reelEls.forEach((el, i) => {
-    el.classList.remove("win", "sour");
-    el.classList.add("spinning");
+    el.parentNode.classList.remove("win", "sour");
+    el.parentNode.classList.add("spinning");
     let k = Math.floor(Math.random() * A.SLOT_SYMBOLS.length);
-    spin.timers[i] = setInterval(() => { k = (k + 1) % A.SLOT_SYMBOLS.length; el.textContent = A.SLOT_SYMBOLS[k]; }, 70 + i * 15);
-    setTimeout(() => landReel(i), 1100 + i * 700);
+    spin.timers[i] = setInterval(() => { k = (k + 1) % A.SLOT_SYMBOLS.length; setReel(i, k); }, 70 + i * 15);
+    setTimeout(() => landReel(i), 1100 + i * 700 + (i === 2 ? tease : 0));
   });
 });
 on($("nudgeBtn"), () => {

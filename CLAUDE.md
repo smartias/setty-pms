@@ -193,6 +193,10 @@ browser (PMS pages) or from the connector (app permissions).
 - Counting rules are in `accolades.js` (`accolades.test.mjs`). The page reaches
   Supabase tables `pms_accolade*`; later migrations are optional for it, and it
   hides the features whose tables or columns are missing.
+- **Points are never stored.** Standings are recomputed on every load from the
+  rows and the rules in `accolades.js`, so changing what an existing rule pays
+  rewrites every past day. A new rule needs a start date, the way the daily
+  spin's 20-point jackpot has `JACKPOT_FROM`.
 - Instant emails: insert triggers on `pms_accolades` and `pms_accolade_cheers`
   (`pms_accolade_notify()`, pg_net) call `pms-user-emails/accolade-notify`,
   which emails the @setty.com people an accolade names, once each
