@@ -940,10 +940,12 @@ section, under `Notebooks/<number> — <name>/` in the site's Documents library.
 layout SharePoint stores) and returns each page's title, creation time and text.
 
 - **Finding a notebook.** `search_notes` with a `projectNumber` adds
-  `oneNoteSections` (section name, `itemId`, size) when a notebook folder
-  starting with the project's number exists. A notebook kept elsewhere (a Teams
-  channel's notebook, someone's OneDrive) is not found; its section file can
-  still be read by `itemId` if the connector can reach the drive.
+  `oneNoteSections` (section name, `itemId`, size). The notebook link on the
+  PMS record (`teamsOneNoteUrl`, `oneNoteNotebookUrl`, `oneNoteUrl`) is tried
+  first, so a project whose `team` points at the wrong region is still found;
+  then a folder starting with the project's number under `Notebooks/` on the
+  region's site. A notebook that is neither linked nor there is not found; its
+  section file can still be read by `itemId` if the connector can reach it.
 - **Reading.** `read_document` on a section returns `pageIndex` (every page) and
   page text up to the usual 50,000 characters; `pages:'4-9'` and
   `find:'keyword'` select pages, and `nextPages` says what to ask for next.
