@@ -146,3 +146,21 @@ test("calendar replies and subject-less records are kept out of meaning-based se
   assert.ok(!/delete from/i.test(mig), "no email is removed from the log");
   assert.ok(!mig.includes("\r"), "migrations are LF");
 });
+
+test("automatic replies are kept out of meaning-based search too", () => {
+  const mig = readFileSync(new URL("../../migrations/20261124170000_emails_meaning_skip_automatic_replies.sql", import.meta.url), "utf8");
+  const skip = (subject) => ["", "{}"].includes(String(subject ?? "").trim())
+    || /^\s*(accepted|declined|tentative|tentatively accepted|canceled|cancelled|automatic reply)\s*:/i.test(String(subject ?? ""));
+  assert.ok(mig.includes("'^\\s*(accepted|declined|tentative|tentatively accepted|canceled|cancelled|automatic reply)\\s*:'"), "the pattern tested here is the one shipped");
+  assert.ok(mig.includes("btrim(coalesce(p_subject, '')) in ('', '{}')"), "the earlier rules are kept");
+  for (const s of ["Automatic reply: Bunker Hill ES - Exhaust Fans", "Automatic reply:  Request for Peer Review", " automatic reply: x", "Declined: Site Visit", "{}"]) {
+    assert.ok(skip(s), "skipped: " + s);
+  }
+  for (const s of ["RE: Automatic reply: Bunker Hill ES", "Automatic reply settings for the shared mailbox", "FW: out of office coverage", "Re: 665 New Lots Ave - BPL - Filing Update"]) {
+    assert.ok(!skip(s), "kept: " + s);
+  }
+  assert.ok(/update public\.pms_project_emails e\s+set embedding = null, embedded_hash = null, embedded_at = null\s+where e\.embedding is not null\s+and public\.pms_emails_skip_meaning\(e\.subject\);/.test(mig), "their existing vectors are cleared, and nothing else is touched");
+  assert.ok(/grant execute on function public\.pms_emails_skip_meaning\(text\) to service_role;/.test(mig), "the grants are repeated");
+  assert.ok(!/delete from/i.test(mig), "no email is removed from the log");
+  assert.ok(!mig.includes("\r"), "migrations are LF");
+});
