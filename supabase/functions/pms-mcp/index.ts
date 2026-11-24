@@ -92,6 +92,8 @@ import {
   planCostEstimateReview, costEstimateReviewsOf, markCostReviewStarted, ESTIMATE_DISCIPLINES, estimateDisciplineLabel,
   setReviewLines,
 } from "./constructionCost.js";
+// The QA checklist review routine (start_checklist_routine / propose_checklist_items). Pure; see its tests.
+import { planProposals, PROPOSAL_PHASES, PROPOSAL_AUTOMATION, MIN_PROJECTS, MIN_RFIS, PROPOSALS_MAX } from "./qaRoutine.js";
 // check_schedule_arithmetic (QA item qa-638): whether a schedule row's numbers agree. Pure; see its tests.
 import { checkSchedule, ROW_KINDS, DEFAULT_TOLERANCE_PCT } from "./scheduleArithmetic.js";
 // The line-by-line detail of a reviewed estimate (pms_cost_estimate_lines). Pure; see its tests.
@@ -1531,7 +1533,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-schedule-arithmetic";
+const BUILD = "2026-11-24-qa-checklist-routine";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.31.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -13831,6 +13833,141 @@ mcp.tool("check_schedule_arithmetic", {
         (r.notChecked ? ` ${r.notChecked} row(s) lacked an input and were not checked: say so in the coverage, do not estimate.` : "") +
         " This checks consistency only: not that a selection is right or that a product is available as specified.",
     });
+  },
+});
+
+// ─── QA CHECKLIST REVIEW ROUTINE: start_checklist_routine / propose_checklist_items ─
+// Started from the Admin Console's QA Checklist tab ("Run with Claude"), run by
+// a Claude session. It reads the preventable RFIs that no checklist item
+// covers and writes PROPOSED items to pms_qa_item_proposals, with a row per
+// run in pms_qa_routine_runs (migration 20261124210000). It never writes
+// pms_qa_checklist: an admin approves each proposal in the console, through
+// pms_decide_qa_item_proposal(). Rules a proposal must meet: qaRoutine.js.
+const QA_ROUTINE_OPEN_HOURS = 24;
+async function qaRoutineWrite(method: "POST" | "PATCH", path: string, body: unknown): Promise<any[]> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    method,
+    headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Supabase ${method} ${res.status}: ${(await res.text()).slice(0, 240)}`);
+  return await res.json();
+}
+const qaRoutineTableError = (e: unknown): string => {
+  const m = String((e as any)?.message ?? e);
+  return /404|not exist|PGRST205|42P01/.test(m) ? "The routine's tables are not available yet: the database has not run migration 20261124210000." : m.slice(0, 240);
+};
+const uncoveredRfiRows = (): Promise<any[]> =>
+  sbGetAll("pms_rfi_root_causes?select=project,item_number,subject,phase,cause,note&item_type=eq.rfi&preventable=is.true&qa_item=is.null&order=project,item_number");
+
+mcp.tool("start_checklist_routine", {
+  description:
+    "START the QA checklist review routine (the Admin Console's 'Run with Claude' on its QA Checklist tab, or when " +
+    "someone asks whether the checklist needs new items). One call: it marks the run as started in the console and " +
+    "returns every preventable RFI that NO checklist item covers, the current checklist, earlier proposals with " +
+    "what an admin decided, and the method. Your job is to find the kinds of RFI that recur across projects and are " +
+    "not already covered, and draft one checklist item for each, then finish with propose_checklist_items. You do " +
+    "not add anything to the checklist: an admin approves or rejects each proposal in the Admin Console. Before " +
+    "proposing, check each group against the existing items: an RFI that an existing item already describes should " +
+    "be re-tagged to that item with tag_rfi_root_causes (keeping its cause and note), not turned into a new item. " +
+    "Needs a signed-in caller.",
+  inputSchema: z.object({}),
+  handler: async () => {
+    const c = currentCaller();
+    if (c.kind !== "user" || !c.email) return asText({ error: "The checklist routine needs a signed-in Setty user behind it.", nextStep: "Connect the connector with your Microsoft sign-in and try again." });
+    const now = new Date().toISOString();
+    let run: any, uncovered: any[], checklist: any[], earlier: any[];
+    try {
+      uncovered = await uncoveredRfiRows();
+      const open: any[] = await sbGet("pms_qa_routine_runs?select=id,requested_at,requested_by,started_at&finished_at=is.null&order=requested_at.desc&limit=1");
+      const fresh = open?.[0] && Date.now() - Date.parse(open[0].requested_at) < QA_ROUTINE_OPEN_HOURS * 3600000 ? open[0] : null;
+      run = fresh
+        ? (await qaRoutineWrite("PATCH", "pms_qa_routine_runs?id=eq." + fresh.id, { started_at: now, started_by: c.email, uncovered_count: uncovered.length }))[0]
+        : (await qaRoutineWrite("POST", "pms_qa_routine_runs", { requested_by: c.email, started_at: now, started_by: c.email, uncovered_count: uncovered.length }))[0];
+      checklist = await sbGetAll("pms_qa_checklist?select=item_id,section,text&enabled=is.true&order=sort");
+      earlier = await sbGet("pms_qa_item_proposals?select=id,text,status,decision_note,rfi_count,project_count,item_id,created_at&order=created_at.desc&limit=60");
+    } catch (e) {
+      return asText({ error: `Could not start the routine: ${qaRoutineTableError(e)}` });
+    }
+    const byProject = new Map<string, number>();
+    for (const r of uncovered) byProject.set(r.project, (byProject.get(r.project) || 0) + 1);
+    return asText({
+      runId: run?.id,
+      requestedBy: run?.requested_by, requestedAt: run?.requested_at,
+      uncoveredPreventableRfis: uncovered.length,
+      projects: byProject.size,
+      rfis: uncovered.slice(0, 400).map((r) => ({ project: r.project, number: r.item_number, phase: r.phase, cause: r.cause, subject: r.subject || undefined, note: r.note || undefined })),
+      ...(uncovered.length > 400 ? { rfisNote: `Showing the first 400 of ${uncovered.length}. rfi_root_cause_summary with listRfis and a cause filter reads the rest.` } : {}),
+      checklist: checklist.map((i: any) => ({ id: i.item_id, section: i.section, text: i.text })),
+      earlierProposals: (earlier || []).map((p: any) => ({ text: p.text, status: p.status, becameItem: p.item_id || undefined, adminNote: p.decision_note || undefined, rfis: p.rfi_count, projects: p.project_count })),
+      rules: { minimumRfis: MIN_RFIS, minimumProjects: MIN_PROJECTS, maximumProposalsPerRun: PROPOSALS_MAX },
+      method: [
+        "1. Read every RFI's note. Many say '(subject only)': those were tagged from the title alone. Use read_rfi_submittal on any you plan to rely on, so a proposal rests on what was actually asked.",
+        "2. Group the RFIs by what a reviewer could have checked before the set went out, not by trade or by project.",
+        "3. For each group, look for an existing checklist item that already describes it. If one does, re-tag those RFIs to it with tag_rfi_root_causes and do not propose a new item.",
+        `4. Keep a group only if it has at least ${MIN_RFIS} RFIs on at least ${MIN_PROJECTS} projects. One project asking the same thing many times is that project's problem, not a firm check. Say what you left out and why.`,
+        "5. Do not re-propose something an admin rejected (earlierProposals), unless new RFIs have changed the case, and then say so in the rationale.",
+        "6. Write each item the way the checklist's items read: 'Verify ...', one sentence a reviewer can act on; details that say what to look at and what counts as a finding; `how` naming the connector tools that do it (search_drawings, read_drawing_schedule, view_drawing, read_document); the phases it applies to; a rationale with the counts; and the RFIs it rests on.",
+        "7. A check nobody has time to do by hand is not a good item. Prefer one the review can do from the drawings; where it needs product or manufacturer knowledge, propose a lesson with save_knowledge instead.",
+        "8. Finish with propose_checklist_items, even when there is nothing to propose: pass no proposals and say why in summary. Then tell the user what you proposed, what you re-tagged, and what you left out.",
+      ],
+    });
+  },
+});
+
+mcp.tool("propose_checklist_items", {
+  description:
+    "FINISH the QA checklist review routine (after start_checklist_routine): store the proposed checklist items for " +
+    "an admin to approve or reject in the Admin Console, and close the run with a summary. Nothing is added to the " +
+    "checklist here. Each proposal is checked: its RFIs are matched against the preventable RFIs that still have no " +
+    `checklist item, and one that rests on fewer than ${MIN_RFIS} such RFIs or fewer than ${MIN_PROJECTS} projects is refused, as is ` +
+    "one whose text repeats an existing item or proposal, or that mostly reuses another proposal's RFIs. The " +
+    "counts stored are computed from the tags, not taken from you. Refused proposals come back with the reason: " +
+    "tell the user. With nothing to propose, call it with no proposals and a summary saying why, so the run is " +
+    "recorded as finished. Needs a signed-in caller.",
+  inputSchema: z.object({
+    runId: z.number().int().describe("The runId start_checklist_routine returned."),
+    summary: z.string().min(20).max(2000).describe("What the run found, for the console: how many uncovered RFIs were read, the groups that recur, what was re-tagged to existing items, and what was left out and why."),
+    proposals: z.array(z.object({
+      text: z.string().describe("The item, as the checklist words them: 'Verify ...', one sentence."),
+      details: z.array(z.string()).min(2).max(10).describe("What to look at and what counts as a finding. The last one may name the RFIs behind it in words."),
+      how: z.string().optional().describe("How a review does it: the connector tools and what to search for."),
+      automation: z.enum(PROPOSAL_AUTOMATION as [string, ...string[]]).optional().describe("auto = the connector checks it mechanically; assisted (default) = Claude gathers evidence and flags; manual = stays with a person."),
+      phases: z.array(z.enum(PROPOSAL_PHASES as [string, ...string[]])).optional().describe("Deliverable phases it applies to. Default CD, Permit, Bid, Addendum."),
+      rationale: z.string().optional().describe("Why this earns a place: the counts, and why no existing item covers it."),
+      rfis: z.array(z.object({ project: z.string(), number: z.string() })).min(1).max(80).describe("The uncovered preventable RFIs it rests on, by project number and RFI number as start_checklist_routine listed them."),
+    })).max(PROPOSALS_MAX).optional(),
+  }),
+  handler: async ({ runId, summary, proposals }) => {
+    const c = currentCaller();
+    if (c.kind !== "user" || !c.email) return asText({ error: "The checklist routine needs a signed-in Setty user behind it." });
+    try {
+      const runs: any[] = await sbGet("pms_qa_routine_runs?select=id,finished_at&id=eq." + runId);
+      if (!runs?.length) return asText({ error: `No routine run ${runId}.`, nextStep: "Call start_checklist_routine first; it returns the runId." });
+      if (runs[0].finished_at) return asText({ error: `Run ${runId} is already finished.`, nextStep: "Start a new run with start_checklist_routine." });
+      const uncovered = await uncoveredRfiRows();
+      const items: any[] = await sbGetAll("pms_qa_checklist?select=text");
+      const onFile: any[] = await sbGet("pms_qa_item_proposals?select=text&status=in.(proposed,rejected)&limit=500");
+      const plan = planProposals(proposals || [], uncovered, [...items, ...(onFile || [])]);
+      const stored: any[] = plan.accepted.length
+        ? await qaRoutineWrite("POST", "pms_qa_item_proposals", plan.accepted.map((a: any) => ({ ...a, run_id: runId, created_by: c.email })))
+        : [];
+      await qaRoutineWrite("PATCH", "pms_qa_routine_runs?id=eq." + runId, {
+        finished_at: new Date().toISOString(), proposals_count: stored.length, refused_count: plan.refused.length, summary,
+      });
+      return asText({
+        runId, finished: true,
+        proposalsStored: stored.map((p: any) => ({ proposalId: p.id, text: p.text, rfis: p.rfi_count, projects: p.project_count })),
+        ...(plan.refused.length ? { refused: plan.refused } : {}),
+        note: (stored.length
+          ? `${stored.length} proposal(s) are waiting in the Admin Console, QA Checklist tab, for an admin to approve or reject. Nothing was added to the checklist.`
+          : "No proposals were stored. The run is recorded as finished with your summary.") +
+          (plan.refused.length ? ` ${plan.refused.length} were refused: tell the user which and why.` : "") +
+          " Tell the user what you proposed, what you re-tagged to existing items, and what you left out.",
+      });
+    } catch (e) {
+      return asText({ error: `Could not store the proposals: ${qaRoutineTableError(e)}`, nextStep: "Nothing may have been stored. Tell the user." });
+    }
   },
 });
 

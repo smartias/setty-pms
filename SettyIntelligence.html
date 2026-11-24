@@ -2347,8 +2347,7 @@ function renderLessons() {
           <option value="manual" ${state.filter.origin==="manual"?"selected":""}>✍ Manual</option>
         </select>
       </div>
-      <button class="btn btn-primary" onclick="openMineModal()">🤖 Mine for lessons</button>
-      <button class="btn btn-ghost" onclick="openLessonForm()" title="Rarely needed — the system mines lessons automatically">＋ Add manually</button>
+      <button class="btn btn-ghost" onclick="openLessonForm()" title="Most lessons arrive from Claude sessions (save_knowledge) and wait here for review">＋ Add manually</button>
       ${knowledgeToolsHTML("lessons")}
     </div>
     <div id="reviewNote"></div>
@@ -2363,7 +2362,7 @@ function renderLessonList() {
   if (!rows.length) {
     el.innerHTML = `<div id="bulkBarL">${bulkBar("L")}</div>` + (state.lessons.length
       ? '<div class="empty">No lessons match these filters.</div>'
-      : '<div class="empty">Nothing here yet. Click <b>🤖 Mine for lessons</b> to extract candidates from your RFIs, submittals, emails and site reports.</div>');
+      : '<div class="empty">Nothing here yet. Lessons a Claude session saves from RFIs, submittals, emails and site reports land here as <b>Needs review</b>.</div>');
     return;
   }
   el.innerHTML = `<div id="bulkBarL">${bulkBar("L")}</div>` + rows.map(renderLessonCard).join("");
@@ -2637,45 +2636,6 @@ function openSignInModal() {
     } catch (e) { toast("Code rejected: " + e.message, "error"); }
   };
   $("nameOnlyBtn").onclick = () => { closeModal(); openNameModal(); };
-  focusModal();
-}
-
-// The mining pipeline surface. Extraction runs server-side (Closeout Memory
-// Edge Function calling Claude) so no keys live in the browser. This modal
-// scopes a run and reports pipeline status.
-function openMineModal() {
-  const projOpts = state.projects.map(p => `<option value="${esc(p.id)}">${esc(p.id)} — ${esc(p.name)}</option>`).join("");
-  const SOURCES = [
-    ["RFIs + review events", true], ["Submittals + review events", true], ["Project emails", true],
-    ["Site reports", true], ["Meeting minutes (SharePoint)", false], ["QA / drawing-review comments", false], ["Closeout notes", false],
-  ];
-  $("modalMount").innerHTML = `
-    <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mineModalTitle">
-        <h3 id="mineModalTitle">🤖 Mine for lessons</h3>
-        <p style="font-size:13px;color:var(--dim);line-height:1.6;margin-bottom:14px">
-          The extractor reads your existing project record and proposes lesson candidates, each citing the source record.
-          Candidates land here as <b>Needs review</b> — nothing enters firm knowledge until you approve it. No forms, no manual entry.
-        </p>
-        <div class="fieldset">
-          <label for="mine_project">Scope</label>
-          <input id="mine_project" list="mineProjList" placeholder="All projects (leave blank) or a SAPX number"/>
-          <datalist id="mineProjList">${projOpts}</datalist>
-        </div>
-        <label>Sources</label>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px">
-          ${SOURCES.map(([s,on]) => `<span class="pill ${on?"pill-green":"pill-gray"}">${on?"✓":"◷"} ${esc(s)}</span>`).join("")}
-        </div>
-        <p style="font-size:11px;color:var(--muted);margin-top:8px">✓ wired now · ◷ queued for the next extractor pass.</p>
-        <div class="status info" style="display:block;margin-top:14px;font-size:12px">
-          Self-serve runs go live once the <code>ANTHROPIC_API_KEY</code> Supabase secret is set for the Edge Function
-          (flagged with Sara — it's a key, not an Azure permission). The 3 lessons in your queue were mined from RFIs in this project's record.
-        </div>
-        <div class="modal-actions">
-          <button class="btn btn-primary" onclick="closeModal()">Got it</button>
-        </div>
-      </div>
-    </div>`;
   focusModal();
 }
 

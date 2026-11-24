@@ -385,10 +385,11 @@ const TABS = [
   { key: "discovery", label: "📥 Drive discovery" },
   { key: "library", label: "📚 Proposal Library" },
   { key: "accolades", label: "🏆 Accolades" },
+  { key: "qachecklist", label: "✅ QA Checklist" },
   { key: "guide", label: "📖 System Guide" },
   { key: "mcp",   label: "🤖 Claude / MCP" },
 ];
-const state = { tab: "signins", roster: null, staffCount: null, roles: null, backups: null, filing: null, filingFilter: "all",
+const state = { tab: "signins", qaRoutine: null, roster: null, staffCount: null, roles: null, backups: null, filing: null, filingFilter: "all",
                 integ: null, integProjects: null, integMaps: null, integFilter: "", tokenShown: false, feedTest: null,
                 sovOpen: null, sovMaps: null, sovMilestones: {},
                 permCatalog: null, permMatrix: null, permOverrides: null,
@@ -595,7 +596,7 @@ function render() {
   $("tabs").innerHTML = TABS.map(t =>
     `<button type="button" class="tab ${state.tab === t.key ? "active" : ""}" onclick="setTab('${t.key}')">${t.label}</button>`).join("");
   ({ signins: renderSignins, roles: renderRoles, backups: renderBackups, filing: renderFiling, integration: renderIntegration,
-     regions: renderRegions, discovery: renderDiscovery, library: renderLibrary, accolades: renderAccolades, guide: renderGuide, mcp: renderMcp })[state.tab]();
+     regions: renderRegions, discovery: renderDiscovery, library: renderLibrary, accolades: renderAccolades, qachecklist: renderQaChecklist, guide: renderGuide, mcp: renderMcp })[state.tab]();
   // Restore focus/caret if the focused element was rebuilt (cached renderers
   // set #view synchronously, so the replacement element exists by now).
   if (_focusId) {
@@ -1109,6 +1110,149 @@ async function renderBackups() {
     <div class="card">
       <div style="color:var(--muted);font-size:12px;margin-bottom:6px">DATED SNAPSHOTS (14-day retention)</div>
       ${(b.snapshots || []).map(s => `<span class="snapchip">${esc(s)}</span>`).join("") || '<div class="empty">None yet.</div>'}
+    </div>`;
+}
+
+// ── QA Checklist: the review routine ─────────────────────────────────────────
+// Preventable RFIs that no checklist item covers are the sign a check is
+// missing. "Run with Claude" records the request (pms_request_qa_routine) and
+// opens a Claude session with the routine prefilled; the session reads those
+// RFIs through the connector (start_checklist_routine) and stores PROPOSED
+// items (propose_checklist_items). Nothing reaches the checklist until an
+// admin approves a proposal here (pms_decide_qa_item_proposal), which numbers
+// the item, adds it, and tags the RFIs it rests on. A chat-button session only
+// loads a skill from the firm's claude.ai library, so the method travels in
+// the connector's start_checklist_routine answer, not in a skill.
+// Run state mirrors runState() in supabase/functions/pms-mcp/qaRoutine.js.
+const QA_ROUTINE_PROMPT = [
+  "Run the QA checklist review routine.",
+  "",
+  "Use the Setty PMS connector: call start_checklist_routine. It marks the run as started in the Admin Console and returns the preventable RFIs that no checklist item covers, the current checklist, earlier proposals with what an admin decided, and the method to follow. Group the RFIs that recur across projects, re-tag the ones an existing item already describes, and draft a checklist item for each remaining group. Save them with propose_checklist_items, even if there is nothing to propose. Do not add anything to the checklist yourself: an admin approves each proposal in the Admin Console. Then tell me what you proposed, what you re-tagged, and what you left out and why.",
+].join("\n");
+function qaRunState(run) {
+  if (!run) return { state: "never", label: "Never run", cls: "info" };
+  const mins = (iso) => Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (run.finished_at) return { state: "finished", label: "Finished " + rel(run.finished_at), cls: "ok" };
+  if (run.started_at) {
+    const m = mins(run.started_at);
+    return m >= 60
+      ? { state: "stalled", label: "Started " + rel(run.started_at) + " and not finished", cls: "bad" }
+      : { state: "running", label: "Claude is running it, started " + rel(run.started_at), cls: "ok" };
+  }
+  const m = mins(run.requested_at);
+  return m >= 10
+    ? { state: "not-started", label: "Requested " + rel(run.requested_at) + ", Claude has not started", cls: "bad" }
+    : { state: "waiting", label: "Requested " + rel(run.requested_at) + ", waiting for Claude", cls: "info" };
+}
+async function qaRoutineRequested() {
+  // The link itself opens Claude (a click, so no pop-up blocker); this records who asked.
+  try { await sb("POST", "/rest/v1/rpc/pms_request_qa_routine", {}); toast("Run requested. Press Enter in the Claude tab that opened.", "success"); }
+  catch (e) { toast("Claude opened, but the request was not recorded: " + e.message, "error"); }
+  state.qaRoutine = null; render();
+}
+async function qaDecideProposal(id, approve) {
+  let note = null;
+  if (approve) {
+    if (!confirm("Add this item to the QA checklist?\n\nEvery QA review will run it from now on, and the RFIs it rests on will be tagged to it.")) return;
+  } else {
+    note = prompt("Why is this rejected? (optional; the next run reads it so the same item is not proposed again)", "");
+    if (note === null) return;
+  }
+  try {
+    const r = await sb("POST", "/rest/v1/rpc/pms_decide_qa_item_proposal", { p_id: id, p_approve: approve, p_note: note });
+    toast(approve ? "Added to the checklist as " + (r && r.item_id) + "; " + ((r && r.rfis_tagged) || 0) + " RFIs tagged to it." : "Proposal rejected.", "success");
+  } catch (e) { toast((approve ? "Approve" : "Reject") + " failed: " + e.message, "error"); }
+  state.qaRoutine = null; render();
+}
+async function renderQaChecklist() {
+  const v = $("view");
+  if (!state.qaRoutine) {
+    v.innerHTML = '<div class="empty">Loading the checklist routine…</div>';
+    try {
+      const [runs, props, uncovered, items] = await Promise.all([
+        sb("GET", "/rest/v1/pms_qa_routine_runs?select=*&order=requested_at.desc&limit=10"),
+        sb("GET", "/rest/v1/pms_qa_item_proposals?select=*&order=created_at.desc&limit=100"),
+        sb("GET", "/rest/v1/pms_rfi_root_causes?select=project&item_type=eq.rfi&preventable=is.true&qa_item=is.null&limit=5000"),
+        sb("GET", "/rest/v1/pms_qa_checklist?select=item_id&enabled=is.true&limit=5000"),
+      ]);
+      state.qaRoutine = { runs: runs || [], props: props || [], uncovered: (uncovered || []).length,
+                          uncoveredProjects: new Set((uncovered || []).map(r => r.project)).size, items: (items || []).length };
+    } catch (e) {
+      v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}<br><span style="font-size:12px">If this says the table does not exist, the database change for the routine has not been applied yet.</span></div>`;
+      return;
+    }
+  }
+  const q = state.qaRoutine;
+  const last = q.runs[0] || null, st = qaRunState(last);
+  const lastDone = q.runs.find(r => r.finished_at) || null;
+  const open = q.props.filter(p => p.status === "proposed");
+  const decided = q.props.filter(p => p.status !== "proposed").slice(0, 20);
+  const arr = (x) => Array.isArray(x) ? x : [];
+  const who = (e) => esc(String(e || "").split("@")[0]);
+  const busy = st.state === "waiting" || st.state === "running";
+  v.innerHTML = `
+    <div class="card">
+      <div style="font-weight:700;margin-bottom:6px">Checklist review routine</div>
+      <div style="color:var(--dim);font-size:13px;line-height:1.55;margin-bottom:10px">
+        Reads the preventable RFIs that no checklist item covers, groups the kinds that recur across projects, and proposes a new
+        checklist item for each. Proposals wait below. Nothing is added to the checklist until an admin approves it here.
+      </div>
+      <div class="stat"><b>${q.uncovered}</b><span>preventable RFIs with no check, on ${q.uncoveredProjects} project${q.uncoveredProjects === 1 ? "" : "s"}</span></div>
+      <div class="stat"><b>${q.items}</b><span>items in the checklist</span></div>
+      <div class="stat"><b>${open.length}</b><span>proposal${open.length === 1 ? "" : "s"} waiting for a decision</span></div>
+      <div style="margin-top:8px;font-size:12.5px;color:var(--dim)">
+        Status: <span class="pill ${st.cls}">${esc(st.label)}</span>
+        ${last ? ` · requested by ${who(last.requested_by)}` + (last.started_by ? `, run by ${who(last.started_by)}` : "") : ""}
+        ${lastDone ? ` · Last completed run: ${esc(new Date(lastDone.finished_at).toLocaleString())} (${rel(lastDone.finished_at)}), read ${lastDone.uncovered_count ?? "?"} RFIs, proposed ${lastDone.proposals_count ?? 0}${lastDone.refused_count ? ", " + lastDone.refused_count + " refused by the rules" : ""}` : " · No run has completed yet"}
+      </div>
+      ${st.state === "not-started" ? `<div style="margin-top:6px;font-size:12.5px;color:var(--red)">The Claude tab was probably closed before the request was sent. Run it again and press Enter in the tab that opens.</div>` : ""}
+      ${st.state === "stalled" ? `<div style="margin-top:6px;font-size:12.5px;color:var(--red)">The chat probably stopped part way. Type "continue" in that Claude tab, or run it again.</div>` : ""}
+      <div style="margin-top:12px">
+        <a class="btn btn-primary" style="text-decoration:none;display:inline-block" href="https://claude.ai/new?q=${encodeURIComponent(QA_ROUTINE_PROMPT)}" target="_blank" rel="noopener noreferrer" onclick="qaRoutineRequested()">▶ ${busy ? "Run again with Claude" : "Run with Claude"}</a>
+        <button class="btn" onclick="state.qaRoutine=null;render()">↻ Refresh</button>
+        <span style="color:var(--muted);font-size:12px">Opens your Claude seat with the routine written out. Press Enter there. It takes several minutes; refresh this page to see the result.</span>
+      </div>
+    </div>
+    <div class="card">
+      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">PROPOSED ITEMS WAITING FOR A DECISION</div>
+      ${open.map(p => `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px">
+          <div style="font-weight:600;line-height:1.45">${esc(p.text)}</div>
+          <div style="margin-top:6px;font-size:12.5px;color:var(--dim)">
+            Rests on <b>${p.rfi_count}</b> preventable RFI${p.rfi_count === 1 ? "" : "s"} on <b>${p.project_count}</b> project${p.project_count === 1 ? "" : "s"}
+            · ${esc(p.automation)} · ${esc(arr(p.phases).join(", ") || "CD, Permit, Bid, Addendum")}
+            · proposed ${rel(p.created_at)}${p.created_by ? " in a run by " + who(p.created_by) : ""}
+          </div>
+          ${p.rationale ? `<div style="margin-top:6px;font-size:13px">${esc(p.rationale)}</div>` : ""}
+          <ul style="margin:8px 0 0 18px;padding:0;font-size:13px;line-height:1.5">${arr(p.details).map(d => `<li>${esc(d)}</li>`).join("")}</ul>
+          ${p.automation_hint ? `<div style="margin-top:6px;font-size:12px;color:var(--muted)">How a review does it: ${esc(p.automation_hint)}</div>` : ""}
+          <details style="margin-top:6px;font-size:12px;color:var(--dim)"><summary style="cursor:pointer">The RFIs behind it</summary>
+            ${arr(p.rfis).map(r => `<span class="snapchip">${esc(r.project)} ${esc(r.number)}</span>`).join(" ")}</details>
+          <div style="margin-top:10px">
+            <button class="btn btn-primary" onclick="qaDecideProposal(${Number(p.id)}, true)">✓ Approve and add to the checklist</button>
+            <button class="btn" onclick="qaDecideProposal(${Number(p.id)}, false)">✕ Reject</button>
+          </div>
+        </div>`).join("") || '<div class="empty">Nothing is waiting. Run the routine to look for new items.</div>'}
+    </div>
+    <div class="card">
+      <div style="color:var(--muted);font-size:12px;margin-bottom:6px">RECENT RUNS</div>
+      <table><thead><tr><th>Requested</th><th>By</th><th>Status</th><th>RFIs read</th><th>Proposed</th><th>What it found</th></tr></thead>
+      <tbody>${q.runs.map(r => { const s2 = qaRunState(r); return `
+        <tr><td title="${esc(r.requested_at)}">${rel(r.requested_at)}</td><td>${who(r.requested_by)}</td>
+            <td><span class="pill ${s2.cls}">${esc(s2.state)}</span></td>
+            <td>${r.uncovered_count ?? ""}</td><td>${r.proposals_count ?? ""}${r.refused_count ? " (+" + r.refused_count + " refused)" : ""}</td>
+            <td style="font-size:12px;color:var(--dim)">${esc(String(r.summary || "").slice(0, 400))}</td></tr>`; }).join("") ||
+        '<tr><td colspan="6" class="empty">No runs yet.</td></tr>'}</tbody></table>
+    </div>
+    <div class="card">
+      <div style="color:var(--muted);font-size:12px;margin-bottom:6px">DECIDED PROPOSALS</div>
+      <table><thead><tr><th>Decision</th><th>Item</th><th>Proposal</th><th>By</th><th>When</th><th>Note</th></tr></thead>
+      <tbody>${decided.map(p => `
+        <tr><td><span class="pill ${p.status === "approved" ? "ok" : "bad"}">${esc(p.status)}</span></td><td>${esc(p.item_id || "")}</td>
+            <td style="font-size:12.5px">${esc(String(p.text || "").slice(0, 160))}</td><td>${who(p.decided_by)}</td>
+            <td title="${esc(p.decided_at || "")}">${p.decided_at ? rel(p.decided_at) : ""}</td>
+            <td style="font-size:12px;color:var(--dim)">${esc(p.decision_note || "")}</td></tr>`).join("") ||
+        '<tr><td colspan="6" class="empty">No proposals have been decided yet.</td></tr>'}</tbody></table>
     </div>`;
 }
 
