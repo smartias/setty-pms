@@ -151,6 +151,17 @@ stopped and what was not done.
 
 ## Step 0 — Setup
 
+**Start with `get_qa_review_packet`.** One call returns most of what Steps 0
+to 2 need: the set and its phase, sheets by discipline, how much is indexed
+and which files have no text, the sheets whose notes hand work to others or
+leave a decision open, the other disciplines' drawings on file with their
+dates, the open findings to back-check, and what the RFI log says to look for
+on a job like this. When the set under review is not the current issued one
+(a QAQC copy, a named folder), pass it as `set`. The packet finds things; it
+does not read drawings. Everything below still applies: use the packet's
+answers where it has them, and do the step by hand where it reports a gap
+(`coverage.gaps`), an empty set, or a background as not found.
+
 ### Where in the lifecycle — say it, and let it shape the review
 
 QA is not one event. Identify which moment this review serves and state it
