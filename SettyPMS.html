@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-24-pms-v211-ca-unsaved-changes";
+    window.__appVersion = "2026-11-24-pms-v212-ca-status-rules";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -86,6 +86,14 @@
 <script type="module">
   import * as PrimeCa from "./primeCa.js";
   window.PrimeCa = PrimeCa;
+</script>
+<!-- RFI / submittal status rules (stamp to status when issued, status to date,
+     overdue), shared with the Tracker. Own block, same reason: without it the
+     page keeps working and only the automatic dates and stamp-driven status
+     are skipped. -->
+<script type="module">
+  import * as CaStatus from "./caStatus.js";
+  window.CaStatus = CaStatus;
 </script>
 <!-- Construction Changes tab (ASI / PR / CCD / COR / CO). Own block, same reason. -->
 <script type="module">
@@ -11136,9 +11144,14 @@ function isOverdue(item) {
   // (connector admin/ca-items-intake): never counted as overdue, so a
   // mis-read email can't raise an alarm. See IntakeBadge.
   if (item.intakeReviewed === false) return false;
-  const closed = ["Closed", "Void", "Responded", "Returned"];
+  // The rule lives in caStatus.js (shared with the Tracker): overdue starts
+  // the day after the due date, and never while the contractor has the ball
+  // (Resubmittal Required). Below is the fallback if that module did not load.
+  if (window.CaStatus) return window.CaStatus.isOverdue(item);
+  const closed = ["Closed", "Void", "Responded", "Returned", "Resubmittal Required"];
   if (closed.includes(item.status)) return false;
-  return new Date(item.dueDate + "T00:00:00") < new Date();
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return new Date(item.dueDate + "T00:00:00") < today;
 }
 
 // Items the connector's scheduled intake appended from a Procore email carry
@@ -11288,8 +11301,9 @@ function IntakeStatusBadge({ item }) {
 // item is just noise.
 //
 // Which statuses mean "the clock has stopped" per type:
-const RFI_CLOSED_STATUSES = ["Closed", "Void", "Responded", "Returned"];
-const SUBMITTAL_CLOSED_STATUSES = ["Returned", "Void"];
+// Same lists as caStatus.js RFI_DONE_STATUSES / SUBMITTAL_DONE_STATUSES.
+const RFI_CLOSED_STATUSES = ["Responded", "Closed", "Void"];
+const SUBMITTAL_CLOSED_STATUSES = ["Returned", "Resubmittal Required", "Void"];
 
 // Sara — "due soon" threshold (calendar days). Anything inside this window but
 // not yet overdue shows amber instead of green. Tune to taste.
@@ -11560,7 +11574,11 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const [portalReturnStatus, setPortalReturnStatus] = React.useState("idle"); // idle | working | done | error
   const [portalReturnMsg, setPortalReturnMsg]       = React.useState("");
 
-  function setF(k, v) { setForm(f => ({ ...f, [k]: v })); }
+  // Every field edit passes through the shared status rules (caStatus.js): a
+  // status set by hand to Responded / Closed / Returned / Resubmittal Required
+  // fills its date when that date is empty.
+  function withCaRules(prev, next) { return window.CaStatus ? window.CaStatus.applyStatusRules(prev, next, type) : next; }
+  function setF(k, v) { setForm(f => withCaRules(f, { ...f, [k]: v })); }
 
   // ── Sub routing when Setty is prime (primeCa.js) ──────────────────────────
   // form.subRouting = { subId, firm, sentAt, dueDate, respondedAt }. The sub's
@@ -11882,7 +11900,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       + li("The contractor's " + (isRFI ? "question" : "submittal") + " and attachments are in "
           + (form.spFolderUrl ? "<a href='" + String(form.spFolderUrl).replace(/'/g, "%27") + "'>the SharePoint folder</a>" : "the SharePoint folder (no link on the item yet; ask " + (esc(pmName) || "the sender") + ")") + ".")
       + li(isRFI ? "Write your answer in the <b>Response</b> field. <i>Copy into Response</i> takes the Claude suggestion if it is right; edit it until it is yours. Anything internal goes in <b>Internal notes</b>, which never leave the office."
-                 : "Pick the <b>Stamp</b> and write the <b>Review comments</b> that go back to the contractor. The status follows the stamp. Anything internal goes in <b>Internal notes</b>, which never leave the office.")
+                 : "Pick the <b>Stamp</b> and write the <b>Review comments</b> that go back to the contractor. When the return is sent the status follows the stamp (Revise and Resubmit or Rejected becomes Resubmittal Required). Anything internal goes in <b>Internal notes</b>, which never leave the office.")
       + li("When your answer is final, either issue it yourself — the item's <b>Issue it</b> panel shows how for this job (" + esc(issueGuide.where) + ") — or press <b>Answer ready — hand to CA</b> and " + (esc(pmName) || "the CA coordinator") + " issues it. Issuing sets the status to " + (isRFI ? "Responded" : "Returned") + ".")
       + li("If this is not yours, or you cannot meet the date, tell " + (esc(pmName) || "the project manager") + " today rather than on the due date.")
       + "</ol>";
@@ -11988,6 +12006,11 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       // Opened after awaits, so a pop-up blocker may stop it; the draft is in Drafts either way.
       let opened = null;
       if (draft.webLink) { opened = window.open(draft.webLink, "_blank"); if (opened) opened.opener = null; }
+      // Same as Draft Response: the answer now exists as a draft, so the item
+      // is Responded, dated and saved at once.
+      const cur = formRef.current;
+      const marked = { ...cur, status: "Responded", dateResponded: cur.dateResponded || new Date().toISOString().slice(0, 10) };
+      setForm(marked); persist(marked);
       setEmailStatus("done");
       setEmailMsg("✓ Reply to the Procore email drafted" + (opened ? " (opened in Outlook on the web)" : ": open it from your Outlook Drafts folder") + ". Check it and press Send; Procore logs it as the response.");
     } catch (e) { setEmailStatus("error"); setEmailMsg("✗ " + e.message + " (the response is copied to your clipboard)"); }
@@ -12055,7 +12078,10 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       // without Save must not leave the item Open and overdue.
       const today = new Date().toISOString().slice(0, 10);
       const cur = formRef.current;
-      const next = { ...cur, ...(isRFI ? { status: "Responded", dateResponded: today } : { status: "Returned", dateReturned: today }) };
+      // A stamp that sends it back (Revise and Resubmit / Rejected) makes it
+      // Resubmittal Required, not Returned (caStatus.js issuedStatus).
+      const issued = window.CaStatus ? window.CaStatus.issuedStatus(type, cur.stamp) : (isRFI ? "Responded" : "Returned");
+      const next = { ...cur, status: issued, ...(isRFI ? { dateResponded: today } : { dateReturned: today }) };
       if (isPrimeJob && !cur.issuedAt) next.issuedAt = new Date().toISOString();
       setForm(next); persist(next);
       setEmailStatus("done");
