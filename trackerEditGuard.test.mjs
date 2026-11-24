@@ -96,3 +96,31 @@ test("the editor uses the guard: close asks first, save is single-flight and wri
     assert.match(src, /saveAssignment\(kind\);/, "the assignment email records the assignment");
   });
 }
+
+// ── hardening and small behaviours (batch 4) ────────────────────────────────
+{
+  const grab = (re) => { const m = re.exec(src); assert.ok(m, "not found: " + re); return m[0]; };
+  const esc = new Function(grab(/const esc = s => .*;/) + "\nreturn esc;")();
+  const csvCell = new Function(grab(/function csvCell\(v\)\{.*\}/) + "\nreturn csvCell;")();
+
+  test("esc covers the apostrophe, so text is safe inside single-quoted attributes", () => {
+    assert.equal(esc(`O'Brien & "Sons" <b>`), "O&#39;Brien &amp; &quot;Sons&quot; &lt;b&gt;");
+    assert.equal(esc(null), "");
+  });
+
+  test("a spreadsheet cell that would run as a formula is exported as text", () => {
+    assert.equal(csvCell("=HYPERLINK(\"http://x\",\"click\")"), `"'=HYPERLINK(""http://x"",""click"")"`);
+    assert.equal(csvCell("+1 212 555 0100"), "'+1 212 555 0100");
+    assert.equal(csvCell("@mention"), "'@mention");
+    assert.equal(csvCell("-see note"), "'-see note");
+    assert.equal(csvCell("-12.5"), "-12.5", "a negative number stays a number");
+    assert.equal(csvCell("2026-11-24"), "2026-11-24"); assert.equal(csvCell("Duct, at beam"), '"Duct, at beam"');
+  });
+
+  test("the page reopens on the last project, drops stale loads, and Ctrl+Enter saves", () => {
+    assert.match(src, /comboSelect\(last&&PROJECTS\.some\(p=>p\.id===last\)\?last:"__ALL__"\)/);
+    assert.equal(src.split("if(seq!==LOAD_SEQ) return;").length - 1, 2, "both loaders drop a response that is no longer the newest");
+    assert.match(src, /e\.key==="Enter"&&\(e\.ctrlKey\|\|e\.metaKey\)&&EDIT&&EDIT\.base/);
+    assert.ok(!src.includes('"Error: "+msg'), "a notice is not prefixed Error:");
+  });
+}
