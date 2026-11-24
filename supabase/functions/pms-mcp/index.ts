@@ -101,6 +101,8 @@ import { checkAgreement } from "./documentAgreement.js";
 // check_tag_schedule_coverage (QA item qa-622): every tag on a plan is scheduled, and the reverse. Pure; see its tests.
 import { tagCoverage } from "./tagCoverage.js";
 // check_deferred_decisions (QA item qa-637): where the documents leave a decision to someone else. Pure; see its tests.
+// check_revision_carried (QA item qa-634): a revision's tag changes against the sheets not re-issued. Pure; see its tests.
+import { revisionCarried } from "./revisionCarried.js";
 // check_controls_coverage (QA item qa-633): scheduled equipment the controls sheets never mention. Pure; see its tests.
 import { controlsCoverage, BMS_CONDITIONAL_PG } from "./controlsCoverage.js";
 import { pgPattern as deferredPgPattern, scanText as deferredScanText, groupHits as deferredGroupHits } from "./deferredDecisions.js";
@@ -1543,7 +1545,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-controls-coverage";
+const BUILD = "2026-11-25-qa-auto-checks";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.32.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -14156,6 +14158,73 @@ mcp.tool("check_controls_coverage", {
         : r.flagged ? `${r.flagged} equipment famil${r.flagged === 1 ? "y is" : "ies are"} on no controls sheet. For each, find its thermostat or switch on a plan, or record it under qa-633. ` : "Every scheduled family checked is mentioned on a controls sheet. ") +
         (bmsConditional.length ? `${bmsConditional.length} place(s) hedge on the BMS: each is a finding unless the set says elsewhere whether there is one. ` : "") +
         "This reads text: it cannot see whether a thermostat is drawn, and it does not cover untagged dampers, detectors or the controls specification. Say so in the coverage.",
+    });
+  },
+});
+
+// ─── REVISION CARRIED: check_revision_carried (QA item qa-634) ───────────────
+// For one addendum or bulletin folder: each sheet against its previous
+// revision, and where the tags it lost or gained are still (or not yet) shown
+// (pms_set_tag_changes, migration 20261125160000). What counts is decided in
+// revisionCarried.js. Read-only.
+mcp.tool("check_revision_carried", {
+  description:
+    "CHECK THAT A REVISION'S CHANGES WERE CARRIED TO THE SHEETS NOT RE-ISSUED (QA checklist item qa-634), for one " +
+    "addendum, bulletin or conformed-set folder in one call. It compares the indexed text of every sheet in that " +
+    "folder with the same sheet's previous issued revision and returns: `removedStillShown`, equipment tags that " +
+    "were REMOVED from the sheets of this set while a sheet NOT in the set still shows them at its current " +
+    "revision (the bulletin that took dampers off the fire alarm sheet and left their power on the electrical " +
+    "sheet); and `addedOnOneSheet`, tags ADDED on one sheet of the set that no other sheet in the project shows " +
+    "(new equipment with no schedule row, power or riser entry). Run it once at the start of qa-634 on the " +
+    "revision's folder. Pass subfolder exactly as list_project_documents prints it, e.g. 'Outgoing/2025-01-21_" +
+    "Addendum #1' or the QAQC folder of a bulletin not yet issued. HOW IT ORDERS REVISIONS: by the date in each " +
+    "set's folder name (2025-01-21_...), so a folder with no date in its name cannot be compared. LIMITS, say " +
+    "them in the coverage: it sees HYPHENATED TAGS only; a change to a note, a size, a quantity, a grid or room " +
+    "name, a detail or a specification section is NOT found here and is still checked by hand; a tag moved from " +
+    "one sheet of the set to another is not reported; it reads text, so scanned sheets count only where OCR " +
+    "indexed them; and both the set and the earlier sets must be INDEXED (search_drawings indexOnly:true). A " +
+    "result with no tag changes does not mean the revision is clean: most bulletins change things that are not " +
+    "tags. Every result is two sheets to open (view_drawing) before recording it under qa-634. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    subfolder: z.string().describe("The revision's folder, spelled as list_project_documents reports it, e.g. 'Outgoing/2026-04-17_Bulletin #13'."),
+  }),
+  handler: async ({ projectNumber, subfolder }) => {
+    const folder = String(subfolder || "").trim().replace(/^\/+|\/+$/g, "");
+    if (!folder) return asText({ error: "Pass the revision's folder as subfolder.", nextStep: "list_project_documents shows the set folders under Outgoing." });
+    if (!/\d{4}[-_]\d{2}[-_]\d{2}/.test(folder)) {
+      return asText({ error: `"${folder}" has no date in its name (YYYY-MM-DD), so it cannot be placed before or after the other sets.`,
+        nextStep: "Do this revision by hand: search_drawings on its subfolder, then each changed tag across the current sets (history.absentAt, stillPresentAtLatest)." });
+    }
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const numPrefix = String(project).toLowerCase().trim();
+    let filesPending = 0;
+    try {
+      const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+      filesPending = known.filter((k) => k.status === "pending").length;
+    } catch { /* coverage is advisory */ }
+    let rows: any[];
+    try { rows = (await sbRpc("pms_set_tag_changes", { p_prefix: numPrefix, p_folder: folder })) || []; }
+    catch (e) {
+      const m = String((e as any)?.message ?? e);
+      return asText({ project, error: /404|PGRST202|does not exist/.test(m) ? "The revision check is not available yet: the database has not run migration 20261125160000." : `Revision check failed: ${m.slice(0, 240)}`,
+        nextStep: "search_drawings on the revision's subfolder, then each changed tag across the current sets, still does it by hand." });
+    }
+    const r = revisionCarried(rows);
+    if (!r.sheetsInSet) {
+      return asText({ project, set: folder, ...r, error: "No indexed sheet was found in that folder.",
+        nextStep: "Check the folder spelling with list_project_documents, and index it with search_drawings (subfolder, indexOnly:true)." });
+    }
+    return asText({
+      project, set: folder, ...(filesPending ? { coverage: { filesPending, note: "Index incomplete: a sheet not read yet cannot be compared or searched. search_drawings indexOnly:true fills it." } } : {}), ...r,
+      note: (r.flagged ? `${r.flagged} tag(s) were removed in this set and are still on sheets that were not re-issued. Open both sheets for each before recording it under qa-634. ` : "No removed tag is still shown on a sheet outside the set. ") +
+        (r.addedOnOneSheet.length ? `${r.addedOnOneSheet.length} tag(s) were added on one sheet only: confirm nothing else needs them. ` : "") +
+        (r.newSheets ? `${r.newSheets} sheet(s) in the set have no earlier revision to compare with. ` : "") +
+        (!r.sheetsWithTagChanges ? "No tag was added or removed on any sheet, which does NOT mean nothing changed: " : "This covers tags only: ") +
+        "changed notes, sizes, quantities, grid and room names, details and specification sections are not seen here and are still checked by hand. Say so in the coverage.",
     });
   },
 });

@@ -999,6 +999,23 @@ call for a whole set, from the drawing text index. Read-only.
   `pms_sheet_phrase_hits`.
 - qa-633 stays `assisted`: whether a thermostat is drawn, untagged dampers and
   detectors, and the controls specification still need a reviewer.
+## Revision carried (`check_revision_carried`, QA item qa-634)
+
+Whether an addendum's or bulletin's tag changes were carried to the sheets
+that were not re-issued. One call for one set folder. Read-only.
+
+- `pms_set_tag_changes` (migration `20261125160000`) compares each sheet in
+  the folder with the same sheet's previous issued revision (sets are ordered
+  by the date in their folder name) and returns each tag added or removed,
+  with the other sheets of the set and the sheets outside it that show the tag
+  at their current revision.
+- `revisionCarried.js` (pure; `revisionCarried.test.mjs`): `removedStillShown`
+  (removed from the set's sheets, still on a sheet not re-issued) and
+  `addedOnOneSheet` (added on one sheet, on no other sheet in the project). A
+  tag moved between two sheets of the set is not reported.
+- Tags only. Changed notes, sizes, quantities, backgrounds and specification
+  sections are not seen, so qa-634 stays `assisted`.
+
 ## Space fit (`check_space_fit`, QA items qa-614 and qa-070; 1.32.0)
 
 Whether what is drawn fits the space it is drawn in. The reviewer reads the

@@ -773,7 +773,12 @@ is in the report header, and spend the budget accordingly:
      room unit) is a finding.
   6. *When the spec has no sequence section,* the drawings are the only
      sequence. Record the dangling spec reference once and carry on.
-- **qa-634 A revision is carried to every sheet it touches.**
+- **qa-634 A revision is carried to every sheet it touches.** Start with
+  `check_revision_carried` on the revision's folder: one call compares
+  every sheet in it with its previous revision and lists the tags removed
+  that sheets not re-issued still show, and tags added on one sheet only. It
+  sees hyphenated tags and nothing else, so the steps below still apply to
+  every change that is a note, a size, a quantity or a background.
   1. *Start from the narrative.* List every changed item the bulletin or
      addendum narrative names. Narratives are often Word files, which
      `read_document` cannot read: get them with `download_document`.
