@@ -157,6 +157,27 @@ for (const hint of autoHints) {
   for (const id of ids) assert.ok(skill.includes(`**${id} `), `skill has no method for ${id}`);
 }
 
+// One more RFI history item (qa-639, 2026-11-24): fire alarm against
+// mechanical. qa-638 (schedule arithmetic) took the other kind found in the
+// same reading, so this file adds one row only.
+{
+  const b = readFileSync(join(here, "../../migrations/20261124210000_qa_fa_mechanical_agreement_item.sql"), "utf8");
+  assert.ok(b.includes("('qa-639','deliverable-qa','RFI History',1890,"), "missing qa-639");
+  assert.ok(!b.includes("('qa-638'"), "qa-638 belongs to 20261124200000_qa_schedule_arithmetic_item.sql");
+  assert.equal(b.split("::jsonb,'rfi-lesson','qa-rfi-review-2026-11-24-fa-mechanical'").length - 1, 1);
+  assert.ok(b.includes("on conflict (item_id) do nothing;"));
+  const details = [...b.matchAll(/\n '(\[.*\])'::jsonb,\n 'assisted'/g)].map((m) => JSON.parse(m[1].replace(/''/g, "'")));
+  assert.equal(details.length, 1);
+  assert.ok(details[0].length >= 4);
+  const phases = [...b.matchAll(/\n '(\[[^\n]*\])'::jsonb,'rfi-lesson'/g)].map((m) => JSON.parse(m[1]));
+  assert.equal(phases.length, 1);
+  for (const x of phases[0]) assert.ok(["DD", "CD", "Permit", "Bid", "Addendum"].includes(x), `unknown phase ${x}`);
+  assert.ok(!b.includes("\r"), "migrations are LF");
+  const skill = readFileSync(join(here, "../../../.claude/skills/qa-coordination-review/SKILL.md"), "utf8");
+  assert.ok(skill.includes("**qa-639 "), "skill has no method for qa-639");
+  assert.equal(skill.split("**qa-638 ").length - 1, 1, "one method for qa-638, the schedule arithmetic one");
+}
+
 // Design narrative as read (Step 5b): the review writes a brief account of the
 // design from the drawings alone and stores it on the review row, with the
 // item-by-item checklist results; the QA tab shows both. No report document
