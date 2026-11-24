@@ -91,3 +91,24 @@ test("the keyword step finds matches through the index and caps what it ranks", 
   assert.ok(!/drop function/i.test(mig), "replaced in place, so its grants stay");
   assert.ok(!mig.includes("\r"), "migrations are LF");
 });
+
+// The snippet is cut from the first 20,000 characters of a body (migration
+// 20261124130000): cleaning and highlighting 25 threads of ~124,000 characters
+// each took most of an 8-second search.
+test("the snippet step works on a capped body, and nothing else changes", () => {
+  const body = (file, start) => {
+    const s = readFileSync(new URL("../../migrations/" + file, import.meta.url), "utf8");
+    const a = s.indexOf(start);
+    return s.slice(a, s.indexOf("$$;", a) + 3);
+  };
+  const before = body("20261124100000_emails_search_sender_direction.sql", "create function public.search_project_emails(");
+  const after = body("20261124130000_emails_search_snippet_cap.sql", "create or replace function public.search_project_emails(");
+  const undo = after
+    .replace("create or replace function public.search_project_emails(", "create function public.search_project_emails(")
+    .replace("           -- Snippet source only. Capped: see the header of 20261124130000.\n", "")
+    .replace("left(e.body_text, 20000) as body_text,", "e.body_text,");
+  assert.equal(undo, before, "the cap is the only difference from the function it replaces");
+  assert.equal(after.split("body_text").length - 1, before.split("body_text").length - 1 + 1, "body_text is read in one place");
+  // body_text feeds the snippet only: every other use is the alias from `scored`.
+  assert.ok(!/e\.body_text(?!, 20000)/.test(after), "no step reads the uncapped body");
+});
