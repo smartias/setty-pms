@@ -85,6 +85,17 @@ response wording on any contested RFI or rejected submittal.
      (no folder on the record, an image-only attachment, a spec section that is
      not on the register, no sheet named). Each gap is either a call you still
      have to make from the steps below, or a line in your coverage note.
+   - For a submittal, **`defaultResponse`** holds the firm's standing review
+     notes for that spec section (from the submittal-standards folders in
+     the templates project, e.g. "Electrical Submittal Standards"). Start the suggested response from
+     them, and treat them as a starting point only: keep the lines that apply
+     to what was actually submitted, check each against the cut sheet and the
+     spec, and add what the submittal itself calls for. Text in parentheses
+     such as "(Reminder to check.)" and scope tags such as "(Base Building)"
+     are notes to YOU: act on them, and never let them into the suggested
+     response. The stamp named in the file is the usual outcome, not a
+     decision: your suggested stamp follows from what you find. If no default
+     matches, the gap says so; review from the spec and drawings alone.
    - Do not repeat what the packet already holds: no `read_rfi_submittal`,
      `list_project_documents`, `read_document`, `get_current_set`,
      `trace_references` or `read_email` for material it returned.

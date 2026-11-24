@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   buildCaReviewPacket, pickFilesToRead, fileRank, clipToBudget, specSectionsIn, matchSpecs,
-  caFamilyRoot, relatedItems, resolveSheets, PACKET_LIMITS,
+  caFamilyRoot, relatedItems, resolveSheets, PACKET_LIMITS, matchDefaultResponses, defaultFileSections, defaultFileWords, isSubmittalStandardsFolder,
 } from "./caReviewPacket.ts";
 
 const here = new URL("./", import.meta.url);
@@ -163,6 +163,84 @@ test("packet: attachment text stays inside the shared budget", async () => {
   const total = p.files.reduce((n, f) => n + (f.text ? f.text.length : 0), 0);
   assert.ok(total <= PACKET_LIMITS.charsAllFiles + 6 * 60, "total " + total);
   assert.ok(p.files.every((f) => f.truncated));
+});
+
+// ── firm default responses ──────────────────────────────────────────────────
+// The real file names in the folder (November 2026).
+const DEFAULTS = ["017823 O & M Manuals - Architectural & LED Interior Lighting.docx", "017823 O & M Manuals - Disconnect Switches.docx",
+  "017823 O & M Manuals - Enclosed Busway.docx", "017823 O & M Manuals - Fire Alarm System.docx", "017823 O & M Manuals - Generator.docx",
+  "017823 O & M Manuals - Lighting Control Devices.docx", "017823 O & M Manuals - Panel boards.docx", "017823 O & M Manuals - Surge Protection Devices.docx",
+  "017823 O & M Manuals - Switchboards Warranty.docx", "017823 O & M Manuals - Switchboards.docx", "017823 O & M Manuals - Transfer Switches.docx",
+  "017823 O & M Manuals - Transformers.docx", "017823 O & M Manuals - VFDs Warranty.docx", "017823 O & M Manuals - VFDs.docx", "017823 O & M Manuals.docx",
+  "142100 Elevator.docx", "213113 Fire Pump and Jockey Pump.docx", "260519 Low Voltage Electrical Power Conductors & Cables.docx", "260526 Grounding & Bonding.docx",
+  "260529 Hangers & Supports.docx", "260533 Raceways and Boxes.docx", "260543 Underground Ducts and Raceways.docx", "260544 Sleeves & Sleeve Seals.docx",
+  "260553 Electrical ID.docx", "260573 & 260574 Short Circuit Coordination & Arc Flash Study.docx", "262200 Transformers.docx", "262416 Panelboards.docx",
+  "262726 Wiring Devices.docx", "262813 Fuses.docx", "262816 Safety Switch & Enclosed Circuit Breaker.docx", "262923 VFD.docx", "263100 PV.docx",
+  "263213 Generator.docx", "263353 UPS.docx", "263600 ATS.docx", "264113 Lightning Protection for Structure.docx", "265100 & 265600 Lighting.docx",
+  "273000 Two-Way Communication System.docx", "283111 Fire Alarm.docx", "Equipment Discrepancy.docx", "Misc Power Equipment.docx", "Qualifications.docx",
+  "Submeter.docx", "Surge Protection Device.docx", "Switchboard.docx", "Utility CT and Transocket.docx"].map((name) => ({ name, itemId: "d|" + name, path: "Submittal Default Responses" }));
+const pick = (item) => matchDefaultResponses(DEFAULTS, item).map((m) => m.file.name);
+
+test("default response: file names give their section numbers and words", () => {
+  assert.deepEqual(defaultFileSections("260573 & 260574 Short Circuit Coordination & Arc Flash Study.docx"), ["260573", "260574"]);
+  assert.deepEqual(defaultFileSections("Switchboard.docx"), []);
+  assert.deepEqual(defaultFileWords("017823 O & M Manuals - Transfer Switches.docx"), ["transfer", "switch"]);
+});
+
+test("default response: matched by spec section, however the record writes it", () => {
+  assert.deepEqual(pick({ specSection: "26 24 16", description: "Panelboards" }), ["262416 Panelboards.docx"]);
+  assert.deepEqual(pick({ specSection: "262416" }), ["262416 Panelboards.docx"]);
+  assert.deepEqual(pick({ specSection: "26 05 74", description: "Arc flash study" }), ["260573 & 260574 Short Circuit Coordination & Arc Flash Study.docx"]);
+  assert.deepEqual(pick({ specSection: "26 56 00.13", description: "Exterior lighting" }), ["265100 & 265600 Lighting.docx"]);
+  assert.equal(matchDefaultResponses(DEFAULTS, { specSection: "28 31 11" })[0].matchedOn, "spec section 283111");
+});
+
+test("default response: several files for one section narrow by the description, with the general notes", () => {
+  assert.deepEqual(pick({ specSection: "01 78 23", description: "O&M Manual - Generator" }), ["017823 O & M Manuals - Generator.docx", "017823 O & M Manuals.docx"]);
+  assert.deepEqual(pick({ specSection: "01 78 23", description: "Operation and maintenance data" }), ["017823 O & M Manuals.docx"]);
+  assert.deepEqual(pick({ specSection: "01 78 23", description: "O&M - Switchboards warranty" }), ["017823 O & M Manuals - Switchboards Warranty.docx", "017823 O & M Manuals.docx"]);
+});
+
+test("default response: with no file for the section, the equipment name decides", () => {
+  assert.deepEqual(pick({ specSection: "26 24 13", description: "Switchboards - shop drawings" }), ["Switchboard.docx"]);
+  assert.deepEqual(pick({ specSection: "26 43 13", description: "Surge protection devices" }), ["Surge Protection Device.docx"]);
+  assert.deepEqual(pick({ description: "Electrical contractor qualifications" }), ["Qualifications.docx"]);
+});
+
+test("default response: nothing is guessed for a section the folder does not cover", () => {
+  assert.deepEqual(pick({ specSection: "23 09 23", description: "VAV boxes and controls" }), []);
+  assert.deepEqual(pick({ specSection: "22 11 16", description: "Domestic water piping" }), []);
+  assert.deepEqual(pick({}), []);
+  // A section number wins over a name: the generator SECTION is not the O&M file.
+  assert.deepEqual(pick({ specSection: "26 32 13", description: "Generator" }), ["263213 Generator.docx"]);
+});
+
+test("packet: a submittal carries the default response; an RFI does not ask for it", async () => {
+  let asked = 0;
+  const lib = async () => { asked++; return { found: true, folderUrl: "https://sp/defaults", files: DEFAULTS }; };
+  const { d } = deps({ defaultResponses: lib, sourceEmail: async () => null, fileText: async (f) => ({ text: f.name.startsWith("262416") ? "Approved as Noted\nProvide copper bussing (Reminder to check.)" : "cut sheet" }) });
+  const sub = await buildCaReviewPacket(d, { ...ARGS, type: "submittal", item: { id: "s", number: "SUB-9", specSection: "26 24 16", description: "Panelboards" }, itemTexts: [["description", "Panelboards"]] });
+  assert.equal(sub.defaultResponse.matches[0].name, "262416 Panelboards.docx");
+  assert.match(sub.defaultResponse.matches[0].text, /copper bussing/);
+  assert.match(sub.defaultResponse.note, /notes to the\s+reviewer|notes to the reviewer/);
+  assert.ok(sub.coverage.included.includes("firm default response"));
+  const rfi = await buildCaReviewPacket(d, ARGS);
+  assert.equal(rfi.defaultResponse, undefined); assert.equal(asked, 1);
+});
+
+test("packet: says so when no default matches, or the folder is missing", async () => {
+  const args = { ...ARGS, type: "submittal", item: { id: "s", number: "SUB-1", specSection: "23 09 23", description: "VAV" }, itemTexts: [["description", "VAV"]] };
+  const a = await buildCaReviewPacket(deps({ defaultResponses: async () => ({ found: true, files: DEFAULTS }), sourceEmail: async () => null }).d, args);
+  assert.ok(a.coverage.gaps.some((g) => /No firm default response matches this submittal \(spec 23 09 23\); the firm's submittal standards hold 46 file/.test(g)));
+  const b = await buildCaReviewPacket(deps({ defaultResponses: async () => ({ found: false, files: [] }), sourceEmail: async () => null }).d, args);
+  assert.ok(b.coverage.gaps.some((g) => /No submittal-standards folder .* was found in the templates project/.test(g)));
+});
+
+test("the standards folders are recognised by name, wherever the discipline sits", () => {
+  for (const n of ["Electrical Submittal Standards", "Mechanical Submittal Standards", "Submittal Default Responses", "05 submittal standard"]) assert.equal(isSubmittalStandardsFolder(n), true, n);
+  for (const n of ["Templates for MCP Connector", "Submittals", "Electrical Standards", "CAD Standards", ""]) assert.equal(isSubmittalStandardsFolder(n), false, n);
+  const src = readFileSync(new URL("index.ts", here), "utf8");
+  assert.match(src, /isSubmittalStandardsFolder\(it\.name\)/, "the connector finds the folders with the same rule");
 });
 
 // ── anchors ─────────────────────────────────────────────────────────────────
