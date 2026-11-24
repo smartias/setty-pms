@@ -250,6 +250,37 @@ one indexed query.
 node supabase/functions/pms-mcp/searchDrawings.test.mjs
 ```
 
+### Sheet numbers for combined books (`sheetFromDrawingList.ts`)
+
+`parseTitleBlock` reads a title block with a pattern per architect's template,
+and knows three projects' templates. Every other combined book used to index
+with no sheet number on any page, so `view_drawing` and `read_drawing_schedule`
+could not open its sheets by number.
+
+The pages of a combined book are numbered from the book's own drawing list (the
+"DRAWING LIST" / "DRAWING INDEX" on its cover, `parseDrawingList`). A page is
+recorded as a sheet only when two things agree: its text carries the sheet's
+number and its title, or it carries the number, no other page can be that sheet,
+and the pages so numbered run in the list's order. A page that fails both stays
+unnumbered. Against the 177 pages whose title blocks do parse, this numbered 146
+and got none wrong.
+
+It works from the text already in `pms_drawing_text`; no PDF is re-read. Rows it
+fills carry `title_block_layout = 'drawing-list.1'`, and a file it has been
+through carries `pms_drawing_index_files.sheets_rule`. It runs for one project
+when `search_drawings`, `view_drawing` or `read_drawing_schedule` is called on
+it, and across all projects in the background sweep (`sheetNumbering` in its
+answer). To re-run every file after changing the rule, change
+`DRAWING_LIST_LAYOUT`. To undo, see the migration
+`20261124110000_drawing_index_sheets_rule.sql`.
+
+Not covered: books with no drawing list in the same file, and sheets the list
+does not name.
+
+```
+node --test supabase/functions/pms-mcp/sheetFromDrawingList.test.mjs
+```
+
 ### Background sweep (`POST /pms-mcp/admin/drawings-index`)
 
 The lazy index is what made `search_drawings` sit at 7-14 s per call: each call
