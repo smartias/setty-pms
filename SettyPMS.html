@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-20-pms-v210-update-banner-baseline";
+    window.__appVersion = "2026-11-24-pms-v211-ca-unsaved-changes";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -11542,6 +11542,13 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const [spStatus, setSpStatus] = useState("idle");
   // Latest form for async handlers (createSpFolder persists after awaits).
   const formRef = React.useRef(form); formRef.current = form;
+  // What was last written to the project: the item as opened, then whatever
+  // an action that saves at once wrote (persist). Closing compares the form
+  // with it, so typed-but-unsaved edits get a Save / Discard prompt.
+  const savedSig = React.useRef(JSON.stringify(item));
+  const [closeAsk, setCloseAsk] = useState(false);
+  function persist(next) { savedSig.current = JSON.stringify(next); if (onSave) onSave(next); }
+  function requestClose() { if (JSON.stringify(formRef.current) !== savedSig.current) setCloseAsk(true); else onClose(); }
   const isRFI = type === "rfi";
   const dueDays = isRFI ? (project.rfiDueDays || 5) : (project.submittalDueDays || 10);
   // An item the client-portal sweep logged (step 2): confirming it also moves
@@ -11651,7 +11658,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   function confirmIntake() {
     const next = { ...form, intakeReviewed: true, intake: { ...(form.intake || {}), reviewedAt: new Date().toISOString() } };
     setForm(next);
-    onSave(next);
+    persist(next);
   }
   // Portal-submitted item: confirm, settle the due date, move the files into a
   // numbered folder, draft the acknowledgement. Each outside step is
@@ -11696,7 +11703,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
     }
     next = { ...next, intakeReviewed: true, intake: { ...(next.intake || {}), reviewedAt: new Date().toISOString() } };
     setForm(next);
-    onSave(next);
+    persist(next);
     setAckStatus(notes.some(n => /failed/.test(n)) ? "error" : "done");
     setAckMsg("\u2713 Confirmed. " + notes.join("; ") + ".");
   }
@@ -11708,7 +11715,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
     const restored = undo ? { ...(st.prev || {}) } : {};
     const next = { ...form, ...restored, intakeStatus: { ...st, reviewed: true, undone: !!undo, reviewedAt: new Date().toISOString() } };
     setForm(next);
-    onSave(next);
+    persist(next);
   }
   function acceptAiResponse() {
     if (!ai?.suggestedResponse || responseApplied) return;
@@ -11829,14 +11836,14 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   }
   function markReviewRequested() {
     const next = { ...form, aiReviewRequested: { at: new Date().toISOString(), by: caWhoName() || "(unknown)" } };
-    setForm(next); onSave(next); setAiNote("");
+    setForm(next); persist(next); setAiNote("");
   }
   // Hand-off to the CA coordinator: saved at once (with the form's current
   // text, so the issuer sees the final answer), cleared by Clear or by issuing.
   function markAnswerReady(on) {
     const next = { ...form };
     if (on) next.answerReady = { at: new Date().toISOString(), by: caWhoName() || "(unknown)" }; else delete next.answerReady;
-    setForm(next); onSave(next);
+    setForm(next); persist(next);
   }
   const issueGuide = caIssueGuide(project.caPortal && project.caPortal.platform, isRFI);
   const platformLink = ((project.externalLinks || []).find(l => l && l.caPortal && /^https:/i.test(l.url || "")) || {}).url || "";
@@ -11989,6 +11996,18 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   // `portal` (from returnViaPortal): the Deliverables folder the document was
   // posted to; the email then says so and links it.
   async function draftResponseEmail(portal) {
+    // Same checks as returnViaPortal (which has already made them when it
+    // calls here): an empty response or an unstamped submittal must not be
+    // marked Responded / Returned. A plain "Approved" may go back bare.
+    if (!portal) {
+      const typed = String((isRFI ? form.response : form.comments) || "").replace(/<[^>]+>|&nbsp;/g, "").trim();
+      if (!isRFI && (!form.stamp || form.stamp === "\u2014")) {
+        setEmailStatus("error"); setEmailMsg("\u2717 Pick a review stamp first."); return;
+      }
+      if (!typed && (isRFI || form.stamp !== "Approved")) {
+        setEmailStatus("error"); setEmailMsg(isRFI ? "\u2717 Enter the response first." : "\u2717 Enter the review comments first."); return;
+      }
+    }
     setEmailStatus("sending");
     const draftWin = window.open("", "_blank");
     const typLabel = isRFI ? "RFI" : "Submittal";
@@ -12032,14 +12051,18 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       const opened = openDraftTab(msg, draftWin);
       // Prime jobs: record when it was issued (the day the response draft was
       // made, matching the status/date the lines below set).
-      if (isPrimeJob && !form.issuedAt) setF("issuedAt", new Date().toISOString());
+      // Saved at once (like createSpFolder): the draft now exists, so closing
+      // without Save must not leave the item Open and overdue.
       const today = new Date().toISOString().slice(0, 10);
-      if (isRFI) { setF("status", "Responded"); setF("dateResponded", today); }
-      else { setF("status", "Returned"); setF("dateReturned", today); }
+      const cur = formRef.current;
+      const next = { ...cur, ...(isRFI ? { status: "Responded", dateResponded: today } : { status: "Returned", dateReturned: today }) };
+      if (isPrimeJob && !cur.issuedAt) next.issuedAt = new Date().toISOString();
+      setForm(next); persist(next);
       setEmailStatus("done");
       setEmailMsg((opened ? "✓ " + (isRFI ? "Response" : "Return") + " email opened in Outlook on the web — check it and press Send" : "✓ " + (isRFI ? "Response" : "Return") + " draft created — it is in your Outlook Drafts folder") + (dist.to.length || dist.cc.length
         ? " (To " + dist.to.length + ", Cc " + dist.cc.length + ")"
-        : isPrimeJob ? ". No distribution list set: add recipients in Outlook, or set the list above the log" : ""));
+        : isPrimeJob ? ". No distribution list set: add recipients in Outlook, or set the list above the log" : "")
+        + ". Marked " + next.status + " and saved.");
     } catch(e) { if (draftWin && !draftWin.closed) draftWin.close(); setEmailStatus("error"); setEmailMsg("✗ " + e.message); }
   }
 
@@ -12068,7 +12091,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       const portalReturn = { at: new Date().toISOString(), by: reviewer, folderUrl: up.folderUrl, fileUrl: up.fileUrl, fileName: up.fileName, deliveryMode: "portal" };
       const next = { ...formRef.current, portalReturn, issuedAt: formRef.current.issuedAt || portalReturn.at };
       setForm(next);
-      if (onSave) onSave(next);
+      persist(next);
       setPortalReturnMsg("\u23f3 Drafting the email\u2026");
       await draftResponseEmail({ folderUrl: up.folderUrl, fileUrl: up.fileUrl });
       setPortalReturnStatus("done");
@@ -12116,7 +12139,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       // folder. Saves the form as it stands (same as pressing Save).
       const next = { ...formRef.current, spFolderUrl: fullUrl };
       setForm(next);
-      if (onSave) onSave(next);
+      persist(next);
       setSpStatus("done");
     } catch(e) { setSpStatus("error: " + e.message); }
   }
@@ -12230,7 +12253,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
                 border: "none", cursor: "pointer" }}>
               {(isRFI ? RFI_STATUSES : SUBMITTAL_STATUSES).map(s => <option key={s} value={s}>{s}</option>)}
             </select>
-            <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none", color: P.textDim, fontSize: 20, cursor: "pointer" }}>✕</button>
+            <button onClick={requestClose} aria-label="Close" style={{ background: "none", border: "none", color: P.textDim, fontSize: 20, cursor: "pointer" }}>✕</button>
           </div>
         </div>
 
@@ -12619,9 +12642,17 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
             <span role="status" style={{ fontSize: 11, color: portalReturnStatus === "done" ? P.green : portalReturnStatus === "error" ? P.red : P.textDim, fontWeight: 500 }}>{portalReturnMsg}</span>
           )}
           <div style={{ display: "flex", gap: 8 }}>
-            <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+            <Btn variant="ghost" onClick={requestClose}>Cancel</Btn>
             <Btn onClick={saveWithFeedback}>Save</Btn>
           </div>
+          {closeAsk && (
+            <div role="alertdialog" aria-label="Unsaved changes" style={{ position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", zIndex: 3100, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", maxWidth: "94vw", fontSize: 12.5, padding: "10px 14px", borderRadius: 8, border: "1px solid " + P.yellow, background: P.card, color: P.text, boxShadow: "0 8px 30px rgba(0,0,0,.45)" }}>
+              <span style={{ fontWeight: 600 }}>This {isRFI ? "RFI" : "submittal"} has changes that are not saved.</span>
+              <Btn small onClick={saveWithFeedback}>Save and close</Btn>
+              <Btn small variant="danger" onClick={onClose}>Discard changes</Btn>
+              <Btn small variant="ghost" onClick={() => setCloseAsk(false)}>Keep editing</Btn>
+            </div>
+          )}
         </div>
       </div>
     </div>
