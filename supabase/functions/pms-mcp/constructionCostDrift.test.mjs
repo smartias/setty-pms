@@ -37,3 +37,23 @@ test("the file sync flags new cost documents and cannot fail over it", () => {
   assert.ok(fn.includes("updateProjectRecord(pid") && fn.includes("planCostDocFlags("));
   assert.ok(/"constructioncostlog", "costdocflags"/.test(src), "flags are redacted with the fee keys");
 });
+
+// Cost estimate review: the packet marks the start, the save is fenced and
+// goes through the shared rules, and the skill names both tools.
+test("the cost estimate review tools are registered and fenced", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  const a = src.indexOf('mcp.tool("get_cost_estimate_packet"'), b = src.indexOf('mcp.tool("save_cost_estimate_review"'), c = src.indexOf("// ── file_qa_report");
+  assert.ok(a > 0 && b > a && c > b);
+  const packet = src.slice(a, b), save = src.slice(b, c);
+  assert.ok(packet.includes("costReviewGate(projectNumber, false)") && packet.includes("markCostReviewStarted("));
+  assert.ok(save.includes("costReviewGate(input.projectNumber, true)") && save.includes("planCostEstimateReview(") && save.includes("updateProjectRecord(g.pid"));
+  const gate = src.slice(src.indexOf("async function costReviewGate("), a);
+  assert.ok(gate.includes('c.kind !== "user"') && gate.includes('"fees.view"') && gate.includes('"projects.edit"'));
+  assert.ok(/"costdocflags", "costestimatereviews"/.test(src), "reviews are redacted with the fee keys");
+  const skill = readFileSync(new URL("../../../.claude/skills/cost-estimate-review/SKILL.md", import.meta.url), "utf8");
+  for (const t of ["get_cost_estimate_packet", "save_cost_estimate_review", "read_document", "get_current_set"]) assert.ok(skill.includes("`" + t + "`"), t);
+  assert.ok(skill.includes("**Do not price anything.**"));
+  const html = readFileSync(new URL("../../../SettyPMS.html", import.meta.url), "utf8");
+  assert.ok(html.includes("get_cost_estimate_packet") && html.includes("save_cost_estimate_review"), "the PMS request names both tools");
+  assert.ok(html.includes("CC.markCostReviewRequested("));
+});

@@ -246,6 +246,196 @@ export function dismissCostDocFlag(project, itemId) {
   return { ...project, costDocFlags: have.map((f) => (f.itemId === itemId && f.status === "open" ? { ...f, status: "dismissed" } : f)) };
 }
 
+// ── Cost estimate reviews ────────────────────────────────────────────────────
+// A cost estimate sent to Claude for review ("Send to Claude for review" on
+// the Schedule tab's cost panel, the same hand-off the RFI and submittal
+// modals use). The connector's save_cost_estimate_review writes one entry to
+// project.costEstimateReviews: what the estimate carries for mechanical,
+// electrical and plumbing, what moved since the previous estimate reviewed,
+// and, when asked for, where the estimate and the drawings disagree. The
+// review is a reading aid for the engineer. It also records the estimate's
+// total in the construction cost history, which is the "ingest".
+
+export const ESTIMATE_DISCIPLINES = [
+  { key: "mechanical", label: "Mechanical (HVAC)", divisions: "23, 25" },
+  { key: "electrical", label: "Electrical", divisions: "26" },
+  { key: "plumbing", label: "Plumbing", divisions: "22" },
+  { key: "fireProtection", label: "Fire protection", divisions: "21" },
+  { key: "technology", label: "Technology / fire alarm / low voltage", divisions: "27, 28" },
+];
+const DISCIPLINE_KEYS = ESTIMATE_DISCIPLINES.map((d) => d.key);
+export const COST_REVIEW_MAX = 30;
+const RECON_SEVERITIES = ["high", "medium", "low"];
+
+export function estimateDisciplineLabel(key) {
+  const d = ESTIMATE_DISCIPLINES.find((x) => x.key === key);
+  return d ? d.label : String(key || "");
+}
+
+// Reviews oldest first.
+export function costEstimateReviewsOf(project) {
+  const list = project && Array.isArray(project.costEstimateReviews) ? project.costEstimateReviews : [];
+  return list.filter((r) => r && r.id && r.at).slice()
+    .sort((a, b) => (String(a.at) < String(b.at) ? -1 : String(a.at) > String(b.at) ? 1 : 0));
+}
+export function latestCostEstimateReview(project) {
+  const list = costEstimateReviewsOf(project);
+  return list.length ? list[list.length - 1] : null;
+}
+
+const pct = (from, to) => (Number.isFinite(from) && from > 0 && Number.isFinite(to) ? Math.round(((to - from) / from) * 1000) / 10 : null);
+const amountOf = (review, key) => {
+  if (!review) return null;
+  if (key === "total") return Number.isFinite(+review.total) && review.total !== null ? +review.total : null;
+  const d = (review.disciplines || []).find((x) => x && x.discipline === key);
+  return d && Number.isFinite(+d.amount) ? +d.amount : null;
+};
+
+// What moved between two reviews: the total, then each discipline either one
+// carries. A side that has no figure is null, and so is its change: a
+// discipline the earlier estimate did not break out is "not comparable", not
+// "new cost".
+export function compareEstimates(prev, next) {
+  if (!prev || !next) return [];
+  return ["total", ...DISCIPLINE_KEYS]
+    .map((key) => {
+      const from = amountOf(prev, key), to = amountOf(next, key);
+      if (from === null && to === null) return null;
+      const both = from !== null && to !== null;
+      return { key, label: key === "total" ? "Total construction cost" : estimateDisciplineLabel(key), from, to, delta: both ? to - from : null, deltaPct: both ? pct(from, to) : null };
+    })
+    .filter(Boolean);
+}
+
+// The request / started stamps, like aiReviewRequested / aiReviewStarted on an
+// RFI. state: none | waiting (sent, Claude has not opened it) | reviewing |
+// ready (a review is newer than the request).
+export function costReviewState(project, nowMs) {
+  const t = (x) => (x ? Date.parse(x.at || "") || 0 : 0);
+  const req = project ? project.costEstimateReviewRequested : null;
+  const st = project ? project.costEstimateReviewStarted : null;
+  const last = latestCostEstimateReview(project);
+  const reqAt = t(req), stAt = t(st), revAt = t(last);
+  const mins = (from) => Math.max(0, Math.round(((nowMs || Date.now()) - from) / 60000));
+  if (stAt > revAt && stAt >= reqAt) return { state: "reviewing", mins: mins(stAt), document: (req && req.document) || null };
+  if (reqAt > revAt) return { state: "waiting", mins: mins(reqAt), by: (req && req.by) || null, document: (req && req.document) || null };
+  return { state: last ? "ready" : "none" };
+}
+
+// The click on "Send to Claude for review": {at, by, document, reconcile}.
+export function markCostReviewRequested(project, req) {
+  const r = req || {};
+  return { ...project, costEstimateReviewRequested: { at: r.at, by: str(r.by, 200) || null, document: str(r.document, 300) || null, reconcile: !!r.reconcile } };
+}
+// The connector's first call for a review.
+export function markCostReviewStarted(project, st) {
+  const x = st || {};
+  return { ...project, costEstimateReviewStarted: { at: x.at, by: str(x.by, 200) || null, document: str(x.document, 300) || null } };
+}
+
+const money = (v) => {
+  const n = Math.round(+v);
+  return Number.isFinite(n) && n >= 0 && n <= COST_MAX ? n : null;
+};
+
+// Plan one review. Nothing is written here: the caller saves plan.project.
+//
+// input {
+//   document: { name, webUrl, itemId },   the estimate that was read (name required)
+//   deliverable, estimateDate, preparedBy, set
+//   total, totalBasis                     total construction cost and what it includes
+//   disciplines: [{ discipline, amount, basis, note }]
+//   breakdown:   [{ discipline, label, amount }]      the larger line items, optional
+//   reconciliation: { against, findings: [{ severity, discipline, issue, estimate, drawings, sheets }], notRun }
+//   notes, unknowns: [text]
+//   recordTotal                           false = do not add the total to the cost history
+// }
+// stamp { at, id, by }
+//
+// Returns { ok:false, error } or
+//   { ok:true, project, review, previous, changes, recorded }
+// previous is the review before this one (null for the first); changes is
+// compareEstimates(previous, review); recorded is the cost-history entry the
+// total produced, or null.
+export function planCostEstimateReview(project, input, stamp) {
+  const inp = input || {}, st = stamp || {};
+  if (!st.at || !st.id) return { ok: false, error: "planCostEstimateReview needs a stamp with at and id." };
+  const docName = str(inp.document && inp.document.name, 300);
+  if (!docName) return { ok: false, error: "Name the estimate document that was read (document.name)." };
+
+  const hasTotal = !(inp.total === undefined || inp.total === null || inp.total === "");
+  const total = hasTotal ? money(inp.total) : null;
+  if (hasTotal && (total === null || total < COST_MIN)) {
+    return { ok: false, error: "total must be the estimate's total construction cost in dollars, at least $10,000. Leave it out if the document gives no total." };
+  }
+  const disciplines = [];
+  for (const d of Array.isArray(inp.disciplines) ? inp.disciplines : []) {
+    if (!d || !DISCIPLINE_KEYS.includes(d.discipline)) return { ok: false, error: "Unknown discipline. Use one of: " + DISCIPLINE_KEYS.join(", ") + "." };
+    if (disciplines.some((x) => x.discipline === d.discipline)) return { ok: false, error: "Each discipline once: " + d.discipline + " appears twice. Add the parts together and say how in its note." };
+    const amount = money(d.amount);
+    if (amount === null) return { ok: false, error: "The amount for " + d.discipline + " is not a dollar amount." };
+    disciplines.push({ discipline: d.discipline, amount, basis: str(d.basis, 300) || null, note: str(d.note, 500) || null });
+  }
+  if (total === null && !disciplines.length) {
+    return { ok: false, error: "Nothing to save: give the total, at least one discipline amount, or both. If the document has neither, it is not a cost estimate: tell the user." };
+  }
+  const mepTotal = disciplines.reduce((s, d) => s + d.amount, 0);
+  if (total !== null && disciplines.length && mepTotal > total * 1.02) {
+    return { ok: false, error: "The discipline amounts add up to more than the total. One of them is not on the same basis (markups, alternates, or a subtotal counted twice): check and resend." };
+  }
+
+  const breakdown = (Array.isArray(inp.breakdown) ? inp.breakdown : []).slice(0, 80)
+    .map((b) => ({ discipline: DISCIPLINE_KEYS.includes(b && b.discipline) ? b.discipline : null, label: str(b && b.label, 200), amount: money(b && b.amount) }))
+    .filter((b) => b.label && b.amount !== null);
+
+  const rec = inp.reconciliation || null;
+  const findings = (rec && Array.isArray(rec.findings) ? rec.findings : []).slice(0, 60)
+    .map((f) => ({
+      severity: RECON_SEVERITIES.includes(f && f.severity) ? f.severity : "medium",
+      discipline: DISCIPLINE_KEYS.includes(f && f.discipline) ? f.discipline : null,
+      issue: str(f && f.issue, 600),
+      estimate: str(f && f.estimate, 300) || null,
+      drawings: str(f && f.drawings, 300) || null,
+      sheets: (Array.isArray(f && f.sheets) ? f.sheets : []).map((x) => str(x, 40)).filter(Boolean).slice(0, 20),
+    }))
+    .filter((f) => f.issue);
+  const reconciliation = rec
+    ? { against: str(rec.against, 300) || null, findings, notRun: str(rec.notRun, 400) || null }
+    : null;
+
+  const previous = latestCostEstimateReview(project);
+  const webUrl = String((inp.document && inp.document.webUrl) || "");
+  const review = {
+    id: st.id, at: st.at, by: str(st.by, 200) || null,
+    document: { name: docName, webUrl: /^https:\/\//i.test(webUrl) ? webUrl : null, itemId: str(inp.document.itemId, 200) || null },
+    deliverable: str(inp.deliverable, 200) || null,
+    estimateDate: /^\d{4}-\d{2}-\d{2}$/.test(String(inp.estimateDate || "")) ? inp.estimateDate : null,
+    preparedBy: str(inp.preparedBy, 200) || null,
+    total, totalBasis: str(inp.totalBasis, 400) || null,
+    disciplines, mepTotal: disciplines.length ? mepTotal : null,
+    mepShare: total && disciplines.length ? Math.round((mepTotal / total) * 1000) / 10 : null,
+    breakdown,
+    reconciliation,
+    notes: str(inp.notes, 3000) || null,
+    unknowns: (Array.isArray(inp.unknowns) ? inp.unknowns : []).map((u) => str(u, 400)).filter(Boolean).slice(0, 20),
+    comparedTo: previous ? { id: previous.id, document: previous.document ? previous.document.name : null, at: previous.at } : null,
+  };
+  const changes = compareEstimates(previous, review);
+  review.changes = changes;
+
+  const list = project && Array.isArray(project.costEstimateReviews) ? project.costEstimateReviews : [];
+  let next = { ...project, costEstimateReviews: [...list, review].slice(-COST_REVIEW_MAX) };
+  let recorded = null;
+  if (inp.recordTotal !== false && total !== null) {
+    const plan = planCostCheck(next, {
+      value: total, source: "cost-estimate", document: docName, deliverable: inp.deliverable,
+      note: review.totalBasis ? "From the cost estimate review. " + review.totalBasis : "From the cost estimate review.",
+    }, { at: st.at, id: st.id + "c", by: st.by, via: "connector" });
+    if (plan.ok) { next = plan.project; recorded = plan.entry; }
+  }
+  return { ok: true, project: next, review, previous, changes, recorded };
+}
+
 // Preventable RFIs per $1M of construction value.
 // rows: [{ project, preventable, cost }]; cost null when none is on record.
 // Projects without a cost are left out of BOTH sides of the ratio and counted,

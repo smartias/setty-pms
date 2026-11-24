@@ -833,6 +833,30 @@ Schedule tab loads (`constructionCostDrift.test.mjs`).
 - The log and the flags are redacted with the other fee keys for callers
   without `fees.view`.
 
+## Cost estimate review (`get_cost_estimate_packet` / `save_cost_estimate_review`, 1.31.0)
+
+The read and write sides of the cost-estimate-review skill and of "Send to
+Claude for review" on the Schedule tab's cost panel, built like
+`get_ca_review_packet` / `save_ca_review`.
+
+- The PMS link opens `claude.ai/new?q=...` with the request prefilled and
+  stamps `project.costEstimateReviewRequested {at, by, document, reconcile}`.
+- `get_cost_estimate_packet` stamps `costEstimateReviewStarted` and returns the
+  estimate to read (requested, flagged as new, or matched by name in the file
+  index), whether to reconcile against the drawings, the cost history, the
+  last three reviews, and the method.
+- `save_cost_estimate_review` appends one entry to
+  `project.costEstimateReviews` (`planCostEstimateReview` in
+  `constructionCost.js`): total and its basis, an amount per discipline
+  (`mechanical`, `electrical`, `plumbing`, `fireProtection`, `technology`), the
+  larger line items, notes, unknowns, reconciliation findings with sheets, and
+  `changes` against the previous review, computed there. Discipline amounts
+  that exceed the total are refused. The total goes into the construction cost
+  history unless `recordTotal` is false.
+- The panel shows the latest review; state (waiting, reviewing, ready) comes
+  from the three stamps (`costReviewState`).
+- Reviews are redacted with the other fee keys for callers without `fees.view`.
+
 ## Fee Calculator write (`set_project_fee`, 1.25.0; inputs 1.26.0)
 
 When a PM tells Claude a fee, this puts it in the PMS so nobody retypes it. It

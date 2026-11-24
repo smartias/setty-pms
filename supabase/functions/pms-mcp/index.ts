@@ -89,6 +89,7 @@ import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } f
 import {
   planCostCheck, latestConstructionCost, costLogOf, rfisPerMillion, costSourceLabel, COST_SOURCES,
   looksLikeCostDocument, planCostDocFlags, openCostDocFlags,
+  planCostEstimateReview, costEstimateReviewsOf, markCostReviewStarted, ESTIMATE_DISCIPLINES, estimateDisciplineLabel,
 } from "./constructionCost.js";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
@@ -256,7 +257,7 @@ function projectVisible(caps: ResolvedCaps, projectNumber?: string | null): bool
 const FEE_KEY_EXACT = new Set([
   "fee", "fees", "feetype", "feestructure", "feeschedulefinalized", "feeauditlog",
   "feecalculatorsubs", "phasesubfees", "lockedsettyfee", "manualsettyfee",
-  "manualconstructioncost", "constructioncostlog", "costdocflags", "manualrsmeanscostpersf", "reimbursablebudget",
+  "manualconstructioncost", "constructioncostlog", "costdocflags", "costestimatereviews", "manualrsmeanscostpersf", "reimbursablebudget",
   "invoices", "invoiced", "billingmethod", "hourlyrates",
   "contractrateschedule", "contractrateschedulelockedat", "ceilingvalue", "contractvalue",
 ]);
@@ -1524,7 +1525,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 // /health so "is my change live?" is answerable without diffing the source.
 const BUILD = "2026-11-24-image-lib-shared-load";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.30.0",
+  name: "setty-pms", version: "1.31.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -13231,6 +13232,204 @@ mcp.tool("record_construction_cost", {
       ...(big ? { warning: `This is ${plan.changePct > 0 ? "up" : "down"} ${Math.abs(plan.changePct)}% from the figure on record. Tell the user and confirm it is the total construction cost for the same scope.` } : {}),
       ...view(plan.project),
       note: "Added to the project's construction cost history (Schedule tab). The Fee Calculator and every fee are unchanged. Tell the user the figure and where it came from. Anyone with this project open in the PMS should refresh the tab before editing.",
+    });
+  },
+});
+
+// ─── COST ESTIMATE REVIEW: get_cost_estimate_packet / save_cost_estimate_review (1.31.0) ─
+// The read and write sides of the cost-estimate-review skill and of the
+// Schedule tab's "Send to Claude for review" on a cost document, built like
+// get_ca_review_packet / save_ca_review. The packet marks the review as under
+// way and hands over what the review needs to start; the save writes ONE entry
+// to project.costEstimateReviews (rules in constructionCost.js) and records the
+// estimate's total in the construction cost history. Neither touches the Fee
+// Calculator. Same fences as record_construction_cost.
+const estimateReviewView = (r: any) => ({
+  reviewedAt: r.at, by: r.by || undefined, document: r.document?.name, deliverable: r.deliverable || undefined,
+  estimateDate: r.estimateDate || undefined, preparedBy: r.preparedBy || undefined,
+  total: r.total, totalBasis: r.totalBasis || undefined,
+  disciplines: (r.disciplines || []).map((d: any) => ({ discipline: d.discipline, label: estimateDisciplineLabel(d.discipline), amount: d.amount, basis: d.basis || undefined, note: d.note || undefined })),
+  mepTotal: r.mepTotal, mepSharePct: r.mepShare,
+  reconciliationFindings: r.reconciliation ? (r.reconciliation.findings || []).length : undefined,
+});
+
+async function costReviewGate(projectNumber: string, needEdit: boolean): Promise<
+  { ok: false; response: ReturnType<typeof asText> } | { ok: true; pid: string; p: any; pn: string | null; project: string; who: { name: string; email: string } }
+> {
+  const c = currentCaller();
+  if (c.kind !== "user" || !c.email) {
+    return { ok: false, response: asText({ error: "A cost estimate review needs a signed-in Setty user behind it.", nextStep: "Connect the connector with your Microsoft sign-in and try again." }) };
+  }
+  const pid = await resolveProjectId(projectNumber);
+  const p = pid ? await getProjectById(pid) : null;
+  if (!pid || !p) return { ok: false, response: asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." }) };
+  const pn = p.projectNumber || null;
+  const caps = await resolveCaps();
+  if (!capFor(caps, "fees.view", pn)) {
+    return { ok: false, response: asText({ error: "Your PMS role cannot see construction cost on this project (it is kept with the fee data).", nextStep: "A PMS admin can grant the fees permission." }) };
+  }
+  if (needEdit && !capFor(caps, "projects.edit", pn)) {
+    return { ok: false, response: asText({ error: "Your PMS role cannot edit this project. Nothing was saved.", nextStep: "Saving a cost estimate review needs the edit-project permission." }) };
+  }
+  return { ok: true, pid, p, pn, project: pn || p.name || projectNumber, who: { name: c.name || c.email, email: c.email } };
+}
+
+mcp.tool("get_cost_estimate_packet", {
+  description:
+    "START of a COST ESTIMATE REVIEW (the cost-estimate-review skill, or a 'Send to Claude for review' request from " +
+    "the PMS Schedule tab). One call: marks the review as under way in the PMS and returns what the review needs: " +
+    "the estimate to read (the one the request named, else the documents flagged as newly saved, else the files in " +
+    "the project folder whose name reads like a cost estimate, each with its itemId for read_document), whether the " +
+    "user asked to reconcile against the drawings, the construction cost on record and its history, the previous " +
+    "estimate reviews with their mechanical / electrical / plumbing totals (what this one is compared with), and " +
+    "the method. Then: read_document on the estimate (Excel comes back sheet by sheet; a large PDF takes pages or " +
+    "find), work out the totals, reconcile if asked, and finish with save_cost_estimate_review. If several " +
+    "documents could be the estimate and the request names none, ask the user which.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    document: z.string().optional().describe("File name of the estimate to review, when the user or the request named one."),
+  }),
+  handler: async ({ projectNumber, document }) => {
+    const g = await costReviewGate(projectNumber, false);
+    if (!g.ok) return g.response;
+    const now = new Date().toISOString();
+    let p = g.p;
+    const req = p.costEstimateReviewRequested || null;
+    const wanted = String(document || req?.document || "").trim();
+    // Mark it started so the PMS shows "Claude is reviewing". A caller who may
+    // not edit still gets the packet; the stamp is the only thing skipped.
+    let startedNote: string | undefined;
+    const caps = await resolveCaps();
+    if (capFor(caps, "projects.edit", g.pn)) {
+      try {
+        const row = await updateProjectRecord(g.pid, (proj) => markCostReviewStarted(proj, { at: now, by: g.who.name, document: wanted || null }));
+        if (row?.project) p = row.project;
+      } catch (e) {
+        startedNote = `Could not mark the review as started in the PMS (${String((e as any)?.message ?? e).slice(0, 120)}). Carry on: the review can still be saved.`;
+      }
+    } else {
+      startedNote = "You can read this project but not edit it, so the review cannot be saved here: tell the user before doing the work.";
+    }
+    let inFolder: Array<{ itemId: string; name: string; folderPath: string; webUrl: string | null; seenAt: string }> = [];
+    let indexNote: string | undefined;
+    if (g.pn) {
+      try { inFolder = await costDocumentsInIndex(String(g.pn).trim().toLowerCase()); }
+      catch (e) { indexNote = `Could not read the file index (${String((e as any)?.message ?? e).slice(0, 120)}). Find the estimate with find_document or list_project_documents.`; }
+    }
+    const flaggedIds = new Set(openCostDocFlags(p).map((f: any) => f.itemId));
+    const reviewed = new Set(costEstimateReviewsOf(p).map((r: any) => String(r.document?.name || "").toLowerCase()));
+    const cand = inFolder.slice(0, 15).map((d) => ({
+      itemId: d.itemId, name: d.name, folder: d.folderPath, firstSeen: String(d.seenAt).slice(0, 10), url: d.webUrl || undefined,
+      ...(flaggedIds.has(d.itemId) ? { flaggedAsNew: true } : {}),
+      ...(reviewed.has(d.name.toLowerCase()) ? { alreadyReviewed: true } : {}),
+      ...(wanted && d.name.toLowerCase() === wanted.toLowerCase() ? { requested: true } : {}),
+    }));
+    const l = latestConstructionCost(p);
+    return asText({
+      project: g.project,
+      projectName: p.name || undefined,
+      request: req ? { document: req.document || undefined, reconcileAgainstDrawings: !!req.reconcile, requestedBy: req.by || undefined, at: req.at } : undefined,
+      estimateToReview: wanted || undefined,
+      candidateDocuments: cand,
+      ...(wanted && !cand.some((c) => (c as any).requested) ? { candidateNote: `"${wanted}" is not in the file index yet (it is refreshed about daily). Find it with find_document or list_project_documents, which read live.` } : {}),
+      ...(indexNote ? { indexNote } : {}),
+      constructionCostOnRecord: { value: l.value, asOf: l.at, source: l.source ? costSourceLabel(l.source) : null, basis: l.basis === "log" ? "history" : l.basis === "fee-calculator" ? "Fee Calculator" : "nothing on record" },
+      costHistory: costLogOf(p).slice(-8).map((e: any) => ({ date: String(e.at).slice(0, 10), constructionCost: e.value, source: costSourceLabel(e.source), deliverable: e.deliverable || undefined, document: e.document || undefined })),
+      previousReviews: costEstimateReviewsOf(p).slice(-3).reverse().map(estimateReviewView),
+      disciplines: ESTIMATE_DISCIPLINES.map((d) => ({ discipline: d.key, label: d.label, usualCsiDivisions: d.divisions })),
+      ...(startedNote ? { startedNote } : {}),
+      method: [
+        "1. Read the estimate in full with read_document (itemId above). A workbook has a summary sheet and trade sheets: read both. Note who prepared it, its date, and the design phase it prices.",
+        "2. Total construction cost: the estimate's bottom line for the base scope, with general conditions, overhead and profit, contingency and escalation. Say in totalBasis exactly what it includes and leaves out (alternates, soft costs, owner's contingency).",
+        "3. Mechanical, electrical, plumbing (and fire protection, technology when broken out): take each from the estimate's own trade or division subtotal. State the basis of each in its `basis` (direct cost only, or with the estimate's markups spread in). Put all disciplines on the SAME basis; if the estimate marks up only at the bottom, give direct costs and say so. Never split a combined line by guessing: if plumbing and fire protection are one number, report it under one and say so in its note, and list the gap in unknowns.",
+        "4. The larger line items go in breakdown (major equipment, distribution, controls), so the next estimate can be compared line by line.",
+        "5. Changes since the previous estimate are computed for you from previousReviews when you save. In notes, explain the moves you can see a reason for (scope added, quantities, unit prices, a different markup), and say when two estimates are not on the same basis.",
+        "6. Only if reconcileAgainstDrawings is true or the user asks: compare the estimate's MEP scope with the current issued set (get_current_set, read_drawing_schedule, find_equipment, search_drawings). Check major equipment counts and sizes against the schedules, systems drawn that the estimate does not price, items priced that the drawings do not show, and quantities that are far apart. Each difference is a finding with the sheet. This is a scope check, not a re-estimate: do not price anything yourself.",
+        "7. Save with save_cost_estimate_review, then tell the user the totals, what moved, and the findings. Never state a number the document does not contain.",
+      ],
+    });
+  },
+});
+
+const ESTIMATE_DISCIPLINE_KEYS = ESTIMATE_DISCIPLINES.map((d) => d.key) as [string, ...string[]];
+mcp.tool("save_cost_estimate_review", {
+  description:
+    "SAVE a cost estimate review to the project (the end of the cost-estimate-review skill; start with " +
+    "get_cost_estimate_packet). Writes one review: the estimate's total construction cost, what it carries for " +
+    "mechanical, electrical and plumbing (plus fire protection and technology when the estimate breaks them out), " +
+    "the larger line items, notes, what could not be determined, and, when a reconciliation against the drawings " +
+    "was done, its findings with sheets. The change from the previous reviewed estimate is computed here and " +
+    "returned: relay it. The total is also added to the project's construction cost history (source 'cost " +
+    "estimate', naming the document) unless recordTotal is false; no fee changes. Every number must come from the " +
+    "document: an amount you derived (summing lines, removing a markup) is allowed only when its basis or note " +
+    "says how. Discipline amounts must be on one basis and cannot add up to more than the total. The review shows " +
+    "in the PMS Schedule tab for the engineer; it is a reading aid, not an approval of the estimate. Needs a " +
+    "signed-in caller with the fees and edit-project permissions.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    document: z.object({
+      name: z.string().describe("File name of the estimate that was read."),
+      itemId: z.string().optional().describe("Its itemId, when it came from the packet or list_project_documents."),
+      webUrl: z.string().optional().describe("Its link, when known."),
+    }),
+    deliverable: z.string().optional().describe("The deliverable or phase the estimate prices: a milestone name from the PMS schedule or a phase code (SD, DD, CD)."),
+    estimateDate: z.string().optional().describe("The estimate's own date, YYYY-MM-DD."),
+    preparedBy: z.string().optional().describe("Who prepared it (estimator, CM, contractor)."),
+    total: z.number().positive().optional().describe("Total construction cost in dollars for the base scope. Omit if the document gives none."),
+    totalBasis: z.string().optional().describe("What the total includes and leaves out: general conditions, overhead and profit, contingency, escalation, alternates."),
+    disciplines: z.array(z.object({
+      discipline: z.enum(ESTIMATE_DISCIPLINE_KEYS).describe(ESTIMATE_DISCIPLINES.map((d) => `${d.key} = ${d.label} (CSI ${d.divisions})`).join("; ")),
+      amount: z.number().min(0).describe("Dollars."),
+      basis: z.string().optional().describe("What the amount includes: 'direct cost', 'with trade markups', 'with all markups spread in'."),
+      note: z.string().optional().describe("How it was arrived at when it is not a single line of the estimate, or what is folded into it."),
+    })).optional().describe("One entry per discipline the estimate breaks out. All on the same basis."),
+    breakdown: z.array(z.object({
+      discipline: z.enum(ESTIMATE_DISCIPLINE_KEYS).optional(),
+      label: z.string().describe("The line as the estimate words it, e.g. 'Air handling units', 'Switchgear and distribution'."),
+      amount: z.number().min(0),
+    })).max(80).optional().describe("The larger line items, for comparing with the next estimate."),
+    reconciliation: z.object({
+      against: z.string().optional().describe("The drawing set compared with, exactly as get_current_set names it."),
+      findings: z.array(z.object({
+        severity: z.enum(["high", "medium", "low"]).optional().describe("high = a system or major equipment missing or doubled; medium = a count or size that differs; low = a note."),
+        discipline: z.enum(ESTIMATE_DISCIPLINE_KEYS).optional(),
+        issue: z.string().describe("The difference in one or two sentences."),
+        estimate: z.string().optional().describe("What the estimate carries."),
+        drawings: z.string().optional().describe("What the drawings show."),
+        sheets: z.array(z.string()).optional().describe("Sheets it was read from, e.g. ['M-601']."),
+      })).max(60).optional(),
+      notRun: z.string().optional().describe("Why a requested reconciliation could not be done (no issued set, estimate has no quantities)."),
+    }).optional().describe("Only when a reconciliation against the drawings was asked for."),
+    notes: z.string().optional().describe("What the engineer should know: reasons for the moves since the last estimate, basis differences, assumptions and exclusions the estimate states."),
+    unknowns: z.array(z.string()).max(20).optional().describe("What could not be determined from the document, one line each."),
+    recordTotal: z.boolean().optional().describe("false = do not add the total to the construction cost history (a partial or trade-only estimate). Default true."),
+  }),
+  handler: async (input) => {
+    const g = await costReviewGate(input.projectNumber, true);
+    if (!g.ok) return g.response;
+    let plan: any = null;
+    try {
+      await updateProjectRecord(g.pid, (proj) => {
+        plan = planCostEstimateReview(proj, input, { at: new Date().toISOString(), id: crypto.randomUUID().slice(0, 8), by: g.who.name });
+        // Returning the same reference tells updateProjectRecord to write nothing.
+        return plan.ok ? plan.project : proj;
+      });
+    } catch (e) {
+      return asText({ error: `Could not save the review: ${String((e as any)?.message ?? e)}`, nextStep: "Nothing was written. Call the tool again with the same content." });
+    }
+    if (!plan) return asText({ error: "Could not save the review: the project record could not be read." });
+    if (!plan.ok) return asText({ project: g.project, error: plan.error });
+    const big = (plan.changes || []).filter((c: any) => c.deltaPct !== null && Math.abs(c.deltaPct) >= 10);
+    return asText({
+      project: g.project, saved: true, savedBy: g.who.email,
+      review: estimateReviewView(plan.review),
+      comparedWith: plan.previous ? { document: plan.previous.document?.name, reviewedAt: plan.previous.at } : null,
+      changesSincePrevious: plan.changes,
+      ...(big.length ? { movesOfTenPercentOrMore: big.map((c: any) => `${c.label}: ${c.deltaPct > 0 ? "up" : "down"} ${Math.abs(c.deltaPct)}%`) } : {}),
+      ...(plan.previous ? {} : { firstReviewNote: "This is the first estimate reviewed on the project, so there is nothing to compare it with yet." }),
+      constructionCostRecorded: plan.recorded ? plan.recorded.value : null,
+      note: "Saved to the project's cost estimate reviews (Schedule tab)." + (plan.recorded ? " The total was added to the construction cost history." : " The construction cost history was not changed.") +
+        " The Fee Calculator and every fee are unchanged. Tell the user the totals, what moved since the previous estimate and why where the document shows it, and any reconciliation findings. Anyone with this project open in the PMS should refresh the tab before editing.",
     });
   },
 });

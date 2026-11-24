@@ -10,6 +10,8 @@ import {
   COST_SOURCES, costLogOf, latestConstructionCost, isCostCheckMilestone, flagCostCheck,
   pendingCostChecks, skipCostCheck, planCostCheck, rfisPerMillion, costSourceLabel,
   looksLikeCostDocument, planCostDocFlags, openCostDocFlags, dismissCostDocFlag, costDocFlagsOf, COST_DOC_FLAG_MAX,
+  planCostEstimateReview, compareEstimates, costEstimateReviewsOf, latestCostEstimateReview, costReviewState,
+  markCostReviewRequested, markCostReviewStarted, ESTIMATE_DISCIPLINES, estimateDisciplineLabel,
 } from "./constructionCost.js";
 
 const stamp = (n = 1) => ({ at: `2027-01-0${n}T12:00:00.000Z`, id: "e" + n, by: "PM", via: "pms" });
@@ -180,6 +182,117 @@ test("the flag list is capped and open flags are the last to go", () => {
   assert.equal(flags.length, COST_DOC_FLAG_MAX);
   assert.equal(flags[flags.length - 1].itemId, "new");
   assert.equal(flags[0].itemId, "old1");
+});
+
+const dd = {
+  document: { name: "50% DD Cost Estimate.pdf", webUrl: "https://setty.sharepoint.com/dd50.pdf" },
+  deliverable: "DD", estimateDate: "2027-02-10", preparedBy: "Estimator Co", total: 20000000,
+  totalBasis: "With 10% design contingency and escalation to mid-2028",
+  disciplines: [
+    { discipline: "mechanical", amount: 3000000, basis: "Division 23 with trade markups" },
+    { discipline: "electrical", amount: 2400000 },
+    { discipline: "plumbing", amount: 900000 },
+  ],
+};
+
+test("a cost estimate review is saved with discipline totals and records the total in the history", () => {
+  const p0 = project({ costDocFlags: [{ itemId: "d1", name: "50% DD Cost Estimate.pdf", status: "open" }] });
+  const plan = planCostEstimateReview(p0, dd, stamp(1));
+  assert.equal(plan.ok, true);
+  assert.equal(p0.costEstimateReviews, undefined, "input project is not mutated");
+  assert.equal(plan.review.mepTotal, 6300000);
+  assert.equal(plan.review.mepShare, 31.5);
+  assert.equal(plan.previous, null);
+  assert.deepEqual(plan.changes, [], "nothing to compare the first estimate with");
+  assert.equal(plan.recorded.value, 20000000);
+  assert.equal(plan.recorded.source, "cost-estimate");
+  assert.equal(plan.recorded.document, "50% DD Cost Estimate.pdf");
+  assert.equal(latestConstructionCost(plan.project).value, 20000000);
+  assert.equal(openCostDocFlags(plan.project).length, 0, "the flag for the document is answered");
+  assert.equal(plan.project.manualConstructionCost, 0, "the Fee Calculator is not touched");
+  assert.equal(latestCostEstimateReview(plan.project).id, plan.review.id);
+});
+
+test("the next estimate is compared with the previous one, discipline by discipline", () => {
+  const first = planCostEstimateReview(project(), dd, stamp(1)).project;
+  const plan = planCostEstimateReview(first, {
+    document: { name: "100% DD Cost Estimate.pdf" }, total: 22000000,
+    disciplines: [
+      { discipline: "mechanical", amount: 3600000 },
+      { discipline: "electrical", amount: 2400000 },
+      { discipline: "fireProtection", amount: 400000 },
+    ],
+  }, stamp(2));
+  assert.equal(plan.ok, true);
+  assert.equal(plan.review.comparedTo.document, "50% DD Cost Estimate.pdf");
+  const by = Object.fromEntries(plan.changes.map((c) => [c.key, c]));
+  assert.deepEqual([by.total.from, by.total.to, by.total.delta, by.total.deltaPct], [20000000, 22000000, 2000000, 10]);
+  assert.equal(by.mechanical.deltaPct, 20);
+  assert.equal(by.electrical.delta, 0);
+  assert.deepEqual([by.plumbing.from, by.plumbing.to, by.plumbing.delta], [900000, null, null], "dropped from the breakdown: not comparable, not a saving");
+  assert.deepEqual([by.fireProtection.from, by.fireProtection.to, by.fireProtection.deltaPct], [null, 400000, null]);
+  assert.equal(costEstimateReviewsOf(plan.project).length, 2);
+  assert.equal(costLogOf(plan.project).length, 2);
+  assert.deepEqual(compareEstimates(null, plan.review), []);
+});
+
+test("recordTotal:false, or no total, leaves the cost history alone", () => {
+  const a = planCostEstimateReview(project(), { ...dd, recordTotal: false }, stamp());
+  assert.equal(a.recorded, null);
+  assert.equal(costLogOf(a.project).length, 0);
+  const b = planCostEstimateReview(project(), { document: { name: "MEP estimate.xlsx" }, disciplines: [{ discipline: "plumbing", amount: 500000 }] }, stamp());
+  assert.equal(b.ok, true);
+  assert.equal(b.review.total, null);
+  assert.equal(b.review.mepShare, null);
+  assert.equal(b.recorded, null);
+});
+
+test("reconciliation findings are kept with their sheets; a run that could not happen says why", () => {
+  const plan = planCostEstimateReview(project(), { ...dd, reconciliation: { against: "2027-02-01_100% DD", findings: [
+    { severity: "high", discipline: "mechanical", issue: "Estimate carries 2 chillers; M-601 schedules 3.", estimate: "2 x 400 ton", drawings: "CH-1, CH-2, CH-3", sheets: ["M-601"] },
+    { severity: "nope", discipline: "structural", issue: "Generator pad not priced.", sheets: "E-101" },
+    { issue: "" },
+  ] } }, stamp());
+  const f = plan.review.reconciliation.findings;
+  assert.equal(f.length, 2);
+  assert.deepEqual(f[0].sheets, ["M-601"]);
+  assert.deepEqual([f[1].severity, f[1].discipline, f[1].sheets], ["medium", null, []]);
+  const none = planCostEstimateReview(project(), { ...dd, reconciliation: { notRun: "No issued set in the index." } }, stamp());
+  assert.equal(none.review.reconciliation.notRun, "No issued set in the index.");
+  assert.equal(planCostEstimateReview(project(), dd, stamp()).review.reconciliation, null, "not asked for");
+});
+
+test("bad reviews are refused with a reason", () => {
+  const bad = (over) => planCostEstimateReview(project(), { ...dd, ...over }, stamp());
+  assert.equal(bad({ document: {} }).ok, false);
+  assert.equal(bad({ total: 9000 }).ok, false);
+  assert.equal(bad({ total: undefined, disciplines: [] }).ok, false);
+  assert.equal(bad({ disciplines: [{ discipline: "structural", amount: 1 }] }).ok, false);
+  assert.equal(bad({ disciplines: [{ discipline: "plumbing", amount: 1 }, { discipline: "plumbing", amount: 2 }] }).ok, false);
+  assert.equal(bad({ disciplines: [{ discipline: "plumbing", amount: -5 }] }).ok, false);
+  assert.match(bad({ disciplines: [{ discipline: "mechanical", amount: 25000000 }] }).error, /more than the total/);
+  assert.equal(planCostEstimateReview(project(), dd, {}).ok, false);
+  assert.equal(bad({ document: { name: "x.pdf", webUrl: "javascript:alert(1)" } }).review.document.webUrl, null);
+});
+
+test("request, started and ready states", () => {
+  const now = Date.parse("2027-01-01T12:10:00.000Z");
+  assert.equal(costReviewState(project(), now).state, "none");
+  const req = markCostReviewRequested(project(), { at: "2027-01-01T12:00:00.000Z", by: "PM", document: "DD Cost Estimate.pdf", reconcile: true });
+  assert.deepEqual(costReviewState(req, now), { state: "waiting", mins: 10, by: "PM", document: "DD Cost Estimate.pdf" });
+  assert.equal(req.costEstimateReviewRequested.reconcile, true);
+  const started = markCostReviewStarted(req, { at: "2027-01-01T12:04:00.000Z", by: "PM" });
+  assert.equal(costReviewState(started, now).state, "reviewing");
+  assert.equal(costReviewState(started, now).mins, 6);
+  const done = planCostEstimateReview(started, dd, { at: "2027-01-01T12:09:00.000Z", id: "r1", by: "PM" }).project;
+  assert.equal(costReviewState(done, now).state, "ready");
+  const again = markCostReviewRequested(done, { at: "2027-01-01T12:09:30.000Z", by: "PM" });
+  assert.equal(costReviewState(again, now).state, "waiting", "a re-send after a review waits again");
+});
+
+test("discipline labels", () => {
+  assert.deepEqual(ESTIMATE_DISCIPLINES.slice(0, 3).map((d) => d.key), ["mechanical", "electrical", "plumbing"]);
+  assert.equal(estimateDisciplineLabel("plumbing"), "Plumbing");
 });
 
 // Drift anchors: the page loads the module and flags a milestone at 100%.
