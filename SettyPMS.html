@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-24-pms-v219-construction-costs-tab";
+    window.__appVersion = "2026-11-24-pms-v220-cost-document-upload";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -8344,6 +8344,65 @@ function CostEstimateLinesTable({ project, review }) {
   );
 }
 
+// ── Pointing at a cost estimate the nightly sync did not flag ────────────────
+// The sync goes by file name and runs once a night, so an estimate can be
+// missing from the Construction Costs tab. Two ways to add it by hand; both end
+// in CC.addCostDocument, which flags the file on the project exactly as the
+// sync would have.
+
+// A SharePoint link to the file -> { itemId, name, webUrl, folderPath }.
+// Graph resolves the link, so the id and webUrl are SharePoint's own.
+async function resolveCostDocLink(url) {
+  const u = String(url || "").trim();
+  if (!/^https:\/\/[^/]*sharepoint\.com\//i.test(u)) throw new Error("Paste a SharePoint link to the file. It starts with https:// and contains sharepoint.com.");
+  const b64 = btoa(unescape(encodeURIComponent(u))).replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
+  // graphFetch returns null on 404: a link SharePoint cannot resolve.
+  const item = await graphFetch("GET", "/shares/u!" + b64 + "/driveItem?$select=id,name,webUrl,size,file,folder,parentReference");
+  if (!item || !item.id) throw new Error("SharePoint could not find a file at that link, or you do not have access to it. In SharePoint, use Copy link on the file itself.");
+  if (item.folder) throw new Error("That link is a folder. Open the folder and copy the link to the estimate file itself.");
+  const driveId = item.parentReference && item.parentReference.driveId;
+  if (!driveId) throw new Error("SharePoint did not say which library that file is in.");
+  const parentPath = safeDecodeFolderUrl(String((item.parentReference && item.parentReference.path) || "").split("root:")[1] || "").replace(/^\/+/, "");
+  return { itemId: driveId + "|" + item.id, name: item.name || "", webUrl: item.webUrl || "", folderPath: parentPath };
+}
+
+// Upload a file from this computer into "<project folder>/Cost Estimates".
+// An existing file of the same name is kept; the new one takes " (2)", " (3)".
+const COST_DOC_UPLOAD_MAX_BYTES = 60 * 1024 * 1024;
+async function uploadCostDocument(project, file) {
+  const CC = window.ConstructionCost;
+  if (!file) throw new Error("No file was chosen.");
+  if (!CC.isCostDocumentType(file.name)) throw new Error(CC.costDocumentTypeError(file.name));
+  if (file.size > COST_DOC_UPLOAD_MAX_BYTES) throw new Error("That file is over 60 MB. Save it to the project folder in SharePoint, then paste its link here.");
+  const projectFolderUrl = (project.projectFolderUrl || "").trim();
+  if (!projectFolderUrl) throw new Error("This project has no SharePoint folder URL. Create one on the Overview tab first, then try again.");
+  const urlParts = safeDecodeFolderUrl(projectFolderUrl).replace(/\/+$/, "").split("/");
+  const projFolderName = (urlParts[urlParts.length - 1] || "").trim();
+  if (!projFolderName) throw new Error("Could not read the project folder name from its URL: " + projectFolderUrl);
+  const { driveId } = await resolveSpIds();
+  const folderPath = await ensureSpSubfolder(driveId, projFolderName, CC.COST_DOC_FOLDER_NAME);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const clean = String(file.name || "estimate").replace(/[\\/:*?"<>|#%]/g, "_").trim() || "estimate";
+  const dot = clean.lastIndexOf(".");
+  const base = dot > 0 ? clean.slice(0, dot) : clean, ext = dot > 0 ? clean.slice(dot) : "";
+  let saved = null;
+  for (let n = 1; n <= 9 && !saved; n++) {
+    const name = n === 1 ? clean : base + " (" + n + ")" + ext;
+    try {
+      const r = await graphFetch("PUT",
+        "/drives/" + driveId + "/root:/" + encodeSpPath(folderPath) + "/" + encodeURIComponent(name) + ":/content?@microsoft.graph.conflictBehavior=fail", bytes);
+      // null = Graph 404 on the parent: the folder moved between the check and the upload.
+      if (!r || !r.id) throw new Error("SharePoint did not save the file. The project folder may have been moved or renamed: check the folder URL on the Overview tab.");
+      saved = r;
+    } catch (e) {
+      // A name clash means an earlier file exists: keep it and take the next suffix.
+      if (!/409|conflict|nameAlreadyExists/i.test(String((e && e.message) || ""))) throw e;
+    }
+  }
+  if (!saved) throw new Error("Nine files with that name are already in the Cost Estimates folder. Rename the file and try again.");
+  return { itemId: driveId + "|" + saved.id, name: saved.name || clean, webUrl: saved.webUrl || "", folderPath: CC.COST_DOC_FOLDER_NAME };
+}
+
 function ConstructionCostPanel({ project, onChange }) {
   const CC = window.ConstructionCost;
   const [open, setOpen] = useState(false);
@@ -8365,6 +8424,27 @@ function ConstructionCostPanel({ project, onChange }) {
   // start, and save_cost_estimate_review writes the review this panel shows.
   const [showReview, setShowReview] = useState(false);
   const [showLines, setShowLines] = useState(false);
+  // Adding an estimate by hand: upload it, or paste its SharePoint link.
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [addBusy, setAddBusy] = useState("");
+  const [addMsg, setAddMsg] = useState(null); // { ok, text }
+  const fileRef = React.useRef(null);
+  const addDocument = async (label, getDoc) => {
+    setAddBusy(label); setAddMsg(null);
+    try {
+      const doc = await getDoc();
+      const plan = CC.addCostDocument(project, doc, { at: new Date().toISOString(), by: getCurrentUser() });
+      if (!plan.ok) { setAddMsg({ ok: false, text: plan.error }); return; }
+      onChange(plan.project, { notifyTeams: false });
+      setLinkOpen(false); setLinkUrl("");
+      setAddMsg({ ok: true, text: "Added \"" + plan.flag.name + "\". Send it to Claude for review, or enter its figure." });
+    } catch (e) {
+      setAddMsg({ ok: false, text: (e && e.message) || String(e) });
+    } finally {
+      setAddBusy("");
+    }
+  };
   const review = CC.latestCostEstimateReview(project);
   const rstate = CC.costReviewState(project);
   const projLabel = (project.name || "Project") + (project.projectNumber ? " (" + project.projectNumber + ")" : "");
@@ -8430,7 +8510,7 @@ function ConstructionCostPanel({ project, onChange }) {
       {!open && docFlags.slice(0, 3).map(f => (
         <div key={f.itemId} style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <div style={{ fontSize: 12, color: P.text }}>
-            Cost document saved {fmtDate(String(f.seenAt).slice(0, 10))}:{" "}
+            {f.manual ? "Cost document added" + (f.addedBy ? " by " + f.addedBy : "") : "Cost document saved"} {fmtDate(String(f.seenAt || f.flaggedAt || "").slice(0, 10))}:{" "}
             {f.webUrl ? <a href={f.webUrl} target="_blank" rel="noopener noreferrer" style={{ color: P.accentLight, fontWeight: 600 }}>{f.name}</a> : <strong>{f.name}</strong>}
             . Does it change the construction cost?
           </div>
@@ -8441,6 +8521,26 @@ function ConstructionCostPanel({ project, onChange }) {
         </div>
       ))}
       {!open && docFlags.length > 3 && <div style={{ marginTop: 6, fontSize: 11, color: P.textDim }}>and {docFlags.length - 3} more cost documents saved since the last check.</div>}
+      {!open && (
+        <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12, color: P.textDim }}>
+          <span>Estimate not listed here?</span>
+          <input ref={fileRef} type="file" accept=".pdf,.xlsx,.xls,.xlsm,.docx,.doc,.csv" style={{ display: "none" }}
+            onChange={e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) addDocument("Uploading…", () => uploadCostDocument(project, f)); }} />
+          <button style={btn} disabled={!!addBusy} onClick={() => fileRef.current && fileRef.current.click()}
+            title={"Saves the file to this project's SharePoint folder, under \"" + CC.COST_DOC_FOLDER_NAME + "\", and lists it here."}>Upload a file</button>
+          <button style={btn} disabled={!!addBusy} onClick={() => { setLinkOpen(v => !v); setAddMsg(null); }}
+            title="For an estimate that is already in SharePoint: paste the link to the file.">Paste a SharePoint link</button>
+          {addBusy && <span>{addBusy}</span>}
+        </div>
+      )}
+      {!open && linkOpen && (
+        <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <input type="text" value={linkUrl} onChange={e => setLinkUrl(e.target.value)} placeholder="https://setty.sharepoint.com/... (Copy link on the file in SharePoint)" style={{ width: 520, maxWidth: "100%" }} />
+          <button style={{ ...btn, color: P.accentLight }} disabled={!!addBusy || !linkUrl.trim()} onClick={() => addDocument("Finding the file…", () => resolveCostDocLink(linkUrl))}>Add</button>
+          <button style={btn} disabled={!!addBusy} onClick={() => { setLinkOpen(false); setAddMsg(null); }}>Cancel</button>
+        </div>
+      )}
+      {addMsg && <div role="status" style={{ marginTop: 6, fontSize: 12, color: addMsg.ok ? P.green : P.red }}>{addMsg.text}</div>}
       {open && (
         <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <input type="number" value={value} onChange={e => setValue(e.target.value)} placeholder="Construction cost, $" style={{ width: 170 }} />

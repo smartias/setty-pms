@@ -830,6 +830,17 @@ Construction Costs tab loads (`constructionCostDrift.test.mjs`).
   recording a figure answers the open flags, and a file is never flagged
   twice. The flag is a prompt to look: no figure is read from the file by the
   sync. Flags appear the morning after the file is saved, not at once.
+- When the sync misses an estimate (an unhelpful name, or saved today), a
+  person adds it on the Construction Costs tab: "Upload a file" saves it to
+  `<project folder>/Cost Estimates` (`uploadCostDocument`), "Paste a
+  SharePoint link" resolves the link through Graph (`resolveCostDocLink`).
+  Both call `addCostDocument`, which flags the file as `open` with
+  `manual: true`. Anything in a folder named "Cost Estimates" is also picked
+  up by the sync whatever it is called.
+- The connector reads a file for a project through `costFileForProject`: in
+  the file index under the project's scope, or, when the index has not seen
+  it, visible to the caller (`sharePointItemVisible`) and either inside the
+  project's folder or attached to the project as a manual flag.
 - The log and the flags are redacted with the other fee keys for callers
   without `fees.view`.
 

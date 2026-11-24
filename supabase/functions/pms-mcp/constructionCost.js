@@ -190,6 +190,9 @@ const COST_DOC_WEAK = /\bestimates?\b/;
 const COST_DOC_NEVER = /\bfees?\b|proposal|invoice/;
 const COST_DOC_NOT_WEAK = /\bloads?\b|energy|\bhours?\b|labor|schedule|\btime\b|\bflow\b|demand|\bfault\b/;
 const COST_DOC_NOT_FOLDER = /proposal|contract|invoice|billing|\bfees?\b|accounting/;
+// The folder the PMS creates under the project folder for uploaded estimates.
+export const COST_DOC_FOLDER_NAME = "Cost Estimates";
+const COST_DOC_FOLDER = /(^|\/| )cost estimates?($|\/)/;
 export const COST_DOC_FLAG_MAX = 50;
 
 const words = (v) => String(v == null ? "" : v).toLowerCase().replace(/[_\-.,()\[\]]+/g, " ").replace(/\s+/g, " ").trim();
@@ -201,7 +204,11 @@ export function looksLikeCostDocument(doc) {
   const ext = String(doc.ext || (raw.includes(".") ? raw.split(".").pop() : "")).toLowerCase().replace(/^\./, "");
   if (!COST_DOC_EXT.includes(ext)) return false;
   const name = words(raw.replace(/\.[A-Za-z0-9]+$/, ""));
-  if (COST_DOC_NEVER.test(name) || COST_DOC_NOT_FOLDER.test(words(doc.folderPath))) return false;
+  const folder = words(doc.folderPath);
+  // Anything saved in the project's "Cost Estimates" folder counts, whatever
+  // it is called: that folder is where the PMS upload puts them.
+  if (COST_DOC_FOLDER.test(folder) && !COST_DOC_NEVER.test(name)) return true;
+  if (COST_DOC_NEVER.test(name) || COST_DOC_NOT_FOLDER.test(folder)) return false;
   if (COST_DOC_STRONG.test(name)) return true;
   return COST_DOC_WEAK.test(name) && !COST_DOC_NOT_WEAK.test(name);
 }
@@ -237,6 +244,40 @@ export function planCostDocFlags(project, docs, now) {
   const open = all.filter((f) => f.status === "open");
   const keepClosed = closed.slice(Math.max(0, closed.length - Math.max(0, COST_DOC_FLAG_MAX - open.length)));
   return { project: { ...project, costDocFlags: [...keepClosed, ...open].slice(-COST_DOC_FLAG_MAX) }, added };
+}
+
+// The kinds of file a cost estimate review can read. Checked BEFORE an upload,
+// so a file that would be refused is never saved to SharePoint first.
+export function isCostDocumentType(name) {
+  const n = String(name || "");
+  return COST_DOC_EXT.includes((n.includes(".") ? n.split(".").pop() : "").toLowerCase());
+}
+export function costDocumentTypeError(name) {
+  return "A cost estimate must be a PDF, Excel, Word or CSV file. \"" + str(name, 200) + "\" is not one of those.";
+}
+
+// A cost document a person pointed at themselves, because the nightly sync did
+// not flag it: uploaded from the Construction Costs tab, or a SharePoint link
+// pasted there. No name test (the person says it is the estimate), only that
+// it is a kind of file the review can read. A file flagged before, even one
+// dismissed, is opened again.
+// doc { itemId ("driveId|itemId"), name, folderPath, webUrl }   stamp { at, by }
+// Returns { ok:false, error } or { ok:true, project, flag }.
+export function addCostDocument(project, doc, stamp) {
+  const d = doc || {}, st = stamp || {};
+  const itemId = str(d.itemId, 400), name = str(d.name, 300);
+  if (!itemId || itemId.indexOf("|") <= 0) return { ok: false, error: "That file could not be identified in SharePoint." };
+  if (!name) return { ok: false, error: "That file has no name." };
+  if (!isCostDocumentType(name)) return { ok: false, error: costDocumentTypeError(name) };
+  const webUrl = String(d.webUrl || "");
+  const flag = {
+    itemId, name, folderPath: str(d.folderPath, 500) || null,
+    webUrl: /^https:\/\//i.test(webUrl) ? webUrl : null,
+    seenAt: st.at || null, flaggedAt: st.at || null, status: "open", manual: true, addedBy: str(st.by, 200) || null,
+  };
+  const have = costDocFlagsOf(project);
+  const rest = have.filter((f) => f.itemId !== itemId);
+  return { ok: true, project: { ...project, costDocFlags: [...rest, flag].slice(-COST_DOC_FLAG_MAX) }, flag };
 }
 
 // "Not a cost estimate": close one flag without recording anything.
