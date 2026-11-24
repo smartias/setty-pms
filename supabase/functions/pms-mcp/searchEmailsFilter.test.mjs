@@ -129,7 +129,7 @@ test("the similarity floor sits between unrelated questions and right answers", 
 });
 
 test("calendar replies and subject-less records are kept out of meaning-based search", () => {
-  const mig = readFileSync(new URL("../../migrations/20261124150000_emails_meaning_skip_calendar_replies.sql", import.meta.url), "utf8");
+  const mig = readFileSync(new URL("../../migrations/20261124160000_emails_meaning_skip_calendar_replies.sql", import.meta.url), "utf8");
   // The rule as the migration writes it, run here on real subject shapes.
   const skip = (subject) => ["", "{}"].includes(String(subject ?? "").trim())
     || /^\s*(accepted|declined|tentative|tentatively accepted|canceled|cancelled)\s*:/i.test(String(subject ?? ""));
