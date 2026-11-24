@@ -61,6 +61,7 @@ import { pickRecordedFolderName, matchRecordedFolder } from "./recordedFolder.ts
 // A single-sheet PDF named for its sheet, confirmed by the page text, for
 // title blocks no pattern reads. Pure; see sheetFromFilename.test.mjs.
 import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OLD } from "./sheetFromFilename.ts";
+import { assignSheetsFromList, DRAWING_LIST_LAYOUT } from "./sheetFromDrawingList.ts";
 // set_project_fee: what may be written into the Fee Calculator and what is
 // refused. Pure; see feeCalculator.test.mjs.
 import { extractSheetTables, orientSheetItems, type SheetTextItem, type SheetTable } from "./scheduleExtract.ts";
@@ -1478,7 +1479,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-project-search-wider-fields-close-matches";
+const BUILD = "2026-11-24-sheet-numbers-from-drawing-list";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -8281,6 +8282,71 @@ async function backfillFilenameSheets(numPrefix: string, known: any[]): Promise<
   return fixed;
 }
 
+// Sheet numbers for combined books, from each book's own drawing list
+// (sheetFromDrawingList.ts). Works from the text already in pms_drawing_text,
+// so nothing is re-read from SharePoint. A file is done once
+// (pms_drawing_index_files.sheets_rule, migration 20261124110000); only rows
+// still without a sheet number are written, stamped with the rule's name.
+// Called for one project from the tools that need sheet numbers, and across
+// all projects by the background sweep. Advisory: it never throws.
+const SHEET_LIST_ANCHOR = "DRAWING\\s+(LIST|INDEX)";
+const SHEET_LIST_MAX_PAGES = 400;
+async function numberSheetsFromList(file: { item_id: string; pages: number }): Promise<number> {
+  const id = encodeURIComponent(file.item_id);
+  let numbered = 0;
+  if (Number(file.pages) <= SHEET_LIST_MAX_PAGES) {
+    // A spec book has no drawing list: one cheap probe instead of loading
+    // every page's text to find that out.
+    const anchor = await sbGet("pms_drawing_text?select=page&item_id=eq." + id +
+      "&text=match." + encodeURIComponent(SHEET_LIST_ANCHOR) + "&limit=1");
+    if (Array.isArray(anchor) && anchor.length) {
+      const rows: any[] = await sbGetAll("pms_drawing_text?select=page,text,sheet_no&item_id=eq." + id + "&order=page.asc");
+      const list: Array<{ sheetNo: string; sheetTitle: string }> = [];
+      const listPages: number[] = [];
+      for (const r of rows) {
+        const rowsOnPage = parseDrawingList(String(r.text || ""));
+        if (rowsOnPage.length >= 2) { listPages.push(Number(r.page)); list.push(...rowsOnPage); }
+      }
+      const textOf = new Map(rows.map((r) => [Number(r.page), String(r.text || "")]));
+      const open = new Set(rows.filter((r) => !r.sheet_no).map((r) => Number(r.page)));
+      const found = assignSheetsFromList(rows.map((r) => ({ page: Number(r.page), text: String(r.text || "") })), list, listPages)
+        .filter((a) => open.has(a.page));
+      for (let i = 0; i < found.length; i += 8) {
+        await Promise.all(found.slice(i, i + 8).map(async (a) => {
+          const rev = parseRevisionBlock(textOf.get(a.page) || "");
+          await sbPatch("pms_drawing_text?item_id=eq." + id + "&page=eq." + a.page + "&sheet_no=is.null&select=page", {
+            sheet_no: a.sheetNo, sheet_title: a.sheetTitle || null,
+            revision: rev.revision, revision_date: rev.date, revision_description: rev.description || null,
+            title_block_layout: DRAWING_LIST_LAYOUT,
+          });
+          numbered++;
+        }));
+      }
+    }
+  }
+  await sbPatch("pms_drawing_index_files?item_id=eq." + id + "&select=item_id", { sheets_rule: DRAWING_LIST_LAYOUT });
+  return numbered;
+}
+async function backfillListSheets(a: { prefix?: string; budgetMs: number; maxFiles: number }): Promise<{ files: number; pages: number }> {
+  const t0 = Date.now();
+  const out = { files: 0, pages: 0 };
+  try {
+    const todo: any[] = await sbGet(
+      "pms_drawing_index_files?select=item_id,pages&status=eq.done&pages=gte.2" +
+      "&or=(sheets_rule.is.null,sheets_rule.neq." + DRAWING_LIST_LAYOUT + ")" +
+      (a.prefix ? "&project_prefix=eq." + encodeURIComponent(a.prefix) : "") +
+      "&order=updated_at.desc&limit=" + a.maxFiles);
+    for (const f of (Array.isArray(todo) ? todo : [])) {
+      if (Date.now() - t0 > a.budgetMs) break;
+      out.pages += await numberSheetsFromList(f);
+      out.files++;
+    }
+  } catch (e) {
+    console.warn("[drawings] drawing-list sheet numbering failed:", String((e as any)?.message ?? e));
+  }
+  return out;
+}
+
 // The lazy indexer, shared by search_drawings (a few files per call, inside
 // the request's time box) and the background sweep below (the same work with
 // a bigger budget, so a search finds the current sets already indexed).
@@ -8557,6 +8623,8 @@ mcp.tool("search_drawings", {
     );
     const knownById = new Map(known.map((k) => [k.item_id, k]));
     const sheetNumbersBackfilled = await backfillFilenameSheets(numPrefix, known);
+    // Combined books: pages numbered from the book's own drawing list.
+    const listNumbered = await backfillListSheets({ prefix: numPrefix, budgetMs: 2500, maxFiles: 40 });
 
     // Current sets (baseline + everything after it) first, newest set first,
     // then the superseded sets; combined books that duplicate individual sheets
@@ -8634,6 +8702,7 @@ mcp.tool("search_drawings", {
       // Pages already in the index that gained a sheet number from their file
       // name on this call (sheetFromFilename.ts). Reported so the change is visible.
       ...(sheetNumbersBackfilled ? { sheetNumbersBackfilled } : {}),
+      ...(listNumbered.pages ? { sheetNumbersFromDrawingList: listNumbered.pages } : {}),
       ...(skippedNow.length ? { skippedThisCall: skippedNow.map(({ itemId: _i, ...s }) => s) } : {}),
       ...(failedNow.length ? { failedThisCall: failedNow } : {}),
       ...(scope.truncated ? { crawlWarning: "The SharePoint folder crawl hit its request cap, so some files under this path were not seen and filesInScope is an undercount." } : {}),
@@ -9619,13 +9688,19 @@ async function resolveIndexedSheet(projectNumber: string | undefined, sheet: str
   if (!sheetNorm) return fail({ error: `"${sheet}" is not a sheet number.` });
 
   let rowsAll: any[];
+  const readSheetRows = () => sbGetAll(
+    "pms_drawing_text?select=item_id,page,file_name,folder_path,web_url,sheet_no,sheet_title,revision,revision_date,revision_description" +
+    "&project_prefix=eq." + encodeURIComponent(numPrefix) +
+    "&sheet_no=ilike." + encodeURIComponent(sheetLoosePattern(sheet)) +
+    "&order=item_id,page",
+  );
   try {
-    rowsAll = await sbGetAll(
-      "pms_drawing_text?select=item_id,page,file_name,folder_path,web_url,sheet_no,sheet_title,revision,revision_date,revision_description" +
-      "&project_prefix=eq." + encodeURIComponent(numPrefix) +
-      "&sheet_no=ilike." + encodeURIComponent(sheetLoosePattern(sheet)) +
-      "&order=item_id,page",
-    );
+    rowsAll = await readSheetRows();
+    // Nothing under that number: the project's combined books may not have
+    // been numbered from their drawing lists yet. Do that now, then look again.
+    if (!rowsAll.length && (await backfillListSheets({ prefix: numPrefix, budgetMs: 6000, maxFiles: 60 })).pages) {
+      rowsAll = await readSheetRows();
+    }
   } catch (e) {
     return fail({ project, error: `Could not read the drawing index: ${String((e as any)?.message ?? e)}` });
   }
@@ -14790,6 +14865,7 @@ app.post("/pms-mcp/admin/portal-ca-intake", async (c) => {
 // small, so many short runs beat a few long ones. The indexer stops opening
 // files and pages at this deadline.
 const DRAWINGS_SWEEP_BUDGET_MS = 6000;
+const DRAWINGS_SWEEP_SHEETS_BUDGET_MS = 12000;
 // The deadline governs, not a project count: a project with nothing pending
 // costs one cached read, and counting it against a cap of 4 (as the first fix
 // did) let four no-ops use the whole run. This is only a safety ceiling.
@@ -14903,8 +14979,14 @@ app.post("/pms-mcp/admin/drawings-index", async (c) => {
       results.push({ project: prefix, error: String((e as any)?.message ?? e).slice(0, 300) });
     }
   }
+  // Number combined books from their drawing lists, newest-indexed files
+  // first, across every project (or the one asked for). Its own budget: this
+  // reads Supabase only, and the first pass over the existing index is ~1,600
+  // files.
+  const sheets = await backfillListSheets({ prefix: onlyProject ? cands[0] : undefined, budgetMs: DRAWINGS_SWEEP_SHEETS_BUDGET_MS, maxFiles: 80 });
   return c.json({
     scanned: results.length + noWork, withWork: results.length, noWork, candidates: cands.length, elapsedMs: Date.now() - started, results,
+    sheetNumbering: sheets,
   }, 200, DOCS_SYNC_CORS);
 });
 
