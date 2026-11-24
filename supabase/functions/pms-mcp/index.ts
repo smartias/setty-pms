@@ -102,7 +102,8 @@ import {
   FOLLOWUP_KINDS, FOLLOWUP_SOURCES, FOLLOWUP_CADENCE_DAYS, type FollowupKind,
   addDays, nextFollowupAfter, toneForReminder, daysOutstanding, isDue,
 } from "./followups.ts";
-import { findCaItemLoose, caMissMessage } from "./caLookup.ts";
+import { findCaItemLoose, caMissMessage, canonicalCaStatus, CA_STATUSES } from "./caLookup.ts";
+import { buildCaReviewPacket, type PacketFile, type FileText, type SheetToken } from "./caReviewPacket.ts";
 import {
   SEARCH_STOPWORDS, searchTerms, projectSearchExtras, searchProjectPool, matchDriveCandidates,
 } from "./projectSearch.ts";
@@ -1478,9 +1479,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-project-search-wider-fields-close-matches";
+const BUILD = "2026-11-24-ca-review-packet";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.27.3",
+  name: "setty-pms", version: "1.28.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -1617,7 +1618,9 @@ const RESULT_ARRAY_KEYS = [
 // `emails: []` (filed emails moved to their own table), and the array fallback
 // below read that as "0 results", so 102 of 164 found projects were logged
 // `empty` in a month (2026-11). For these only `error` and `count` are read.
-const RECORD_TOOLS = new Set(["get_project"]);
+// One record per call: an empty `files` or `sheets` list inside it is a coverage
+// gap the packet reports, not an empty result.
+const RECORD_TOOLS = new Set(["get_project", "get_ca_review_packet"]);
 function classifyResult(payload: any, recordTool = false): { outcome: TelemetryOutcome; resultCount: number | null; detail: string | null } {
   if (!payload || typeof payload !== "object") return { outcome: "hit", resultCount: null, detail: null };
   if (payload.error) {
@@ -4232,6 +4235,355 @@ mcp.tool("read_rfi_submittal", {
         } catch (e) { return { driveNote: `Drive CA folders not read: ${String((e as any)?.message ?? e)}` }; }
       })()),
     });
+  },
+});
+
+// ─── CA REVIEW PACKET (get_ca_review_packet) ─────────────────────────────────
+// One call that hands a reviewer the item, its filed attachments (with text),
+// the source email, the sheets it names matched to the current set, and the
+// governing spec. The selection and budgeting rules are caReviewPacket.ts;
+// what follows are the fetchers it is given. Each either returns or throws:
+// the packet turns a throw into a coverage gap.
+// Sizes are set by the worker's memory, not by patience: two attachments are
+// parsed at once, each held twice (the cached bytes and pdf.js's copy).
+const PACKET_FILE_MAX_BYTES = 12 * 1024 * 1024;   // an attachment larger than this is listed, not read
+const PACKET_SPEC_MAX_BYTES = 32 * 1024 * 1024;   // a spec book: read only the pages that name the section
+const PACKET_SPEC_SCAN_PAGES = 300;
+const PACKET_FOLDER_LISTINGS = 14;                // item folder, IN, OUT and the per-email folders under them
+
+// Text of PDF pages without OCR. `find` narrows to the pages matching it (spec
+// books); otherwise the first `maxPages`. Pages with no text layer are named
+// in imageOnlyPages for view_drawing, and left out of the memo so a later
+// read_document can still OCR them.
+async function packetPdfText(key: string, bytes: Uint8Array, o: { maxPages: number; find?: RegExp; scanCap?: number }): Promise<FileText> {
+  const { getDocumentProxy } = await import("unpdf");
+  const pdf: any = await getDocumentProxy(bytes.byteLength > PDF_CACHE_MAX_BYTES ? bytes : bytes.slice());
+  const total: number = pdf.numPages;
+  const memo = pdfPageTexts(key);
+  const imageOnly: number[] = [];
+  const pageText = async (i: number): Promise<string> => {
+    const have = memo.pages.get(i);
+    if (have !== undefined) return have;
+    const pg = await pdf.getPage(i);
+    const tc = await pg.getTextContent();
+    const t = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+    if (needsOcr(t)) { if (!imageOnly.includes(i)) imageOnly.push(i); return ""; }
+    pdfPageTextPut(memo, i, t);
+    return t;
+  };
+  const parts: string[] = [];
+  const read: number[] = [];
+  if (o.find) {
+    const cap = Math.min(total, o.scanCap ?? PACKET_SPEC_SCAN_PAGES);
+    for (let i = 1; i <= cap && read.length < o.maxPages; i++) {
+      const t = await pageText(i);
+      if (t && o.find.test(t)) { parts.push(`[p.${i}]\n${t}`); read.push(i); }
+    }
+    return {
+      totalPages: total, pagesRead: read.join(", "), text: parts.join("\n\n"),
+      ...(read.length ? {} : { note: `No page in the first ${cap} of ${total} names this section in its text.` }),
+      ...(imageOnly.length ? { imageOnlyPages: imageOnly } : {}),
+    };
+  }
+  const end = Math.min(total, o.maxPages);
+  for (let i = 1; i <= end; i++) {
+    const t = await pageText(i);
+    if (t) { parts.push(`[p.${i}]\n${t}`); read.push(i); }
+  }
+  return {
+    totalPages: total, pagesRead: end ? `1-${end}` : "", text: parts.join("\n\n"),
+    ...(total > end ? { note: `First ${end} of ${total} pages. read_document {itemId, pages:"X-Y"} for the rest.`, truncated: true } : {}),
+    ...(imageOnly.length ? { imageOnlyPages: imageOnly } : {}),
+  };
+}
+
+// Bytes of one file by its id, with the same visibility gates read_document
+// applies. `gated` skips the SharePoint gate for a child of a folder that was
+// itself gated a moment ago (the item folder listing).
+async function packetFileBytes(itemId: string, o: { maxBytes: number; gated?: boolean; name?: string; size?: number | null }): Promise<{ name: string; key: string; bytes: Uint8Array }> {
+  if (isAzId(itemId)) {
+    const dec = decodeAzId(itemId);
+    if (!azFileIdOk(dec)) throw new Error("malformed drive file id");
+    const gate = await azurePathProject(dec.team, dec.relPath);
+    if (!gate.ok) throw new Error("not visible to this caller");
+    const az = await azureCtxForTeam(dec.team, dec.label);
+    if (!az.ok) throw new Error(az.error);
+    const name = dec.relPath.split("/").pop() || "";
+    const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
+    if (props.size > o.maxBytes) throw new Error(`too large to read here (${Math.round(props.size / 1048576)} MB)`);
+    const cached = extOf(name) === "pdf" ? pdfCacheGet(itemId) : null;
+    if (cached) return { name, key: itemId, bytes: cached };
+    const res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (extOf(name) === "pdf") pdfCachePut(itemId, bytes);
+    return { name, key: itemId, bytes };
+  }
+  const bar = itemId.indexOf("|");
+  if (bar <= 0) throw new Error("not a driveId|itemId file id");
+  const drive = itemId.slice(0, bar), realId = itemId.slice(bar + 1);
+  let name = o.name || "", size = o.size ?? null;
+  if (!o.gated || !name) {
+    const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,webUrl,parentReference`);
+    const gate = await sharePointItemVisible(drive, meta);
+    if (!gate.ok) throw new Error("not visible to this caller");
+    name = meta.name || name; size = meta.size ?? size;
+  }
+  if ((size ?? 0) > o.maxBytes) throw new Error(`too large to read here (${Math.round((size ?? 0) / 1048576)} MB)`);
+  const cached = extOf(name) === "pdf" ? pdfCacheGet(itemId) : null;
+  if (cached) return { name, key: itemId, bytes: cached };
+  const res = await fetch(`https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
+    { headers: { Authorization: "Bearer " + (await graphToken()) } });
+  if (!res.ok) throw new Error(`Graph content ${res.status}`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (extOf(name) === "pdf") pdfCachePut(itemId, bytes);
+  return { name, key: itemId, bytes };
+}
+
+async function packetBytesToText(name: string, key: string, bytes: Uint8Array, o: { maxPages: number; find?: RegExp; scanCap?: number }): Promise<FileText> {
+  const ext = extOf(name);
+  if (ext === "pdf") return packetPdfText(key, bytes, o);
+  const dec = () => new TextDecoder().decode(bytes);
+  if (ext === "html" || ext === "htm") return { text: htmlToText(dec()) };
+  if (["txt", "csv", "md", "json", "xml"].includes(ext)) return { text: dec() };
+  if (ext === "docx") {
+    const { unzipSync, strFromU8 } = await import("npm:fflate@0.8.2");
+    const docXml = unzipSync(bytes)["word/document.xml"];
+    if (!docXml) return { note: "DOCX had no readable document.xml." };
+    return {
+      text: strFromU8(docXml)
+        .replace(/<w:tab[^>]*\/?>/g, "\t").replace(/<\/w:p>/g, "\n").replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+        .replace(/\n{3,}/g, "\n\n").trim(),
+    };
+  }
+  return { note: `.${ext || "?"} is not read as text here.` };
+}
+
+// Every file under the item's folder. SharePoint: the record's spFolderUrl,
+// walked through IN / OUT / the per-email folders. A project on the office
+// drive: the item's folder(s) under CA, the same match read_rfi_submittal makes.
+async function packetListFiles(p: any, item: any, type: "rfi" | "submittal"): Promise<{ files: PacketFile[]; folderUrl?: string | null; note?: string; truncated?: boolean }> {
+  const url = String(item?.spFolderUrl || "").trim();
+  if (/^https:\/\//i.test(url)) {
+    const root = await graphGet(`/shares/${encodeURIComponent(shareToken(url))}/driveItem?$select=id,name,folder,webUrl,parentReference`);
+    const drive = root?.parentReference?.driveId;
+    if (!root?.id || !drive) throw new Error("the folder link on the record did not resolve");
+    if (!root.folder) throw new Error("the folder link on the record points at a file, not a folder");
+    const gate = await sharePointItemVisible(drive, root);
+    if (!gate.ok) throw new Error("the item's folder is not visible to this caller");
+    const files: PacketFile[] = [];
+    const queue: Array<{ id: string; path: string; depth: number }> = [{ id: root.id, path: "", depth: 0 }];
+    let listings = 0, truncated = false;
+    while (queue.length) {
+      const f = queue.shift()!;
+      if (listings >= PACKET_FOLDER_LISTINGS) { truncated = true; break; }
+      listings++;
+      const r = await listChildren(`/drives/${drive}/items/${encodeURIComponent(f.id)}/children?$select=id,name,size,folder,file,lastModifiedDateTime,webUrl&$top=200`);
+      truncated = truncated || r.truncated;
+      for (const c of r.value) {
+        const path = f.path ? `${f.path}/${c.name}` : String(c.name);
+        if (c.folder) { if (f.depth < 3) queue.push({ id: c.id, path, depth: f.depth + 1 }); else truncated = true; }
+        else files.push({ itemId: `${drive}|${c.id}`, name: c.name, path: f.path, size: c.size ?? null, modified: c.lastModifiedDateTime ?? null, webUrl: c.webUrl ?? null, ext: extOf(c.name) });
+      }
+    }
+    return { files, folderUrl: url, truncated };
+  }
+  const team = await teamWithShares(p?.projectNumber);
+  if (team) {
+    const r = await azureCaItems(team, String(p.projectNumber).toLowerCase().trim(), type);
+    const keys = [String(item.number || ""), String(item.specSection || "")].filter((k) => k.trim().length >= 2);
+    const matched = r.items.filter((it) => keys.some((k) => folderMentionsNumber(it.name, k))).slice(0, 3);
+    const files: PacketFile[] = [];
+    for (const it of matched) {
+      for (const f of await driveCaItemFiles(it)) {
+        files.push({ itemId: String(f.itemId), name: String(f.name), path: it.name, size: (f.size as number) ?? null, modified: (f.modified as string) ?? null, ext: String(f.ext || extOf(String(f.name))) });
+      }
+    }
+    return {
+      files, folderUrl: null, truncated: r.truncated,
+      ...(matched.length ? {} : { note: `No folder under CA on the office drive is named with "${item.number}"${r.items.length ? ` (${r.items.length} ${type} folder(s) are there: browse with list_project_documents)` : ""}. Ask where the contractor's attachments are filed.` }),
+    };
+  }
+  return { files: [], folderUrl: null, note: "The record has no SharePoint folder, so no attachments are filed with it. The contractor's files may be on the source email or still in the portal: ask before reviewing." };
+}
+
+mcp.tool("get_ca_review_packet", {
+  description:
+    "START HERE when reviewing ONE RFI or submittal. One call returns what a review needs: the item (question / " +
+    "description, response so far, spec section, dates, any Claude suggestion already on it); every file in the " +
+    "item's folder with the TEXT of the contractor's attachments already extracted; the email it was logged from; " +
+    "the sheets it names, matched to the current issued set with ready view_drawing arguments; the governing spec " +
+    "section's text when the issued register has it; QA-ledger rows on those sheets; and related items (earlier " +
+    "rounds, same spec section, same sheet). It also marks the item as under review in the PMS, so there is no " +
+    "need to call mark_ca_review_started, read_rfi_submittal, list_project_documents, read_document, " +
+    "get_current_set, trace_references or read_email first. `coverage.gaps` lists what could NOT be gathered " +
+    "(no folder, image-only attachment, spec not on the register): carry those into the review. It does not " +
+    "render drawings or OCR scans: look at sheets and image-only pages with view_drawing. Finish with save_ca_review.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    type: z.enum(["rfi", "submittal"]).describe("Whether it's an RFI or a submittal"),
+    number: z.string().describe("The RFI/submittal number (e.g. '004', 'RFI-012' or '23 09 23-1.0')"),
+    markStarted: z.boolean().optional().describe("Default true: record that a review is under way, so the PMS shows 'Claude is reviewing'. Pass false to only read (looking something up, not reviewing)."),
+  }),
+  handler: async ({ projectNumber, type, number, markStarted }) => {
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}"`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const arr = type === "rfi" ? (p?.rfis ?? []) : (p?.submittals ?? []);
+    const found = findCaItemLoose(arr, number, type);
+    const item = found.item;
+    if (!item) {
+      return asText({
+        error: caMissMessage(found, type, number, `on project ${projectNumber}`, arr.length),
+        ...(found.candidates.length ? { candidates: found.candidates } : {}),
+        ...(found.similar.length ? { similarNumbers: found.similar } : {}),
+        nextStep: found.candidates.length
+          ? "Ask the user which one they mean, then call again with that number exactly as written."
+          : `search_rfis_submittals lists this project's ${type} log. An item that was never logged can be added with backload_ca_item; then call this again.`,
+      });
+    }
+    const project = String(p?.projectNumber || projectNumber);
+    const cap = (t: string) => t.length > MAX_DOC_CHARS ? t.slice(0, MAX_DOC_CHARS) + "\n…[truncated]" : t;
+    const question = htmlToText(item.description || "");
+    const response = htmlToText(item.response || item.comments || "");
+    const ai = item.aiReview;
+    const links = outgoingLinks(p, item);
+    const linkedFrom = incomingLinks(p, type, item.id);
+    const itemView: Record<string, unknown> = {
+      type, number: item.number,
+      ...(found.matchedBy === "format" ? { numberNote: `Asked for "${number}"; the log writes it "${item.number}".` } : {}),
+      subject: item.title || item.description || null, discipline: item.discipline || null,
+      specSection: item.specSection || null, status: item.status || null, reviewAction: item.stamp || null,
+      from: item.from || null, receivedVia: item.receivedVia || item.source || null,
+      received: item.dateReceived || null, dueDate: item.dueDate || null, closed: item.dateResponded || item.dateReturned || null,
+      [type === "rfi" ? "question" : "description"]: cap(question),
+      response: cap(response),
+      ...(response ? { responseNote: "A person already wrote this. Your suggestion is saved beside it, never over it." } : {}),
+      notes: item.notes || null,
+      ...(item.intake && item.intake.formUrl ? { intakeFormUrl: item.intake.formUrl } : {}),
+      ...(ai ? { existingClaudeReview: { at: ai.at ?? null, reviewedAgainstSet: ai.reviewedAgainstSet ?? null, suggestedStamp: ai.suggestedStamp ?? null,
+        suggestedResponse: String(ai.suggestedResponse || "").slice(0, 1500), note: "A Claude review is already saved on this item. save_ca_review replaces it." } } : {}),
+      ...(links.length ? { links } : {}),
+      ...(linkedFrom.length ? { linkedFrom, linkedFromNote: LINKED_FROM_NOTE } : {}),
+    };
+    const itemTexts: Array<[string, string]> = [
+      ["subject", String(item.title || "")],
+      [type === "rfi" ? "question" : "description", question],
+      ["response", response],
+      ["notes", String(item.notes || "")],
+    ];
+    const numPrefix = project.toLowerCase().trim();
+    const packet = await buildCaReviewPacket({
+      markStarted: async () => {
+        const who = qaLedgerCaller();
+        if (!who.ok) throw new Error("sign-in required to mark a review started (the service lane cannot)");
+        const at = new Date().toISOString();
+        await updateProjectRecord(pid, (proj) => {
+          const key = caArrKey(type);
+          const list = Array.isArray(proj[key]) ? proj[key] : [];
+          const it = list.find((x: any) => x && (x.id ? x.id === item.id : String(x.number) === String(item.number)));
+          if (!it) throw new Error("the item is no longer in the log");
+          return { ...proj, [key]: list.map((x: any) => (x === it ? { ...x, aiReviewStarted: { at, by: who.email } } : x)) };
+        });
+        return at;
+      },
+      listFiles: () => packetListFiles(p, item, type),
+      fileText: async (f, o) => {
+        const got = await packetFileBytes(f.itemId, { maxBytes: PACKET_FILE_MAX_BYTES, gated: !isAzId(f.itemId), name: f.name, size: f.size ?? null });
+        return packetBytesToText(got.name, got.key, got.bytes, o);
+      },
+      sourceEmail: async () => {
+        const rid = String(item.sourceEmailId || (item.sourceEmail && item.sourceEmail.recordId) || "").trim();
+        if (!rid) return null;
+        const rows = await sbGet(
+          "pms_project_emails?record_id=eq." + encodeURIComponent(rid) + "&project_id=eq." + encodeURIComponent(pid) +
+          "&select=record_id,subject,from_name,from_address,to_addresses,direction,email_date,attachment_names,body_text,body_html_compressed&limit=1");
+        const r = rows && rows[0];
+        if (!r) throw new Error("the email the record points at is not filed on this project");
+        return {
+          recordId: r.record_id, subject: r.subject || null, from: [r.from_name, r.from_address].filter(Boolean).join(" ") || null,
+          to: r.to_addresses || null, date: r.email_date || null, direction: r.direction || null,
+          ...(r.attachment_names ? { attachmentNames: r.attachment_names } : {}),
+          body: emailBody(r),
+        };
+      },
+      sheetTokens: (fields) => {
+        const out: SheetToken[] = [];
+        const seen = new Set<string>();
+        for (const [field, text] of fields) {
+          for (const t of sheetTokensInText(text)) {
+            // Same rule trace_references applies to a token nothing has
+            // validated yet: a known discipline prefix, written without a space.
+            if (t.spaceSeparated || !DISCIPLINE_NAME[t.discipline] || seen.has(t.sheet)) continue;
+            seen.add(t.sheet);
+            out.push({ sheet: t.sheet, discipline: t.discipline, spaceSeparated: false, field, snippet: refSnippet(text, t.at, t.token.length) });
+          }
+        }
+        return out;
+      },
+      currentSet: async () => {
+        const composed = composeCurrentSet(await transmittalRows(pid));
+        const sheets = new Map<string, any>();
+        for (const d of composed.disciplines) for (const s of d.sheets) {
+          const c = canonicalSheet({ sheetNo: s.sheetNo });
+          sheets.set(c ? c.key : String(s.sheetNo), s);
+        }
+        const newest = composed.sourceSets[0];
+        const label = newest ? [newest.setName, newest.issueDate].filter(Boolean).join(", ") + (composed.sourceSets.length > 1 ? ` (current set composed from ${composed.sourceSets.length} issuances)` : "") : null;
+        return { sheets, specifications: composed.specifications, label, sheetCount: composed.sheetCount };
+      },
+      indexedSheets: async (keys) => {
+        const out = new Map<string, any>();
+        if (!numPrefix || !keys.length) return out;
+        const want = new Set(keys);
+        const rows = await sbGetAll(
+          "pms_drawing_text?select=sheet_no,sheet_title,revision,revision_date,web_url&project_prefix=eq." + encodeURIComponent(numPrefix) +
+          "&sheet_no=not.is.null&order=sheet_no.asc");
+        for (const r of (rows ?? [])) {
+          const c = canonicalSheet({ sheetNo: r?.sheet_no });
+          if (!c || !want.has(c.key)) continue;
+          const have = out.get(c.key);
+          if (!have || String(r.revision_date || "") > String(have.revisionDate || "")) {
+            out.set(c.key, { sheetNo: r.sheet_no, title: r.sheet_title || null, revision: r.revision || null, revisionDate: r.revision_date || null, webUrl: r.web_url || null });
+          }
+        }
+        return out;
+      },
+      specText: async (spec, wanted) => {
+        const url = String(spec?.webUrl || "").trim();
+        if (!/^https:\/\//i.test(url)) return { error: "the register entry has no link to the file" };
+        const meta = await graphGet(`/shares/${encodeURIComponent(shareToken(url))}/driveItem?$select=id,name,size,file,folder,webUrl,parentReference`);
+        const drive = meta?.parentReference?.driveId;
+        if (!meta?.id || !drive) return { error: "the register's link did not resolve" };
+        if (meta.folder) return { error: "the register's link is a folder, not the spec file" };
+        const gate = await sharePointItemVisible(drive, meta);
+        if (!gate.ok) return { error: "not visible to this caller" };
+        const itemId = `${drive}|${meta.id}`;
+        const got = await packetFileBytes(itemId, { maxBytes: PACKET_SPEC_MAX_BYTES, gated: true, name: meta.name, size: meta.size ?? null });
+        // "23 09 23" as it prints in a section header or a page footer: the
+        // three pairs with optional spaces between them.
+        const digits = String(wanted || spec.section || "").replace(/\D/g, "");
+        const find = digits.length >= 5
+          ? new RegExp(digits.length === 5 ? `\\b${digits}\\b` : `\\b${digits.slice(0, 2)}\\s?${digits.slice(2, 4)}\\s?${digits.slice(4, 6)}\\b`)
+          : undefined;
+        // A file for this one section is read from the top; a book is searched.
+        const whole = await packetBytesToText(got.name, got.key, got.bytes, { maxPages: 10 });
+        if (extOf(got.name) !== "pdf" || (whole.totalPages ?? 0) <= 40 || !find) return { ...whole, itemId };
+        const hit = await packetPdfText(got.key, got.bytes, { maxPages: 10, find, scanCap: PACKET_SPEC_SCAN_PAGES });
+        return { ...hit, itemId, ...(hit.text ? { note: `Spec book of ${hit.totalPages} pages: these are the pages whose text names the section. read_document {itemId, pages:"X-Y"} reads around them.` } : {}) };
+      },
+      ledger: async (sheets) => {
+        const rows = await qaLedgerFor(project, { sheets }, { relevantOnly: true });
+        return rows.map((r: any) => ({
+          id: r.id, source: r.source, severity: r.severity ?? null, status: r.status, title: r.title, sheets: r.sheets ?? null,
+          ...(r.action ? { action: r.action } : {}),
+          ...(r.response ? { response: r.response, responseDisposition: r.response_disposition ?? null } : {}),
+          matchedOn: r.matchedOn,
+        }));
+      },
+    }, { project: p, projectNumber: project, type, item, itemView, itemTexts, markStarted: markStarted !== false });
+    if (packet.qaLedger) (packet.qaLedger as any).note = QA_LEDGER_CA_NOTE;
+    return asText(packet);
   },
 });
 
@@ -12298,7 +12650,7 @@ mcp.tool("backload_ca_item", {
     specSection: z.string().optional().describe("Submittals: CSI spec section, e.g. '23 09 23'."),
     discipline: z.string().optional().describe("Mechanical / Electrical / Plumbing / Fire Protection / Technology / Multi-Discipline / Other. Default Mechanical."),
     from: z.string().optional().describe("GC/prime the item came from, or ball-in-court."),
-    status: z.string().optional().describe("Log status. RFI default 'Open'; submittal default 'Received'."),
+    status: z.string().optional().describe("Log status, one of the log's own: RFI Open / Pending Sub Response / Responded / Closed / Void; submittal Received / Under Review / Pending Sub Review / Returned / Resubmittal Required / Void. RFI default 'Open'; submittal default 'Received'."),
     stamp: z.enum(["Approved", "Approved as Noted", "Revise and Resubmit", "Rejected", "—"]).optional().describe("Submittals only: existing review stamp if the item was already actioned outside the PMS."),
     dateReceived: z.string().optional().describe("YYYY-MM-DD."),
     dueDate: z.string().optional().describe("YYYY-MM-DD."),
@@ -12320,6 +12672,13 @@ mcp.tool("backload_ca_item", {
     }
     if (type === "submittal" && (args.response || args.dateResponded || args.title)) {
       return asText({ error: "response/dateResponded/title are RFI fields — for a submittal use comments/dateReturned/description." });
+    }
+    // Only the log's own statuses are stored (caLookup.ts): a near miss such
+    // as "In Review" is written as the log spells it, anything else refused.
+    if (args.status != null && String(args.status).trim()) {
+      const st = canonicalCaStatus(type, args.status);
+      if (!st) return asText({ error: `"${args.status}" is not a ${type === "rfi" ? "RFI" : "submittal"} status.`, allowed: CA_STATUSES[type], nextStep: "Call again with one of the allowed statuses, or leave status out for the default." });
+      args.status = st;
     }
     const pid = await resolveProjectId(projectNumber);
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });

@@ -74,3 +74,26 @@ test("a miss says what is in the log", () => {
   assert.equal(findCaItemLoose(log, "", "rfi").item, null);
   assert.equal(findCaItemLoose(null, "1", "rfi").item, null);
 });
+
+// ── log statuses (backload_ca_item) ─────────────────────────────────────────
+{
+  const { canonicalCaStatus, CA_STATUSES } = await import("./caLookup.ts");
+  const { readFileSync } = await import("node:fs");
+  test("backfill statuses: the log's spelling, known near misses mapped, anything else refused", () => {
+    assert.equal(canonicalCaStatus("submittal", "under review"), "Under Review");
+    assert.equal(canonicalCaStatus("submittal", "In Review"), "Under Review");
+    assert.equal(canonicalCaStatus("submittal", " Revise and  Resubmit "), "Resubmittal Required");
+    assert.equal(canonicalCaStatus("rfi", "CLOSED"), "Closed");
+    assert.equal(canonicalCaStatus("rfi", "Returned"), null);
+    assert.equal(canonicalCaStatus("submittal", "Responded"), null);
+    assert.equal(canonicalCaStatus("rfi", ""), null);
+  });
+  test("the connector's status lists are the ones the PMS and Tracker use (caStatus.js)", async () => {
+    const shared = await import("../../../caStatus.js");
+    assert.deepEqual(CA_STATUSES.rfi, shared.RFI_STATUSES);
+    assert.deepEqual(CA_STATUSES.submittal, shared.SUBMITTAL_STATUSES);
+    const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const body = src.slice(src.indexOf('mcp.tool("backload_ca_item"'));
+    assert.match(body.slice(0, 9000), /canonicalCaStatus\(type, args\.status\)/, "backload_ca_item checks the status before writing");
+  });
+}

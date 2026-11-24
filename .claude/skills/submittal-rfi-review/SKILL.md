@@ -71,15 +71,31 @@ response wording on any contested RFI or rejected submittal.
 
 ## Step 0 — Resolve the item, or backfill it first
 
-0. **`mark_ca_review_started`** (project + type + number) — do this before
-   anything else. The person who sent you this is looking at an item marked
-   "waiting"; this one call turns it into "Claude is reviewing", and without it
-   they cannot tell a review in progress from a request that never arrived. If
-   it answers that the item is not logged, carry on to step 2 and call it again
-   right after `backload_ca_item`.
-1. `read_rfi_submittal` (project + type + number) for the full text: the
+0. **`get_ca_review_packet`** (project + type + number) — do this before
+   anything else. ONE call returns the item in full, every file in its folder
+   with the text of the contractor's attachments already extracted, the email
+   it was logged from, the sheets it names matched to the current issued set
+   (each with ready `view_drawing` arguments), the governing spec section's
+   text when the register has it, the QA-ledger rows on those sheets, and
+   related items (earlier rounds, same spec section, same sheet). It also
+   marks the item "Claude is reviewing": the person who sent you this is
+   looking at an item marked "waiting", and without that mark they cannot tell
+   a review in progress from a request that never arrived.
+   - Read **`coverage.gaps`** first. It lists what the packet could NOT gather
+     (no folder on the record, an image-only attachment, a spec section that is
+     not on the register, no sheet named). Each gap is either a call you still
+     have to make from the steps below, or a line in your coverage note.
+   - Do not repeat what the packet already holds: no `read_rfi_submittal`,
+     `list_project_documents`, `read_document`, `get_current_set`,
+     `trace_references` or `read_email` for material it returned.
+   - If it answers that the item is not logged, carry on to step 2 and call it
+     again right after `backload_ca_item`.
+1. Only if `get_ca_review_packet` is not among your tools (an older
+   connector): **`mark_ca_review_started`** first, then
+   `read_rfi_submittal` (project + type + number) for the full text: the
    submittal description / the RFI question, spec section, discipline, status,
-   any response already there, and linked items.
+   any response already there, and linked items. Then gather the rest with
+   the individual calls in Step 1.
 2. **If the item is NOT logged yet** (common during the Newforma cutover — the
    PDF or the Procore/Forma notification is filed but the log row doesn't
    exist), backfill it:
@@ -96,6 +112,12 @@ response wording on any contested RFI or rejected submittal.
    the review starts.
 
 ## Step 1 — Establish the review basis (what you check against)
+
+The packet from Step 0 already carries most of this: `reviewedAgainstSet`, the
+`sheets`, the `specs` text, the `files` with their text, `qaLedger` and
+`related`. Work down the list below ONLY for what the packet did not give you
+(its `coverage.gaps`), and for the looking that no text can replace: the
+schedule values, and `view_drawing` on the sheets and on image-only pages.
 
 1. `get_current_set` for the composed current issued set — in CA that is the
    baseline submission plus every bulletin/addendum since. Say which set you

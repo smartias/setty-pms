@@ -149,8 +149,8 @@ check(!shipped.includes("Ask Sara Arias."), "the slice-A 'not enabled yet' refus
 // project it names (folder → project → team → projectRefVisible) before any
 // share call, and the share root is never listed for a caller.
 has("async function azurePathProject(team: string, relPath: string)", "share paths earn their own visibility verdict");
-check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPath\);/g) || []).length === 9,
-  "every az: entry point runs the gate: list_project_documents, read_document, the PDF loader, the ranged PDF source (large-file indexing), drawing item meta, the raw-file meta + byte openers behind download_document (1.19.0), and view_photos' itemId + folderId branches (1.20.0)");
+check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPath\);/g) || []).length === 10,
+  "every az: entry point runs the gate: list_project_documents, read_document, the PDF loader, the ranged PDF source (large-file indexing), drawing item meta, the raw-file meta + byte openers behind download_document (1.19.0), and view_photos' itemId + folderId branches (1.20.0), and the review packet's file reader (1.28.0)");
 has("if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;", "the gate is projectRefVisible, so per-project overrides (confidential included) apply");
 has('if (String(p.team || "").toUpperCase().trim() !== team) return notFound;', "a project is only served from its own team's share");
 has('error: "The share root is not browsable."', "the share root is never listed for a caller");

@@ -603,6 +603,57 @@ Claude" seat link. Detector and key-folding are pure and pinned by the test.
 node supabase/functions/pms-mcp/commentResponses.test.mjs
 ```
 
+## The review packet (`get_ca_review_packet`, 1.28.0)
+
+One call that hands a reviewer everything a single RFI or submittal needs. It
+exists because of telemetry: across 37 Claude reviews (Sept to Nov 2026) the
+median review made about 20 tool calls, and half of them were the hunt for
+material: `list_project_documents` 4.6 times per review (walking the item
+folder level by level), `read_document` 3.8, `search_drawings` 1.6 (46% empty),
+`find_document` 1.1 (28% empty), plus the email search and `get_current_set`.
+
+What it returns, for `{projectNumber, type, number}`:
+
+| Key | Content |
+| --- | --- |
+| `item` | The record as `read_rfi_submittal` gives it, plus any Claude review already saved on it. |
+| `files` | Every file under the record's `spFolderUrl` (IN, OUT and the per-email folders; a drive project's CA folder instead). Up to 6 are read: `text` holds the extracted text, `imageOnlyPages` the pages with no text layer. |
+| `sourceEmail` | The email the record was logged from (`sourceEmailId` / `sourceEmail.recordId`), body included. |
+| `sheets` | Sheets a person confirmed on the item, plus the ones its text, email and attachments name, kept only when the current set or the drawing index knows them. Each row carries the current revision and a ready `view` argument for `view_drawing`. |
+| `reviewedAgainstSet` | One line naming the newest issued set, for `save_ca_review`. |
+| `specs` | The record's spec section (and any the text names) matched to the register's specifications, with the section's text. A spec book over 40 pages is searched for the pages that name the section. |
+| `qaLedger`, `related` | Ledger rows on those sheets; earlier rounds of the same item, same spec section, same sheet. |
+| `coverage` | `included` and, above all, `gaps`: what could not be gathered and why. |
+
+Rules worth knowing before changing it:
+
+- **It marks the review started** (`aiReviewStarted`, the same write as
+  `mark_ca_review_started`) unless `markStarted:false`. A failed mark is a gap,
+  not an error: the read still returns.
+- **Fail-soft.** Each fetcher either returns or throws, and a throw becomes a
+  line in `coverage.gaps`. A packet that silently lacked the governing spec
+  would be worse than no packet.
+- **No OCR and no rendering.** Image-only pages are named so the reviewer looks
+  at them with `view_drawing`; `read_document` still OCRs on request.
+- **Same gates as the piecemeal tools.** The item folder goes through
+  `sharePointItemVisible` before it is listed, drive files through
+  `azurePathProject`, the spec file through `sharePointItemVisible`, and the
+  source email must belong to the project.
+- **Budgets** are `PACKET_LIMITS` in `caReviewPacket.ts` (6 files, 12 pages and
+  9,000 characters each, 36,000 in all; 12,000 for spec text). An attachment over
+  12 MB or a spec file over 32 MB is listed with a note and left for
+  `read_document`: the limit is the worker's memory.
+- **Telemetry:** it is in `RECORD_TOOLS`, so an empty `files` list does not log
+  the call as "empty". To see whether it worked, compare calls per review
+  before and after (sessions ending in `save_ca_review`).
+
+The logic is `caReviewPacket.ts` (pure, tested with fake fetchers in
+`caReviewPacket.test.mjs`); `index.ts` supplies the fetchers.
+
+`backload_ca_item` now stores only the log's own statuses
+(`canonicalCaStatus` in `caLookup.ts`): two submittals had been backfilled as
+"In Review", which no screen offers.
+
 ## Submittal / RFI review (`save_ca_review` / `backload_ca_item`)
 
 The write side of the submittal-rfi-review skill and the CA-item modal's "Send to
