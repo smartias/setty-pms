@@ -812,6 +812,40 @@ still matched nothing. They apply from CD on. Run them after the five above.
   A finding quotes the phrase and writes the question a bidder would ask.
   "If applicable" on a controls item is qa-633, not this item.
 
+Two more were added later on 2026-11-24, from the preventable RFIs that
+still matched nothing after qa-637. Run them after the three above.
+
+- **qa-638 What is scheduled can be bought and can do the job.** qa-602
+  asks whether spec and drawings name the same equipment; this asks whether
+  that equipment, as scheduled, is possible.
+  1. *Air and heat.* For each unit with a coil, check airflow, capacity and
+     the entering and leaving temperatures against each other (for air,
+     BTU/h = 1.08 x cfm x temperature rise). Apply from DD on.
+  2. *Basis of design.* The named model and size is made with the scheduled
+     options and meets the scheduled leaving conditions. Read the product
+     data when it is filed; when it is not, put the check on the to-confirm
+     list and do not guess.
+  3. *Panels.* Voltage matches the source on the one-line; the breaker
+     types called for are made at the scheduled interrupting rating.
+  4. *Boxes and controllers.* Count what the plan puts in each floor box and
+     on each lighting or control panel against what it holds.
+  5. *Schedules.* No two tags of different types carry the same model.
+  A finding gives the two numbers that cannot both be true, or names the
+  option the product is not made with, and the sheet each came from.
+
+- **qa-639 Fire alarm and mechanical agree, and the matrix is complete.**
+  qa-612 checks dampers against rated walls; this checks the two sets that
+  both draw them against each other.
+  1. *Count per floor:* fire smoke dampers and duct smoke detectors on the
+     M sheets against the modules and detectors on the FA sheets.
+  2. *Who provides and who powers* each detector and damper actuator.
+  3. *Matrix:* every input has a row and every output names the equipment
+     it acts on, by wing or zone where the building has them.
+  4. *Interfaces named in a note* (IT, AV, DAS, ERRCS, BMS, elevator): each
+     has a matrix row and a head-end or tie-in location.
+  A finding gives both counts with their sheets, or quotes the note and
+  says which row is missing.
+
 **One row per defect.** A connection to an existing system can read as
 qa-630 or qa-631. Use qa-630 when the question is whether the existing
 thing is there and adequate (is there a drain, is the panel pole free), and
