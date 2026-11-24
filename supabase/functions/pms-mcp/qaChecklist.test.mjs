@@ -140,7 +140,7 @@ for (const hint of autoHints) {
 // Three more RFI history items (qa-635 to qa-637, 2026-11-24): the kinds that
 // still matched nothing after the qa-630 series, approved for the 2027 goal.
 {
-  const b = readFileSync(join(here, "../../migrations/20261124140000_qa_rfi_history_items_2027.sql"), "utf8");
+  const b = readFileSync(join(here, "../../migrations/20261124150000_qa_rfi_history_items_2027.sql"), "utf8");
   const ids = ["qa-635", "qa-636", "qa-637"];
   for (const id of ids) assert.ok(b.includes(`('${id}','deliverable-qa','RFI History',`), `missing ${id}`);
   assert.equal(b.split("::jsonb,'rfi-lesson','qa-rfi-review-2026-11-24-rfi-history'").length - 1, 3);
