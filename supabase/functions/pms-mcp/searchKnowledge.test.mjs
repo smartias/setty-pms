@@ -1,3 +1,4 @@
+import { rankByQuery } from "./knowledgeQuery.ts";
 // Tests for search_knowledge's filtering in index.ts — the in-memory filter,
 // the slim projection, and the load-bearing serving rules (approved-only by
 // default, own-submissions gated on identity, project visibility applied).
@@ -15,19 +16,18 @@ const knowledgeTrades = (r) => {
   const set = Array.isArray(r.disciplines) ? r.disciplines.filter(Boolean) : [];
   return set.length ? set : (r.discipline ? [r.discipline] : []);
 };
+// The query rule itself is the shipped one (knowledgeQuery.ts), not a copy.
+const lessonFields = (r) =>
+  [r.lesson_summary, r.agency, ...knowledgeTrades(r), r.system, r.issue_type, r.source_reference,
+   Array.isArray(r.tags) ? r.tags.join(" ") : r.tags];
+const practiceFields = (r) =>
+  [r.title, r.practice_text, r.coord_theme, r.system, r.issue_type, ...knowledgeTrades(r)];
 function filterKnowledge(rows, f) {
   const has = (v, needle) => String(v ?? "").toLowerCase().includes(needle);
   let out = rows;
   if (f.agency) { const a = f.agency.toLowerCase().trim(); out = out.filter((r) => has(r.agency, a)); }
   if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r) => knowledgeTrades(r).some((t) => has(t, d))); }
-  if (f.query) {
-    const q = f.query.toLowerCase().trim();
-    out = out.filter((r) =>
-      [r.lesson_summary, r.agency, ...knowledgeTrades(r), r.system, r.issue_type, r.source_reference,
-       Array.isArray(r.tags) ? r.tags.join(" ") : r.tags]
-        .some((v) => has(v, q)));
-  }
-  return out;
+  return rankByQuery(out, lessonFields, f.query);
 }
 const slimLesson = (r) => ({
   lessonId: r.lesson_id, project: r.project_id || undefined, agency: r.agency || undefined,
@@ -41,13 +41,7 @@ function filterPractices(rows, f) {
   const has = (v, needle) => String(v ?? "").toLowerCase().includes(needle);
   let out = rows;
   if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r) => knowledgeTrades(r).some((t) => has(t, d))); }
-  if (f.query) {
-    const q = f.query.toLowerCase().trim();
-    out = out.filter((r) =>
-      [r.title, r.practice_text, r.coord_theme, r.system, r.issue_type, ...knowledgeTrades(r)]
-        .some((v) => has(v, q)));
-  }
-  return out;
+  return rankByQuery(out, practiceFields, f.query);
 }
 const slimPractice = (r) => ({
   practiceId: r.practice_id, title: r.title, discipline: r.discipline || undefined,
