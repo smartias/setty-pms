@@ -1,61 +1,19 @@
 // Project search: describing a job rather than naming it.
 //
-// Mirrors the implementation in index.ts. The fixtures are REAL rows: the
+// Runs the shipped rules (projectSearch.ts). The fixtures are REAL rows: the
 // St. Therese job is the one that prompted this (Sara: "people might refer to a
 // project citing the agency, name and prime, ie Feasibility Study with SCA for
 // Morphosis"), and searching that exact phrase returned zero before this change.
 import { strict as assert } from "node:assert";
 import test from "node:test";
 
-const SEARCH_STOPWORDS = new Set([
-  "a", "an", "the", "with", "for", "of", "on", "at", "in", "and", "to", "by",
-  "project", "job", "study", "our",
-]);
+import {
+  searchTerms as termsOf, projectHaystack, projectSearchExtras, matchProject, searchProjectPool,
+  matchDriveCandidates, wordStartMatch, CLOSE_MATCH_MAX,
+} from "./projectSearch.ts";
 
-const AGENCY_ALIASES = {
-  sca: "school construction authority",
-  ddc: "department of design and construction",
-  dasny: "dormitory authority",
-  cuny: "city university",
-  suny: "state university",
-  sucf: "state university construction fund",
-  ogs: "office of general services",
-  edc: "economic development corporation",
-  dep: "department of environmental protection",
-  dot: "department of transportation",
-  nycha: "housing authority",
-  hpd: "housing preservation development",
-};
-
-const projectHaystack = (p) => [
-  p.name, p.projectNumber, p.status, p.owner, p.prime, p.clientName,
-  p.projectType, p.projectCity, p.projectState, p.buildingCategory,
-  p.contractNumber, p.primeProjectNumber,
-].filter(Boolean).join(" ").toLowerCase();
-
-function scoreProjectMatch(p, terms) {
-  if (!terms.length) return 1;
-  const hay = projectHaystack(p);
-  let hits = 0;
-  for (const t of terms) {
-    const alias = AGENCY_ALIASES[t];
-    if (hay.includes(t) || (alias && hay.includes(alias))) hits++;
-  }
-  return hits === terms.length ? hits : 0;
-}
-
-const termsOf = (raw) => String(raw || "").toLowerCase().trim()
-  .split(/[^a-z0-9.#&-]+/)
-  .filter((t) => t && t.length > 1 && !SEARCH_STOPWORDS.has(t));
-
-const search = (pool, raw) => {
-  const terms = termsOf(raw);
-  if (!terms.length) return pool;
-  return pool.map((p) => ({ p, s: scoreProjectMatch(p, terms) }))
-    .filter((r) => r.s > 0)
-    .sort((a, b) => b.s - a.s || String(a.p.name).localeCompare(String(b.p.name)))
-    .map((r) => r.p);
-};
+// What search_projects returns as `projects`: the projects carrying every term.
+const search = (pool, raw) => searchProjectPool(pool, termsOf(raw)).full.map((r) => r.project);
 
 const STTHERESE = {
   name: "St. Therese of Lisieux Feasibility Study", projectNumber: "",
@@ -149,4 +107,106 @@ test("single characters are dropped", () => {
 
 test("city is searchable", () => {
   assert.equal(search(POOL, "Slade New York")[0].name, "280 Broadway");
+});
+
+// ── Secondary fields, close matches, drive folders (2026-11-24) ──────────────
+// 147 of 366 searches came back empty in the 30 days before this. Replayed
+// against the portfolio: 20 named a project by something outside the primary
+// fields, 21 named a drive folder with no PMS record, 64 had at least half
+// their terms on a real project.
+const withExtras = (p, r) => ({ ...p, searchExtras: projectSearchExtras(r) });
+const HOSPITAL = withExtras(
+  { name: "Tower Fit-Out", projectNumber: "SAPX246011.00", status: "In Progress", owner: "DASNY", prime: "Perkins Eastman" },
+  { projectAddress: "2 Battery Park Plaza", projectManager: "Dana Whitfield", drivePath: "\\\\nyc\\Projects\\2024\\SAPX246011 TOWER FITOUT",
+    directory: [{ company: "Gilbane Building Company", name: "Pat Moreno", email: "pm@gilbane.example" }],
+    teamMembers: [{ name: "Lee Okafor", role: "Engineer" }] },
+);
+const POOL2 = [...POOL, HOSPITAL];
+
+test("a firm in the project directory finds the project, and the answer says where", () => {
+  const r = searchProjectPool(POOL2, termsOf("Gilbane"));
+  assert.equal(r.full.length, 1);
+  assert.equal(r.full[0].project.name, "Tower Fit-Out");
+  assert.deepEqual(r.full[0].match.matchedOn, { gilbane: "project directory" });
+});
+
+test("site address, project manager and team are searchable", () => {
+  assert.equal(search(POOL2, "Battery Park")[0].name, "Tower Fit-Out");
+  assert.equal(search(POOL2, "Whitfield DASNY")[0].name, "Tower Fit-Out");
+  assert.equal(search(POOL2, "Okafor")[0].name, "Tower Fit-Out");
+  assert.equal(matchProject(HOSPITAL, ["okafor"]).matchedOn.okafor, "team");
+});
+
+test("secondary fields match at the start of a word only", () => {
+  assert.equal(search(POOL2, "bane").length, 0, "'bane' is inside Gilbane, not a word start");
+  assert.ok(wordStartMatch("gilbane building co", "gil"));
+  assert.ok(!wordStartMatch("textile works", "tx"));
+  assert.ok(wordStartMatch("a.b (c++)", "(c++"), "regex characters in a term are literal");
+});
+
+test("an email address in the directory is not searched", () => {
+  assert.equal(search(POOL2, "example").length, 0);
+});
+
+test("a primary match outranks a directory match", () => {
+  const perkinsJob = withExtras({ name: "Annex", projectNumber: "SAPX250001.00" }, { directory: [{ company: "Perkins Eastman" }] });
+  const hits = search([perkinsJob, TABLER], "Perkins");
+  assert.deepEqual(hits.map((h) => h.name), ["SUNY Stony Brook Tabler Quad Red Hall", "Annex"]);
+});
+
+test("projects carrying every term never come with close matches", () => {
+  const r = searchProjectPool(POOL2, termsOf("Morphosis SCA"));
+  assert.equal(r.full.length, 2);
+  assert.equal(r.close.length, 0);
+});
+
+test("one wrong word returns the nearest projects apart from the answer", () => {
+  const r = searchProjectPool(POOL2, termsOf("Morphosis DASNY"));
+  assert.equal(r.full.length, 0, "still no project carries both");
+  assert.deepEqual(r.close.map((c) => c.project.name).sort(), ["SCA Q526", "St. Therese of Lisieux Feasibility Study", "Tower Fit-Out"]);
+  const st = r.close.find((c) => c.project.name.startsWith("St."));
+  assert.deepEqual(st.match.matched, ["morphosis"]);
+  assert.deepEqual(st.match.missing, ["dasny"]);
+});
+
+test("a close match needs half the terms, one of them in the primary fields", () => {
+  assert.equal(searchProjectPool(POOL2, termsOf("Tabler chiller plant replacement")).close.length, 0, "1 of 4 terms is not close");
+  assert.equal(searchProjectPool(POOL2, termsOf("Tabler chiller")).close[0].project.name, "SUNY Stony Brook Tabler Quad Red Hall");
+  assert.equal(searchProjectPool(POOL2, termsOf("Gilbane warehouse")).close.length, 0, "a shared directory entry alone is not close");
+  assert.equal(searchProjectPool(POOL2, termsOf("Zebra")).close.length, 0, "a single term has no close matches");
+});
+
+test("close matches are capped and the total is reported", () => {
+  const many = Array.from({ length: 9 }, (_, i) => ({ name: "Library " + i, projectNumber: "", status: "In Progress" }));
+  const r = searchProjectPool(many, termsOf("Library Queens"));
+  assert.equal(r.close.length, CLOSE_MATCH_MAX);
+  assert.equal(r.closeTotal, 9);
+});
+
+test("no terms lists the pool unchanged", () => {
+  assert.equal(searchProjectPool(POOL2, []).full.length, POOL2.length);
+});
+
+const FOLDERS = [
+  { project_number: "SIPX268040.00", name_from_folder: "HOUSTON TRANSIT HUB", folder_name: "SIPX268040", team: "DC", year: "2026" },
+  { project_number: "SIPX202054.00", name_from_folder: null, folder_name: "SIPX202054 EDGEWOOD LABS", team: "DC", year: "2020" },
+];
+
+test("a drive folder with no PMS record is found by name or by number", () => {
+  assert.deepEqual(matchDriveCandidates(FOLDERS, ["houston"], null),
+    [{ projectNumber: "SIPX268040.00", folderName: "HOUSTON TRANSIT HUB", team: "DC", year: "2026" }]);
+  assert.equal(matchDriveCandidates(FOLDERS, ["sipx202054"], "sipx202054")[0].folderName, "SIPX202054 EDGEWOOD LABS");
+  assert.equal(matchDriveCandidates(FOLDERS, ["edgewood", "labs"], null).length, 1);
+  assert.equal(matchDriveCandidates(FOLDERS, ["edgewood", "hospital"], null).length, 0, "every term must be on the folder");
+  assert.equal(matchDriveCandidates(FOLDERS, [], null).length, 0);
+  assert.equal(matchDriveCandidates(null, ["houston"], null).length, 0);
+});
+
+test("the shipped handler uses these rules and keeps close matches out of `projects`", async () => {
+  const { readFileSync } = await import("node:fs");
+  const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  assert.ok(shipped.includes("const found = searchProjectPool(pool, terms);"));
+  assert.ok(shipped.includes("count: 0, includeArchived: !!includeArchived, projects: [],\n        interpreted: { terms },\n        ...extras,"), "close matches ride beside an empty list");
+  assert.ok(shipped.includes('return Object.defineProperty(p, "searchExtras", { value: projectSearchExtras(row), enumerable: false });'), "search text never leaves with a record");
+  assert.ok(!/function scoreProjectMatch|const AGENCY_ALIASES/.test(shipped), "index.ts has no second copy of the rules");
 });
