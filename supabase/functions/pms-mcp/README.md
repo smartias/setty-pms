@@ -939,6 +939,26 @@ Read-only: it touches no project data.
   document states is `not-compared`.
 - Migration `20261124260000` marks qa-632 `auto` and rewrites its hint.
 
+## Tags against schedules (`check_tag_schedule_coverage`, QA item qa-622)
+
+Every equipment tag on a plan has a schedule row, and every scheduled tag is
+drawn. One call for a whole set, from the drawing text index. Read-only.
+
+- `pms_tag_sheet_kinds` (migration `20261124270000`) returns each hyphenated
+  tag on the newest indexed revision of every sheet in scope, with the sheets
+  it is on split into schedule sheets (title contains SCHEDULE, or passed in
+  `scheduleSheets`), plans (PLAN or LAYOUT) and others.
+- `tagCoverage.js` (pure; `tagCoverage.test.mjs`) decides what is a finding. A
+  tag is judged only inside a family the set shows to be equipment: a prefix
+  with a member both scheduled and on a plan. That keeps out sheet references,
+  code sections, model numbers and RFI numbers.
+- Returns `notScheduled`, `notOnPlans`, `familiesNotScheduled` (a prefix on
+  two or more plans, never scheduled) and `writtenTwoWays` (FCU-01 and FCU-1).
+- Limits: hyphenated tags only; text only; a schedule on a sheet not titled
+  SCHEDULE must be passed in `scheduleSheets`.
+- qa-622 stays `assisted`: untagged devices, the architect's sheets and
+  Division 01 still need a reviewer.
+
 ## Fee Calculator write (`set_project_fee`, 1.25.0; inputs 1.26.0)
 
 When a PM tells Claude a fee, this puts it in the PMS so nobody retypes it. It

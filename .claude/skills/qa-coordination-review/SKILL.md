@@ -595,7 +595,14 @@ Run the five checklist items, each with a disposition:
   tag with no schedule row, "typical" with no extent, items on the
   architect's sheets that ours omit or lay out differently, alternates and
   allowances in Division 01 that cannot be found on the drawings, and work
-  the documents require with no shown way to do it.
+  the documents require with no shown way to do it. Start with
+  `check_tag_schedule_coverage`: one call reconciles every hyphenated tag in
+  the set against the schedule sheets (drawn but not scheduled, scheduled
+  but on no plan, families never scheduled). Look at `scheduleSheets` in its
+  answer first; if a schedule sits on a sheet not listed, pass that sheet and
+  run it again. Confirm each result on the sheet before recording it. It
+  does not see untagged devices, lighting type letters or tags without a
+  hyphen: those, and the rest of this item, are still yours.
 - **qa-623 The spec book as one set.** Table of contents against the book:
   a section twice in two versions, a missing section, a section for a system
   the project does not have. For each major basis-of-design model, check

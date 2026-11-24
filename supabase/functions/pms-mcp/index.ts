@@ -98,6 +98,8 @@ import { planProposals, PROPOSAL_PHASES, PROPOSAL_AUTOMATION, MIN_PROJECTS, MIN_
 import { checkSchedule, ROW_KINDS, DEFAULT_TOLERANCE_PCT } from "./scheduleArithmetic.js";
 // check_document_agreement (QA item qa-632): whether plan, schedule, detail and spec say the same thing. Pure; see its tests.
 import { checkAgreement } from "./documentAgreement.js";
+// check_tag_schedule_coverage (QA item qa-622): every tag on a plan is scheduled, and the reverse. Pure; see its tests.
+import { tagCoverage } from "./tagCoverage.js";
 // The line-by-line detail of a reviewed estimate (pms_cost_estimate_lines). Pure; see its tests.
 import {
   extractSheetLines, normalizeSuppliedLines, summarizeLines, checkAgainstReview, toRows, LINES_MAX,
@@ -1535,7 +1537,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-document-agreement";
+const BUILD = "2026-11-24-tag-schedule-coverage";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.31.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -13906,6 +13908,78 @@ mcp.tool("check_document_agreement", {
         (single ? ` ${single} subject(s) had fewer than two comparable statements and were not compared: say so in the coverage.` : "") +
         (noSched ? ` ${noSched} panel(s) had no schedule rows and were not compared.` : "") +
         " This compares only what you passed: a document you did not read is not covered. It does not say which document is right.",
+    });
+  },
+});
+
+// ─── TAG AGAINST SCHEDULE: check_tag_schedule_coverage (QA item qa-622) ──────
+// Every equipment tag drawn on a plan has a schedule row, and every scheduled
+// tag is drawn. Answered for a whole set in one call from the drawing text
+// index (pms_tag_sheet_kinds, migration 20261124270000); what counts as a
+// finding is decided in tagCoverage.js. Read-only.
+mcp.tool("check_tag_schedule_coverage", {
+  description:
+    "RECONCILE EQUIPMENT TAGS AGAINST SCHEDULES for a whole drawing set in one call (QA checklist item qa-622: a " +
+    "bidder can count and price everything shown). Reads the indexed text of the newest revision of every sheet and " +
+    "returns: `notScheduled`, tags drawn on a plan that are on no schedule sheet; `notOnPlans`, tags on a schedule " +
+    "sheet that no plan shows; `familiesNotScheduled`, tag prefixes on two or more plans with no member on any " +
+    "schedule sheet (a schedule may be missing, or the prefix is not equipment: you decide); and `writtenTwoWays`, " +
+    "a tag spelled FCU-01 in one place and FCU-1 in another. Run it once at the start of qa-622 instead of " +
+    "reconciling tags by hand. HOW IT DECIDES: a sheet is a schedule sheet when its title contains SCHEDULE, a plan " +
+    "when its title contains PLAN or LAYOUT; `scheduleSheets` in the answer lists the schedule sheets it used. If a " +
+    "schedule sits on a sheet titled something else (a panel schedule on a plan, 'DETAILS'), pass that sheet in " +
+    "scheduleSheets and run it again, or its tags come back as not scheduled. A tag is judged only in a family the " +
+    "set shows to be equipment (a prefix with a member both scheduled and on a plan), which is what keeps code " +
+    "sections, sheet references and model numbers out. LIMITS, say them in the coverage: it sees HYPHENATED tags " +
+    "only (FCU-11; not FCU11, a lighting type letter, or an untagged device); it reads text, so a tag on a scanned " +
+    "sheet is missed unless OCR indexed it; a scheduled tag that is drawn only on a typical plan under another name " +
+    "is reported as not on plans; and it only knows INDEXED sheets (check `coverage`; fill with search_drawings " +
+    "indexOnly:true). By default it reads the issued drawings; pass subfolder for a pre-issuance QA set. Every " +
+    "result is a question: before recording one under qa-622, open the plan (view_drawing) or the schedule " +
+    "(read_drawing_schedule) and confirm it. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    subfolder: z.string().optional().describe("Limit to ONE set folder, spelled as list_project_documents reports it. Required for a pre-issuance QA set; omit for the issued drawings."),
+    scheduleSheets: z.array(z.string()).max(60).optional().describe("Sheets that carry schedules although their title does not say SCHEDULE, e.g. ['E-201', 'M-701']."),
+    families: z.array(z.string()).max(40).optional().describe("Only these tag prefixes, e.g. ['UH', 'EF']. Omit for every family."),
+  }),
+  handler: async ({ projectNumber, subfolder, scheduleSheets, families }) => {
+    const folder = subfolder?.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "") : null;
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const numPrefix = String(project).toLowerCase().trim();
+    let indexedFiles = 0, filesPending = 0;
+    try {
+      const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+      indexedFiles = known.filter((k) => k.status === "done").length;
+      filesPending = known.filter((k) => k.status === "pending").length;
+    } catch { /* coverage is advisory */ }
+    const coverage = { indexedFiles, filesPending, ...(filesPending ? { note: "Index incomplete: a tag on a sheet not read yet looks missing. search_drawings indexOnly:true fills it; then run this again." } : {}) };
+    if (!indexedFiles) return asText({ project, coverage, error: "Nothing is indexed for this project yet.", nextStep: "Run search_drawings with indexOnly:true first." });
+    let rows: any[];
+    try {
+      rows = (await sbRpc("pms_tag_sheet_kinds", {
+        p_prefix: numPrefix, p_folder: folder, p_exclude: folder ? null : PRE_ISSUE_FOLDER_SQL_RE,
+        p_schedule_sheets: scheduleSheets?.length ? scheduleSheets : null,
+      })) || [];
+    } catch (e) {
+      const m = String((e as any)?.message ?? e);
+      return asText({ project, coverage, error: /404|PGRST202|does not exist/.test(m) ? "The tag reconciliation is not available yet: the database has not run migration 20261124270000." : `Tag reconciliation failed: ${m.slice(0, 240)}`,
+        nextStep: "find_equipment and read_drawing_schedule still reconcile tags by hand." });
+    }
+    const r = tagCoverage(rows, { families });
+    if (!r.scheduleSheets.length) {
+      return asText({ project, coverage, ...r, flagged: 0, notScheduled: [], notOnPlans: [],
+        error: "No sheet in scope has SCHEDULE in its title, so there was nothing to reconcile the plans against.",
+        nextStep: "Find the sheets that carry the schedules (extract_sheet_index, or search_drawings for SCHEDULE) and pass them as scheduleSheets." });
+    }
+    return asText({
+      project, ...(folder ? { scope: `Sheets from "${folder}" only.` } : { scope: PRE_ISSUE_NOTE }), coverage, ...r,
+      note: (r.flagged ? `${r.flagged} tag(s) to confirm. ` : "Every tag in a scheduled family is both scheduled and on a plan. ") +
+        "Check scheduleSheets first: a schedule on a sheet not listed there makes its tags look unscheduled (pass it in scheduleSheets and run again). " +
+        "Confirm each result on the sheet before recording it under qa-622. Hyphenated tags only: untagged devices, lighting type letters and tags written without a hyphen are not covered, and say so in the coverage.",
     });
   },
 });
