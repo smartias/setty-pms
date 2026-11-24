@@ -6,7 +6,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { planProposals, runState, MIN_PROJECTS, MIN_RFIS, MIN_LESSONS, MIN_LESSON_PROJECTS } from "./qaRoutine.js";
+import { planProposals, runState, MIN_PROJECTS, MIN_RFIS, MIN_LESSONS, MIN_LESSON_PROJECTS, MIN_FIRM_WIDE } from "./qaRoutine.js";
 
 const uncovered = [
   { project: "SAPX1.00", item_number: "001" }, { project: "SAPX1.00", item_number: "002" },
@@ -63,7 +63,7 @@ test("a proposal can rest on lessons that recur across projects, with no RFIs", 
   assert.equal(refused.length, 0);
   const a = accepted[0];
   assert.deepEqual([a.rfi_count, a.lesson_count, a.project_count], [0, 2, 2], "unknown and repeated ids are dropped");
-  assert.deepEqual(a.lessons[0], { id: lessons[0].lesson_id, project: "SAPX1.00", summary: "Lesson 1 about freeze protection." });
+  assert.deepEqual(a.lessons[0], { id: lessons[0].lesson_id, kind: "lesson", project: "SAPX1.00", summary: "Lesson 1 about freeze protection." });
   assert.deepEqual([MIN_LESSONS, MIN_LESSON_PROJECTS], [2, 2]);
 });
 
@@ -83,6 +83,18 @@ test("RFIs and lessons about the same thing are one proposal, and a second one r
   assert.match(r.refused[0].why, /merge the two/);
 });
 
+test("one best practice, or one firm-wide lesson, carries a proposal; one project lesson still does not", () => {
+  const bp = { lesson_id: "11111111-0000-0000-0000-000000000001", kind: "practice", project_id: null, lesson_summary: "Freeze protection: show it for every exposed water line." };
+  const fw = { lesson_id: "22222222-0000-0000-0000-000000000002", kind: "lesson", project_id: null, lesson_summary: "Firm-wide lesson." };
+  const pool = [...lessons, bp, fw];
+  const one = (id) => planProposals([{ ...good, rfis: [], lessons: [id] }], uncovered, [], pool);
+  const a = one(bp.lesson_id).accepted[0];
+  assert.deepEqual([a.lesson_count, a.project_count, a.lessons[0].kind], [1, 0, "practice"]);
+  assert.equal(one(fw.lesson_id).accepted[0].lessons[0].kind, "lesson");
+  assert.match(one(lessons[0].lesson_id).refused[0].why, /or one best practice or firm-wide lesson/);
+  assert.equal(MIN_FIRM_WIDE, 1);
+});
+
 test("run state from the three timestamps", () => {
   const now = Date.parse("2027-01-01T12:00:00Z");
   assert.equal(runState(null, now).state, "never");
@@ -98,9 +110,9 @@ test("the routine's tools, tables, approval function and console tab are in step
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
   const a = src.indexOf('mcp.tool("start_checklist_routine"'), b = src.indexOf('mcp.tool("propose_checklist_items"');
   assert.ok(a > 0 && b > a);
-  const propose = src.slice(b, b + 6000);
+  const propose = src.slice(b, b + 9000);
   assert.ok(propose.includes("planProposals(") && propose.includes('"pms_qa_item_proposals"'));
-  assert.ok(!/pms_qa_checklist\?|sbUpsert\("pms_qa_checklist"/.test(src.slice(a, b + 6000).replace(/pms_qa_checklist\?select=[^"]*/g, "")), "the connector reads the checklist and never writes it");
+  assert.ok(!/pms_qa_checklist\?|sbUpsert\("pms_qa_checklist"/.test(src.slice(a, b + 9000).replace(/pms_qa_checklist\?select=[^"]*/g, "")), "the connector reads the checklist and never writes it");
   const sql = readFileSync(new URL("../../migrations/20261124220000_qa_checklist_routine.sql", import.meta.url), "utf8");
   for (const s of ["create table if not exists public.pms_qa_routine_runs", "create table if not exists public.pms_qa_item_proposals",
     "create or replace function public.pms_request_qa_routine()", "create or replace function public.pms_decide_qa_item_proposal("]) assert.ok(sql.includes(s), s);
@@ -110,6 +122,10 @@ test("the routine's tools, tables, approval function and console tab are in step
   for (const x of ["create table if not exists public.pms_qa_lesson_coverage", "add column if not exists lessons ", "insert into public.pms_qa_lesson_coverage",
     "if not public.is_pms_admin() then", "update public.pms_rfi_root_causes rc", "revoke all on function public.pms_decide_qa_item_proposal"]) assert.ok(sql2.includes(x), x);
   assert.ok(propose.includes("candidateLessonRows()") && src.includes('"pms_qa_lesson_coverage?on_conflict=lesson_id"'));
+  const sql3 = readFileSync(new URL("../../migrations/20261124240000_qa_routine_best_practices.sql", import.meta.url), "utf8");
+  for (const x of ["create table if not exists public.pms_qa_practice_coverage", "insert into public.pms_qa_practice_coverage", "insert into public.pms_qa_lesson_coverage",
+    "if not public.is_pms_admin() then", "update public.pms_rfi_root_causes rc", "revoke all on function public.pms_decide_qa_item_proposal"]) assert.ok(sql3.includes(x), x);
+  assert.ok(src.includes('"pms_qa_practice_coverage?on_conflict=practice_id"') && src.includes("pms_best_practices?select="));
   const html = readFileSync(new URL("../../../SettyAdmin.html", import.meta.url), "utf8");
   assert.ok(html.includes('{ key: "qachecklist"') && html.includes("async function renderQaChecklist()"));
   assert.ok(html.includes("rpc/pms_request_qa_routine") && html.includes("rpc/pms_decide_qa_item_proposal"));

@@ -1857,7 +1857,15 @@ Anyone with the Admin Console can start it: QA Checklist tab, "Run with Claude".
   record that an EXISTING item already describes a lesson
   (`lessonsAlreadyCovered`). Linked lessons are not read again. The lesson
   itself is never changed and every QA review still reads it.
+- Best practices and firm-wide lessons (`20261124240000_qa_routine_best_practices.sql`):
+  the routine also reads approved best practices (`pms_best_practices`) and
+  lessons with no project. Each is already a firm-level statement a person
+  approved, so ONE can carry a proposal. Links go to
+  `pms_qa_practice_coverage` (best practices) or `pms_qa_lesson_coverage`.
 - Migrations: `20261124220000_qa_checklist_routine.sql`,
+  `20261124230000_qa_routine_lessons.sql`,
+  `20261124240000_qa_routine_best_practices.sql`.
+
   `20261124230000_qa_routine_lessons.sql`.
 
 ## The QA review packet (`get_qa_review_packet`)
