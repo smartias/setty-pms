@@ -809,10 +809,10 @@ cost, kept beside the Fee Calculator's `manualConstructionCost` and never
 written to it: a new estimate must not move a fee. One entry per check
 (`value`, `source`, `deliverable`, `document`, `by`, `via`). The rules are in
 `constructionCost.js`, a byte-identical copy of the repo-root module the PMS
-Schedule tab loads (`constructionCostDrift.test.mjs`).
+Construction Costs tab loads (`constructionCostDrift.test.mjs`).
 
 - The PMS flags a billable base-contract milestone when it reaches 100%
-  (`costCheckPending`) and the Schedule tab asks "still $X, or a new figure?".
+  (`costCheckPending`) and the Construction Costs tab asks "still $X, or a new figure?".
   A figure can also be recorded there at any time.
 - `record_construction_cost` reads the history (project only) or adds an
   entry. It may record a figure read from a cost estimate, naming the
@@ -825,7 +825,7 @@ Schedule tab loads (`constructionCostDrift.test.mjs`).
 - The nightly file sync (`syncProjectDocuments`) flags a cost estimate saved
   to the project folder: files first seen in the last 7 days whose NAME reads
   like one (`looksLikeCostDocument`; pdf, Excel, Word, csv; not fee, proposal
-  or invoice paper) go on `project.costDocFlags` as `open`. The Schedule tab
+  or invoice paper) go on `project.costDocFlags` as `open`. The Construction Costs tab
   shows each with "Enter its figure / Still $X / Not a cost estimate";
   recording a figure answers the open flags, and a file is never flagged
   twice. The flag is a prompt to look: no figure is read from the file by the
@@ -836,7 +836,7 @@ Schedule tab loads (`constructionCostDrift.test.mjs`).
 ## Cost estimate review (`get_cost_estimate_packet` / `save_cost_estimate_review`, 1.31.0)
 
 The read and write sides of the cost-estimate-review skill and of "Send to
-Claude for review" on the Schedule tab's cost panel, built like
+Claude for review" on the Construction Costs tab's cost panel, built like
 `get_ca_review_packet` / `save_ca_review`.
 
 - The PMS link opens `claude.ai/new?q=...` with the request prefilled and
@@ -856,6 +856,35 @@ Claude for review" on the Schedule tab's cost panel, built like
 - The panel shows the latest review; state (waiting, reviewing, ready) comes
   from the three stamps (`costReviewState`).
 - Reviews are redacted with the other fee keys for callers without `fees.view`.
+
+### Line-by-line detail (`save_cost_estimate_lines` / `get_cost_estimate_lines`)
+
+Every line of a reviewed estimate goes in `pms_cost_estimate_lines` (migration
+`20261124180000`), keyed by project number and the review's id. The review
+entry carries only `lines: {count, source, at}` (`setReviewLines`). Rules in
+`costEstimateLines.js` (pure; `costEstimateLines.test.mjs`).
+
+- **Workbook**: the reviewer describes each sheet's layout (heading row, which
+  column is which, by heading text, letter or number) and `extractSheetLines`
+  reads the cells. No number passes through the model. The file must be in
+  `pms_documents` under the project's scope, which is what ties the read to
+  the project. `preview: true` writes nothing and returns the first lines.
+- **PDF**: the reviewer passes the lines (400 a call, `append`), stored as
+  `source = 'transcribed'`. `verifyLinesAgainstPages` looks for each amount in
+  the PDF's text layer the way an estimate prints it (commas, cents,
+  parentheses) and sets `verified`; the tool returns the ones not found. A
+  scan has no text and is left unchecked (`verified` null).
+- A row with a description and no numbers is a section heading (not stored);
+  a row whose description says total or subtotal is stored with `is_subtotal`
+  and left out of sums. Discipline comes from the heading, CSI code or sheet,
+  never from the description.
+- `checkAgainstReview` reports the gap between the lines' sum per discipline
+  and the review's amounts. It is reported, never corrected.
+- Without `append`, saving replaces the review's lines. Cap: 20,000 per review.
+- RLS: readable by a signed-in user with `fees.view` on the project
+  (`pms_has_cap`); written by the connector with the service key. The PMS
+  loads them on demand in the review panel ("Line items"), with a discipline
+  filter, a search and a CSV download.
 
 ## Fee Calculator write (`set_project_fee`, 1.25.0; inputs 1.26.0)
 

@@ -57,3 +57,25 @@ test("the cost estimate review tools are registered and fenced", () => {
   assert.ok(html.includes("get_cost_estimate_packet") && html.includes("save_cost_estimate_review"), "the PMS request names both tools");
   assert.ok(html.includes("CC.markCostReviewRequested("));
 });
+
+// Line-by-line detail: stored through the fenced gate, replaced as a set, and
+// the workbook and PDF reads are both tied to the project by the file index.
+test("the estimate line tools are registered, fenced and tied to the project", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  const a = src.indexOf('mcp.tool("save_cost_estimate_lines"'), b = src.indexOf('mcp.tool("get_cost_estimate_lines"'), c = src.indexOf("// ── file_qa_report");
+  assert.ok(a > 0 && b > a && c > b);
+  const save = src.slice(a, b), read = src.slice(b, c);
+  assert.ok(save.includes("costReviewGate(projectNumber, !preview)"), "a preview needs no edit right; a write does");
+  assert.ok(save.includes("deleteCostLines(g.pn, review.id)") && save.includes("setReviewLines("));
+  assert.ok(save.includes("verifyLinesAgainstPages(") && save.includes("extractSheetLines("));
+  assert.ok(read.includes("costReviewGate(projectNumber, false)"));
+  for (const fn of ["async function projectWorkbookRows(", "async function projectPdfPageTexts("]) {
+    const body = src.slice(src.indexOf(fn), src.indexOf(fn) + 900);
+    assert.ok(body.includes('"&scope=eq." + encodeURIComponent(pn.trim().toLowerCase())'), fn + " checks the file belongs to the project");
+  }
+  const skill = readFileSync(new URL("../../../.claude/skills/cost-estimate-review/SKILL.md", import.meta.url), "utf8");
+  for (const t of ["save_cost_estimate_lines", "get_cost_estimate_lines"]) assert.ok(skill.includes("`" + t + "`"), t);
+  const html = readFileSync(new URL("../../../SettyPMS.html", import.meta.url), "utf8");
+  assert.ok(html.includes("function CostEstimateLinesTable(") && html.includes("pms_cost_estimate_lines?select="));
+  assert.ok(html.includes("save_cost_estimate_lines"), "the PMS request asks for the lines to be stored");
+});
