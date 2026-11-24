@@ -74,3 +74,25 @@ export function caMissMessage(m: CaMatch, type: CaType, number: unknown, where: 
   const size = total === 0 ? ` The ${type} log ${where} is empty.` : "";
   return `No ${type} "${number}" ${where}.${size}${near}`;
 }
+
+// ── Log statuses ─────────────────────────────────────────────────────────────
+// The same lists as caStatus.js in the repo root (the PMS and the Tracker).
+// backload_ca_item used to store whatever status it was handed; two submittals
+// went in as "In Review", a name no screen offers, and dropped out of every
+// open count.
+export const CA_STATUSES: Record<CaType, string[]> = {
+  rfi: ["Open", "Pending Sub Response", "Responded", "Closed", "Void"],
+  submittal: ["Received", "Under Review", "Pending Sub Review", "Returned", "Resubmittal Required", "Void"],
+};
+const CA_STATUS_ALIASES: Record<CaType, Record<string, string>> = {
+  rfi: { answered: "Responded", "pending sub": "Pending Sub Response", "in review": "Open", "under review": "Open" },
+  submittal: { "in review": "Under Review", reviewing: "Under Review", open: "Received", "pending sub": "Pending Sub Review", "pending sub response": "Pending Sub Review", "revise and resubmit": "Resubmittal Required", resubmit: "Resubmittal Required" },
+};
+// The log's own spelling for a status, or null when it is not one of the
+// log's statuses (the caller refuses it and lists the allowed ones).
+export function canonicalCaStatus(type: CaType, status: unknown): string | null {
+  const want = String(status ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  if (!want) return null;
+  const hit = CA_STATUSES[type].find((s) => s.toLowerCase() === want);
+  return hit || CA_STATUS_ALIASES[type][want] || null;
+}
