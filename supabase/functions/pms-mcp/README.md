@@ -897,6 +897,25 @@ entry carries only `lines: {count, source, at}` (`setReviewLines`). Rules in
   loads them on demand in the review panel ("Line items"), with a discipline
   filter, a search and a CSV download.
 
+## Schedule arithmetic (`check_schedule_arithmetic`, QA item qa-638)
+
+Whether the numbers on an equipment schedule row agree with each other. The
+reviewer reads the rows (`read_drawing_schedule`) and passes the numbers; the
+sums are done in `scheduleArithmetic.js` (pure; `scheduleArithmetic.test.mjs`)
+so no arithmetic is left to the model. Read-only: it touches no project data.
+
+- Kinds: `airHeating`, `airSensibleCooling` (1.08 x cfm x dT),
+  `airTotalCooling` (4.5 x cfm x dh), `hydronic` (500 x gpm x dT), `kwMbh`
+  (3.412), `electricalLoad` (kW or kVA against volts, phase, amps),
+  `overcurrent` (breaker between MCA and MOCP), `voltage` (equipment against
+  the feeding panel's system), `capacity` (a count against a limit), plus
+  `models` (one model number under different descriptions).
+- Default tolerance 15%; kW against MBH is held to 5%.
+- A row without the inputs is `cannot-check`, never estimated.
+- A flag says the row is not consistent with itself. It does not say which
+  number is wrong, that the selection is wrong, or that the product exists.
+  Product-availability lessons belong in the knowledge layer.
+
 ## Fee Calculator write (`set_project_fee`, 1.25.0; inputs 1.26.0)
 
 When a PM tells Claude a fee, this puts it in the PMS so nobody retypes it. It

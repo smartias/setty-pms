@@ -157,25 +157,25 @@ for (const hint of autoHints) {
   for (const id of ids) assert.ok(skill.includes(`**${id} `), `skill has no method for ${id}`);
 }
 
-// Two more RFI history items (qa-638, qa-639, 2026-11-24): the kinds that
-// repeat across projects among the RFIs still matching nothing after qa-637.
+// One more RFI history item (qa-639, 2026-11-24): fire alarm against
+// mechanical. qa-638 (schedule arithmetic) took the other kind found in the
+// same reading, so this file adds one row only.
 {
-  const b = readFileSync(join(here, "../../migrations/20261124200000_qa_rfi_history_items_buildable_fa.sql"), "utf8");
-  const ids = ["qa-638", "qa-639"];
-  for (const id of ids) assert.ok(b.includes(`('${id}','deliverable-qa','RFI History',`), `missing ${id}`);
-  assert.equal(b.split("::jsonb,'rfi-lesson','qa-rfi-review-2026-11-24-buildable-fa'").length - 1, 2);
+  const b = readFileSync(join(here, "../../migrations/20261124210000_qa_fa_mechanical_agreement_item.sql"), "utf8");
+  assert.ok(b.includes("('qa-639','deliverable-qa','RFI History',1890,"), "missing qa-639");
+  assert.ok(!b.includes("('qa-638'"), "qa-638 belongs to 20261124200000_qa_schedule_arithmetic_item.sql");
+  assert.equal(b.split("::jsonb,'rfi-lesson','qa-rfi-review-2026-11-24-fa-mechanical'").length - 1, 1);
   assert.ok(b.includes("on conflict (item_id) do nothing;"));
   const details = [...b.matchAll(/\n '(\[.*\])'::jsonb,\n 'assisted'/g)].map((m) => JSON.parse(m[1].replace(/''/g, "'")));
-  assert.equal(details.length, 2);
-  for (const d of details) assert.ok(Array.isArray(d) && d.length >= 4);
+  assert.equal(details.length, 1);
+  assert.ok(details[0].length >= 4);
   const phases = [...b.matchAll(/\n '(\[[^\n]*\])'::jsonb,'rfi-lesson'/g)].map((m) => JSON.parse(m[1]));
-  assert.equal(phases.length, 2);
-  for (const ph of phases) for (const x of ph) assert.ok(["DD", "CD", "Permit", "Bid", "Addendum"].includes(x), `unknown phase ${x}`);
-  // Sorts after qa-635 to qa-637 (1850 to 1870) in the same section.
-  assert.deepEqual([...b.matchAll(/'RFI History',(\d+),/g)].map((m) => Number(m[1])), [1880, 1890]);
+  assert.equal(phases.length, 1);
+  for (const x of phases[0]) assert.ok(["DD", "CD", "Permit", "Bid", "Addendum"].includes(x), `unknown phase ${x}`);
   assert.ok(!b.includes("\r"), "migrations are LF");
   const skill = readFileSync(join(here, "../../../.claude/skills/qa-coordination-review/SKILL.md"), "utf8");
-  for (const id of ids) assert.ok(skill.includes(`**${id} `), `skill has no method for ${id}`);
+  assert.ok(skill.includes("**qa-639 "), "skill has no method for qa-639");
+  assert.equal(skill.split("**qa-638 ").length - 1, 1, "one method for qa-638, the schedule arithmetic one");
 }
 
 // Design narrative as read (Step 5b): the review writes a brief account of the

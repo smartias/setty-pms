@@ -812,26 +812,30 @@ still matched nothing. They apply from CD on. Run them after the five above.
   A finding quotes the phrase and writes the question a bidder would ask.
   "If applicable" on a controls item is qa-633, not this item.
 
-Two more were added later on 2026-11-24, from the preventable RFIs that
-still matched nothing after qa-637. Run them after the three above.
+- **qa-638 The numbers on a schedule row agree.** Automatic: you read, the
+  connector does the sums. Do not do this arithmetic yourself.
+  1. *Read every equipment schedule and panel schedule*
+     (`read_drawing_schedule`): M, P and E.
+  2. *Pass the rows to `check_schedule_arithmetic`*, each under every kind
+     its columns support: air heating and cooling (cfm, capacity,
+     temperatures), hydronic (gpm, capacity, temperatures), kW against MBH,
+     electrical load (kW, volts, phase, amps), overcurrent (breaker against
+     MCA and MOCP), voltage (the unit against the panel that feeds it), and
+     counts against a capacity. Pass `models` for every scheduled item.
+  3. *Only numbers printed on the schedule.* A row that lacks an input comes
+     back not checked: report the count in the coverage. Never fill one in.
+  4. *Confirm a flag before recording it.* Open the sheet (`view_drawing`) and
+     check the values were read from the right columns. Schedules are easy to
+     misread and a wrong flag costs the engineer's trust.
+  5. *Write the finding as a question with both numbers:* "MAU-1 is scheduled
+     at 143 MBH; 1,700 cfm from 10 F to 55 F is 83 MBH. Which is intended?"
+     The check does not know which number is wrong.
+  It checks that a row is consistent with itself. It does not check that the
+  product can be bought as specified: for that, `search_knowledge` carries
+  the lessons from earlier jobs.
 
-- **qa-638 What is scheduled can be bought and can do the job.** qa-602
-  asks whether spec and drawings name the same equipment; this asks whether
-  that equipment, as scheduled, is possible.
-  1. *Air and heat.* For each unit with a coil, check airflow, capacity and
-     the entering and leaving temperatures against each other (for air,
-     BTU/h = 1.08 x cfm x temperature rise). Apply from DD on.
-  2. *Basis of design.* The named model and size is made with the scheduled
-     options and meets the scheduled leaving conditions. Read the product
-     data when it is filed; when it is not, put the check on the to-confirm
-     list and do not guess.
-  3. *Panels.* Voltage matches the source on the one-line; the breaker
-     types called for are made at the scheduled interrupting rating.
-  4. *Boxes and controllers.* Count what the plan puts in each floor box and
-     on each lighting or control panel against what it holds.
-  5. *Schedules.* No two tags of different types carry the same model.
-  A finding gives the two numbers that cannot both be true, or names the
-  option the product is not made with, and the sheet each came from.
+One more was added later on 2026-11-24, from the preventable RFIs that
+still matched nothing. Run it after the items above, from CD on.
 
 - **qa-639 Fire alarm and mechanical agree, and the matrix is complete.**
   qa-612 checks dampers against rated walls; this checks the two sets that
