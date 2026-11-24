@@ -101,7 +101,7 @@ import {
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
 // classifier, RPC arguments and row mapping are pure. See caItems.ts.
 import {
-  buildCaSearchArgs, caRowToItem, caTotalOf, clampCaLimit, summarizeReconcile,
+  buildCaSearchArgs, caRowToItem, caTotalOf, caMeaningOnlyNote, clampCaLimit, summarizeReconcile,
   CA_EMBED_MODEL, isEmbedding, vectorLiteral, runEmbedPass, emailEmbedStoreRow, emailEmbedLabel,
 } from "./caItems.ts";
 
@@ -1529,7 +1529,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-cost-estimate-lines";
+const BUILD = "2026-11-24-ca-search-similarity";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.31.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -4054,7 +4054,9 @@ mcp.tool("search_rfis_submittals", {
     "imported records). Filter by project, type (rfi/submittal), status, discipline, or keyword " +
     "(matches number, subject, discipline, spec section, and the full question/response/comments " +
     "text). A prose query is also matched by meaning, so everyday wording finds records that use " +
-    "different words (a \"radiator hookup\" question finds the FTR connection RFI). Returns compact " +
+    "different words (a \"radiator hookup\" question finds the FTR connection RFI); such a row " +
+    "carries its similarity, and keywordHit:false when none of its words matched. When no row " +
+    "matched the words the answer says so, and the rows are only the closest by meaning. Returns compact " +
     "rows with a snippet — call read_rfi_submittal for the full text. With " +
     "no project, searches firm-wide. A project in a Related Projects group (phases, sister buildings) " +
     "is searched together with its siblings by default; each row's `project` says which log it came " +
@@ -4099,6 +4101,7 @@ mcp.tool("search_rfis_submittals", {
     let tableNote: string | undefined;
     let total: number | null = null;   // matches before the limit (table path only)
     let semanticNote: string | undefined;
+    let keywordNote: string | undefined;
     if (CA_ITEMS_USE_TABLE) {
       try {
         // Embed the query only when semantic ranking is wanted AND the query is
@@ -4119,6 +4122,7 @@ mcp.tool("search_rfis_submittals", {
         const rows = await sbRpc("search_ca_items", args);
         out = (Array.isArray(rows) ? rows : []).map((r: any) => caRowToItem(r, mode !== "list"));
         total = caTotalOf(rows);
+        keywordNote = caMeaningOnlyNote(rows, mode) ?? undefined;
         source = "table"; searchMode = mode;
       } catch (e) {
         console.warn("[search_rfis_submittals] table path failed, scanning projects:", String((e as any)?.message ?? e));
@@ -4179,7 +4183,7 @@ mcp.tool("search_rfis_submittals", {
       count: total ?? out.length, returned: Math.min(out.length, lim),
       items: flagSameProjectDuplicates(withSiblings ? flagCrossProjectDuplicates(out.slice(0, lim)) : out.slice(0, lim), pid ? projects : []), source,
       ...(searchMode && searchMode !== "list" ? { searchMode } : {}),
-      ...(tableNote ? { note: tableNote } : {}),
+      ...(tableNote || keywordNote ? { note: tableNote ?? keywordNote } : {}),
       ...(semanticNote ? { semanticNote } : {}),
       ...(relatedNote ? { relatedProjects: relatedNote } : {}),
       ...(driveOnly.length ? { driveOnly } : {}), ...(driveNote ? { driveNote } : {}),

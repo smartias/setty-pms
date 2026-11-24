@@ -232,6 +232,10 @@ export type CaSearchRow = {
   date_closed: string | null; link_count: number | null; has_ai_review: boolean | null;
   rank: number | null; snippet: string | null;
   total?: number | string | null;   // matches before the limit; absent on the pre-total function
+  // 20261124190000: how close the row is to the question (null unless it was among
+  // the nearest by meaning) and whether its words matched. Absent on the older function.
+  similarity?: number | null;
+  keyword_hit?: boolean | null;
 };
 
 // The same keys the in-memory path has always returned, so a caller cannot
@@ -252,9 +256,23 @@ export function caRowToItem(r: CaSearchRow, ranked: boolean): Record<string, unk
     closed: r.date_closed || null,
     snippet: String(r.snippet ?? "").slice(0, 300),
     ...(ranked && typeof r.rank === "number" ? { rank: Math.round(r.rank * 1000) / 1000 } : {}),
+    ...(ranked && typeof r.similarity === "number" ? { similarity: Math.round(r.similarity * 1000) / 1000 } : {}),
+    // Said only when false: the row is here by meaning alone, none of its words matched.
+    ...(ranked && r.keyword_hit === false ? { keywordHit: false } : {}),
     ...(links ? { linkCount: links, linkNote: "Has linked items — read_rfi_submittal shows them." } : {}),
     ...(r.has_ai_review ? { aiReviewed: true } : {}),
   };
+}
+
+// A hybrid answer in which no row matched the words is only "the nearest by
+// meaning", which for an off-topic question is noise. Say so once. Null when
+// the rows do not carry keyword_hit (the older function) or any row matched.
+export const CA_MEANING_ONLY_NOTE =
+  "No RFI or submittal contains these words; the rows are the closest by meaning. Check the subject and project before relying on one.";
+export function caMeaningOnlyNote(rows: Array<{ keyword_hit?: boolean | null }> | null | undefined, mode: CaSearchMode): string | null {
+  if (mode !== "hybrid" || !Array.isArray(rows) || !rows.length) return null;
+  if (!rows.every((r) => typeof r?.keyword_hit === "boolean")) return null;
+  return rows.some((r) => r.keyword_hit) ? null : CA_MEANING_ONLY_NOTE;
 }
 
 // Matches before the limit, carried on every row by the RPC's window count.

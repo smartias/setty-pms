@@ -3,8 +3,9 @@
 // reconcile pass. The SQL side is covered by supabase/ca-items-local-test.sql.
 import { strict as assert } from "node:assert";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
-  classifyCaQuery, buildCaSearchArgs, caRowToItem, caTotalOf, clampCaLimit, summarizeReconcile,
+  classifyCaQuery, buildCaSearchArgs, caRowToItem, caTotalOf, caMeaningOnlyNote, CA_MEANING_ONLY_NOTE, clampCaLimit, summarizeReconcile,
   vectorLiteral, isEmbedding, summarizeEmbedRun, runEmbedPass, emailEmbedStoreRow, emailEmbedLabel,
   CA_SEARCH_DEFAULT_LIMIT, CA_SEARCH_MAX_LIMIT, CA_EMBED_DIMS, CA_MIN_SIMILARITY,
 } from "./caItems.ts";
@@ -265,4 +266,46 @@ test("without storeRow the embed pass still sends the CA shape", async () => {
   const stores = [];
   await runEmbedPass({ ...h.opts, store: async (rows) => { stores.push(rows); return rows.length; } });
   assert.deepEqual(Object.keys(stores[0][0]).sort(), ["embed_hash", "embedding", "item_id", "item_type", "project_row_id"]);
+});
+
+test("a row found by meaning carries its similarity, and says when no word matched", () => {
+  const byMeaning = caRowToItem({ ...ROW, similarity: 0.83456, keyword_hit: false }, true);
+  assert.equal(byMeaning.similarity, 0.835);
+  assert.equal(byMeaning.keywordHit, false);
+  const both = caRowToItem({ ...ROW, similarity: 0.9, keyword_hit: true }, true);
+  assert.equal(both.similarity, 0.9);
+  assert.equal("keywordHit" in both, false, "said only when false");
+  const wordsOnly = caRowToItem({ ...ROW, similarity: null, keyword_hit: true }, true);
+  assert.equal("similarity" in wordsOnly, false);
+  const listed = caRowToItem({ ...ROW, similarity: null, keyword_hit: true }, false);
+  assert.equal("similarity" in listed, false);
+  assert.equal("keywordHit" in listed, false);
+  const older = caRowToItem(ROW, true);
+  assert.equal("similarity" in older, false, "the older function's rows are unchanged");
+  assert.equal("keywordHit" in older, false);
+});
+
+test("an answer with no word match says the rows are only the closest by meaning", () => {
+  const none = [{ keyword_hit: false }, { keyword_hit: false }];
+  assert.equal(caMeaningOnlyNote(none, "hybrid"), CA_MEANING_ONLY_NOTE);
+  assert.equal(caMeaningOnlyNote([{ keyword_hit: false }, { keyword_hit: true }], "hybrid"), null);
+  assert.equal(caMeaningOnlyNote(none, "text"), null, "keyword-only search never claims a meaning match");
+  assert.equal(caMeaningOnlyNote(none, "list"), null);
+  assert.equal(caMeaningOnlyNote([], "hybrid"), null);
+  assert.equal(caMeaningOnlyNote([{}, {}], "hybrid"), null, "rows from the older function carry no flag");
+  assert.equal(caMeaningOnlyNote(null, "hybrid"), null);
+});
+
+test("20261124190000 adds similarity and keyword_hit to search_ca_items and changes nothing else", () => {
+  const read = (f) => readFileSync(new URL("../../migrations/" + f, import.meta.url), "utf8");
+  const mig = read("20261124190000_search_ca_items_similarity.sql");
+  const body = (sql) => sql.slice(sql.indexOf("create function public.search_ca_items("), sql.indexOf("to service_role;", sql.indexOf("create function public.search_ca_items(")));
+  const was = body(read("20261017150000_ca_items_embeddings.sql"));
+  const now = body(mig)
+    .replace("total bigint,\n  similarity real, keyword_hit boolean\n)", "total bigint\n)")
+    .replace("as total,\n    f.similarity,\n    (f.lex_ix is not null) as keyword_hit\n", "as total\n");
+  assert.equal(now, was, "apart from the two columns the function is the one already in production");
+  assert.ok(mig.includes("drop function if exists public.search_ca_items(text[], text, text, text, text, text, text, boolean, integer, extensions.vector, real);"));
+  assert.ok(/from public, anon, authenticated;\s+grant execute on function public\.search_ca_items\([^)]*\)\s+to service_role;/.test(mig), "grants are repeated after the drop");
+  assert.ok(!mig.includes("\r"), "migrations are LF");
 });
