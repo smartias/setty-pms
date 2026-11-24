@@ -63,6 +63,7 @@ import { pickRecordedFolderName, matchRecordedFolder } from "./recordedFolder.ts
 import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OLD } from "./sheetFromFilename.ts";
 import { assignSheetsFromList, DRAWING_LIST_LAYOUT } from "./sheetFromDrawingList.ts";
 import { rankByQuery, closeByQuery, CLOSE_QUERY_NOTE, pickByMeaning, BY_MEANING_NOTE } from "./knowledgeQuery.ts";
+import { lazyModule } from "./lazyModule.ts";
 // set_project_fee: what may be written into the Fee Calculator and what is
 // refused. Pure; see feeCalculator.test.mjs.
 import { extractSheetTables, orientSheetItems, type SheetTextItem, type SheetTable } from "./scheduleExtract.ts";
@@ -1521,7 +1522,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-cost-document-flags";
+const BUILD = "2026-11-24-image-lib-shared-load";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.30.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -9456,10 +9457,14 @@ const isPhotoName = (name: string) =>
 // same imagescript dependency view_drawing already pins for encoding
 // rendered PDF pages (README → Gotchas). Returns null on anything
 // imagescript cannot decode (e.g. HEIC) rather than guessing a fallback.
+// imagescript is imported once per isolate and shared (lazyModule.ts): two
+// calls importing it at the same moment could be handed the module before it
+// had finished loading ("Cannot access 'Image' before initialization").
+const imageClass = lazyModule(() => import("imagescript"), (m) => m.Image);
 const VIEW_PHOTOS_DRIVE_TARGET_EDGE = 900;
 async function downscaleForView(bytes: Uint8Array): Promise<{ data: string; mimeType: string } | null> {
   try {
-    const { Image } = await import("imagescript") as any;
+    const Image = await imageClass();
     const img = await Image.decode(bytes);
     if (Math.max(img.width, img.height) > VIEW_PHOTOS_DRIVE_TARGET_EDGE) {
       if (img.width >= img.height) img.resize(VIEW_PHOTOS_DRIVE_TARGET_EDGE, Image.RESIZE_AUTO);
@@ -9717,7 +9722,7 @@ function drawingPageSize(pg: any): { wPt: number; hPt: number } {
 const PDFIUM_RUNTIME_FAILURE = /null function|signature mismatch|memory access out of bounds|unreachable|RuntimeError|table index is out of bounds/i;
 
 async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, region: ViewDrawingRegion): Promise<{ b64: string; mimeType: string; width: number; height: number; pageCount: number | null }> {
-  const { Image } = await import("imagescript") as any;
+  const Image = await imageClass();
   for (let attempt = 1; ; attempt++) {
     try {
       return await renderDrawingPageOnce(pdfBytes, pageInFile, region, Image);
