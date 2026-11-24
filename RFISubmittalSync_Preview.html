@@ -213,6 +213,9 @@
   window.SheetRefs = SheetRefs;
   import * as CaIntake from "./caIntake.js";
   window.CaIntake = CaIntake;
+  // Status rules shared with the main PMS (status to date, overdue).
+  import * as CaStatus from "./caStatus.js";
+  window.CaStatus = CaStatus;
   window.dispatchEvent(new Event("caintake-ready"));
 </script>
 <script src="setty-auth.js"></script>
@@ -1105,7 +1108,7 @@ function emailAction(kind, which){
       `1. Open the item in the PMS: ${dl||"(open it from the RFI / Submittal Tracker)"}\n   Start with the Claude review box at the top: red flags first, then the suggested ${isRFI?"answer":"stamp and comments"} and the sheets it checked. Verify against the current set before you trust it.`,
       `2. The contractor's ${isRFI?"question":"submittal"} and attachments are in the SharePoint folder: ${sp||"(no folder link on the item yet — ask the sender)"}`,
       isRFI ? `3. Write your answer in the Response field. "Copy into Response" takes the Claude suggestion if it is right; edit it until it is yours. Anything internal goes in Internal notes, which never leave the office.`
-            : `3. Pick the Stamp and write the Review comments that go back to the contractor. The status follows the stamp. Anything internal goes in Internal notes, which never leave the office.`,
+            : `3. Pick the Stamp and write the Review comments that go back to the contractor. When the return is sent the status follows the stamp (Revise and Resubmit or Rejected becomes Resubmittal Required). Anything internal goes in Internal notes, which never leave the office.`,
       `4. When your answer is final, either issue it yourself — the item's "Issue it" panel shows how for this job (${(()=>{const p=PROJECTS.find(x=>x.id===(EDIT&&EDIT.projId))||{}; return caIssueGuide(p.platform||p.detected||"", kind).where;})()}) — or press "Answer ready — hand to CA" and ${pm||"the CA coordinator"} issues it. Issuing sets the status to ${isRFI?"Responded":"Returned"}.`,
       `5. If this is not yours, or you cannot meet the date, tell ${pm||"the project manager"} today rather than on the due date.`
     ].join("\n");
@@ -1221,7 +1224,9 @@ async function saveEditor(){
   try{
     await writeArray(arrKey, arr=>{
       if(isNew){ const base=kind==="rfi"?blankRFI():blankSub(); return [...arr, {...base, ...edits, id:uid(), loggedBy:who||"(unknown)", loggedAt:now}]; }
-      return arr.map(r=>{ if(r.id!==id) return r; const m={...r, ...edits};
+      return arr.map(r=>{ if(r.id!==id) return r; let m={...r, ...edits};
+        // caStatus.js: a status set to Responded / Closed / Returned / Resubmittal Required gets its date when that is empty.
+        if(window.CaStatus) m=window.CaStatus.applyStatusRules(r, m, kind==="rfi"?"rfi":"submittal");
         if(m.answerReady&&!OPEN_STATUSES.includes(m.status||"")) delete m.answerReady; // issued (or closed): the hand-off is done
         if(EDIT.confirmIntake&&isUnreviewed(m)){ m.intakeReviewed=true; m.intake={...(m.intake||{}), reviewedAt:now, reviewedBy:who||null}; }
         // Dismiss removes ONLY the review the user actually saw. writeArray re-reads
