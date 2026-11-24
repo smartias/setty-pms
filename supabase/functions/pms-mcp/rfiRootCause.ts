@@ -100,3 +100,91 @@ export function summarizeRootCauses(rows: RootCauseRow[], opts: { uncoveredLimit
     projects: [...new Set(rows.map((r) => r.project))].length,
   };
 }
+
+// ── Preventable RFIs that no lesson records yet ──────────────────────────────
+// The tags say which RFIs a document review could have prevented; a lesson is
+// what carries that to the next project. On 2026-11-24, 483 RFIs were tagged
+// preventable and 64 lessons came from RFIs. lessonCandidates() lists the
+// preventable RFIs no lesson links to, grouped by the checklist item (or, with
+// none, by cause) so ONE lesson is drafted per recurring pattern, not one per
+// RFI: 200 single-RFI lessons would bury the reviewer and the reader alike.
+
+// "RFI-019", "rfi 19", "019" and "19" are the same RFI, and so are "BID-338"
+// and "BID-RFI-338" (lessons mined from the bid log write it the second way);
+// "BID-032" and "032" stay apart.
+export function rfiKey(project: unknown, number: unknown): string {
+  const n = String(number ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/RFI/g, "").replace(/^([A-Z]*)0+(?=\d)/, "$1");
+  return String(project ?? "").trim().toUpperCase() + "#" + n;
+}
+
+export type LessonRow = { project_id?: string | null; status?: string | null; linked_records?: unknown; source_reference?: string | null };
+
+// The RFIs a lesson already covers. linked_records is the reliable record
+// ([{type:"rfi", project, rfi_id}]); a lesson on the same project whose source
+// text names the number counts too, because hand-saved lessons carry no links.
+// Rejected and archived lessons cover nothing.
+export function coveredRfiKeys(lessons: LessonRow[]): { linked: Set<string>; sourceText: Map<string, string> } {
+  const linked = new Set<string>();
+  const sourceText = new Map<string, string>();
+  for (const l of lessons ?? []) {
+    if (l.status === "rejected" || l.status === "archived") continue;
+    const links = Array.isArray(l.linked_records) ? l.linked_records : [];
+    for (const x of links as any[]) {
+      if (!x || String(x.type ?? "").toLowerCase() !== "rfi") continue;
+      const num = x.rfi_id ?? x.number ?? x.id;
+      const proj = x.project ?? l.project_id;
+      if (num && proj) linked.add(rfiKey(proj, num));
+    }
+    const p = String(l.project_id ?? "").trim().toUpperCase();
+    if (p && l.source_reference) sourceText.set(p, (sourceText.get(p) ?? "") + "\n" + String(l.source_reference).toUpperCase());
+  }
+  return { linked, sourceText };
+}
+
+function namedInSource(text: string | undefined, number: string): boolean {
+  if (!text) return false;
+  const n = String(number).toUpperCase().trim();
+  if (!n) return false;
+  const digits = n.replace(/^RFI[\s#-]*/, "").replace(/^0+(?=.)/, "");
+  // "RFI 19", "RFI-019", "RFI #19" or the whole stored number as a token.
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp("\\bRFI[\\s#-]*0*" + esc(digits) + "\\b").test(text)
+    || (/[A-Z]/.test(n.replace(/^RFI/, "")) && new RegExp("(^|[^A-Z0-9])" + esc(n) + "([^A-Z0-9]|$)").test(text));
+}
+
+export const LESSON_GROUP_ITEMS = 12;
+
+export function lessonCandidates(tags: RootCauseRow[], lessons: LessonRow[], opts: { groupLimit?: number; itemsPerGroup?: number } = {}) {
+  const { linked, sourceText } = coveredRfiKeys(lessons);
+  const groups = new Map<string, { qaItem: string | null; cause: string | null; rfis: RootCauseRow[]; projects: Set<string> }>();
+  let preventable = 0, covered = 0;
+  for (const t of tags ?? []) {
+    if (!t.preventable) continue;
+    preventable++;
+    if (linked.has(rfiKey(t.project, t.item_number)) || namedInSource(sourceText.get(String(t.project).trim().toUpperCase()), t.item_number)) { covered++; continue; }
+    const key = t.qa_item ? "item:" + t.qa_item : "cause:" + t.cause;
+    const g = groups.get(key) ?? { qaItem: t.qa_item || null, cause: t.qa_item ? null : t.cause, rfis: [], projects: new Set<string>() };
+    g.rfis.push(t); g.projects.add(t.project);
+    groups.set(key, g);
+  }
+  const perGroup = Math.max(1, opts.itemsPerGroup ?? LESSON_GROUP_ITEMS);
+  const all = [...groups.values()]
+    // A pattern seen on several projects first: that is what a firm lesson is for.
+    .sort((a, b) => b.projects.size - a.projects.size || b.rfis.length - a.rfis.length
+      || String(a.qaItem ?? a.cause).localeCompare(String(b.qaItem ?? b.cause)))
+    .map((g) => ({
+      ...(g.qaItem ? { qaItem: g.qaItem } : { noChecklistItem: true, cause: g.cause }),
+      rfis: g.rfis.length, projects: g.projects.size,
+      items: g.rfis.slice(0, perGroup).map((r) => ({
+        project: r.project, number: r.item_number, cause: r.cause,
+        ...(r.subject ? { subject: String(r.subject).slice(0, 120) } : {}),
+        ...(r.note ? { note: r.note } : {}),
+      })),
+      ...(g.rfis.length > perGroup ? { moreNotShown: g.rfis.length - perGroup } : {}),
+    }));
+  const lim = Math.max(1, opts.groupLimit ?? 10);
+  return {
+    preventable, alreadyInALesson: covered, withoutALesson: preventable - covered,
+    groups: all.slice(0, lim), groupsTotal: all.length,
+  };
+}

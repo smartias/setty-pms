@@ -79,7 +79,7 @@ import { isBackgroundPath, BACKGROUND_NOTE } from "./drawingTier.ts";
 import { retryingRange, httpRange, openRangedPdf, type RangedPdf } from "./pdfRanged.ts";
 import { readOneNoteSection, oneNoteReadResult, oneNoteNotebookFolder, type OneNoteSection } from "./oneNoteSection.ts";
 // Why an RFI was asked and which QA check would have caught it. Pure; see its tests.
-import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses } from "./rfiRootCause.ts";
+import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses, lessonCandidates, rfiKey } from "./rfiRootCause.ts";
 import { isIssuedSetRow, notASetReason } from "./issuedSet.ts";
 import { needsOcr, ocrPage, ocrNote, OCR_SYSTEM_PROMPT, OCR_MAX_PAGES_PER_CALL } from "./ocrPages.ts";
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
@@ -1529,7 +1529,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-cost-document-pointer";
+const BUILD = "2026-11-24-lesson-candidates";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.31.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -12659,8 +12659,22 @@ mcp.tool("rfi_root_cause_summary", {
         : `Could not read the tags: ${m.slice(0, 200)}` });
     }
     const s = summarizeRootCauses(rows);
+    // RFIs in the log with no tag at all: the summary is only as complete as
+    // the tagging, so say how much of the log it does not cover.
+    let untagged: Record<string, unknown> | undefined;
+    if (!wantCause && !phase) {
+      try {
+        const logged = await sbGetAll("pms_ca_items?select=project_number,number&item_type=eq.rfi" + (project ? "&project_number=eq." + encodeURIComponent(project) : ""));
+        const have = new Set(rows.map((r: any) => rfiKey(r.project, r.item_number)));
+        const missing = (Array.isArray(logged) ? logged : []).filter((c: any) => c.number && !have.has(rfiKey(c.project_number, c.number)));
+        untagged = { rfisInLog: Array.isArray(logged) ? logged.length : 0, untagged: missing.length,
+          ...(missing.length ? { examples: missing.slice(0, 15).map((c: any) => `${c.project_number} ${c.number}`), nextStep: "Tag them with tag_rfi_root_causes (read each with read_rfi_submittal first)." } : {}) };
+      } catch (e) {
+        untagged = { error: `Could not count untagged RFIs: ${String((e as any)?.message ?? e).slice(0, 160)}` };
+      }
+    }
     if (!rows.length) {
-      return asText({ ...(project ? { project } : {}), tagged: 0,
+      return asText({ ...(project ? { project } : {}), tagged: 0, ...(untagged ? { coverage: untagged } : {}),
         note: "No RFIs carry a root-cause tag" + (project ? " on this project" : "") + " yet. Tags are written when an RFI is reviewed (save_ca_review rootCause) or back-filled with tag_rfi_root_causes." });
     }
     // Preventable RFIs per $1M of construction value: the second measure
@@ -12691,6 +12705,7 @@ mcp.tool("rfi_root_cause_summary", {
     return asText({
       ...(project ? { project } : { projects: s.projects }),
       ...s,
+      ...(untagged ? { coverage: untagged } : {}),
       ...(perMillion ? { perMillionConstructionValue: perMillion } : {}),
       ...(listRfis ? { rfis: rows.slice(0, 300) } : {}),
       note: "Counts cover TAGGED RFIs only. byQaItem says which checks the log would have rewarded: run those first and widest. noCheckExamples are preventable RFIs with no checklist item: a kind that recurs across projects is a candidate for a new item (tell the user; do not add items yourself). Internal: never quote to the contractor.",
@@ -14621,6 +14636,55 @@ function knowledgeSensitiveTerm(...fields: Array<string | null | undefined>): st
   return null;
 }
 
+// ─── PREVENTABLE RFIs WITH NO LESSON: list_lesson_candidates ────────────────
+// The step between the RFI log and the knowledge layer. Read-only: it names
+// the patterns; a session drafts one lesson per pattern with save_knowledge
+// (automated: true), which queues it for a human reviewer. Nothing a review
+// reads changes until that reviewer approves.
+mcp.tool("list_lesson_candidates", {
+  description:
+    "Which preventable RFIs has the firm NOT yet turned into a lesson? Reads the root-cause tags and the " +
+    "knowledge layer and returns the preventable RFIs no lesson covers, GROUPED by the QA checklist item that " +
+    "would have caught them (or by cause, when no item covers them), patterns seen on the most projects first. " +
+    "Use it when asked to turn the RFI log into lessons, or what we keep getting RFIs about and have not written " +
+    "down. Then draft ONE lesson per group, not one per RFI: read two or three of the group's RFIs with " +
+    "read_rfi_submittal, write what a designer should check before issue and why, and save it with " +
+    "save_knowledge {automated: true, linkedRfis: [...every RFI the lesson rests on]}. Such a save is only a " +
+    "SUGGESTION: a reviewer approves it in the Intelligence console before any review reads it. Say so to the " +
+    "user. A group marked noChecklistItem is also a candidate for a new QA checklist item: report those to the " +
+    "user; do not add checklist items yourself. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().optional().describe("One project (number OR name). Omit for every tagged project."),
+    limit: z.number().optional().describe("Groups to return (default 10, max 40)."),
+  }),
+  handler: async ({ projectNumber, limit }) => {
+    let project: string | null = null;
+    if (projectNumber) {
+      const pid = await resolveProjectId(projectNumber);
+      if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+      project = String((await getProjectById(pid))?.projectNumber || projectNumber);
+    }
+    let tags: any[], lessons: any[];
+    try {
+      tags = await sbGetAll("pms_rfi_root_causes?select=project,item_number,subject,cause,preventable,qa_item,note&item_type=eq.rfi&preventable=eq.true" +
+        (project ? "&project=eq." + encodeURIComponent(project) : "") + "&order=project,item_number");
+      // Suggested lessons count as covering their RFIs: a draft already in the
+      // queue must not be drafted again.
+      lessons = await sbGetAll("pms_lessons?select=project_id,status,linked_records,source_reference&status=in.(approved,suggested)");
+    } catch (e) {
+      return asText({ error: `Could not read the tags or the lessons: ${String((e as any)?.message ?? e).slice(0, 200)}` });
+    }
+    const out = lessonCandidates(tags, lessons, { groupLimit: Math.min(Math.max(Math.trunc(Number(limit) || 10), 1), 40) });
+    return asText({
+      ...(project ? { project } : {}),
+      ...out,
+      note: out.withoutALesson
+        ? "One lesson per GROUP. Save each with save_knowledge {automated: true, linkedRfis}: it queues for review and these RFIs then leave this list. alreadyInALesson counts RFIs a lesson links to or names in its source. Internal: never quote to the contractor."
+        : "Every preventable tagged RFI is already covered by a lesson" + (project ? " on this project." : "."),
+    });
+  },
+});
+
 mcp.tool("save_knowledge", {
   description:
     "Save a durable finding to Setty's SHARED project knowledge record (the knowledge layer) in the PMS. " +
@@ -14657,8 +14721,9 @@ mcp.tool("save_knowledge", {
     source: z.string().max(1000).optional().describe("Citations the reviewer can check: noteIds, document paths, email subjects, RFI/submittal numbers."),
     allowDuplicate: z.boolean().optional().describe("Set true ONLY after this tool returned possibleDuplicate and the user confirmed the new entry is genuinely different."),
     automated: z.boolean().optional().describe("Set true when this save comes from an automated pipeline or batch extraction (e.g. a QC memo run) rather than a finding the user personally confirmed in this conversation. Automated entries always queue for human review."),
+    linkedRfis: z.array(z.object({ project: z.string(), number: z.string() })).max(60).optional().describe("The RFIs this lesson rests on, e.g. [{project:'SAPX196006.00', number:'RFI-158'}]. Pass them whenever a lesson comes from RFIs (list_lesson_candidates): it is how the firm knows which preventable RFIs already have a lesson."),
   }),
-  handler: async ({ summary, projectNumber, agency, discipline, source, allowDuplicate, automated }) => {
+  handler: async ({ summary, projectNumber, agency, discipline, source, allowDuplicate, automated, linkedRfis }) => {
     // Identity is not optional here. The old no-write rule existed because
     // sign-in was a boolean gate; an unattributed knowledge row would be
     // exactly that failure again.
@@ -14754,6 +14819,10 @@ mcp.tool("save_knowledge", {
     // queues too, project-scoped or not — see KNOWLEDGE_SENSITIVE_TERMS.
     const sensitiveTerm = knowledgeSensitiveTerm(summary, source);
     const status = pn && !isAutomated && !sensitiveTerm ? "approved" : "suggested";
+    // The same shape the mining passes write, so one reader serves both.
+    const rfiLinks = (linkedRfis ?? [])
+      .map((x) => ({ type: "rfi", rfi_id: String(x.number ?? "").trim(), project: String(x.project ?? "").trim() }))
+      .filter((x) => x.rfi_id && x.project);
     const row = await sbInsert("pms_lessons", {
       project_id: pn,
       agency: agency?.trim() || null,
@@ -14764,6 +14833,7 @@ mcp.tool("save_knowledge", {
       origin: isAutomated ? "mined" : "connector",
       author_email: caller.email,
       author_name: caller.name,
+      ...(rfiLinks.length ? { linked_records: rfiLinks, source_type: "rfi" } : {}),
     });
 
     return asText({
@@ -14772,6 +14842,7 @@ mcp.tool("save_knowledge", {
         status,
         project: pn, agency: agency?.trim() || null,
         author: caller.email,
+        ...(rfiLinks.length ? { linkedRfis: rfiLinks.length } : {}),
         ...(sensitiveTerm ? { heldForReview: "sensitive-terms", matchedTerm: sensitiveTerm } : {}),
       },
       note: isAutomated
