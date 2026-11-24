@@ -20,6 +20,9 @@ export const MIN_RFIS = 3;
 // needed: the same thing learned on two projects is a pattern.
 export const MIN_LESSONS = 2;
 export const MIN_LESSON_PROJECTS = 2;
+// A best practice, or a lesson saved firm-wide (no project), is already a
+// statement about every project that a person approved: one is enough.
+export const MIN_FIRM_WIDE = 1;
 export const PROPOSALS_MAX = 12;
 
 const text = (v, max) => String(v == null ? "" : v).replace(/\s+/g, " ").trim().slice(0, max);
@@ -41,8 +44,9 @@ export function runState(run, nowMs) {
 //   uncovered  rows of pms_rfi_root_causes that are preventable with no qa_item:
 //              [{ project, item_number }]
 //   existing   [{ text }] items and open proposals already on file, to refuse a repeat
-//   lessons    approved lessons no checklist item describes yet:
-//              [{ lesson_id, project_id, lesson_summary }]
+//   lessons    approved lessons and best practices no checklist item describes yet:
+//              [{ lesson_id, project_id, lesson_summary, kind }]; kind "practice"
+//              is a best practice, and no project_id means firm-wide
 // Returns { accepted: [...], refused: [{ text, why }] }. An accepted proposal
 // carries only the RFIs that really are uncovered and the lessons that really
 // are candidates, and its counts are computed here, never taken from the
@@ -78,13 +82,14 @@ export function planProposals(proposals, uncovered, existing, lessons) {
       const row = lessonById.get(k);
       if (!row || seenL.has(k)) continue;
       seenL.add(k);
-      les.push({ id: k, project: text(row.project_id, 60), summary: text(row.lesson_summary, 300) });
+      les.push({ id: k, kind: row.kind === "practice" ? "practice" : "lesson", project: text(row.project_id, 60), summary: text(row.lesson_summary, 300) });
     }
+    const firmWide = les.filter((l) => l.kind === "practice" || !l.project).length;
     const lessonProjects = new Set(les.map((l) => l.project.toUpperCase()).filter(Boolean));
     const rfiRule = rfis.length >= MIN_RFIS && projects.size >= MIN_PROJECTS;
-    const lessonRule = les.length >= MIN_LESSONS && lessonProjects.size >= MIN_LESSON_PROJECTS;
+    const lessonRule = (les.length >= MIN_LESSONS && lessonProjects.size >= MIN_LESSON_PROJECTS) || firmWide >= MIN_FIRM_WIDE;
     if (!rfiRule && !lessonRule) {
-      refuse(`It rests on ${rfis.length} uncovered preventable RFI(s) on ${projects.size} project(s) and ${les.length} approved lesson(s) from ${lessonProjects.size} project(s). A new item needs at least ${MIN_RFIS} RFIs on at least ${MIN_PROJECTS} projects, or at least ${MIN_LESSONS} lessons from at least ${MIN_LESSON_PROJECTS} projects. RFIs already tagged to an item or not tagged preventable, and lessons that are not approved, have no project, or are already linked to an item, do not count.`);
+      refuse(`It rests on ${rfis.length} uncovered preventable RFI(s) on ${projects.size} project(s) and ${les.length} approved lesson(s) from ${lessonProjects.size} project(s). A new item needs at least ${MIN_RFIS} RFIs on at least ${MIN_PROJECTS} projects, or at least ${MIN_LESSONS} lessons from at least ${MIN_LESSON_PROJECTS} projects, or one best practice or firm-wide lesson. RFIs already tagged to an item or not tagged preventable, and lessons or best practices that are not approved or are already linked to an item, do not count.`);
       continue;
     }
     const evidence = [...rfis.map((r) => keyOf(r.project, r.number)), ...les.map((l) => "lesson|" + l.id)];
