@@ -73,7 +73,7 @@ has('...(r.source === "drive" ? { folderId: r.folder_id } : { folderUrl: r.folde
   "search_field_photos exposes folderId for drive rows, folderUrl otherwise");
 has("async function downscaleForView(bytes: Uint8Array): Promise<{ data: string; mimeType: string } | null> {",
   "downscaleForView is defined");
-has('const { Image } = await import("imagescript") as any;', "downscaleForView reuses the pinned imagescript dependency");
+has('const Image = await imageClass();', "downscaleForView reuses the pinned imagescript dependency through the shared loader");
 has("type PhotoFile =", "view_photos' file union type distinguishes sharepoint vs. drive sources");
 has("if (isAzId(raw)) {", "view_photos' itemId branch accepts an az: drive file id, not just a SharePoint composite");
 has("} else if (folderId?.trim()) {", "view_photos gained a folderId (drive folder) input mode");
