@@ -511,7 +511,10 @@ const termContractsOf = (m: any): any[] => Array.isArray(m?.termContracts) ? m.t
 const staffOf = (m: any): any[] => Array.isArray(m?.staff) ? m.staff : [];
 
 async function getProjectById(pid: string): Promise<any | null> {
-  const rows = await sbGet("pms_projects?select=project,team&project->>id=eq." + encodeURIComponent(pid));
+  // By the row's primary key. The row id and the id inside the blob are the
+  // same value on every row (checked 2026-11-24, 613 of 613); filtering on the
+  // blob's copy read all 613 blobs to return one (40 ms against 0.3 ms).
+  const rows = await sbGet("pms_projects?select=project,team&id=eq." + encodeURIComponent(pid));
   const p = rows?.[0]?.project ?? null;
   if (!p) return null;
   // A project the caller cannot view does not exist for them — same shape as a
@@ -540,11 +543,41 @@ const _resolveScope = new AsyncLocalStorage<{ ambiguity?: ProjectRefAmbiguity }>
 // (SAPX21602.00), current ones six.
 const CANONICAL_NUMBER_RE = /^[a-z]{4}\d{5,6}\.\d{2}$/i;
 const BARE_NUMBER_RE = /^[a-z]{4}\d{5,6}$/;
+// Every project's id, number and name: what a reference is resolved against.
+// One project-scoped call used to read this list up to three times (the
+// wrapper normalising the argument, the visibility check, then the handler's
+// own resolveProjectId), about 110 ms of database time each plus the round
+// trip. It is now read once and shared: by every resolve inside a request, by
+// calls that overlap (the in-flight read is reused), and by later calls on a
+// warm isolate for PROJECT_REFS_TTL_MS. The list is the UNFILTERED one, shared
+// across callers; visibility is applied per request in resolveProjectRefIn.
+// A write through updateProjectRecord drops it, and a reference that finds
+// nothing in a list older than PROJECT_REFS_RECHECK_MS is looked up once more,
+// so a project created a moment ago resolves on the first try.
+const PROJECT_REFS_TTL_MS = 60_000;
+const PROJECT_REFS_RECHECK_MS = 5_000;
+let _projectRefs: { at: number; rows: Promise<any[]> } | null = null;
+function loadProjectRefs(maxAgeMs: number): Promise<any[]> {
+  const now = Date.now();
+  if (_projectRefs && now - _projectRefs.at < maxAgeMs) return _projectRefs.rows;
+  const entry = {
+    at: now,
+    rows: sbGetAll("pms_projects?select=pid:project->>id,pn:project->>projectNumber,nm:project->>name,team&order=id.asc"),
+  };
+  _projectRefs = entry;
+  // A failed read is not kept: the next call tries again.
+  entry.rows.catch(() => { if (_projectRefs === entry) _projectRefs = null; });
+  return entry.rows;
+}
 async function resolveProjectRef(identifier: string): Promise<ProjectRefRow | null> {
+  const found = await resolveProjectRefIn(identifier, await loadProjectRefs(PROJECT_REFS_TTL_MS));
+  if (found || !_projectRefs || Date.now() - _projectRefs.at < PROJECT_REFS_RECHECK_MS) return found;
+  return resolveProjectRefIn(identifier, await loadProjectRefs(0));
+}
+async function resolveProjectRefIn(identifier: string, rows: any[]): Promise<ProjectRefRow | null> {
   const id = identifier.toLowerCase().trim();
   const scope = _resolveScope.getStore();
   if (scope) delete scope.ambiguity;
-  const rows = await sbGetAll("pms_projects?select=pid:project->>id,pn:project->>projectNumber,nm:project->>name,team&order=id.asc");
   const caps = await resolveCaps();
   const visible: ProjectRefRow[] = caps.isAdmin ? (rows || [])
     : (rows || []).filter((r: any) => projectVisible(caps, r?.pn));
@@ -1480,7 +1513,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-ca-review-packet";
+const BUILD = "2026-11-24-project-refs-read-once";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.28.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -12142,7 +12175,7 @@ const CA_REVIEW_TRACKED_SEVERITIES = new Set(["life-safety", "agency", "cost"]);
 // version race the write is refused (nothing written). Busts the portfolio
 // cache so the next read reflects the write.
 async function updateProjectRecord(pid: string, mutate: (proj: any) => any): Promise<any> {
-  const rows = await sbGet("pms_projects?select=id,project,version&project->>id=eq." + encodeURIComponent(pid));
+  const rows = await sbGet("pms_projects?select=id,project,version&id=eq." + encodeURIComponent(pid));
   if (!rows?.length) throw new Error("Project row not found for the resolved id.");
   const rowId = rows[0].id, proj = rows[0].project, ver = rows[0].version;
   const updated = mutate(proj);
@@ -12167,6 +12200,7 @@ async function updateProjectRecord(pid: string, mutate: (proj: any) => any): Pro
     throw new Error("Project changed since it was read (a concurrent save) — nothing was written. Re-run the tool.");
   }
   _projCache = null; // the write invalidates the portfolio-wide cache
+  _projectRefs = null; // ...and the id/number/name list (a rename must resolve at once)
   return back[0];
 }
 
@@ -15170,7 +15204,7 @@ app.post("/pms-mcp/admin/portal-ca-intake", async (c) => {
             return rows.filter((r: any) => r.pid).map((r: any) => ({ pid: String(r.pid), deliverablesUrl: String(r.deliv || ""), updatedAt: String(r.updated_at || "") }));
           },
           readProject: async (pid: string) => {
-            const rows = await sbGet("pms_projects?select=project&project->>id=eq." + encodeURIComponent(pid) + "&limit=1");
+            const rows = await sbGet("pms_projects?select=project&id=eq." + encodeURIComponent(pid) + "&limit=1");
             return rows?.[0]?.project ?? null;
           },
           logMeta: async (folderUrl: string, fileName: string) => {
