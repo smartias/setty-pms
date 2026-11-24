@@ -199,7 +199,7 @@
 <div id="out"><p class="empty">Loading projects…</p></div>
 </main>
 
-<div class="overlay" id="overlay" role="dialog" aria-modal="true" aria-labelledby="modalTitle" onclick="if(event.target===this)closeEditor()">
+<div class="overlay" id="overlay" role="dialog" aria-modal="true" aria-labelledby="modalTitle" onmousedown="this._down=(event.target===this)" onclick="if(event.target===this&&this._down)requestCloseEditor()">
   <div class="modal" id="modal"></div>
 </div>
 <div class="toast" id="toast" role="status"></div>
@@ -267,8 +267,9 @@ const OPEN_STATUSES = ["Open","Pending Sub Response","Received","Under Review","
 /* ---- utils ---- */
 const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const uid = () => Math.random().toString(36).slice(2,10);
-const today = () => new Date().toISOString().slice(0,10);
-function addWD(dateStr, days){ const d=new Date((dateStr||today())+"T00:00:00"); let c=0; while(c<days){ d.setDate(d.getDate()+1); const w=d.getDay(); if(w!==0&&w!==6)c++; } return d.toISOString().slice(0,10); }
+// The LOCAL calendar day: toISOString() is UTC, which dated an item logged after about 7 pm Eastern as tomorrow.
+const today = () => localISO(new Date());
+function addWD(dateStr, days){ const d=new Date((dateStr||today())+"T00:00:00"); let c=0; while(c<days){ d.setDate(d.getDate()+1); const w=d.getDay(); if(w!==0&&w!==6)c++; } return localISO(d); }
 // Who is making the change: the sign-in name (the suite's shared session).
 // Signed out, there is no name, and a save is logged as "(unknown)".
 function getWho(){
@@ -974,7 +975,7 @@ function menuHtml(id, label, items){
     `<div class="items" id="${id}" role="menu">${items.join("")}</div></span>`;
 }
 document.getElementById("overlay").addEventListener("keydown", e=>{
-  if(e.key==="Escape"){ e.preventDefault(); if(document.querySelector(".menu.open")){ const b=document.querySelector(".menu.open > button"); closeMenus(); if(b) b.focus(); } else closeEditor(); return; }
+  if(e.key==="Escape"){ e.preventDefault(); if(document.querySelector(".menu.open")){ const b=document.querySelector(".menu.open > button"); closeMenus(); if(b) b.focus(); } else if(document.getElementById("closeAsk")&&document.getElementById("closeAsk").style.display==="flex") keepEditing(); else requestCloseEditor(); return; }
   if(e.key!=="Tab") return;
   const f=[...document.getElementById("modal").querySelectorAll("button,input,select,textarea,a[href]")].filter(el=>!el.disabled&&el.offsetParent!==null);
   if(!f.length) return;
@@ -1002,7 +1003,10 @@ async function openEditor(kind, id){
   const grid = fields.filter(f=>!hidden.has(f.k)).map(f=>{
     const v = rec[f.k]==null?"":rec[f.k];
     let input;
-    if(f.sel) input=`<select id="f_${f.k}">${f.sel.map(o=>`<option ${o===v?"selected":""}>${esc(o)}</option>`).join("")}</select>`;
+    // A stored value that is not on the list (a blank discipline, "Multi-Discipline" on a submittal, a stamp never
+    // set) is shown as itself. Without its own option the browser showed the FIRST one and Save wrote that:
+    // Mechanical, or Approved.
+    if(f.sel) input=`<select id="f_${f.k}">${f.sel.includes(v)?"":`<option value="${esc(v)}" selected>${v===""?"— not set —":esc(v)}</option>`}${f.sel.map(o=>`<option ${o===v?"selected":""}>${esc(o)}</option>`).join("")}</select>`;
     else if(f.ta) input=`<textarea id="f_${f.k}">${esc(v)}</textarea>`;
     else input=`<input id="f_${f.k}" type="${f.t||"text"}" value="${esc(v)}">`;
     return `<div class="fld ${f.full?"full":""}"><label for="f_${f.k}">${esc(f.l)}</label>${input}</div>`;
@@ -1042,7 +1046,7 @@ async function openEditor(kind, id){
     // Project reference (mirrors the main PMS modal): the tracker lists every
     // CA job, so say which project this item belongs to.
     ((EDIT.projNum||EDIT.projName)?`<span title="Project" style="margin-left:12px;font-size:12px;color:var(--muted)">${EDIT.projNum?`<b>${esc(EDIT.projNum)}</b>`:""}${EDIT.projNum&&EDIT.projName?" · ":""}${esc(EDIT.projName||"")}</span>`:"")+
-    `<button type="button" class="x" aria-label="Close editor" onclick="closeEditor()">✕</button></div>`+
+    `<button type="button" class="x" aria-label="Close editor" onclick="requestCloseEditor()">✕</button></div>`+
     intakeBar+
     `<div id="aiReadyBar" style="display:none;align-items:center;gap:10px;background:var(--card2);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;margin:0 18px 8px;font-size:12.5px">🤖 A new Claude review was saved for this item. <span style="flex:1"></span><button class="go" onclick="reloadEditorItem()">Reload to view</button></div>`+
     `<div id="assignWarn" class="intake" role="alert" style="display:none;margin-top:0;margin-bottom:8px"></div>`+
@@ -1053,8 +1057,12 @@ async function openEditor(kind, id){
     `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
     emailMenu+claudeMenu+
     `<span class="by">${by}</span><span id="formErr" class="formerr" role="alert" style="display:none"></span><span class="spacer"></span>`+
-    `<button onclick="closeEditor()">Cancel</button><button class="go" onclick="saveEditor()">${isNew?"Add to log":"Save"}</button></div>`;
+    `<button onclick="requestCloseEditor()">Cancel</button><button class="go" onclick="saveEditor()">${isNew?"Add to log":"Save"}</button></div>`+
+    `<div id="closeAsk" role="alertdialog" aria-label="Unsaved changes" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;position:sticky;bottom:0;padding:10px 18px;background:var(--bg2);border-top:1px solid var(--warn);font-size:13px">`+
+    `<b style="flex:1 1 220px">This item has changes that are not saved.</b><button class="go" onclick="saveEditor()">Save and close</button><button class="ghost" onclick="closeEditor()">Discard changes</button><button onclick="keepEditing()">Keep editing</button></div>`;
   document.getElementById("overlay").classList.add("show");
+  // What the form opened with: Save writes only what differs from this, and closing asks first when anything does.
+  EDIT.base=collectEdits(kind); EDIT.sheetBase=JSON.stringify(EDIT.sheetRefsWork||[]); EDIT.autoNumber=isNew?rec.number:null;
   const ff=document.getElementById("modal").querySelector("input,select,textarea");
   if(ff) ff.focus();
   renderSheetRefChips(); // async; degrades to "unavailable" without blocking the editor
@@ -1072,6 +1080,8 @@ async function openEditor(kind, id){
     // team list could be drawn yet do we fall back to the record's assignees.
     if(box){ const checked=new Set([...box.querySelectorAll(".asg:checked")].map(c=>c.value)); box.innerHTML=asgHtmlFor(t2, team.length?checked:cur); }
     asgSuggest(""); // the fresh team list may carry disciplines the cached one lacked
+    // Ticks drawn now from the record are what the form "opened with": not an edit, so not an unsaved change.
+    if(EDIT.base&&!EDIT.asgTouched) EDIT.base.assignedTo=[...document.querySelectorAll(".asg:checked")].map(c=>c.value);
     const wrap=document.getElementById("subWrap"), curSub=document.getElementById("f_subAssigned");
     if(wrap&&s2.length&&curSub&&curSub.tagName==="INPUT") wrap.innerHTML=subHtmlFor(s2, curSub.value);
   }).catch(()=>{});
@@ -1081,6 +1091,57 @@ async function openEditor(kind, id){
 function confirmIntake(){ if(!EDIT||EDIT.isNew) return; EDIT.confirmIntake=true; saveEditor(); }
 function closeEditor(){ if(EDIT&&EDIT.reviewPoll) clearInterval(EDIT.reviewPoll); closeMenus(); document.getElementById("overlay").classList.remove("show"); EDIT=null;
   if(LAST_FOCUS && LAST_FOCUS.isConnected){ try{ LAST_FOCUS.focus(); }catch(e){} } LAST_FOCUS=null; }
+// ── EDIT GUARD (begin) ───────────────────────────────────────────────────────
+// Pure helpers for saving an edited item. The editor used to write EVERY field
+// on the form over the stored record, so a form opened an hour ago wiped what
+// an engineer (or the PMS tab this page opens) had written since. Now only the
+// fields the person actually changed are written, and a field that someone
+// else changed in the meantime is reported, not silently overwritten.
+function editSame(a,b){ const n=v=>v==null?"":v; return JSON.stringify(n(a))===JSON.stringify(n(b)); }
+// Keys whose value on the form differs from what the form opened with.
+function changedKeys(base, now){ return Object.keys(now||{}).filter(k=>!editSame((base||{})[k], now[k])); }
+// stored: the record as it is in the database now. base: the form as opened.
+// now: the form as it is. Returns the record to write, the keys written, and
+// `conflicts`: keys the person changed that ALSO changed underneath, to a
+// different value than theirs.
+function mergeEdit(stored, base, now){
+  const keys=changedKeys(base, now); const next={...stored}; const conflicts=[];
+  for(const k of keys){
+    if(k in (base||{}) && !editSame(stored[k], base[k]) && !editSame(stored[k], now[k])) conflicts.push(k);
+    next[k]=now[k];
+  }
+  return {next, keys, conflicts};
+}
+// A new item's number: the auto number follows the live log (someone may have
+// added one since the form opened); a typed number that is taken is refused.
+function resolveNewNumber(typed, auto, liveList, nextFn){
+  const norm=v=>String(v||"").trim().toLowerCase();
+  const taken=n=>(liveList||[]).some(r=>norm(r.number)===norm(n));
+  if(!taken(typed)) return {number:typed};
+  if(norm(typed)===norm(auto)) return {number:nextFn(liveList), moved:true};
+  return {error:`${typed} is already in the log. Change the number, or edit the existing item.`};
+}
+// ── EDIT GUARD (end) ─────────────────────────────────────────────────────────
+const EDIT_LABELS={number:"Number",title:"Title",discipline:"Discipline",status:"Status",from:"From",dateReceived:"Received",dueDate:"Due",dateResponded:"Responded",dateReturned:"Returned",
+  description:"Description",response:"Response",comments:"Review comments",notes:"Internal notes",specSection:"Spec section",stamp:"Stamp",resubNumber:"Resubmittal #",assignedTo:"Assigned to",subAssigned:"Subconsultant",spFolderUrl:"SharePoint folder"};
+// Has the person changed anything in the open editor? (fields, sheet chips, a dismissed review)
+function editorDirty(){
+  if(!EDIT||!EDIT.base) return false;
+  if(changedKeys(EDIT.base, collectEdits(EDIT.kind)).length) return true;
+  return !!EDIT.dismissAi || JSON.stringify(EDIT.sheetRefsWork||[])!==EDIT.sheetBase;
+}
+// Cancel / ✕ / Escape / a click on the backdrop: ask before throwing typed work away.
+function requestCloseEditor(){
+  if(!editorDirty()){ closeEditor(); return; }
+  const box=document.getElementById("closeAsk"); if(!box){ closeEditor(); return; }
+  box.style.display="flex"; const b=box.querySelector("button"); if(b) b.focus();
+}
+function keepEditing(){ const box=document.getElementById("closeAsk"); if(box) box.style.display="none"; }
+function setEditorBusy(on){
+  if(EDIT) EDIT.saving=on;
+  document.querySelectorAll("#modal .mfoot button, #closeAsk button").forEach(b=>{ b.disabled=!!on; });
+  const go=document.querySelector("#modal .mfoot button.go"); if(go){ if(on){ go.dataset.label=go.textContent; go.textContent="Saving…"; } else if(go.dataset.label) go.textContent=go.dataset.label; }
+}
 function collectEdits(kind){
   const fields=kind==="rfi"?RFI_FIELDS:SUB_FIELDS; const e={};
   for(const f of fields){ const el=document.getElementById("f_"+f.k); if(!el)continue; let v=el.value; if(f.t==="number")v=Number(v)||0; e[f.k]=v; }
@@ -1178,9 +1239,13 @@ async function markAnswerReady(kind, id, on){
   const arrKey=kind==="rfi"?"rfis":"submittals"; const stamp={at:new Date().toISOString(), by:getWho()||"(unknown)"};
   const rec=findRec(kind,id); const projId=(rec&&rec.__projId)||(EDIT&&EDIT.id===id&&EDIT.projId)||(CURRENT.proj&&CURRENT.proj.id);
   // Carry the form's current text with it: "answer ready" with a stale response saved would mislead the issuer.
-  const edits=(EDIT&&EDIT.id===id&&!EDIT.isNew)?collectEdits(kind):{};
+  const inEditor=!!(EDIT&&EDIT.id===id&&!EDIT.isNew&&EDIT.base);
+  const form=inEditor?collectEdits(kind):{};
+  // Only what was changed on the form rides along (the same rule as Save), so a form opened earlier cannot wipe newer values.
+  const edits={}; for(const k of (inEditor?changedKeys(EDIT.base, form):[])) edits[k]=form[k];
   try{
     await writeArray(arrKey, arr=>arr.map(r=>{ if(r.id!==id) return r; const m={...r, ...edits}; if(on) m.answerReady=stamp; else delete m.answerReady; return m; }), false, projId);
+    if(inEditor) EDIT.base=form; // those edits are saved now
     if(rec){ Object.assign(rec, edits); if(on) rec.answerReady=stamp; else delete rec.answerReady; }
     const panel=document.getElementById("issuePanel"); if(panel&&rec) panel.outerHTML=issuePanelHtml(kind, rec);
     renderProject(); toast(on?"Marked ready to issue ✓ — the CA coordinator sees it in the Ready to issue filter":"Cleared", true);
@@ -1245,16 +1310,33 @@ function startWaitPoll(){
   },60000);
 }
 async function saveEditor(){
-  if(!EDIT)return; const {kind,isNew,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
+  if(!EDIT||EDIT.saving)return; const {kind,isNew,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
+  keepEditing();
   if(!validateEditor(kind)){ EDIT.confirmIntake=false; return; }
   const edits=collectEdits(kind); const who=getWho(); const now=new Date().toISOString();
-  edits.syncEditedBy=who||"(unknown)"; edits.syncEditedAt=now;
-  if(EDIT.sheetRefsWork) edits.sheetRefs=EDIT.sheetRefsWork; // chip decisions ride the save
-  clearUndoBar(); // any other edit makes a blind import-undo unsafe
+  const type=kind==="rfi"?"rfi":"submittal";
+  const sheetsChanged=JSON.stringify(EDIT.sheetRefsWork||[])!==EDIT.sheetBase;
+  let movedTo="";
+  setEditorBusy(true);
   try{
     await writeArray(arrKey, arr=>{
-      if(isNew){ const base=kind==="rfi"?blankRFI():blankSub(); return [...arr, {...base, ...edits, id:uid(), loggedBy:who||"(unknown)", loggedAt:now}]; }
-      return arr.map(r=>{ if(r.id!==id) return r; let m={...r, ...edits};
+      if(isNew){
+        const base=kind==="rfi"?blankRFI():blankSub();
+        // The number is settled against the log as it is NOW, inside the write.
+        const num=resolveNewNumber(edits.number, EDIT.autoNumber, arr, l=>nextNumber(kind,l));
+        if(num.error) throw new Error(num.error);
+        if(num.moved) movedTo=num.number;
+        let item={...base, ...edits, number:num.number, id:uid(), loggedBy:who||"(unknown)", loggedAt:now, syncEditedBy:who||"(unknown)", syncEditedAt:now};
+        if(EDIT.sheetRefsWork) item.sheetRefs=EDIT.sheetRefsWork;
+        if(window.CaStatus) item=window.CaStatus.applyStatusRules(base, item, type); // logged already answered: it gets its date
+        return [...arr, item];
+      }
+      return arr.map(r=>{ if(r.id!==id) return r;
+        // Only what the person changed is written; a field someone else changed meanwhile is reported first.
+        const merged=mergeEdit(r, EDIT.base, edits);
+        if(merged.conflicts.length&&!EDIT.overwriteOk){ const e=new Error("changed underneath"); e.fieldConflict=merged.conflicts; e.stored=r; throw e; }
+        let m=merged.next; m.syncEditedBy=who||"(unknown)"; m.syncEditedAt=now;
+        if(sheetsChanged) m.sheetRefs=EDIT.sheetRefsWork; // chip decisions ride the save
         // caStatus.js: a status set to Responded / Closed / Returned / Resubmittal Required gets its date when that is empty.
         if(window.CaStatus) m=window.CaStatus.applyStatusRules(r, m, kind==="rfi"?"rfi":"submittal");
         if(m.answerReady&&!OPEN_STATUSES.includes(m.status||"")) delete m.answerReady; // issued (or closed): the hand-off is done
@@ -1266,9 +1348,20 @@ async function saveEditor(){
         if(EDIT.dismissAi && m.aiReview && (!EDIT.ai || m.aiReview.at===EDIT.ai.at)) delete m.aiReview;
         return m; });
     }, false, EDIT.projId);
+    clearUndoBar(); // any other edit makes a blind import-undo unsafe (only once this one has landed)
     const confirmed=EDIT.confirmIntake;
-    closeEditor(); toast(isNew?"Added to log ✓":confirmed?"Confirmed and saved ✓":"Saved ✓", true); selectProject(CURRENT.proj.id);
-  }catch(err){ if(EDIT) EDIT.confirmIntake=false; toastErr(err); }
+    closeEditor(); toast(isNew?(movedTo?`Added to log as ${movedTo} ✓ (the number you were shown was taken meanwhile)`:"Added to log ✓"):confirmed?"Confirmed and saved ✓":"Saved ✓", true); selectProject(CURRENT.proj.id);
+  }catch(err){
+    setEditorBusy(false);
+    if(err&&err.fieldConflict&&EDIT){
+      // Someone else changed the same field(s) while this form was open. Say which, and let the person choose.
+      const names=err.fieldConflict.map(k=>EDIT_LABELS[k]||k).join(", ");
+      const theirs=err.fieldConflict.slice(0,3).map(k=>`${EDIT_LABELS[k]||k}: ${String(Array.isArray(err.stored[k])?err.stored[k].length+" assigned":err.stored[k]==null||err.stored[k]===""?"(blank)":err.stored[k]).slice(0,80)}`).join("\n");
+      if(confirm(`Someone else changed ${names} on this item while you had it open.\n\nIt now reads:\n${theirs}\n\nOK = save YOUR version of ${err.fieldConflict.length>1?"those fields":"that field"}.\nCancel = keep theirs and go back to the form (nothing is saved).`)){ EDIT.overwriteOk=true; return saveEditor(); }
+      return;
+    }
+    if(EDIT) EDIT.confirmIntake=false; toastErr(err);
+  }
 }
 async function deleteRecord(){
   if(!EDIT||EDIT.isNew)return; const {kind,id,projId}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
