@@ -959,6 +959,27 @@ drawn. One call for a whole set, from the drawing text index. Read-only.
 - qa-622 stays `assisted`: untagged devices, the architect's sheets and
   Division 01 still need a reviewer.
 
+## Deferred decisions (`check_deferred_decisions`, QA item qa-637)
+
+Every place a sheet, or a specification PDF the reviewer names, leaves a
+decision to the owner, the authority or an unnamed code edition. Read-only.
+
+- Phrases, in `deferredDecisions.js` (pure; `deferredDecisions.test.mjs`): as
+  allowed / permitted / approved / directed by; owner's option or approval;
+  verify / confirm / coordinate with owner; if or where applicable, if
+  required; TBD and to be determined; latest edition and code in effect. Bare
+  "as required" is left out: it is on a fifth of the sheets and says nothing.
+- The patterns are written once and used in both engines: Postgres over the
+  drawing text index (`pgPattern`, `\b` becomes `\y`) through
+  `pms_sheet_phrase_hits` (migration `20261124280000`), and JS over spec pages.
+  The SQL function finds each occurrence by position (`regexp_instr`), so two
+  phrases close together on a sheet are both returned.
+- Specification books are not in the drawing index, so up to three PDFs per
+  call are read page by page (`projectPdfPageTexts`, text layer, 400 pages).
+- The same note on many sheets is one entry listing the sheets.
+- A place is somewhere to look, not a finding. Deciding whether the answer is
+  stated elsewhere is the reviewer's step.
+
 ## Fee Calculator write (`set_project_fee`, 1.25.0; inputs 1.26.0)
 
 When a PM tells Claude a fee, this puts it in the PMS so nobody retypes it. It

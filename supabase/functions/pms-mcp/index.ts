@@ -100,6 +100,8 @@ import { checkSchedule, ROW_KINDS, DEFAULT_TOLERANCE_PCT } from "./scheduleArith
 import { checkAgreement } from "./documentAgreement.js";
 // check_tag_schedule_coverage (QA item qa-622): every tag on a plan is scheduled, and the reverse. Pure; see its tests.
 import { tagCoverage } from "./tagCoverage.js";
+// check_deferred_decisions (QA item qa-637): where the documents leave a decision to someone else. Pure; see its tests.
+import { pgPattern as deferredPgPattern, scanText as deferredScanText, groupHits as deferredGroupHits } from "./deferredDecisions.js";
 // The line-by-line detail of a reviewed estimate (pms_cost_estimate_lines). Pure; see its tests.
 import {
   extractSheetLines, normalizeSuppliedLines, summarizeLines, checkAgainstReview, toRows, LINES_MAX,
@@ -1537,7 +1539,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-tag-schedule-coverage";
+const BUILD = "2026-11-24-deferred-decisions";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.31.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -13980,6 +13982,98 @@ mcp.tool("check_tag_schedule_coverage", {
       note: (r.flagged ? `${r.flagged} tag(s) to confirm. ` : "Every tag in a scheduled family is both scheduled and on a plan. ") +
         "Check scheduleSheets first: a schedule on a sheet not listed there makes its tags look unscheduled (pass it in scheduleSheets and run again). " +
         "Confirm each result on the sheet before recording it under qa-622. Hyphenated tags only: untagged devices, lighting type letters and tags written without a hyphen are not covered, and say so in the coverage.",
+    });
+  },
+});
+
+// ─── DEFERRED DECISIONS: check_deferred_decisions (QA item qa-637) ───────────
+// Every place a sheet, or a specification PDF the reviewer names, leaves a
+// decision to the owner, the authority or an unnamed code edition. Drawings
+// come from the text index in one query (pms_sheet_phrase_hits, migration
+// 20261124280000); specification books are not in that index, so they are
+// read here page by page. Phrases and grouping: deferredDecisions.js. Read-only.
+const DEFERRED_SPEC_FILES_MAX = 3;
+mcp.tool("check_deferred_decisions", {
+  description:
+    "FIND WHERE THE DOCUMENTS DEFER A DECISION (QA checklist item qa-637), for a whole drawing set in one call, " +
+    "and in specification PDFs you name. It searches for: 'as allowed / permitted / approved / directed by' the " +
+    "owner, architect, engineer or authority; owner's option, discretion or approval; 'verify / confirm / " +
+    "coordinate ... with owner' (or university, campus, client, agency); 'if applicable', 'where applicable', 'if " +
+    "required', 'if necessary'; 'TBD' and 'to be determined / confirmed / selected'; and 'latest edition' or " +
+    "'code in effect' with no edition named. Run it once at the start of qa-637 instead of searching phrase by " +
+    "phrase. DRAWINGS: the newest indexed revision of every sheet (issued drawings by default; pass subfolder for a " +
+    "pre-issuance QA set). SPECIFICATIONS are not in the drawing index: find the spec book or section PDFs with " +
+    "list_project_documents and pass up to " + DEFERRED_SPEC_FILES_MAX + " itemIds per call in specItemIds; each is read page by page (text " +
+    "layer only, first 400 pages). The answer groups places by kind, with the phrase in its sentence and where it " +
+    "is; the same note printed on many sheets is listed once with the sheets. EVERY PLACE IS SOMEWHERE TO LOOK, " +
+    "NOT A FINDING: 'where applicable' on a mounting-height detail is usually harmless. For each, check whether " +
+    "the answer is stated elsewhere in the set, in search_agency_preferences and in search_knowledge; record it " +
+    "under qa-637 only when it is stated nowhere, quoting the phrase and writing the question a bidder would ask. " +
+    "'If applicable' on a controls item belongs to qa-633. It does not search for bare 'as required' (too common " +
+    "to be useful) and it reads text only: a scanned sheet is covered only where OCR indexed it. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    subfolder: z.string().optional().describe("Limit the drawings to ONE set folder, spelled as list_project_documents reports it. Required for a pre-issuance QA set."),
+    specItemIds: z.array(z.string()).max(DEFERRED_SPEC_FILES_MAX).optional().describe("Specification PDFs to read as well: 'driveId|itemId' from list_project_documents."),
+    drawings: z.boolean().optional().describe("false to skip the drawings and read only specItemIds. Default true."),
+  }),
+  handler: async ({ projectNumber, subfolder, specItemIds, drawings }) => {
+    const folder = subfolder?.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "") : null;
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const numPrefix = String(project).toLowerCase().trim();
+    const hits: any[] = [];
+    const coverage: any = {};
+    if (drawings !== false) {
+      let indexedFiles = 0, filesPending = 0;
+      try {
+        const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+        indexedFiles = known.filter((k) => k.status === "done").length;
+        filesPending = known.filter((k) => k.status === "pending").length;
+      } catch { /* coverage is advisory */ }
+      coverage.drawings = { indexedFiles, filesPending, scope: folder ? `Sheets from "${folder}" only.` : PRE_ISSUE_NOTE };
+      if (!indexedFiles) coverage.drawings.note = "Nothing is indexed for this project yet, so no sheet was searched. Run search_drawings with indexOnly:true, then call again.";
+      else {
+        if (filesPending) coverage.drawings.note = "Index incomplete: sheets not read yet were not searched. search_drawings indexOnly:true fills it.";
+        try {
+          const rows: any[] = (await sbRpc("pms_sheet_phrase_hits", { p_prefix: numPrefix, p_pattern: deferredPgPattern(), p_folder: folder, p_exclude: folder ? null : PRE_ISSUE_FOLDER_SQL_RE })) || [];
+          coverage.drawings.sheetsSearched = Number(rows[0]?.total_sheets ?? 0) || undefined;
+          if (rows.length >= 1500) coverage.drawings.truncated = "More than 1,500 matches: only the first 1,500 are shown. Narrow with subfolder.";
+          for (const r of rows) hits.push({ where: r.sheet_no, phrase: r.phrase, text: `${r.before ? "…" : ""}${r.before || ""}${r.phrase || ""}${r.after || ""}${r.after ? "…" : ""}` });
+        } catch (e) {
+          const m = String((e as any)?.message ?? e);
+          coverage.drawings.error = /404|PGRST202|does not exist/.test(m) ? "The drawing search is not available yet: the database has not run migration 20261124280000." : `Drawing search failed: ${m.slice(0, 200)}`;
+        }
+      }
+    }
+    if (specItemIds?.length) {
+      coverage.specifications = [];
+      for (const id of specItemIds.slice(0, DEFERRED_SPEC_FILES_MAX)) {
+        let r: any;
+        try { r = await projectPdfPageTexts(String(project), p, id); }
+        catch (e) { r = { ok: false, why: String((e as any)?.message ?? e).slice(0, 160) }; }
+        if (!r.ok) { coverage.specifications.push({ itemId: id, read: false, why: r.why }); continue; }
+        const nums = Object.keys(r.pages).map(Number).sort((a, b) => a - b);
+        let name = id, blank = 0;
+        try { const d: any[] = await sbGet("pms_documents?select=name&item_id=eq." + encodeURIComponent(id) + "&limit=1"); if (d?.[0]?.name) name = String(d[0].name); } catch { /* the id serves as the name */ }
+        for (const n of nums) {
+          if (!r.pages[n]) { blank++; continue; }
+          for (const h of deferredScanText(r.pages[n])) hits.push({ where: `${name} p.${n}`, phrase: h.phrase, text: h.text });
+        }
+        coverage.specifications.push({ itemId: id, name, read: true, pagesRead: nums.length, totalPages: r.totalPages,
+          ...(r.totalPages > nums.length ? { note: `Only the first ${nums.length} of ${r.totalPages} pages were read.` } : {}),
+          ...(blank ? { pagesWithNoText: blank } : {}) });
+      }
+    }
+    const g = deferredGroupHits(hits);
+    return asText({
+      project, coverage, ...g,
+      note: (g.places ? `${g.places} place(s) to look at (${g.hits} match(es); a note repeated across sheets is listed once). ` : "No deferring phrase was found in what was searched. ") +
+        "A place is not a finding: check whether the answer is stated elsewhere in the set, in the agency preferences and in the knowledge layer, and record under qa-637 only what is stated nowhere. " +
+        (specItemIds?.length ? "" : "Specifications were NOT searched: pass their PDFs in specItemIds, or say so in the coverage. ") +
+        "Bare 'as required' is not searched.",
     });
   },
 });

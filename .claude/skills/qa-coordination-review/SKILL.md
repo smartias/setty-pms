@@ -815,9 +815,14 @@ still matched nothing. They apply from CD on. Run them after the five above.
      hanging and mounting accessories.
   A finding quotes the spec article and says which sheet is silent.
 
-- **qa-637 The documents state a decision.**
-  1. *Search specs and notes* for "as allowed by", "as permitted by", "as
-     approved by owner", "as directed", "if applicable", "if required".
+- **qa-637 The documents state a decision.** The search is automatic: do
+  not search phrase by phrase.
+  1. *Run `check_deferred_decisions`* once. It searches every sheet in the
+     set for "as allowed by", "as permitted by", "as approved by owner", "as
+     directed", "if applicable", "if required", "TBD", "coordinate with
+     owner" and "latest edition". Specifications are not in the drawing
+     index: find the spec PDFs with `list_project_documents` and pass them in
+     `specItemIds`, three per call. Say in the coverage which were read.
   2. *For each hit:* is the answer stated elsewhere in the set? Check the
      agency preferences and the knowledge layer for the owner's standing
      answer before raising it.
