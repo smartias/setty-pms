@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-24-pms-v217-construction-cost-check";
+    window.__appVersion = "2026-11-24-pms-v218-cost-estimate-review";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -8267,6 +8267,34 @@ function ConstructionCostPanel({ project, onChange }) {
   const docFlags = CC.openCostDocFlags(project);
   const due = !!pending || docFlags.length > 0;
   const log = CC.costLogOf(project);
+  // Cost estimate review by Claude: the same hand-off as an RFI or submittal.
+  // The link opens the reviewer's Claude seat with the request prefilled; the
+  // click records who asked and for which document, the connector stamps the
+  // start, and save_cost_estimate_review writes the review this panel shows.
+  const [showReview, setShowReview] = useState(false);
+  const review = CC.latestCostEstimateReview(project);
+  const rstate = CC.costReviewState(project);
+  const projLabel = (project.name || "Project") + (project.projectNumber ? " (" + project.projectNumber + ")" : "");
+  const reviewUrl = (docName, reconcile) => "https://claude.ai/new?q=" + encodeURIComponent([
+    "Review " + (docName ? "this cost estimate for " + projLabel + ": \"" + docName + "\"." : "the latest cost estimate for " + projLabel + "."),
+    "",
+    "Use the Setty PMS connector and the cost-estimate-review skill: start with get_cost_estimate_packet for the project" + (docName ? " and that document" : "") + " (one call: it marks the review as under way in the PMS and returns the estimate to read, the previous estimates and the method; if the skill is not installed, follow the method the packet returns). Work out the total construction cost and what the estimate carries for mechanical, electrical and plumbing, and tell me what changed since the previous estimate." + (reconcile ? " Then reconcile the estimate's MEP scope against the current issued drawing set and list where they differ, with sheets." : " Do not reconcile against the drawings this time.") + " Save it with save_cost_estimate_review and summarize it for me here. Use only numbers the document contains.",
+  ].join("\n"));
+  const askReview = (docName, reconcile) => onChange(CC.markCostReviewRequested(project, { at: new Date().toISOString(), by: getCurrentUser(), document: docName || null, reconcile }), { notifyTeams: false });
+  const link = { fontSize: 11, fontWeight: 600, color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" };
+  const reviewLinks = (docName) => (
+    <span style={{ display: "inline-flex", gap: 10, alignItems: "center" }}>
+      <a href={reviewUrl(docName, false)} target="_blank" rel="noopener noreferrer" style={link} onClick={() => askReview(docName, false)}
+        title="Opens your Claude seat with the review prefilled. It reads the estimate, pulls out the mechanical, electrical and plumbing costs, compares them with the previous estimate and saves the result here.">🤖 Send to Claude for review</a>
+      <a href={reviewUrl(docName, true)} target="_blank" rel="noopener noreferrer" style={link} onClick={() => askReview(docName, true)}
+        title="The same review, plus a check of the estimate's MEP scope against the current issued drawing set. Takes longer.">+ reconcile with drawings</a>
+    </span>
+  );
+  const chg = (key) => {
+    const c = review && (review.changes || []).find(x => x.key === key);
+    if (!c || c.deltaPct === null || c.deltaPct === undefined) return null;
+    return <span style={{ color: c.deltaPct > 0 ? P.red : c.deltaPct < 0 ? P.green : P.textDim }}> ({c.deltaPct > 0 ? "+" : ""}{c.deltaPct}%)</span>;
+  };
   const stamp = () => ({ at: new Date().toISOString(), id: Math.random().toString(36).slice(2, 10), by: getCurrentUser(), via: "pms" });
   const save = (input) => {
     const plan = CC.planCostCheck(project, { ...input, milestoneId: pending ? pending.id : null }, stamp());
@@ -8287,7 +8315,15 @@ function ConstructionCostPanel({ project, onChange }) {
         </div>
         {!due && !open && <button style={btn} onClick={() => { setOpen(true); setErr(""); }}>Record a figure</button>}
         {log.length > 0 && <button style={btn} onClick={() => setShowHistory(v => !v)}>{showHistory ? "Hide history" : "History (" + log.length + ")"}</button>}
+        {docFlags.length === 0 && !open && reviewLinks("")}
       </div>
+      {(rstate.state === "waiting" || rstate.state === "reviewing") && (
+        <div style={{ marginTop: 8, fontSize: 12, color: P.text }}>
+          {rstate.state === "reviewing"
+            ? "🤖 Claude is reviewing the cost estimate" + (rstate.document ? " (" + rstate.document + ")" : "") + ", started " + rstate.mins + " min ago. Refresh when it tells you it has saved."
+            : "⏳ Sent to Claude " + rstate.mins + " min ago" + (rstate.document ? " (" + rstate.document + ")" : "") + ". If the Claude tab was closed before the request was sent, send it again."}
+        </div>
+      )}
       {pending && !open && (
         <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <div style={{ fontSize: 12, color: P.text }}>
@@ -8308,6 +8344,7 @@ function ConstructionCostPanel({ project, onChange }) {
           <button style={btn} onClick={() => { setDoc(f.name); setSource("cost-estimate"); setOpen(true); setErr(""); }}>Enter its figure</button>
           {latest.value ? <button style={btn} onClick={() => save({ unchanged: true, source: "cost-estimate", document: f.name })}>Still {fmt(latest.value)}</button> : null}
           <button style={btn} onClick={() => onChange(CC.dismissCostDocFlag(project, f.itemId), { notifyTeams: false })}>Not a cost estimate</button>
+          {reviewLinks(f.name)}
         </div>
       ))}
       {!open && docFlags.length > 3 && <div style={{ marginTop: 6, fontSize: 11, color: P.textDim }}>and {docFlags.length - 3} more cost documents saved since the last check.</div>}
@@ -8325,6 +8362,91 @@ function ConstructionCostPanel({ project, onChange }) {
       )}
       {err && <div style={{ marginTop: 6, fontSize: 12, color: P.red }}>{err}</div>}
       {(open || due) && <div style={{ marginTop: 6, fontSize: 11, color: P.textDim }}>Construction only, not Setty's fee. Kept apart from the Fee Calculator: recording a figure here never changes a fee.</div>}
+      {review && (
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px solid ${P.border}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 12, color: P.textDim }}>
+            <span>
+              Estimate reviewed {fmtDate(String(review.at).slice(0, 10))}:{" "}
+              {review.document && review.document.webUrl
+                ? <a href={review.document.webUrl} target="_blank" rel="noopener noreferrer" style={{ color: P.accentLight, fontWeight: 600 }}>{review.document.name}</a>
+                : <strong style={{ color: P.text }}>{review.document ? review.document.name : ""}</strong>}
+            </span>
+            {review.total ? <span>Total <strong style={{ color: P.text }}>{fmt(review.total)}</strong>{chg("total")}</span> : null}
+            {(review.disciplines || []).map(d => (
+              <span key={d.discipline}>{CC.estimateDisciplineLabel(d.discipline)} <strong style={{ color: P.text }}>{fmt(d.amount)}</strong>{chg(d.discipline)}</span>
+            ))}
+            {review.reconciliation && (review.reconciliation.findings || []).length > 0 && <span style={{ color: P.yellow }}>{review.reconciliation.findings.length} differences from the drawings</span>}
+            <button style={btn} onClick={() => setShowReview(v => !v)}>{showReview ? "Hide review" : "Show review"}</button>
+          </div>
+          {showReview && (
+            <div style={{ marginTop: 8, fontSize: 12, color: P.text }}>
+              <div style={{ color: P.textDim, marginBottom: 6 }}>
+                {review.preparedBy ? "Prepared by " + review.preparedBy + ". " : ""}{review.estimateDate ? "Dated " + fmtDate(review.estimateDate) + ". " : ""}
+                {review.totalBasis ? "Total: " + review.totalBasis + ". " : ""}
+                {review.mepShare != null ? "The disciplines below are " + review.mepShare + "% of the total. " : ""}
+                {review.comparedTo ? "Compared with " + (review.comparedTo.document || "the previous estimate") + " (" + fmtDate(String(review.comparedTo.at).slice(0, 10)) + ")." : "First estimate reviewed: nothing to compare with yet."}
+              </div>
+              {(review.changes || []).length > 0 && (
+                <table style={{ fontSize: 12, width: "100%", marginBottom: 8 }}>
+                  <thead><tr><th style={{ textAlign: "left" }}>Since the previous estimate</th><th style={{ textAlign: "right" }}>Before</th><th style={{ textAlign: "right" }}>Now</th><th style={{ textAlign: "right" }}>Change</th></tr></thead>
+                  <tbody>
+                    {review.changes.map(c => (
+                      <tr key={c.key}>
+                        <td>{c.label}</td>
+                        <td style={{ textAlign: "right" }}>{c.from == null ? "not broken out" : fmt(c.from)}</td>
+                        <td style={{ textAlign: "right" }}>{c.to == null ? "not broken out" : fmt(c.to)}</td>
+                        <td style={{ textAlign: "right" }}>{c.delta == null ? "" : (c.delta > 0 ? "+" : c.delta < 0 ? "-" : "") + fmt(Math.abs(c.delta)) + (c.deltaPct == null ? "" : " (" + (c.deltaPct > 0 ? "+" : "") + c.deltaPct + "%)")}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {(review.disciplines || []).some(d => d.basis || d.note) && (
+                <ul style={{ margin: "0 0 8px 18px", padding: 0, color: P.textDim }}>
+                  {review.disciplines.filter(d => d.basis || d.note).map(d => <li key={d.discipline}>{CC.estimateDisciplineLabel(d.discipline)}: {[d.basis, d.note].filter(Boolean).join(". ")}</li>)}
+                </ul>
+              )}
+              {(review.breakdown || []).length > 0 && (
+                <details style={{ marginBottom: 8 }}>
+                  <summary style={{ cursor: "pointer", color: P.textDim }}>Larger line items ({review.breakdown.length})</summary>
+                  <table style={{ fontSize: 12, width: "100%", marginTop: 4 }}>
+                    <tbody>{review.breakdown.map((b, i) => <tr key={i}><td>{b.discipline ? CC.estimateDisciplineLabel(b.discipline) : ""}</td><td>{b.label}</td><td style={{ textAlign: "right" }}>{fmt(b.amount)}</td></tr>)}</tbody>
+                  </table>
+                </details>
+              )}
+              {review.notes && <div style={{ whiteSpace: "pre-wrap", marginBottom: 8 }}>{review.notes}</div>}
+              {(review.unknowns || []).length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: P.textDim }}>Could not be determined from the document:</div>
+                  <ul style={{ margin: "2px 0 0 18px", padding: 0 }}>{review.unknowns.map((u, i) => <li key={i}>{u}</li>)}</ul>
+                </div>
+              )}
+              {review.reconciliation && (
+                <div>
+                  <div style={{ color: P.textDim }}>
+                    Reconciled against the drawings{review.reconciliation.against ? " (" + review.reconciliation.against + ")" : ""}:
+                    {review.reconciliation.notRun ? " not done. " + review.reconciliation.notRun : (review.reconciliation.findings || []).length === 0 ? " no differences found." : ""}
+                  </div>
+                  {(review.reconciliation.findings || []).length > 0 && (
+                    <table style={{ fontSize: 12, width: "100%", marginTop: 4 }}>
+                      <thead><tr><th style={{ textAlign: "left" }}>Difference</th><th style={{ textAlign: "left" }}>Estimate</th><th style={{ textAlign: "left" }}>Drawings</th><th style={{ textAlign: "left" }}>Sheets</th></tr></thead>
+                      <tbody>
+                        {review.reconciliation.findings.map((f, i) => (
+                          <tr key={i} style={{ verticalAlign: "top" }}>
+                            <td><span style={{ color: f.severity === "high" ? P.red : f.severity === "medium" ? P.yellow : P.textDim, fontWeight: 600 }}>{f.severity}</span>{f.discipline ? " · " + CC.estimateDisciplineLabel(f.discipline) : ""}: {f.issue}</td>
+                            <td>{f.estimate || ""}</td><td>{f.drawings || ""}</td><td>{(f.sheets || []).join(", ")}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+              <div style={{ marginTop: 6, fontSize: 11, color: P.textDim }}>Read from the estimate by Claude{review.by ? " for " + review.by : ""}. A reading aid, not an approval of the estimate: check any figure you rely on against the document.</div>
+            </div>
+          )}
+        </div>
+      )}
       {showHistory && log.length > 0 && (
         <table style={{ marginTop: 8, fontSize: 12, width: "100%" }}>
           <thead><tr><th style={{ textAlign: "left" }}>Date</th><th style={{ textAlign: "left" }}>Construction cost</th><th style={{ textAlign: "left" }}>Source</th><th style={{ textAlign: "left" }}>Deliverable</th><th style={{ textAlign: "left" }}>Recorded by</th></tr></thead>
