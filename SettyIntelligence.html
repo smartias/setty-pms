@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-11-20-intel-v40-sensitive-lesson-flag";
+    window.__appVersion = "2026-11-24-intel-v41-qa-checklist-tab";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -291,6 +291,9 @@ const MODULES = [
   { key: "practices", label: "Best Practices",        table: "pms_best_practices",        idcol: "practice_id", live: false },
   { key: "agencies",  label: "Agency Preferences",    table: "pms_agency_preferences",    idcol: "pref_id",     live: true  },
   { key: "standards", label: "Engineering Standards", table: "pms_engineering_standards", idcol: "standard_id", live: true  },
+  // A read-only copy of the QA review checklist (2026-11-24), so the checks sit
+  // beside the lessons and RFIs they came from. Edited in the Admin Console.
+  { key: "checklist", label: "QA Checklist",          table: "pms_qa_checklist",          idcol: "item_id",     live: true  },
   { key: "graph",     label: "Expertise Graph",       table: "pms_person_work",           idcol: null,          live: true  },
   { key: "meetings",  label: "Meeting Items",         table: "pms_meeting_items",         idcol: "id",          live: true  },
   { key: "agents",    label: "Agents",                table: "pms_ii_agent_runs",         idcol: "run_id",      live: false },
@@ -322,6 +325,7 @@ const state = {
   heat: { rows: [], asof: {}, blocked: {}, loaded: false, loading: false, f: { agency: "", quiet: false } },
   prefs: { rows: [], loaded: false, loading: false, f: { q: "", agency: "", discipline: "", type: "", status: "" } },
   stds: { rows: [], loaded: false, loading: false, f: { q: "", discipline: "", basis: "", status: "" } },
+  qaList: { rows: [], rfis: null, loaded: false, loading: false, f: { q: "", section: "", source: "", phase: "" }, open: new Set() },
   meetingItems: { rows: [], loaded: false, loading: false, f: { project: "", type: "", status: "pending", q: "" } },
 };
 
@@ -380,7 +384,7 @@ async function loadAll() {
 // prove the database wiring end to end.
 async function loadCounts() {
   // "agencies" is live but table-backed — keep its badge on the same count query.
-  await Promise.all(MODULES.filter(m => !m.live || m.key === "agencies" || m.key === "meetings" || m.key === "standards").map(async m => {
+  await Promise.all(MODULES.filter(m => !m.live || m.key === "agencies" || m.key === "meetings" || m.key === "standards" || m.key === "checklist").map(async m => {
     try {
       const res = await fetch(SUPABASE_URL + "/rest/v1/" + m.table + "?select=" + (m.idcol || "*") + "&limit=1",
         { headers: { ...SB_HEADERS, "Prefer": "count=exact", "Range-Unit": "items", "Range": "0-0" } });
@@ -418,6 +422,7 @@ function _renderInner() {
   if (state.tab === "practices") return renderPractices();
   if (state.tab === "agencies") return renderAgencyPrefs();
   if (state.tab === "standards") return renderStandards();
+  if (state.tab === "checklist") return renderQaChecklist();
   if (state.tab === "graph") return renderGraph();
   if (state.tab === "meetings") return renderMeetingItems();
   renderPlaceholder(MODULES.find(m => m.key === state.tab));
@@ -1788,6 +1793,109 @@ async function loadStandards() {
   state.counts.standards = state.stds.rows.length;
   render();
 }
+// ── QA Checklist tab: a read-only copy of pms_qa_checklist ───────────────────
+// The checklist is what a QA review runs, item by item. It is shown here so a
+// reviewer reading a lesson can see the check it belongs to, and how many
+// preventable RFIs the firm has had under each check (pms_rfi_root_causes,
+// which signed-in users may read). Nothing is edited here: items are added by
+// migration and switched on or off in the Admin Console.
+const QA_SOURCE_LABEL = { seed: "Original checklist", lesson: "From a lesson", "rfi-lesson": "From the RFI log" };
+const QA_AUTOMATION_LABEL = { manual: "By a person", assisted: "Claude assists", auto: "Automatic" };
+async function loadQaChecklist() {
+  state.qaList.loading = true;
+  try {
+    state.qaList.rows = (await sb("GET", "/rest/v1/pms_qa_checklist?select=item_id,section,sort,text,details,automation,phases,source,enabled&order=sort,item_id")) || [];
+  } catch (e) { toast("Load failed: " + e.message, "error"); state.qaList.rows = []; }
+  // The RFI counts are an extra: the checklist stands without them.
+  try {
+    const tags = (await sb("GET", "/rest/v1/pms_rfi_root_causes?select=qa_item,project&item_type=eq.rfi&preventable=is.true&qa_item=not.is.null&limit=5000")) || [];
+    const by = {};
+    tags.forEach(t => { if (!t.qa_item) return; const e = (by[t.qa_item] = by[t.qa_item] || { rfis: 0, projects: new Set() }); e.rfis++; e.projects.add(t.project); });
+    state.qaList.rfis = by;
+  } catch (_) { state.qaList.rfis = null; }
+  state.qaList.loaded = true; state.qaList.loading = false;
+  state.counts.checklist = state.qaList.rows.filter(r => r.enabled !== false).length;
+  render();
+}
+function qaChecklistFiltered() {
+  const f = state.qaList.f;
+  const q = (f.q || "").toLowerCase().trim();
+  return state.qaList.rows.filter(r => {
+    if (f.section && (r.section || "") !== f.section) return false;
+    if (f.source && (r.source || "seed") !== f.source) return false;
+    if (f.phase && !(Array.isArray(r.phases) && r.phases.includes(f.phase))) return false;
+    if (q) {
+      const hay = [r.item_id, r.section, r.text, ...(Array.isArray(r.details) ? r.details : [])].join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+function renderQaChecklist() {
+  if (!state.qaList.loaded && !state.qaList.loading) loadQaChecklist();
+  if (state.qaList.loading || !state.qaList.loaded) { setBusy(true); $("view").innerHTML = '<div class="empty" role="status">Loading…</div>'; return; }
+  const all = state.qaList.rows;
+  const f = state.qaList.f;
+  const sections = [...new Set(all.map(r => r.section).filter(Boolean))];
+  const phases = [...new Set(all.flatMap(r => Array.isArray(r.phases) ? r.phases : []))];
+  const opt = (arr, sel, label) => arr.map(a => '<option value="' + esc(a) + '" ' + (a === sel ? "selected" : "") + '>' + esc(label ? label(a) : a) + '</option>').join("");
+  const on = all.filter(r => r.enabled !== false).length;
+  $("view").innerHTML =
+    '<div class="status info" style="display:block;margin-bottom:14px">✅ The checklist a QA review runs, item by item: <b>' + on + '</b> items in use' + (all.length - on ? ', ' + (all.length - on) + ' switched off' : '') +
+      '. This is a read-only copy. Items are switched on or off in the Admin Console; new ones come from lessons and from the RFI log.' +
+      (state.qaList.rfis ? ' The RFI count on an item is how many preventable RFIs the firm has logged that this check would have caught.' : '') + '</div>' +
+    '<div class="toolbar">' +
+      '<div class="grow"><label for="qcQ">Search</label>' +
+        '<input id="qcQ" placeholder="item number, wording, section…" value="' + esc(f.q || "") + '" oninput="state.qaList.f.q=this.value; renderQaChecklistList()"/></div>' +
+      '<div class="field"><label for="qcSection">Section</label>' +
+        '<select id="qcSection" onchange="state.qaList.f.section=this.value; renderQaChecklistList()"><option value="">All</option>' + opt(sections, f.section) + '</select></div>' +
+      '<div class="field"><label for="qcSource">Where it came from</label>' +
+        '<select id="qcSource" onchange="state.qaList.f.source=this.value; renderQaChecklistList()"><option value="">All</option>' + opt(Object.keys(QA_SOURCE_LABEL), f.source, k => QA_SOURCE_LABEL[k]) + '</select></div>' +
+      (phases.length ? '<div class="field"><label for="qcPhase">Phase</label>' +
+        '<select id="qcPhase" onchange="state.qaList.f.phase=this.value; renderQaChecklistList()"><option value="">All</option>' + opt(phases, f.phase) + '</select></div>' : '') +
+      '<button class="btn btn-ghost" style="margin-left:auto" onclick="state.qaList.loaded=false; render()">↻ Refresh</button>' +
+    '</div><div id="qcList"></div>';
+  renderQaChecklistList();
+}
+function renderQaChecklistList() {
+  const el = $("qcList"); if (!el) return;
+  const rows = qaChecklistFiltered();
+  if (!rows.length) { el.innerHTML = '<div class="empty">' + (state.qaList.rows.length ? "No checklist items match these filters." : "The checklist could not be read.") + '</div>'; return; }
+  const bySection = {}; const order = [];
+  rows.forEach(r => { const k = r.section || "General"; if (!bySection[k]) { bySection[k] = []; order.push(k); } bySection[k].push(r); });
+  el.innerHTML = order.map(k =>
+    '<h2 style="margin:18px 0 8px">✅ ' + esc(k) + ' <span style="color:var(--muted);font-size:12px;font-weight:400">' + bySection[k].length + '</span></h2>' +
+    bySection[k].map(renderQaChecklistCard).join("")).join("");
+}
+function toggleQaItem(id) {
+  state.qaList.open.has(id) ? state.qaList.open.delete(id) : state.qaList.open.add(id);
+  renderQaChecklistList();
+}
+function renderQaChecklistCard(r) {
+  const id = esc(r.item_id);
+  const off = r.enabled === false;
+  const details = Array.isArray(r.details) ? r.details.filter(Boolean) : [];
+  const open = state.qaList.open.has(r.item_id);
+  const hit = state.qaList.rfis && state.qaList.rfis[r.item_id];
+  const src = r.source || "seed";
+  const srcPill = { seed: "pill-gray", lesson: "pill-purple", "rfi-lesson": "pill-blue" }[src] || "pill-gray";
+  return '<div class="lesson ' + (off ? "archived" : "approved") + '">' +
+    '<div class="lesson-top"><div style="flex:1">' +
+      '<div style="font-size:12px;font-weight:600;color:var(--dim);margin-bottom:3px">' + id + '</div>' +
+      '<div class="lesson-summary">' + esc(r.text) + '</div>' +
+      '<div class="lesson-meta">' +
+        '<span class="pill ' + srcPill + '" title="Where this item came from">' + esc(QA_SOURCE_LABEL[src] || src) + '</span>' +
+        '<span class="pill pill-gray" title="Who runs this check in a QA review">' + esc(QA_AUTOMATION_LABEL[r.automation] || r.automation || "By a person") + '</span>' +
+        (Array.isArray(r.phases) && r.phases.length ? '<span class="pill pill-gray" title="Phases this item applies to">' + esc(r.phases.join(" · ")) + '</span>' : "") +
+        (hit ? '<span class="pill pill-yellow" title="Preventable RFIs in the firm\'s log that this check would have caught">' + hit.rfis + ' RFI' + (hit.rfis === 1 ? "" : "s") + ' on ' + hit.projects.size + ' project' + (hit.projects.size === 1 ? "" : "s") + '</span>' : "") +
+        (off ? '<span class="pill pill-red">switched off</span>' : "") +
+      '</div></div>' +
+      (details.length ? '<div class="lesson-actions"><button class="btn btn-ghost btn-sm" aria-expanded="' + open + '" data-id="' + id + '" onclick="toggleQaItem(this.dataset.id)">' + (open ? "Hide" : "How to check") + '</button></div>' : "") +
+    '</div>' +
+    (open && details.length ? '<div class="lesson-sub"><ul style="margin:0;padding-left:18px">' + details.map(d => '<li style="margin:2px 0">' + esc(d) + '</li>').join("") + '</ul></div>' : "") +
+  '</div>';
+}
+
 function standardsFiltered() {
   const f = state.stds.f;
   return state.stds.rows.filter(r => {
