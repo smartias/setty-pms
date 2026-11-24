@@ -216,6 +216,9 @@
   // Status rules shared with the main PMS (status to date, overdue).
   import * as CaStatus from "./caStatus.js";
   window.CaStatus = CaStatus;
+  // Assignee suggestion (the engineer for the item's discipline), shared with the main PMS.
+  import * as CaAssign from "./caAssign.js";
+  window.CaAssign = CaAssign;
   window.dispatchEvent(new Event("caintake-ready"));
 </script>
 <script src="setty-auth.js"></script>
@@ -820,6 +823,31 @@ const subName=s=>(s&&typeof s==="object")?(s.name||s.company||s.discipline||""):
 function subHtmlFor(subs, subVal){ return (subs&&subs.length)
     ? `<select id="f_subAssigned"><option value="">— none —</option>${subs.map(s=>{const n=subName(s);return `<option ${n===subVal?"selected":""}>${esc(n)}</option>`;}).join("")}${subVal&&!subs.some(s=>subName(s)===subVal)?`<option selected>${esc(subVal)}</option>`:""}</select>`
     : `<input id="f_subAssigned" value="${esc(subVal)}" placeholder="subconsultant (optional)">`; }
+// Assignee suggestion in the editor (caAssign.js): the engineer for the item's
+// discipline. `mode` "auto" ticks it when the discipline changes, unless a
+// person has ticked someone themselves; "force" is the Assign button; "" only
+// refreshes the hint beside the label.
+function asgSuggest(mode){
+  if(!EDIT||!window.CaAssign) return;
+  const team=(typeof EDIT_TEAM!=="undefined"&&EDIT_TEAM&&EDIT_TEAM.length)?EDIT_TEAM:((CURRENT.teams&&CURRENT.teams[EDIT.projId])||[]);
+  const d=(document.getElementById("f_discipline")||{}).value||"";
+  const pm=(PROJECTS.find(x=>x.id===EDIT.projId)||{}).pm||"";
+  const s=window.CaAssign.suggestAssignees(team,d,pm);
+  const boxes=[...document.querySelectorAll("#asgBox .asg")];
+  const none=()=>!boxes.some(b=>b.checked);
+  if(mode==="force"||(mode==="auto"&&!EDIT.asgTouched&&(none()||EDIT.asgAuto))){
+    boxes.forEach(b=>{ b.checked=s.ids.includes(b.value); });
+    EDIT.asgAuto=s.ids.length>0;
+  }
+  const hint=document.getElementById("asgHint"); if(!hint) return;
+  const label=window.CaAssign.suggestionLabel(s,d);
+  hint.innerHTML = (label&&none()) ? " · "+esc(label)+(s.ids.length?` <button type="button" onclick="asgSuggest('force')" style="margin-left:6px;padding:1px 8px;font-size:11px">Assign</button>`:"") : "";
+}
+document.addEventListener("change", e=>{
+  const t=e.target; if(!EDIT||!t||!t.closest||!t.closest("#modal")) return;
+  if(t.id==="f_discipline") asgSuggest("auto");
+  else if(t.classList&&t.classList.contains("asg")){ EDIT.asgTouched=true; EDIT.asgAuto=false; asgSuggest(""); }
+});
 function validateEditor(kind){
   document.querySelectorAll("#modal [aria-invalid]").forEach(e=>e.removeAttribute("aria-invalid"));
   const bad=[]; const list=kind==="rfi"?CURRENT.rfis:CURRENT.submittals;
@@ -990,7 +1018,7 @@ async function openEditor(kind, id){
     (rec.spFolderUrl?`<a href="${esc(rec.spFolderUrl)}" target="_blank" rel="noreferrer" style="background:#0078d4;color:#fff;border-radius:6px;padding:6px 11px;text-decoration:none;font-size:12px;white-space:nowrap;align-self:center"><span aria-hidden="true">📁</span> Open<span class="sr-only"> (opens in a new tab)</span></a>`
       :(isNew?"":`<a href="${esc(caItemDeepLink(kind, rec.number)||"#")}" target="_blank" rel="noreferrer" title="Opens this exact item in the main PMS, where the Create Folder button generates the SharePoint folder (needs the PMS's Microsoft sign-in). The folder URL saved there shows here after a refresh." style="border:1px solid var(--line);color:var(--accent);border-radius:6px;padding:6px 11px;text-decoration:none;font-size:12px;white-space:nowrap;align-self:center;font-weight:600"><span aria-hidden="true">📁</span> Create folder in PMS<span class="sr-only"> (opens in a new tab)</span></a>`))+`</div>`+
     `<div class="muted" style="font-size:11px;margin-top:3px">Creating a new folder needs Microsoft sign-in — do that in the main PMS, then paste the link here.</div>`;
-  const extra = `<div class="fld full"><label>Assigned to</label><div id="asgBox" style="border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:var(--card2)">${asgHtml}</div></div>`+
+  const extra = `<div class="fld full"><label>Assigned to<span id="asgHint" class="muted" style="font-weight:400"></span></label><div id="asgBox" style="border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:var(--card2)">${asgHtml}</div></div>`+
     `<div class="fld full"><label for="f_subAssigned">Subconsultant (optional)</label><div id="subWrap" class="fld" style="gap:0">${subHtml}</div></div>`+
     `<div class="fld full"><label>Drawing sheet references <span class="muted" style="font-weight:400">(verify the callouts — same checker as the main PMS)</span></label><div id="sheetRefChips"><span class="muted" style="font-size:12px">Checking for drawing references…</span></div></div>`+
     `<div class="fld full"><label for="f_spFolderUrl">SharePoint folder</label>${spHtml}</div>`;
@@ -1033,6 +1061,7 @@ async function openEditor(kind, id){
   startReviewPoll(); renderAiWaitBar();
   // Background refresh of the team and subconsultant lists for this project.
   // Only the two blocks are patched, keeping whatever the user has ticked since.
+  asgSuggest("");
   fetchJson(`pms_projects?id=eq.${projId}&select=team:project->teamMembers,subs:project->subconsultants`).then(pr=>{
     if(!EDIT||EDIT.seq!==seq||!pr[0]) return;
     const t2=(pr[0].team||team).filter(t=>t&&(t.name||t.role)), s2=pr[0].subs||[];
@@ -1042,6 +1071,7 @@ async function openEditor(kind, id){
     // even when that is nothing (the user may have cleared them); only when no
     // team list could be drawn yet do we fall back to the record's assignees.
     if(box){ const checked=new Set([...box.querySelectorAll(".asg:checked")].map(c=>c.value)); box.innerHTML=asgHtmlFor(t2, team.length?checked:cur); }
+    asgSuggest(""); // the fresh team list may carry disciplines the cached one lacked
     const wrap=document.getElementById("subWrap"), curSub=document.getElementById("f_subAssigned");
     if(wrap&&s2.length&&curSub&&curSub.tagName==="INPUT") wrap.innerHTML=subHtmlFor(s2, curSub.value);
   }).catch(()=>{});
