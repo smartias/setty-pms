@@ -25,7 +25,9 @@
 //
 // Pure; see sheetFromDrawingList.test.mjs.
 
-export const DRAWING_LIST_LAYOUT = "drawing-list.1";
+// The number changes when the RULES change, so files read under an older rule
+// are read again (pms_drawing_index_files.sheets_rule). .2: part suffixes.
+export const DRAWING_LIST_LAYOUT = "drawing-list.2";
 
 export type ListEntry = { sheetNo: string; sheetTitle: string };
 export type PageCandidates = { page: number; cands: number[]; titled: number[] };
@@ -37,11 +39,15 @@ const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // The number as a sheet prints it: prefix and digits may be split by a hyphen
 // or a space, and it must stand alone ("E101" is not found in "FE101",
-// "E1010", "E101A" or "E101.00").
+// "E1010", "E101A", "E101.00" or "E101-A").
 export function sheetTokenRe(sheetNo: string): RegExp | null {
-  const m = /^([A-Z]{1,4})-?(\d{2,4})(\.\d{1,2})?([A-Z]?)$/.exec(String(sheetNo || "").toUpperCase().trim());
+  const m = /^([A-Z]{1,4})-?(\d{2,4})(\.\d{1,2})?([A-Z]?)(?:-([A-Z0-9]{1,2}))?$/.exec(String(sheetNo || "").toUpperCase().trim());
   if (!m) return null;
-  return new RegExp(`(?<![A-Za-z0-9.])${esc(m[1])}[-\\s]?${esc(m[2])}${esc(m[3] || "")}${esc(m[4] || "")}(?![A-Za-z0-9]|\\.\\d)`);
+  // A part suffix ("E101-A"): required when the list row has one, and its
+  // absence required when it has none, so "E101" is not found in "E101-A".
+  const part = m[5] ? `-?${esc(m[5])}` : "";
+  return new RegExp(`(?<![A-Za-z0-9.])${esc(m[1])}[-\\s]?${esc(m[2])}${esc(m[3] || "")}${esc(m[4] || "")}${part}` +
+    `(?![A-Za-z0-9]|\\.\\d|-[A-Z0-9]{1,2}(?![A-Za-z0-9]))`);
 }
 
 const normTitle = (s: unknown) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
