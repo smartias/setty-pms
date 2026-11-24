@@ -93,7 +93,7 @@ import {
   setReviewLines,
 } from "./constructionCost.js";
 // The QA checklist review routine (start_checklist_routine / propose_checklist_items). Pure; see its tests.
-import { planProposals, PROPOSAL_PHASES, PROPOSAL_AUTOMATION, MIN_PROJECTS, MIN_RFIS, PROPOSALS_MAX } from "./qaRoutine.js";
+import { planProposals, PROPOSAL_PHASES, PROPOSAL_AUTOMATION, MIN_PROJECTS, MIN_RFIS, MIN_LESSONS, MIN_LESSON_PROJECTS, PROPOSALS_MAX } from "./qaRoutine.js";
 // check_schedule_arithmetic (QA item qa-638): whether a schedule row's numbers agree. Pure; see its tests.
 import { checkSchedule, ROW_KINDS, DEFAULT_TOLERANCE_PCT } from "./scheduleArithmetic.js";
 // The line-by-line detail of a reviewed estimate (pms_cost_estimate_lines). Pure; see its tests.
@@ -1533,7 +1533,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-qa-checklist-routine";
+const BUILD = "2026-11-24-qa-routine-lessons";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.31.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -13840,14 +13840,17 @@ mcp.tool("check_schedule_arithmetic", {
 // Started from the Admin Console's QA Checklist tab ("Run with Claude"), run by
 // a Claude session. It reads the preventable RFIs that no checklist item
 // covers and writes PROPOSED items to pms_qa_item_proposals, with a row per
-// run in pms_qa_routine_runs (migration 20261124210000). It never writes
+// run in pms_qa_routine_runs (migration 20261124220000). It never writes
 // pms_qa_checklist: an admin approves each proposal in the console, through
 // pms_decide_qa_item_proposal(). Rules a proposal must meet: qaRoutine.js.
+// Since 20261124230000 it also reads the approved LESSONS no checklist item
+// describes yet (pms_qa_lesson_coverage), so a lesson that recurs across
+// projects can be promoted to a checklist item the same way.
 const QA_ROUTINE_OPEN_HOURS = 24;
 async function qaRoutineWrite(method: "POST" | "PATCH", path: string, body: unknown): Promise<any[]> {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method,
-    headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+    headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json", Prefer: "return=representation,resolution=ignore-duplicates" },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Supabase ${method} ${res.status}: ${(await res.text()).slice(0, 240)}`);
@@ -13855,17 +13858,32 @@ async function qaRoutineWrite(method: "POST" | "PATCH", path: string, body: unkn
 }
 const qaRoutineTableError = (e: unknown): string => {
   const m = String((e as any)?.message ?? e);
-  return /404|not exist|PGRST205|42P01/.test(m) ? "The routine's tables are not available yet: the database has not run migration 20261124210000." : m.slice(0, 240);
+  return /404|not exist|PGRST205|42P01/.test(m) ? "The routine's tables are not available yet: the database has not run migrations 20261124220000 and 20261124230000." : m.slice(0, 240);
 };
 const uncoveredRfiRows = (): Promise<any[]> =>
   sbGetAll("pms_rfi_root_causes?select=project,item_number,subject,phase,cause,note&item_type=eq.rfi&preventable=is.true&qa_item=is.null&order=project,item_number");
+
+// Approved lessons a checklist item could be made from: tied to a project, not
+// superseded, not yet linked to an item, and not behind a proposal that is
+// still waiting for a decision.
+async function candidateLessonRows(): Promise<any[]> {
+  const [lessons, covered, open] = await Promise.all([
+    sbGetAll("pms_lessons?select=lesson_id,project_id,agency,discipline,system,issue_type,lesson_summary&status=eq.approved&project_id=not.is.null&superseded_by=is.null&order=discipline,project_id"),
+    sbGetAll("pms_qa_lesson_coverage?select=lesson_id"),
+    sbGet("pms_qa_item_proposals?select=lessons&status=eq.proposed&limit=500"),
+  ]);
+  const skip = new Set<string>((covered || []).map((c: any) => String(c.lesson_id).toLowerCase()));
+  for (const p of open || []) for (const l of Array.isArray(p.lessons) ? p.lessons : []) skip.add(String(l?.id || "").toLowerCase());
+  return (lessons || []).filter((l: any) => !skip.has(String(l.lesson_id).toLowerCase()));
+}
 
 mcp.tool("start_checklist_routine", {
   description:
     "START the QA checklist review routine (the Admin Console's 'Run with Claude' on its QA Checklist tab, or when " +
     "someone asks whether the checklist needs new items). One call: it marks the run as started in the console and " +
-    "returns every preventable RFI that NO checklist item covers, the current checklist, earlier proposals with " +
-    "what an admin decided, and the method. Your job is to find the kinds of RFI that recur across projects and are " +
+    "returns every preventable RFI that NO checklist item covers, every approved lesson in the knowledge layer that " +
+    "no checklist item describes yet, the current checklist, earlier proposals with what an admin decided, and the " +
+    "method. Your job is to find the kinds of RFI, and the lessons, that recur across projects and are " +
     "not already covered, and draft one checklist item for each, then finish with propose_checklist_items. You do " +
     "not add anything to the checklist: an admin approves or rejects each proposal in the Admin Console. Before " +
     "proposing, check each group against the existing items: an RFI that an existing item already describes should " +
@@ -13876,14 +13894,15 @@ mcp.tool("start_checklist_routine", {
     const c = currentCaller();
     if (c.kind !== "user" || !c.email) return asText({ error: "The checklist routine needs a signed-in Setty user behind it.", nextStep: "Connect the connector with your Microsoft sign-in and try again." });
     const now = new Date().toISOString();
-    let run: any, uncovered: any[], checklist: any[], earlier: any[];
+    let run: any, uncovered: any[], lessons: any[], checklist: any[], earlier: any[];
     try {
       uncovered = await uncoveredRfiRows();
+      lessons = await candidateLessonRows();
       const open: any[] = await sbGet("pms_qa_routine_runs?select=id,requested_at,requested_by,started_at&finished_at=is.null&order=requested_at.desc&limit=1");
       const fresh = open?.[0] && Date.now() - Date.parse(open[0].requested_at) < QA_ROUTINE_OPEN_HOURS * 3600000 ? open[0] : null;
       run = fresh
-        ? (await qaRoutineWrite("PATCH", "pms_qa_routine_runs?id=eq." + fresh.id, { started_at: now, started_by: c.email, uncovered_count: uncovered.length }))[0]
-        : (await qaRoutineWrite("POST", "pms_qa_routine_runs", { requested_by: c.email, started_at: now, started_by: c.email, uncovered_count: uncovered.length }))[0];
+        ? (await qaRoutineWrite("PATCH", "pms_qa_routine_runs?id=eq." + fresh.id, { started_at: now, started_by: c.email, uncovered_count: uncovered.length, lessons_count: lessons.length }))[0]
+        : (await qaRoutineWrite("POST", "pms_qa_routine_runs", { requested_by: c.email, started_at: now, started_by: c.email, uncovered_count: uncovered.length, lessons_count: lessons.length }))[0];
       checklist = await sbGetAll("pms_qa_checklist?select=item_id,section,text&enabled=is.true&order=sort");
       earlier = await sbGet("pms_qa_item_proposals?select=id,text,status,decision_note,rfi_count,project_count,item_id,created_at&order=created_at.desc&limit=60");
     } catch (e) {
@@ -13898,9 +13917,12 @@ mcp.tool("start_checklist_routine", {
       projects: byProject.size,
       rfis: uncovered.slice(0, 400).map((r) => ({ project: r.project, number: r.item_number, phase: r.phase, cause: r.cause, subject: r.subject || undefined, note: r.note || undefined })),
       ...(uncovered.length > 400 ? { rfisNote: `Showing the first 400 of ${uncovered.length}. rfi_root_cause_summary with listRfis and a cause filter reads the rest.` } : {}),
+      approvedLessonsWithNoItem: lessons.length,
+      lessons: lessons.slice(0, 300).map((l: any) => ({ id: l.lesson_id, project: l.project_id, discipline: l.discipline || undefined, system: l.system || undefined, type: l.issue_type || undefined, agency: l.agency || undefined, summary: String(l.lesson_summary || "").replace(/\s+/g, " ").trim().slice(0, 420) })),
+      ...(lessons.length > 300 ? { lessonsNote: `Showing the first 300 of ${lessons.length}. The rest are read on a later run, once these are linked or proposed.` } : {}),
       checklist: checklist.map((i: any) => ({ id: i.item_id, section: i.section, text: i.text })),
       earlierProposals: (earlier || []).map((p: any) => ({ text: p.text, status: p.status, becameItem: p.item_id || undefined, adminNote: p.decision_note || undefined, rfis: p.rfi_count, projects: p.project_count })),
-      rules: { minimumRfis: MIN_RFIS, minimumProjects: MIN_PROJECTS, maximumProposalsPerRun: PROPOSALS_MAX },
+      rules: { minimumRfis: MIN_RFIS, minimumProjects: MIN_PROJECTS, minimumLessons: MIN_LESSONS, minimumLessonProjects: MIN_LESSON_PROJECTS, maximumProposalsPerRun: PROPOSALS_MAX },
       method: [
         "1. Read every RFI's note. Many say '(subject only)': those were tagged from the title alone. Use read_rfi_submittal on any you plan to rely on, so a proposal rests on what was actually asked.",
         "2. Group the RFIs by what a reviewer could have checked before the set went out, not by trade or by project.",
@@ -13909,7 +13931,10 @@ mcp.tool("start_checklist_routine", {
         "5. Do not re-propose something an admin rejected (earlierProposals), unless new RFIs have changed the case, and then say so in the rationale.",
         "6. Write each item the way the checklist's items read: 'Verify ...', one sentence a reviewer can act on; details that say what to look at and what counts as a finding; `how` naming the connector tools that do it (search_drawings, read_drawing_schedule, view_drawing, read_document); the phases it applies to; a rationale with the counts; and the RFIs it rests on.",
         "7. A check nobody has time to do by hand is not a good item. Prefer one the review can do from the drawings; where it needs product or manufacturer knowledge, propose a lesson with save_knowledge instead.",
-        "8. Finish with propose_checklist_items, even when there is nothing to propose: pass no proposals and say why in summary. Then tell the user what you proposed, what you re-tagged, and what you left out.",
+        `8. LESSONS. Then read the lessons: each is an approved lesson from one project that no checklist item describes yet. Group the ones that say the same thing a reviewer could check on the drawings. A group earns an item with at least ${MIN_LESSONS} lessons from at least ${MIN_LESSON_PROJECTS} projects; pass their ids in the proposal's lessons. A group of RFIs and a group of lessons about the same thing are ONE proposal carrying both.`,
+        "9. Where an existing checklist item already describes a lesson, do not propose: list it in lessonsAlreadyCovered with that item's id, so later runs do not read it again. Only do this when the item really asks for the same check.",
+        "10. Most lessons will NOT become items, and that is right: a lesson about process, schedule, fees, one agency's habit or one manufacturer's product stays a lesson, and every QA review already reads it. Leave those alone and do not list them anywhere. Summaries here are shortened; search_knowledge reads a lesson in full before you rely on it.",
+        "11. Finish with propose_checklist_items, even when there is nothing to propose: pass no proposals and say why in summary. Then tell the user what you proposed, what you re-tagged or linked to existing items, and what you left out.",
       ],
     });
   },
@@ -13920,7 +13945,7 @@ mcp.tool("propose_checklist_items", {
     "FINISH the QA checklist review routine (after start_checklist_routine): store the proposed checklist items for " +
     "an admin to approve or reject in the Admin Console, and close the run with a summary. Nothing is added to the " +
     "checklist here. Each proposal is checked: its RFIs are matched against the preventable RFIs that still have no " +
-    `checklist item, and one that rests on fewer than ${MIN_RFIS} such RFIs or fewer than ${MIN_PROJECTS} projects is refused, as is ` +
+    `checklist item, and its lessons against the approved lessons no item describes. One that rests on fewer than ${MIN_RFIS} such RFIs on ${MIN_PROJECTS} projects AND fewer than ${MIN_LESSONS} such lessons from ${MIN_LESSON_PROJECTS} projects is refused, as is ` +
     "one whose text repeats an existing item or proposal, or that mostly reuses another proposal's RFIs. The " +
     "counts stored are computed from the tags, not taken from you. Refused proposals come back with the reason: " +
     "tell the user. With nothing to propose, call it with no proposals and a summary saying why, so the run is " +
@@ -13935,10 +13960,15 @@ mcp.tool("propose_checklist_items", {
       automation: z.enum(PROPOSAL_AUTOMATION as [string, ...string[]]).optional().describe("auto = the connector checks it mechanically; assisted (default) = Claude gathers evidence and flags; manual = stays with a person."),
       phases: z.array(z.enum(PROPOSAL_PHASES as [string, ...string[]])).optional().describe("Deliverable phases it applies to. Default CD, Permit, Bid, Addendum."),
       rationale: z.string().optional().describe("Why this earns a place: the counts, and why no existing item covers it."),
-      rfis: z.array(z.object({ project: z.string(), number: z.string() })).min(1).max(80).describe("The uncovered preventable RFIs it rests on, by project number and RFI number as start_checklist_routine listed them."),
+      rfis: z.array(z.object({ project: z.string(), number: z.string() })).max(80).optional().describe("The uncovered preventable RFIs it rests on, by project number and RFI number as start_checklist_routine listed them."),
+      lessons: z.array(z.string()).max(40).optional().describe("The approved lessons it rests on: their ids as start_checklist_routine listed them."),
     })).max(PROPOSALS_MAX).optional(),
+    lessonsAlreadyCovered: z.array(z.object({
+      lessonId: z.string().describe("A lesson id from start_checklist_routine."),
+      itemId: z.string().describe("The existing checklist item that already asks for the same check, e.g. qa-631."),
+    })).max(200).optional().describe("Lessons an EXISTING checklist item already describes. Recorded so later runs skip them; the lesson itself is not changed."),
   }),
-  handler: async ({ runId, summary, proposals }) => {
+  handler: async ({ runId, summary, proposals, lessonsAlreadyCovered }) => {
     const c = currentCaller();
     if (c.kind !== "user" || !c.email) return asText({ error: "The checklist routine needs a signed-in Setty user behind it." });
     try {
@@ -13946,9 +13976,27 @@ mcp.tool("propose_checklist_items", {
       if (!runs?.length) return asText({ error: `No routine run ${runId}.`, nextStep: "Call start_checklist_routine first; it returns the runId." });
       if (runs[0].finished_at) return asText({ error: `Run ${runId} is already finished.`, nextStep: "Start a new run with start_checklist_routine." });
       const uncovered = await uncoveredRfiRows();
-      const items: any[] = await sbGetAll("pms_qa_checklist?select=text");
+      const candidates = await candidateLessonRows();
+      const items: any[] = await sbGetAll("pms_qa_checklist?select=item_id,text");
       const onFile: any[] = await sbGet("pms_qa_item_proposals?select=text&status=in.(proposed,rejected)&limit=500");
-      const plan = planProposals(proposals || [], uncovered, [...items, ...(onFile || [])]);
+      const plan = planProposals(proposals || [], uncovered, [...items, ...(onFile || [])], candidates);
+      // Lessons an existing item already describes: only real candidates, only real items,
+      // and never one a proposal in this same call rests on.
+      const inProposal = new Set<string>(plan.accepted.flatMap((a: any) => a.lessons.map((l: any) => l.id)));
+      const candidateIds = new Set<string>(candidates.map((l: any) => String(l.lesson_id).toLowerCase()));
+      const itemIds = new Map<string, string>(items.map((i: any) => [String(i.item_id).toLowerCase(), i.item_id]));
+      const links = new Map<string, string>();
+      const linksRefused: any[] = [];
+      for (const x of lessonsAlreadyCovered || []) {
+        const lid = String(x.lessonId || "").trim().toLowerCase(), item = itemIds.get(String(x.itemId || "").trim().toLowerCase());
+        if (!candidateIds.has(lid)) linksRefused.push({ lessonId: x.lessonId, why: "Not one of the lessons this run was given." });
+        else if (!item) linksRefused.push({ lessonId: x.lessonId, why: `No checklist item ${x.itemId}.` });
+        else if (inProposal.has(lid)) linksRefused.push({ lessonId: x.lessonId, why: "A proposal in this call rests on it." });
+        else links.set(lid, item);
+      }
+      const linked: any[] = links.size
+        ? await qaRoutineWrite("POST", "pms_qa_lesson_coverage?on_conflict=lesson_id", [...links].map(([lesson_id, qa_item]) => ({ lesson_id, qa_item, set_by: c.email })))
+        : [];
       const stored: any[] = plan.accepted.length
         ? await qaRoutineWrite("POST", "pms_qa_item_proposals", plan.accepted.map((a: any) => ({ ...a, run_id: runId, created_by: c.email })))
         : [];
@@ -13957,8 +14005,10 @@ mcp.tool("propose_checklist_items", {
       });
       return asText({
         runId, finished: true,
-        proposalsStored: stored.map((p: any) => ({ proposalId: p.id, text: p.text, rfis: p.rfi_count, projects: p.project_count })),
+        proposalsStored: stored.map((p: any) => ({ proposalId: p.id, text: p.text, rfis: p.rfi_count, lessons: p.lesson_count, projects: p.project_count })),
         ...(plan.refused.length ? { refused: plan.refused } : {}),
+        ...(linked.length ? { lessonsLinkedToExistingItems: linked.length } : {}),
+        ...(linksRefused.length ? { lessonLinksRefused: linksRefused } : {}),
         note: (stored.length
           ? `${stored.length} proposal(s) are waiting in the Admin Console, QA Checklist tab, for an admin to approve or reject. Nothing was added to the checklist.`
           : "No proposals were stored. The run is recorded as finished with your summary.") +

@@ -1849,4 +1849,13 @@ Anyone with the Admin Console can start it: QA Checklist tab, "Run with Claude".
   `pms_decide_qa_item_proposal()` is the only path to the checklist: it takes
   the next `qa-N`, inserts the item under "RFI History" and tags the RFIs the
   proposal rests on that are still uncovered.
-- Migration: `20261124220000_qa_checklist_routine.sql`.
+- Lessons too (`20261124230000_qa_routine_lessons.sql`): the routine also
+  reads the approved lessons no checklist item describes yet (tied to a
+  project, not superseded). A proposal may rest on lessons instead of, or as
+  well as, RFIs: at least 2 lessons from at least 2 projects. Approval links
+  those lessons to the new item in `pms_qa_lesson_coverage`; a run can also
+  record that an EXISTING item already describes a lesson
+  (`lessonsAlreadyCovered`). Linked lessons are not read again. The lesson
+  itself is never changed and every QA review still reads it.
+- Migrations: `20261124220000_qa_checklist_routine.sql`,
+  `20261124230000_qa_routine_lessons.sql`.
