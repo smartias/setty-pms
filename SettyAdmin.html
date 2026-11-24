@@ -1127,7 +1127,7 @@ async function renderBackups() {
 const QA_ROUTINE_PROMPT = [
   "Run the QA checklist review routine.",
   "",
-  "Use the Setty PMS connector: call start_checklist_routine. It marks the run as started in the Admin Console and returns the preventable RFIs that no checklist item covers, the approved lessons that no checklist item describes, the current checklist, earlier proposals with what an admin decided, and the method to follow. Group the RFIs that recur across projects, re-tag the ones an existing item already describes, and draft a checklist item for each remaining group. Do the same for lessons that recur across projects. Save everything with propose_checklist_items, even if there is nothing to propose. Do not add anything to the checklist yourself: an admin approves each proposal in the Admin Console. Then tell me what you proposed, what you re-tagged or linked to existing items, and what you left out and why.",
+  "Use the Setty PMS connector: call start_checklist_routine. It marks the run as started in the Admin Console and returns the preventable RFIs that no checklist item covers, the approved lessons and best practices that no checklist item describes, the current checklist, earlier proposals with what an admin decided, and the method to follow. Group the RFIs that recur across projects, re-tag the ones an existing item already describes, and draft a checklist item for each remaining group. Do the same for lessons that recur across projects, and for best practices and firm-wide lessons that are checks a reviewer can do on the drawings. Save everything with propose_checklist_items, even if there is nothing to propose. Do not add anything to the checklist yourself: an admin approves each proposal in the Admin Console. Then tell me what you proposed, what you re-tagged or linked to existing items, and what you left out and why.",
 ].join("\n");
 function qaRunState(run) {
   if (!run) return { state: "never", label: "Never run", cls: "info" };
@@ -1153,14 +1153,14 @@ async function qaRoutineRequested() {
 async function qaDecideProposal(id, approve) {
   let note = null;
   if (approve) {
-    if (!confirm("Add this item to the QA checklist?\n\nEvery QA review will run it from now on, and the RFIs and lessons it rests on will be linked to it.")) return;
+    if (!confirm("Add this item to the QA checklist?\n\nEvery QA review will run it from now on, and the RFIs, lessons and best practices it rests on will be linked to it.")) return;
   } else {
     note = prompt("Why is this rejected? (optional; the next run reads it so the same item is not proposed again)", "");
     if (note === null) return;
   }
   try {
     const r = await sb("POST", "/rest/v1/rpc/pms_decide_qa_item_proposal", { p_id: id, p_approve: approve, p_note: note });
-    toast(approve ? "Added to the checklist as " + (r && r.item_id) + "; " + ((r && r.rfis_tagged) || 0) + " RFIs tagged to it" + (r && r.lessons_linked ? ", " + r.lessons_linked + " lessons linked." : ".") : "Proposal rejected.", "success");
+    toast(approve ? "Added to the checklist as " + (r && r.item_id) + "; " + ((r && r.rfis_tagged) || 0) + " RFIs tagged to it" + (r && (r.lessons_linked || r.practices_linked) ? ", " + ((r.lessons_linked || 0) + (r.practices_linked || 0)) + " lessons and best practices linked." : ".") : "Proposal rejected.", "success");
   } catch (e) { toast((approve ? "Approve" : "Reject") + " failed: " + e.message, "error"); }
   state.qaRoutine = null; render();
 }
@@ -1175,19 +1175,27 @@ async function renderQaChecklist() {
         sb("GET", "/rest/v1/pms_rfi_root_causes?select=project&item_type=eq.rfi&preventable=is.true&qa_item=is.null&limit=5000"),
         sb("GET", "/rest/v1/pms_qa_checklist?select=item_id&enabled=is.true&limit=5000"),
       ]);
-      // Lessons a run would read: approved, tied to a project, not yet linked to an item.
-      // Optional: older databases have no pms_qa_lesson_coverage, and the count is then hidden.
-      let lessonsOpen = null;
+      // Lessons and best practices a run would read: approved, not yet linked to an item.
+      // Optional: older databases lack the coverage tables, and each count is then hidden.
+      let lessonsOpen = null, practicesOpen = null;
       try {
         const [les, cov] = await Promise.all([
-          sb("GET", "/rest/v1/pms_lessons?select=lesson_id&status=eq.approved&project_id=not.is.null&superseded_by=is.null&limit=5000"),
+          sb("GET", "/rest/v1/pms_lessons?select=lesson_id&status=eq.approved&superseded_by=is.null&limit=5000"),
           sb("GET", "/rest/v1/pms_qa_lesson_coverage?select=lesson_id&limit=5000"),
         ]);
         const done = new Set((cov || []).map(c => c.lesson_id));
         lessonsOpen = (les || []).filter(l => !done.has(l.lesson_id)).length;
       } catch (e) { lessonsOpen = null; }
+      try {
+        const [bps, cov] = await Promise.all([
+          sb("GET", "/rest/v1/pms_best_practices?select=practice_id&status=eq.approved&limit=5000"),
+          sb("GET", "/rest/v1/pms_qa_practice_coverage?select=practice_id&limit=5000"),
+        ]);
+        const done = new Set((cov || []).map(c => c.practice_id));
+        practicesOpen = (bps || []).filter(b => !done.has(b.practice_id)).length;
+      } catch (e) { practicesOpen = null; }
       state.qaRoutine = { runs: runs || [], props: props || [], uncovered: (uncovered || []).length,
-                          uncoveredProjects: new Set((uncovered || []).map(r => r.project)).size, items: (items || []).length, lessonsOpen };
+                          uncoveredProjects: new Set((uncovered || []).map(r => r.project)).size, items: (items || []).length, lessonsOpen, practicesOpen };
     } catch (e) {
       v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}<br><span style="font-size:12px">If this says the table does not exist, the database change for the routine has not been applied yet.</span></div>`;
       return;
@@ -1205,19 +1213,20 @@ async function renderQaChecklist() {
     <div class="card">
       <div style="font-weight:700;margin-bottom:6px">Checklist review routine</div>
       <div style="color:var(--dim);font-size:13px;line-height:1.55;margin-bottom:10px">
-        Reads the preventable RFIs that no checklist item covers and the approved lessons that no item describes, groups the kinds
-        that recur across projects, and proposes a new checklist item for each. Proposals wait below. Nothing is added to the
-        checklist until an admin approves it here. Most lessons never become items: they stay in the knowledge layer, which every
-        QA review already reads.
+        Reads the preventable RFIs that no checklist item covers and the approved lessons and best practices that no item describes,
+        groups the kinds that recur across projects, and proposes a new checklist item for each. Proposals wait below. Nothing is
+        added to the checklist until an admin approves it here. Most lessons and best practices never become items: they stay in
+        the knowledge layer, which every QA review already reads.
       </div>
       <div class="stat"><b>${q.uncovered}</b><span>preventable RFIs with no check, on ${q.uncoveredProjects} project${q.uncoveredProjects === 1 ? "" : "s"}</span></div>
       ${q.lessonsOpen === null ? "" : `<div class="stat"><b>${q.lessonsOpen}</b><span>approved lessons not yet linked to a check</span></div>`}
+      ${q.practicesOpen === null ? "" : `<div class="stat"><b>${q.practicesOpen}</b><span>best practices not yet linked to a check</span></div>`}
       <div class="stat"><b>${q.items}</b><span>items in the checklist</span></div>
       <div class="stat"><b>${open.length}</b><span>proposal${open.length === 1 ? "" : "s"} waiting for a decision</span></div>
       <div style="margin-top:8px;font-size:12.5px;color:var(--dim)">
         Status: <span class="pill ${st.cls}">${esc(st.label)}</span>
         ${last ? ` · requested by ${who(last.requested_by)}` + (last.started_by ? `, run by ${who(last.started_by)}` : "") : ""}
-        ${lastDone ? ` · Last completed run: ${esc(new Date(lastDone.finished_at).toLocaleString())} (${rel(lastDone.finished_at)}), read ${lastDone.uncovered_count ?? "?"} RFIs${lastDone.lessons_count != null ? " and " + lastDone.lessons_count + " lessons" : ""}, proposed ${lastDone.proposals_count ?? 0}${lastDone.refused_count ? ", " + lastDone.refused_count + " refused by the rules" : ""}` : " · No run has completed yet"}
+        ${lastDone ? ` · Last completed run: ${esc(new Date(lastDone.finished_at).toLocaleString())} (${rel(lastDone.finished_at)}), read ${lastDone.uncovered_count ?? "?"} RFIs${lastDone.lessons_count != null ? " and " + lastDone.lessons_count + " lessons and best practices" : ""}, proposed ${lastDone.proposals_count ?? 0}${lastDone.refused_count ? ", " + lastDone.refused_count + " refused by the rules" : ""}` : " · No run has completed yet"}
       </div>
       ${st.state === "not-started" ? `<div style="margin-top:6px;font-size:12.5px;color:var(--red)">The Claude tab was probably closed before the request was sent. Run it again and press Enter in the tab that opens.</div>` : ""}
       ${st.state === "stalled" ? `<div style="margin-top:6px;font-size:12.5px;color:var(--red)">The chat probably stopped part way. Type "continue" in that Claude tab, or run it again.</div>` : ""}
@@ -1233,7 +1242,7 @@ async function renderQaChecklist() {
         <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px">
           <div style="font-weight:600;line-height:1.45">${esc(p.text)}</div>
           <div style="margin-top:6px;font-size:12.5px;color:var(--dim)">
-            Rests on ${[p.rfi_count || !p.lesson_count ? `<b>${Number(p.rfi_count)}</b> preventable RFI${p.rfi_count === 1 ? "" : "s"}` : "", p.lesson_count ? `<b>${Number(p.lesson_count)}</b> approved lesson${p.lesson_count === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ")} on <b>${p.project_count}</b> project${p.project_count === 1 ? "" : "s"}
+            Rests on ${[p.rfi_count || !p.lesson_count ? `<b>${Number(p.rfi_count)}</b> preventable RFI${p.rfi_count === 1 ? "" : "s"}` : "", ...((n, b) => [n ? `<b>${n}</b> approved lesson${n === 1 ? "" : "s"}` : "", b ? `<b>${b}</b> best practice${b === 1 ? "" : "s"}` : ""])(arr(p.lessons).filter(l => l.kind !== "practice").length, arr(p.lessons).filter(l => l.kind === "practice").length)].filter(Boolean).join(", ")}${p.project_count ? ` on <b>${p.project_count}</b> project${p.project_count === 1 ? "" : "s"}` : ""}
             · ${esc(p.automation)} · ${esc(arr(p.phases).join(", ") || "CD, Permit, Bid, Addendum")}
             · proposed ${rel(p.created_at)}${p.created_by ? " in a run by " + who(p.created_by) : ""}
           </div>
@@ -1242,8 +1251,8 @@ async function renderQaChecklist() {
           ${p.automation_hint ? `<div style="margin-top:6px;font-size:12px;color:var(--muted)">How a review does it: ${esc(p.automation_hint)}</div>` : ""}
           ${arr(p.rfis).length ? `<details style="margin-top:6px;font-size:12px;color:var(--dim)"><summary style="cursor:pointer">The RFIs behind it</summary>
             ${arr(p.rfis).map(r => `<span class="snapchip">${esc(r.project)} ${esc(r.number)}</span>`).join(" ")}</details>` : ""}
-          ${arr(p.lessons).length ? `<details style="margin-top:6px;font-size:12px;color:var(--dim)"><summary style="cursor:pointer">The lessons behind it</summary>
-            <ul style="margin:6px 0 0 18px;padding:0;line-height:1.5">${arr(p.lessons).map(l => `<li><b>${esc(l.project || "")}</b> ${esc(l.summary || "")}</li>`).join("")}</ul></details>` : ""}
+          ${arr(p.lessons).length ? `<details style="margin-top:6px;font-size:12px;color:var(--dim)"><summary style="cursor:pointer">The lessons and best practices behind it</summary>
+            <ul style="margin:6px 0 0 18px;padding:0;line-height:1.5">${arr(p.lessons).map(l => `<li><b>${esc(l.kind === "practice" ? "Best practice" : l.project || "Firm-wide lesson")}</b> ${esc(l.summary || "")}</li>`).join("")}</ul></details>` : ""}
           <div style="margin-top:10px">
             <button class="btn btn-primary" onclick="qaDecideProposal(${Number(p.id)}, true)">✓ Approve and add to the checklist</button>
             <button class="btn" onclick="qaDecideProposal(${Number(p.id)}, false)">✕ Reject</button>
