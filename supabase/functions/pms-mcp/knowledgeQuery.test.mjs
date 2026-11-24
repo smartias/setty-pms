@@ -4,7 +4,9 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { queryTerms, termInText, matchQuery, rankByQuery, closeByQuery, CLOSE_QUERY_MAX } from "./knowledgeQuery.ts";
+import {
+  queryTerms, termInText, matchQuery, rankByQuery, closeByQuery, CLOSE_QUERY_MAX, pickByMeaning, BY_MEANING_MAX,
+} from "./knowledgeQuery.ts";
 
 const ROWS = [
   { id: 1, text: "Electric resistance heat is not permitted with A2L refrigerants unless the unit is listed for it.", system: "DOAS" },
@@ -91,4 +93,67 @@ test("the four knowledge filters use this rule, and close matches stay out of th
   assert.ok(src.includes("const close = out.length ? [] : closeByQuery(beforeQuery, agencyPrefFields, query);"), "agency preferences: close matches only when nothing matched");
   assert.ok(src.includes("const closeLessons = out.length || practices.length ? []"), "knowledge: close matches only when nothing matched");
   assert.equal(src.split("closeMatchesNote: CLOSE_QUERY_NOTE,").length - 1, 3, "each tool says what close matches are");
+});
+
+// ── By meaning (migration 20261124140000) ────────────────────────────────────
+const key = (r) => r.id;
+const hit = (id, similarity) => ({ kind: "lesson", row_key: id, similarity });
+
+test("rows found by meaning come back nearest first, with their similarity", () => {
+  const out = pickByMeaning([hit(5, 0.91234), hit(2, 0.84)], ROWS, key, []);
+  assert.deepEqual(out.map((m) => [m.row.id, m.similarity]), [[5, 0.912], [2, 0.84]]);
+});
+
+test("a row already returned as a word match is not repeated", () => {
+  const words = rankByQuery(ROWS, fields, "duct insulation");
+  assert.deepEqual(pickByMeaning([hit(3, 0.95), hit(4, 0.88)], ROWS, key, words).map((m) => m.row.id), [4]);
+});
+
+test("a key outside the caller's rows is dropped, never returned", () => {
+  // The pool is what the tool has already filtered (status, agency, discipline,
+  // project visibility). A lesson from a project the caller cannot see is not
+  // in it, so its key finds nothing.
+  const visible = ROWS.filter((r) => r.id !== 1);
+  assert.deepEqual(pickByMeaning([hit(1, 0.97), hit(2, 0.9)], visible, key, []).map((m) => m.row.id), [2]);
+  assert.deepEqual(pickByMeaning([hit("no-such-row", 0.99)], ROWS, key, []), []);
+});
+
+test("capped, de-duplicated, and safe on a bad answer", () => {
+  const many = Array.from({ length: 12 }, (_, i) => ({ id: "k" + i }));
+  assert.equal(pickByMeaning(many.map((r) => hit(r.id, 0.9)), many, key, []).length, BY_MEANING_MAX);
+  assert.equal(pickByMeaning([hit(2, 0.9), hit(2, 0.9)], ROWS, key, []).length, 1);
+  assert.deepEqual(pickByMeaning(null, ROWS, key, []), []);
+  assert.deepEqual(pickByMeaning({ error: "x" }, ROWS, key, []), []);
+});
+
+test("the tools look meaning hits up in their own filtered rows, and a failure is silent", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  for (const line of [
+    'pickByMeaning(await knowledgeByMeaning(query, ["agency_pref"]), beforeQuery, (r: any) => r.pref_id, out);',
+    'pickByMeaning(await knowledgeByMeaning(query, ["standard"]), standardPool, (r: any) => r.standard_id, out);',
+    'pickByMeaning(meantHits.filter((h: any) => h.kind === "lesson"), lessonPool, (r: any) => r.lesson_id, out);',
+    'pickByMeaning(meantHits.filter((h: any) => h.kind === "practice"), practicePool, (r: any) => r.practice_id, practices);',
+  ]) assert.ok(src.includes(line), "index.ts lost: " + line);
+  assert.ok(src.includes("const lessonPool = filterKnowledge(visible, { agency, discipline });"), "the lesson pool is the visibility-filtered one");
+  assert.ok(src.includes('agency?.trim() ? ["lesson"] : ["lesson", "practice"]'), "practices carry no agency, so an agency search does not return them by meaning either");
+  const helper = src.slice(src.indexOf("async function knowledgeByMeaning"), src.indexOf("const knowledgeEmbedStoreRow"));
+  assert.ok(helper.includes("if (!KNOWLEDGE_SEMANTIC ||") && helper.includes("return [];\n  }\n}"), "the kill switch and a failure both return nothing");
+  assert.ok(src.includes('const KNOWLEDGE_SEMANTIC = Deno.env.get("KNOWLEDGE_SEMANTIC") !== "0";'));
+  assert.ok(src.includes("if (KNOWLEDGE_SEMANTIC && !Number(summary.queued)) {"), "knowledge is embedded only when no email is waiting");
+  assert.equal(src.split("relatedByMeaningNote: BY_MEANING_NOTE,").length - 1, 3, "each tool says what a meaning match is");
+});
+
+test("the migration serves only what the tools serve", () => {
+  const mig = readFileSync(new URL("../../migrations/20261124140000_knowledge_embeddings.sql", import.meta.url), "utf8");
+  for (const rule of [
+    "from public.pms_lessons l where l.status = 'approved'",
+    "from public.pms_best_practices p where p.status = 'approved'",
+    "from public.pms_engineering_standards st where st.status = 'active'",
+    "from public.pms_agency_preferences a where a.status is distinct from 'archived'",
+  ]) assert.ok(mig.includes(rule), "source lost: " + rule);
+  const sem = mig.slice(mig.indexOf("create or replace function public.pms_knowledge_semantic("));
+  assert.ok(sem.includes("join public.pms_knowledge_embed_source() s on s.kind = e.kind and s.row_key = e.row_key"), "a row that stopped being served is not returned");
+  assert.ok(mig.includes("alter table public.pms_knowledge_embeddings enable row level security;") && !/create policy/i.test(mig), "service role only");
+  assert.equal(mig.split("from public, anon, authenticated;").length - 1, 4, "no function is callable by the browser roles");
+  assert.ok(!mig.includes("\r"), "migrations are LF");
 });

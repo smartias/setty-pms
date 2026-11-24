@@ -62,7 +62,7 @@ import { pickRecordedFolderName, matchRecordedFolder } from "./recordedFolder.ts
 // title blocks no pattern reads. Pure; see sheetFromFilename.test.mjs.
 import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OLD } from "./sheetFromFilename.ts";
 import { assignSheetsFromList, DRAWING_LIST_LAYOUT } from "./sheetFromDrawingList.ts";
-import { rankByQuery, closeByQuery, CLOSE_QUERY_NOTE } from "./knowledgeQuery.ts";
+import { rankByQuery, closeByQuery, CLOSE_QUERY_NOTE, pickByMeaning, BY_MEANING_NOTE } from "./knowledgeQuery.ts";
 // set_project_fee: what may be written into the Fee Calculator and what is
 // refused. Pure; see feeCalculator.test.mjs.
 import { extractSheetTables, orientSheetItems, type SheetTextItem, type SheetTable } from "./scheduleExtract.ts";
@@ -1514,7 +1514,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-knowledge-word-matching";
+const BUILD = "2026-11-24-knowledge-by-meaning";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.29.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -13453,6 +13453,46 @@ const knowledgeTrades = (r: any): string[] => {
   return set.length ? set : (r.discipline ? [r.discipline] : []);
 };
 
+// Knowledge by meaning (migration 20261124140000). The query is embedded with
+// the model the emails and CA items use, and the database returns the served
+// rows nearest it. Advisory: any failure (model down, migration not applied)
+// returns nothing and the word search stands alone. KNOWLEDGE_SEMANTIC=0 is
+// the kill switch, no redeploy.
+const KNOWLEDGE_SEMANTIC = Deno.env.get("KNOWLEDGE_SEMANTIC") !== "0";
+// Starting value, to be set from real queries once the rows are embedded:
+// email search lets an unrelated query through at 0.77, and relevant hits
+// there sit near 0.86.
+const KNOWLEDGE_MIN_SIMILARITY = 0.8;
+type KnowledgeKind = "lesson" | "practice" | "standard" | "agency_pref";
+async function knowledgeByMeaning(query: string | undefined, kinds: KnowledgeKind[]): Promise<any[]> {
+  if (!KNOWLEDGE_SEMANTIC || !String(query ?? "").trim() || !kinds.length) return [];
+  try {
+    const rows = await sbRpc("pms_knowledge_semantic", {
+      p_embedding: vectorLiteral(await embedText(String(query).trim())),
+      p_kinds: kinds, p_limit: 20, p_min_similarity: KNOWLEDGE_MIN_SIMILARITY,
+    });
+    return Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    console.warn("[knowledge] meaning-based lookup unavailable:", String((e as any)?.message ?? e));
+    return [];
+  }
+}
+const knowledgeEmbedStoreRow = (r: any, embedding: string): Record<string, unknown> =>
+  ({ kind: r.kind, row_key: r.row_key, embed_hash: r.embed_hash, embedding });
+// One pass over the knowledge rows with no vector yet (or whose text changed).
+// Rides on the once-a-minute email embed job; ~540 rows in all.
+async function runKnowledgeEmbedPass(maxRows: number): Promise<Record<string, unknown>> {
+  return await runEmbedPass({
+    maxRows, fetchSize: CA_EMBED_FETCH, storeEvery: CA_EMBED_STORE_EVERY, budgetMs: CA_EMBED_BUDGET_MS,
+    now: () => Date.now(),
+    fetchRows: (limit) => sbRpc("pms_knowledge_to_embed", { p_limit: limit }),
+    embed: (text) => embedText(text),
+    store: async (rows) => Number(await sbRpc("pms_knowledge_store_embeddings", { p_rows: rows })) || 0,
+    storeRow: knowledgeEmbedStoreRow, label: (r: any) => `knowledge ${r.kind} ${r.row_key}`,
+    log: (msg) => console.warn("[knowledge-embed]", msg),
+  });
+}
+
 // The fields a free-text query reads on each kind of knowledge row. Matching is
 // word by word (knowledgeQuery.ts), not the whole query as one phrase.
 const agencyPrefFields = (r: any): unknown[] =>
@@ -13499,11 +13539,16 @@ mcp.tool("search_agency_preferences", {
       verified: r.date_verified || undefined, status: r.status,
     });
     const close = out.length ? [] : closeByQuery(beforeQuery, agencyPrefFields, query);
+    const meant = pickByMeaning(await knowledgeByMeaning(query, ["agency_pref"]), beforeQuery, (r: any) => r.pref_id, out);
     const CAP = 200;
     return asText({
       count: out.length,
       truncated: out.length > CAP,
       preferences: out.slice(0, CAP).map(slim),
+      ...(meant.length ? {
+        relatedByMeaning: meant.map((m) => ({ ...slim(m.row), similarity: m.similarity })),
+        relatedByMeaningNote: BY_MEANING_NOTE,
+      } : {}),
       ...(close.length ? {
         closeMatches: close.map((c) => ({ ...slim(c.row), matchedTerms: c.matchedTerms, missingTerms: c.missingTerms })),
         closeMatchesNote: CLOSE_QUERY_NOTE,
@@ -13556,13 +13601,18 @@ mcp.tool("search_engineering_standards", {
       source: r.source_reference || undefined,
       verified: r.date_verified || undefined, status: r.status,
     });
-    const close = out.length ? []
-      : closeByQuery(filterEngineeringStandards(rows, { discipline, system, includeArchived }), standardFields, query);
+    const standardPool = filterEngineeringStandards(rows, { discipline, system, includeArchived });
+    const close = out.length ? [] : closeByQuery(standardPool, standardFields, query);
+    const meant = pickByMeaning(await knowledgeByMeaning(query, ["standard"]), standardPool, (r: any) => r.standard_id, out);
     const CAP = 200;
     return asText({
       count: out.length,
       truncated: out.length > CAP,
       standards: out.slice(0, CAP).map(slim),
+      ...(meant.length ? {
+        relatedByMeaning: meant.map((m) => ({ ...slim(m.row), similarity: m.similarity })),
+        relatedByMeaningNote: BY_MEANING_NOTE,
+      } : {}),
       ...(close.length ? {
         closeMatches: close.map((c) => ({ ...slim(c.row), matchedTerms: c.matchedTerms, missingTerms: c.missingTerms })),
         closeMatchesNote: CLOSE_QUERY_NOTE,
@@ -13692,8 +13742,13 @@ mcp.tool("search_knowledge", {
       practicePool = filterPractices(pRows, { discipline });
     }
     // Nothing carries every word: the entries that carry at least half of them.
-    const closeLessons = out.length || practices.length ? []
-      : closeByQuery(filterKnowledge(visible, { agency, discipline }), lessonFields, query);
+    const lessonPool = filterKnowledge(visible, { agency, discipline });
+    const closeLessons = out.length || practices.length ? [] : closeByQuery(lessonPool, lessonFields, query);
+    // By meaning: one lookup for both kinds; each key is then looked up in the
+    // rows this caller may see, so a hidden project's lesson cannot come back.
+    const meantHits = await knowledgeByMeaning(query, agency?.trim() ? ["lesson"] : ["lesson", "practice"]);
+    const meantLessons = pickByMeaning(meantHits.filter((h: any) => h.kind === "lesson"), lessonPool, (r: any) => r.lesson_id, out);
+    const meantPractices = pickByMeaning(meantHits.filter((h: any) => h.kind === "practice"), practicePool, (r: any) => r.practice_id, practices);
     const closePractices = out.length || practices.length ? [] : closeByQuery(practicePool, practiceFields, query);
 
     let own: any[] | undefined;
@@ -13715,6 +13770,13 @@ mcp.tool("search_knowledge", {
       lessons: out.slice(0, KNOWLEDGE_RESULT_CAP).map(slimLesson),
       bestPracticeCount: practices.length,
       bestPractices: practices.slice(0, KNOWLEDGE_RESULT_CAP).map(slimPractice),
+      ...(meantLessons.length || meantPractices.length ? {
+        relatedByMeaning: {
+          lessons: meantLessons.map((m) => ({ ...slimLesson(m.row), similarity: m.similarity })),
+          bestPractices: meantPractices.map((m) => ({ ...slimPractice(m.row), similarity: m.similarity })),
+        },
+        relatedByMeaningNote: BY_MEANING_NOTE,
+      } : {}),
       ...(closeLessons.length || closePractices.length ? {
         closeMatches: {
           lessons: closeLessons.map((c) => ({ ...slimLesson(c.row), matchedTerms: c.matchedTerms, missingTerms: c.missingTerms })),
@@ -15024,7 +15086,15 @@ app.post("/pms-mcp/admin/emails-embed", async (c) => {
       log: (msg) => console.warn("[emails-embed]", msg),
     });
     if (summary.failed) console.warn("[emails-embed]", JSON.stringify(summary));
-    return c.json(summary, 200, DOCS_SYNC_CORS);
+    // The knowledge layer's vectors ride on this job: when no email is waiting,
+    // the same budget goes to knowledge rows with no vector yet. Its own
+    // failure (the migration not applied) never fails the email pass.
+    let knowledge: Record<string, unknown> | undefined;
+    if (KNOWLEDGE_SEMANTIC && !Number(summary.queued)) {
+      try { knowledge = await runKnowledgeEmbedPass(maxRows); }
+      catch (e) { knowledge = { error: String((e as any)?.message ?? e).slice(0, 200) }; }
+    }
+    return c.json(knowledge ? { ...summary, knowledge } : summary, 200, DOCS_SYNC_CORS);
   } catch (e) {
     const error = String((e as any)?.message ?? e);
     console.warn("[emails-embed] failed:", error);

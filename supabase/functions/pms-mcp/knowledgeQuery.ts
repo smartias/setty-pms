@@ -76,3 +76,33 @@ export function closeByQuery<T>(
 export const CLOSE_QUERY_NOTE =
   "No entry carries every word of the query. These carry SOME of the words (see missingTerms): read them as " +
   "possibly related, not as the firm's answer to the question asked.";
+
+// ── By meaning (2026-11-24, migration 20261124140000) ────────────────────────
+// Rows the database found nearest the query by vector, turned into rows the
+// caller may see. `hits` come nearest first as { row_key, similarity }.
+// `pool` is the tool's own rows AFTER its status, agency, discipline and
+// visibility filters, so a key the caller may not see, or that a filter
+// excluded, finds nothing here and is dropped. Rows already returned as word
+// matches are left out: they are in the results.
+export const BY_MEANING_MAX = 5;
+export const BY_MEANING_NOTE =
+  "Found by MEANING, not by the words of the query: each is a served entry whose text is close to the question " +
+  "(similarity 1 = identical). Read it before relying on it; it may be about a neighbouring subject.";
+
+export function pickByMeaning<T>(
+  hits: Array<{ row_key?: unknown; similarity?: unknown }> | null | undefined,
+  pool: T[], keyOf: (row: T) => unknown, already: T[], max = BY_MEANING_MAX,
+): Array<{ row: T; similarity: number }> {
+  const byKey = new Map(pool.map((r) => [String(keyOf(r)), r]));
+  const taken = new Set(already.map((r) => String(keyOf(r))));
+  const out: Array<{ row: T; similarity: number }> = [];
+  for (const h of Array.isArray(hits) ? hits : []) {
+    const k = String(h?.row_key ?? "");
+    const row = byKey.get(k);
+    if (!row || taken.has(k)) continue;
+    taken.add(k);
+    out.push({ row, similarity: Math.round(Number(h.similarity) * 1000) / 1000 });
+    if (out.length >= max) break;
+  }
+  return out;
+}
