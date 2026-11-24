@@ -1827,3 +1827,26 @@ RFIs were tagged preventable and 64 lessons came from RFIs.
   (`linked_records`, the shape the mining passes write) or, on the same
   project, names it in `source_reference`. Rules and tests: `rfiRootCause.ts`.
 - `rfi_root_cause_summary` reports `coverage`: RFIs in the log with no tag.
+
+## The checklist review routine (`start_checklist_routine` / `propose_checklist_items`)
+
+A preventable RFI that no checklist item covers (`pms_rfi_root_causes`:
+`preventable`, `qa_item` null) means a check is missing. The routine reads
+those RFIs, groups the kinds that recur and proposes a checklist item for each.
+Anyone with the Admin Console can start it: QA Checklist tab, "Run with Claude".
+
+- The button records the request (`pms_request_qa_routine()`, table
+  `pms_qa_routine_runs`) and opens Claude with the prompt written out. The tab
+  shows the state of the latest run: waiting, running, finished, or stalled.
+- `start_checklist_routine` (no inputs) stamps the start and returns the
+  uncovered RFIs, the current checklist, earlier proposals and the method.
+- `propose_checklist_items` stores proposals in `pms_qa_item_proposals` and
+  closes the run. It never writes `pms_qa_checklist`. A proposal must rest on
+  at least 3 uncovered preventable RFIs on at least 2 projects; the connector
+  counts them from the tags and refuses repeats of an existing item or an
+  earlier proposal. Rules and tests: `qaRoutine.js`.
+- An admin approves or rejects each proposal in the console.
+  `pms_decide_qa_item_proposal()` is the only path to the checklist: it takes
+  the next `qa-N`, inserts the item under "RFI History" and tags the RFIs the
+  proposal rests on that are still uncovered.
+- Migration: `20261124220000_qa_checklist_routine.sql`.
