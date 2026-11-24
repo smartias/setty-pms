@@ -933,8 +933,13 @@ are congested routes that need a person; the rest are sums nobody did.
   things stacked at one spot. Insulation counts on both sides; a sloped pipe
   adds its fall over the run. A flag also says what ceiling height the stack
   would take.
+  `beamDepth` takes a beam below the deck off what is available; a row
+  that fits with neither `beamDepth` nor `noBeam` is marked `toDeckOnly` and
+  counted apart, because RCP and wall-section elevations usually stop at the
+  deck.
 - `fit`: one dimension of a room, closet, shaft or pit against the parts
-  along it, clearances included.
+  along it, clearances included. Also a corridor's clear width against what
+  runs side by side above its ceiling.
 - `workingSpace`: clear depth, width and headroom against NEC 110.26(A).
   Depth by voltage to ground and condition (0 to 150 V: 36 in.; 151 to 600 V:
   36, 42, 48 in.; 601 to 1000 V: 36, 48, 60 in.); width 30 in. or the
@@ -942,6 +947,12 @@ are congested routes that need a person; the rest are sums nobody did.
   depth between the condition 1 and condition 3 values is not checked.
 - Results: `ok`, `tight` (less than 2 in. left, or `tightIn`), `flag`,
   `cannot-check`. A row that lacks a dimension is never estimated.
+- Tried on two projects' RFIs (2026-11-24). Sinclair Hall: not checkable, the
+  bid set prints no ceiling heights and the architect's set is not on file.
+  Tabler: caught the cable tray elevation against the plank and the corridor
+  ducts under the tray; missed a corridor that was short on width (hence the
+  width sum) and a bathroom that passed to the plank while something below
+  it set the duct low (hence `toDeckOnly`).
 - It does not choose the locations, does not know what was not passed, and
   does not find congested routes. The table values are the model code's: the
   adopted edition and local amendments are the engineer's to confirm.

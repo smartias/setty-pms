@@ -1082,6 +1082,24 @@ Pass 1) in the report's Cross-discipline table, with the sheets compared.
      or fill one in. Many ceiling heights on one floor against one
      structure depth is how nine "lower the ceiling" RFIs happened on one
      project, so check every distinct ceiling height, not one per floor.
+     **Beams.** An RCP note or wall section gives the underside of the
+     deck or plank, not of the steel. At each location read the framing
+     plan and pass `beamDepth` (the deepest member crossing below the deck
+     there), or `noBeam` when it shows none. A row that fits with neither
+     comes back `toDeckOnly`: report it as "fits to deck only, framing not
+     read", never as checked. On Tabler a bathroom passed to the plank
+     with 11 in. to spare while the contractor found no room under the
+     return duct.
+     **Corridors need the width as well.** Pass the corridor's clear width
+     and everything that runs side by side above its ceiling (cassette or
+     fan coil, cable tray with its side clearances, duct mains, pipe mains
+     with insulation) to `check_space_fit`, kind `fit`. A corridor can pass
+     on depth and fail on width: on Tabler a cassette took nearly the full
+     width and left no room for the tray.
+     **Cable tray.** Check the tray's printed elevation against the
+     structure too: tray elevation, tray depth and the clearance the
+     technology sheets ask for above it, as kind `fit` against the
+     underside of deck.
   6. **Risers and drops.** Take every riser from the riser diagrams and
      find its chase or furred wall on the architectural plan on each floor
      it passes. Then every pipe drop to a fixture: the wall it drops in

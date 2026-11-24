@@ -132,6 +132,42 @@ test("a set of locations is summarized with what does not fit first", () => {
   assert.equal(checkSpace({ rows: [{ id: "A", kind: "plenum", plenum: 16, stack: [{ what: "duct", depth: 12 }] }], tightIn: 6 }).tight, 1);
 });
 
+test("plenum: a beam below the deck, and a pass that is to the deck only", () => {
+  // Tabler Unit Type 4 bathroom: plank at 9'-10", ceiling at 8'-0", a 10 in. return duct and a 1 in. pipe.
+  const row = { id: "Unit Type 4 bathroom", kind: "plenum", structureBottomAff: "9'-10\"", ceilingHeight: "8'-0\"", stack: [{ what: "33x10 RA", depth: 10 }, { what: "1 in. CHW", depth: 1 }] };
+  const deck = checkSpaceRow(row);
+  assert.equal(deck.status, "ok");
+  assert.equal(deck.toDeckOnly, true, "no beam depth: the pass is to the deck only");
+  assert.match(deck.message, /Measured to the underside of the deck or slab only/);
+  const beam = checkSpaceRow({ ...row, beamDepth: 16 });
+  assert.equal(beam.status, "flag", "a 16 in. beam leaves 6 in. for 11");
+  assert.deepEqual([beam.availableIn, beam.neededIn], [6, 11]);
+  assert.match(beam.availableFrom, /less a 16 in\. beam below it/);
+  assert.ok(!beam.toDeckOnly);
+  const none = checkSpaceRow({ ...row, noBeam: true });
+  assert.ok(!none.toDeckOnly && !/deck or slab only/.test(none.message), "the framing plan shows no beam here");
+  assert.ok(!checkSpaceRow({ ...row, beamDepth: 0 }).toDeckOnly);
+  assert.ok(!checkSpaceRow({ id: "A", kind: "plenum", plenum: 24, stack: [{ what: "duct", depth: 12 }] }).toDeckOnly, "a dimensioned plenum is already clear of structure");
+  const ftf = checkSpaceRow({ id: "A", kind: "plenum", floorToFloor: 128, structureDepth: 10, ceilingHeight: 96, beamDepth: "1'-0\"", stack: [{ what: "duct", depth: 9 }] });
+  assert.deepEqual([ftf.availableIn, ftf.status], [10, "tight"]);
+  // A flag needs no caveat: it fails even to the deck.
+  const short = checkSpaceRow({ ...row, ceilingHeight: "9'-4\"" });
+  assert.equal(short.status, "flag");
+  assert.ok(!/deck or slab only/.test(short.message));
+  const s = checkSpace({ rows: [row, { ...row, noBeam: true }, short] });
+  assert.equal(s.toDeckOnly, 1, "counted so the coverage can say how many passes are to the deck only");
+  assert.equal(s.okRows[0].toDeckOnly, true);
+});
+
+test("fit: a corridor's width against what runs side by side in it", () => {
+  // A 6 ft corridor: a 37 in. cassette fan coil, an 18 in. tray with 6 in. each side, a 12 in. duct and 4 in. mains.
+  const c = checkSpaceRow({ id: "Link corridor at FCU-12", kind: "fit", of: "corridor clear width", available: "6'-0\"",
+    parts: [{ what: "FCU-12 cassette", size: 37 }, { what: "18x3 tray", size: 18 }, { what: "tray clearance, both sides", size: 12 }, { what: "12x10 RA", size: 12 }] });
+  assert.equal(c.status, "flag");
+  assert.deepEqual([c.availableIn, c.neededIn, c.marginIn], [72, 79, -7]);
+  assert.match(c.message, /corridor clear width has 72 in\./);
+});
+
 // Drift anchors: the tool, the checklist hints and the skill method exist together.
 test("check_space_fit, the checklist hints and the skill method are in step", () => {
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
@@ -145,6 +181,8 @@ test("check_space_fit, the checklist hints and the skill method are in step", ()
   const skill = readFileSync(new URL("../../../.claude/skills/qa-coordination-review/SKILL.md", import.meta.url), "utf8");
   assert.ok(skill.includes("`check_space_fit`"));
   for (const k of SPACE_KINDS) assert.ok(skill.includes("`" + k + "`"), `skill does not name the ${k} kind`);
+  for (const k of ["beamDepth", "noBeam"]) assert.ok(src.includes(k) && skill.includes("`" + k + "`"), k);
+  assert.ok(/corridor[^.]*width/i.test(skill), "the skill asks for the corridor width sum");
   const readme = readFileSync(new URL("./README.md", import.meta.url), "utf8");
   assert.ok(readme.includes("`check_space_fit`") && readme.includes("spaceCheck.js"));
 });

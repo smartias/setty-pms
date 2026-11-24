@@ -13,8 +13,9 @@
 // Three kinds:
 //   plenum        the space between a ceiling and the structure above it,
 //                 against what is drawn stacked in it at that spot
-//   fit           one dimension of a room, closet, shaft or pit against the
-//                 things that have to sit side by side along it
+//   fit           one dimension of a room, closet, shaft, pit or corridor
+//                 (its width) against the things that have to sit side by
+//                 side along it
 //   workingSpace  the clear space in front of electrical equipment against
 //                 the NEC 110.26(A) minimums
 //
@@ -113,11 +114,13 @@ function verdict(id, kind, available, needed, tight, where, extra) {
 // section dimensions it; `structureBottomAff` (underside of the beam, duct
 // bank or slab above the floor) minus `ceilingHeight`; or `floorToFloor`
 // minus `structureDepth` (slab and beam together) minus `ceilingHeight`.
+// `beamDepth` is taken off the last two; without it (and without `noBeam`)
+// a row that fits is marked toDeckOnly.
 function checkPlenum(row, id, tightIn) {
   const kind = "plenum";
   const given = (k) => row[k] != null && row[k] !== "";
   const read = {};
-  for (const k of ["plenum", "structureBottomAff", "floorToFloor", "structureDepth", "ceilingHeight", "allowance"]) {
+  for (const k of ["plenum", "structureBottomAff", "floorToFloor", "structureDepth", "ceilingHeight", "allowance", "beamDepth"]) {
     if (!given(k)) continue;
     read[k] = toInches(row[k]);
     if (read[k] === null) return cannot(id, kind, `Not checked: ${k} ("${String(row[k]).slice(0, 30)}") could not be read as a dimension.`);
@@ -137,6 +140,17 @@ function checkPlenum(row, id, tightIn) {
         : "the structure depth";
     return cannot(id, kind, `Not checked: the row does not give ${lacks}.`);
   }
+  // A beam, girder or joist that crosses below the deck at this spot. The
+  // elevations on an RCP or wall section usually stop at the deck or plank,
+  // so without this the sum is to the deck only, and a pass is not a pass
+  // where steel crosses. A dimensioned `plenum` is taken as already clear.
+  let toDeckOnly = false;
+  if (read.plenum == null) {
+    if (read.beamDepth != null) {
+      available -= read.beamDepth;
+      if (read.beamDepth > 0) how += ` less a ${inch(read.beamDepth)} beam below it`;
+    } else if (row.noBeam !== true) toDeckOnly = true;
+  }
   const sum = sumParts(row.stack);
   if (sum.error) return cannot(id, kind, `Not checked: ${sum.error}.`);
   if (available <= 0) {
@@ -149,6 +163,10 @@ function checkPlenum(row, id, tightIn) {
   if (v.status === "flag" && read.ceilingHeight != null) {
     v.ceilingToFit = feetInches(read.ceilingHeight + (available - needed));
     v.message += ` As drawn it would take a ceiling at ${v.ceilingToFit}, not ${feetInches(read.ceilingHeight)}.`;
+  }
+  if (toDeckOnly) {
+    v.toDeckOnly = true;
+    if (v.status !== "flag") v.message += " Measured to the underside of the deck or slab only: no beam depth was given, so this is not a pass where a beam crosses. Pass beamDepth, or noBeam when the framing plan shows none.";
   }
   return v;
 }
@@ -245,9 +263,11 @@ export function checkSpace(input) {
   const of = (s) => results.filter((r) => r.status === s);
   return {
     checked: results.length, ok: of("ok").length, tight: of("tight").length, flagged: of("flag").length, notChecked: of("cannot-check").length,
+    // Plenum rows that passed without a beam depth: reported, not counted as clean.
+    toDeckOnly: results.filter((r) => r.toDeckOnly && r.status !== "flag").length,
     flags: of("flag"),
     tightRows: of("tight"),
     notCheckedRows: of("cannot-check").map((r) => ({ id: r.id, kind: r.kind, message: r.message })),
-    okRows: of("ok").map((r) => ({ id: r.id, kind: r.kind, message: r.message })),
+    okRows: of("ok").map((r) => ({ id: r.id, kind: r.kind, message: r.message, ...(r.toDeckOnly ? { toDeckOnly: true } : {}) })),
   };
 }

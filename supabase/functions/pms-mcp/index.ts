@@ -13867,10 +13867,16 @@ mcp.tool("check_space_fit", {
     "together at that spot) and `ceilingHeight`. `stack` is everything that crosses at that spot, one above the " +
     "other: the unit or duct with its insulation, the pipe that crosses it (with slope and run when it drains), " +
     "the sprinkler main, the light fixture. Things side by side are not stacked. `allowance` adds a stated depth " +
-    "for hangers or the ceiling grid when the project gives one. " +
-    "fit: one dimension of a room, closet, shaft or pit (`available`, named in `of`) against the `parts` that " +
-    "sit along it: equipment depth plus its working or service clearance in a closet; risers with insulation " +
-    "and the space between them in a shaft; a unit and its pull space in a pit. " +
+    "for hangers or the ceiling grid when the project gives one. Elevations on an RCP or wall section usually " +
+    "stop at the deck or plank: give `beamDepth`, the deepest beam, girder or joist crossing below it at that " +
+    "spot (framing plan), or `noBeam: true` when the framing plan shows none. Without either, a row that fits " +
+    "comes back marked toDeckOnly and is NOT a clean pass. " +
+    "fit: one dimension of a room, closet, shaft, pit or corridor (`available`, named in `of`) against the " +
+    "`parts` that sit along it: equipment depth plus its working or service clearance in a closet; risers with " +
+    "insulation and the space between them in a shaft; a unit and its pull space in a pit; and across a " +
+    "corridor's clear WIDTH, everything that runs side by side above its ceiling (the cassette or fan coil, the " +
+    "cable tray with its side clearances, the duct mains, the pipe mains with insulation). A corridor needs " +
+    "both sums: depth as plenum, width as fit. " +
     "workingSpace: the clear `depth`, `width` and `headroom` in front of a panel, switchboard, transformer, " +
     "disconnect, VFD or controller against NEC 110.26(A): give `system` as written ('480Y/277') or " +
     "`voltsToGround`, and `condition` 1, 2 or 3 when you can tell what faces the equipment. " +
@@ -13888,6 +13894,8 @@ mcp.tool("check_space_fit", {
       id: z.string().describe("The location, and the sheets it was read from: 'Corridor 200 at grid C/4 (M-102, A-301)'."),
       kind: z.enum(SPACE_KINDS as [string, ...string[]]),
       plenum: SPACE_DIM, structureBottomAff: SPACE_DIM, floorToFloor: SPACE_DIM, structureDepth: SPACE_DIM, ceilingHeight: SPACE_DIM, allowance: SPACE_DIM,
+      beamDepth: SPACE_DIM.describe("plenum: depth of the deepest beam, girder or joist crossing BELOW the deck or plank at this spot, from the framing plan (a W16 is about 16 in.: pass the depth the structural sheets or the steel table give, not a guess)."),
+      noBeam: z.boolean().optional().describe("plenum: true when the framing plan shows no member crossing below the deck at this spot."),
       stack: z.array(SPACE_PART).max(30).optional().describe("plenum: what is drawn one above the other at this spot."),
       available: SPACE_DIM, of: z.string().optional().describe("fit: which dimension of which space, e.g. 'Electrical Closet 123A depth'."),
       parts: z.array(SPACE_PART).max(30).optional().describe("fit: what sits along that dimension, clearances included."),
@@ -13903,6 +13911,7 @@ mcp.tool("check_space_fit", {
       ...r,
       note: (r.flagged ? `${r.flagged} location(s) do not fit on the numbers passed. Confirm each dimension on the sheet, then record it (qa-614 for plenum and fit, qa-070 for working space) with the numbers.` : "Nothing passed fails to fit.") +
         (r.tight ? ` ${r.tight} fit with almost nothing to spare: name them to the engineer as places to look at, not as findings.` : "") +
+        (r.toDeckOnly ? ` ${r.toDeckOnly} plenum row(s) fit to the underside of the deck only, with no beam depth given: report them as 'to deck only', not as checked, until the framing plan is read.` : "") +
         (r.notChecked ? ` ${r.notChecked} could not be checked for a missing or unreadable dimension: say so in the coverage, do not estimate.` : "") +
         " This checks the numbers you passed. It does not know what else is in the space, and it is not a substitute for a section through a tight spot. Working space is the NEC 110.26(A) minimum: confirm the edition and local amendments the project is under.",
     });
