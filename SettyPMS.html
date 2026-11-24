@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-24-pms-v214-ca-review-packet-prompt";
+    window.__appVersion = "2026-11-24-pms-v215-ca-list-inline-edit";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -13900,8 +13900,75 @@ function CaListFilterBar({ st, patch, reset, search, setSearch, shown, total, my
     </React.Fragment>
   );
 }
+// ── Inline edits on the list rows (status, due date, assignee) ───────────────
+// The three things people change most without needing the rest of the item.
+// Each goes through the same rules as the modal: caStatus.js dates a status
+// that means "our answer went out", and an item that is no longer open drops
+// its "answer ready" hand-off flag. The change saves with the project's
+// normal autosave; the modal is still there for everything else.
+function caInlinePatch(item, patch, type) {
+  let next = { ...item, ...patch };
+  if (window.CaStatus) next = window.CaStatus.applyStatusRules(item, next, type);
+  if (next.answerReady && !caIsOpenStatus(type === "rfi", next.status)) delete next.answerReady;
+  return next;
+}
+function CaInlineStatus({ item, type, onPatch }) {
+  const isRFI = type === "rfi";
+  const list = isRFI ? RFI_STATUSES : SUBMITTAL_STATUSES;
+  const sc = (isRFI ? RFI_STATUS_COLORS : SUBMITTAL_STATUS_COLORS)[item.status] || { bg: P.border, text: P.textMuted };
+  return (
+    <select value={item.status || ""} onChange={e => onPatch({ status: e.target.value })}
+      aria-label={"Status of " + (item.number || "item")} title="Change status"
+      style={{ background: sc.bg, color: sc.text, padding: "3px 6px", borderRadius: 20, fontSize: 11, fontWeight: 600, border: "none", cursor: "pointer", maxWidth: 170 }}>
+      {!list.includes(item.status) && <option value={item.status || ""}>{item.status || "(none)"}</option>}
+      {list.map(s => <option key={s} value={s}>{s}</option>)}
+    </select>
+  );
+}
+function CaInlineDue({ item, overdue, onPatch }) {
+  return (
+    <input type="date" value={item.dueDate || ""} onChange={e => onPatch({ dueDate: e.target.value })}
+      aria-label={"Due date of " + (item.number || "item")} title="Change due date"
+      style={{ display: "block", marginBottom: 3, fontSize: 12, padding: "1px 2px", width: 122, background: "transparent", border: "1px solid transparent", borderRadius: 4, color: overdue ? P.red : P.textMuted, cursor: "pointer" }}
+      onFocus={e => { e.currentTarget.style.borderColor = P.border; }} onBlur={e => { e.currentTarget.style.borderColor = "transparent"; }} />
+  );
+}
+function CaInlineAssign({ item, staffList, onPatch }) {
+  const [open, setOpen] = useState(false);
+  const box = React.useRef(null);
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const away = e => { if (box.current && !box.current.contains(e.target)) setOpen(false); };
+    const esc = e => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
+  }, [open]);
+  const ids = item.assignedTo || [];
+  const names = caAssigneeNames(item, staffList);
+  function toggle(id) { onPatch({ assignedTo: ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id] }); }
+  return (
+    <span ref={box} style={{ position: "relative", display: "inline-block" }}>
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open} aria-label={"Assign " + (item.number || "item")} title="Change who it is assigned to"
+        style={{ background: "none", border: "1px solid " + (open ? P.border : "transparent"), borderRadius: 4, padding: "1px 4px", font: "inherit", fontSize: 12, textAlign: "left", cursor: "pointer", color: names.length ? P.text : P.textDim }}>
+        {names.length ? names.join(", ") : "Unassigned"}<span aria-hidden="true" style={{ marginLeft: 4, opacity: 0.5 }}>▾</span>
+      </button>
+      {open && (
+        <div role="group" aria-label="Assigned to" style={{ position: "absolute", zIndex: 50, top: "100%", left: 0, marginTop: 4, minWidth: 190, maxHeight: 260, overflowY: "auto", background: P.card, border: "1px solid " + P.border, borderRadius: 8, padding: 6, boxShadow: "0 8px 24px rgba(0,0,0,.35)" }}>
+          {staffList.length === 0 && <div style={{ fontSize: 12, color: P.textDim, padding: 4 }}>No team members on this project yet. Add them on the Team tab.</div>}
+          {staffList.map(m => (
+            <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 4px", cursor: "pointer", whiteSpace: "nowrap" }}>
+              <input type="checkbox" checked={ids.includes(m.id)} onChange={() => toggle(m.id)} />
+              {m.name || m.role}
+            </label>
+          ))}
+        </div>
+      )}
+    </span>
+  );
+}
 // Row click opens the item, except on the row's own buttons and links.
-function caRowClick(e, open) { if (!(e.target.closest && e.target.closest("button, a, input, select, label"))) open(); }
+function caRowClick(e, open) { if (!(e.target.closest && e.target.closest("button, a, input, select, label, [role=group]"))) open(); }
 
 function RFIsView({ project, onChange, staff, clients }) {
   const rfis = project.rfis || [];
@@ -14041,8 +14108,6 @@ function RFIsView({ project, onChange, staff, clients }) {
           <tbody>
             {filtered.map(r => {
               const overdue = isOverdue(r);
-              const sc = RFI_STATUS_COLORS[r.status] || {};
-              const assigneeNames = caAssigneeNames(r, staffList);
               return (
                 <tr key={r.id} onClick={e => caRowClick(e, () => openItem(r))} title="Click to open" style={{ cursor: "pointer", background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
                   <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}<DuplicateBadge twins={dupMap[r.id]} /><IntakeBadge item={r} /><IntakeStatusBadge item={r} /><AiReviewMark item={withFresh(r)} /><AnswerReadyBadge item={r} isRFI={true} /></td>
@@ -14053,14 +14118,14 @@ function RFIsView({ project, onChange, staff, clients }) {
                   <td style={{ fontSize: 12 }}>{r.discipline}</td>
                   <td style={{ fontSize: 12, color: P.textMuted }}>{r.from || "—"}</td>
                   <td style={{ fontSize: 12 }}>
-                    {assigneeNames.length > 0 ? assigneeNames.join(", ") : <span style={{ color: P.textDim }}>Unassigned</span>}
+                    <CaInlineAssign item={r} staffList={staffList} onPatch={p => saveRFI(caInlinePatch(r, p, "rfi"))} />
                   </td>
                   <td style={{ fontSize: 12, color: P.textMuted, whiteSpace: "nowrap" }}>{r.dateReceived || "—"}</td>
                   <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                    <div style={{ color: overdue ? P.red : P.textMuted, marginBottom: 3 }}>{r.dueDate || "—"}</div>
+                    <CaInlineDue item={r} overdue={overdue} onPatch={p => saveRFI(caInlinePatch(r, p, "rfi"))} />
                     <SlaChip dueDate={r.dueDate} isClosed={RFI_CLOSED_STATUSES.includes(r.status) || isUnreviewedIntake(r)} />
                   </td>
-                  <td><Badge color={sc} text={r.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}<CaBallChip item={r} type="rfi" project={project} /></td>
+                  <td><CaInlineStatus item={r} type="rfi" onPatch={p => saveRFI(caInlinePatch(r, p, "rfi"))} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}<CaBallChip item={r} type="rfi" project={project} /></td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
                       <Btn small variant="ghost" onClick={() => openItem(r)}>Open</Btn>
@@ -14289,9 +14354,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
           <tbody>
             {filtered.map(s => {
               const overdue = isOverdue(s);
-              const sc = SUBMITTAL_STATUS_COLORS[s.status] || {};
               const stc = STAMP_COLORS[s.stamp || "—"] || {};
-              const assigneeNames = caAssigneeNames(s, staffList);
               return (
                 <tr key={s.id} onClick={e => caRowClick(e, () => openItem(s))} title="Click to open" style={{ cursor: "pointer", background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
                   <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{s.number}<IntakeBadge item={s} /><IntakeStatusBadge item={s} /><AiReviewMark item={withFresh(s)} /><AnswerReadyBadge item={s} isRFI={false} /></td>
@@ -14302,15 +14365,15 @@ function SubmittalsView({ project, onChange, staff, clients }) {
                   <td style={{ fontFamily: "JetBrains Mono", fontSize: 12 }}>{s.specSection || "—"}</td>
                   <td style={{ fontSize: 12 }}>{s.discipline}</td>
                   <td style={{ fontSize: 12 }}>
-                    {assigneeNames.length > 0 ? assigneeNames.join(", ") : <span style={{ color: P.textDim }}>Unassigned</span>}
+                    <CaInlineAssign item={s} staffList={staffList} onPatch={p => saveSubmittal(caInlinePatch(s, p, "submittal"))} />
                   </td>
                   <td style={{ fontSize: 12, color: P.textMuted, whiteSpace: "nowrap" }}>{s.dateReceived || "—"}</td>
                   <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                    <div style={{ color: overdue ? P.red : P.textMuted, marginBottom: 3 }}>{s.dueDate || "—"}</div>
+                    <CaInlineDue item={s} overdue={overdue} onPatch={p => saveSubmittal(caInlinePatch(s, p, "submittal"))} />
                     <SlaChip dueDate={s.dueDate} isClosed={SUBMITTAL_CLOSED_STATUSES.includes(s.status) || isUnreviewedIntake(s)} />
                   </td>
                   <td>{s.stamp && s.stamp !== "—" ? <Badge color={stc} text={s.stamp} /> : <span style={{ color: P.textDim, fontSize: 12 }}>—</span>}</td>
-                  <td><Badge color={sc} text={s.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}<CaBallChip item={s} type="submittal" project={project} /></td>
+                  <td><CaInlineStatus item={s} type="submittal" onPatch={p => saveSubmittal(caInlinePatch(s, p, "submittal"))} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}<CaBallChip item={s} type="submittal" project={project} /></td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
                       <Btn small variant="ghost" onClick={() => openItem(s)}>Open</Btn>
