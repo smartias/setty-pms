@@ -812,6 +812,28 @@ still matched nothing. They apply from CD on. Run them after the five above.
   A finding quotes the phrase and writes the question a bidder would ask.
   "If applicable" on a controls item is qa-633, not this item.
 
+- **qa-638 The numbers on a schedule row agree.** Automatic: you read, the
+  connector does the sums. Do not do this arithmetic yourself.
+  1. *Read every equipment schedule and panel schedule*
+     (`read_drawing_schedule`): M, P and E.
+  2. *Pass the rows to `check_schedule_arithmetic`*, each under every kind
+     its columns support: air heating and cooling (cfm, capacity,
+     temperatures), hydronic (gpm, capacity, temperatures), kW against MBH,
+     electrical load (kW, volts, phase, amps), overcurrent (breaker against
+     MCA and MOCP), voltage (the unit against the panel that feeds it), and
+     counts against a capacity. Pass `models` for every scheduled item.
+  3. *Only numbers printed on the schedule.* A row that lacks an input comes
+     back not checked: report the count in the coverage. Never fill one in.
+  4. *Confirm a flag before recording it.* Open the sheet (`view_drawing`) and
+     check the values were read from the right columns. Schedules are easy to
+     misread and a wrong flag costs the engineer's trust.
+  5. *Write the finding as a question with both numbers:* "MAU-1 is scheduled
+     at 143 MBH; 1,700 cfm from 10 F to 55 F is 83 MBH. Which is intended?"
+     The check does not know which number is wrong.
+  It checks that a row is consistent with itself. It does not check that the
+  product can be bought as specified: for that, `search_knowledge` carries
+  the lessons from earlier jobs.
+
 **One row per defect.** A connection to an existing system can read as
 qa-630 or qa-631. Use qa-630 when the question is whether the existing
 thing is there and adequate (is there a drain, is the panel pole free), and

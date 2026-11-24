@@ -92,6 +92,8 @@ import {
   planCostEstimateReview, costEstimateReviewsOf, markCostReviewStarted, ESTIMATE_DISCIPLINES, estimateDisciplineLabel,
   setReviewLines,
 } from "./constructionCost.js";
+// check_schedule_arithmetic (QA item qa-638): whether a schedule row's numbers agree. Pure; see its tests.
+import { checkSchedule, ROW_KINDS, DEFAULT_TOLERANCE_PCT } from "./scheduleArithmetic.js";
 // The line-by-line detail of a reviewed estimate (pms_cost_estimate_lines). Pure; see its tests.
 import {
   extractSheetLines, normalizeSuppliedLines, summarizeLines, checkAgainstReview, toRows, LINES_MAX,
@@ -1529,7 +1531,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-lesson-candidates";
+const BUILD = "2026-11-24-schedule-arithmetic";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.31.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -13776,6 +13778,58 @@ mcp.tool("get_cost_estimate_lines", {
       })),
       ...(rows.length > skip + cap ? { more: `Showing ${cap} of ${rows.length} from line ${skip + 1}. Pass offset:${skip + cap} for the next page, or narrow with discipline or search.` } : {}),
       ...(rows.length ? {} : { note: review.lines?.count ? "No line matches those filters." : "No lines are stored for this review. Store them with save_cost_estimate_lines." }),
+    });
+  },
+});
+
+// ─── SCHEDULE ARITHMETIC: check_schedule_arithmetic (QA item qa-638) ─────────
+// The sums behind an equipment schedule row, done here so none is left to the
+// model: the reviewer reads the rows (read_drawing_schedule) and passes the
+// numbers. Read-only, no project data touched; rules in scheduleArithmetic.js.
+const SCHEDULE_NUM = z.number().optional();
+mcp.tool("check_schedule_arithmetic", {
+  description:
+    "CHECK THE ARITHMETIC of equipment schedule rows (QA checklist item qa-638). You read the rows with " +
+    "read_drawing_schedule and pass each row's numbers; this tool does the sums and returns only the rows that do " +
+    "not close, each with the scheduled value and the value the row's own numbers imply. Use it during a QA review " +
+    "on every mechanical, plumbing and electrical equipment schedule and panel schedule; never do this arithmetic " +
+    "yourself. One row can be passed several times under different kinds. Kinds and what each needs: " +
+    "airHeating / airSensibleCooling (cfm, a capacity as mbh, btuh, kw or tons, and eatF + latF or deltaTF); " +
+    "airTotalCooling (cfm, a capacity, enteringH + leavingH or deltaH in Btu/lb); hydronic (gpm, a capacity, " +
+    "ewtF + lwtF or deltaTF; fluidFactor when not water, default 500); kwMbh (kw and mbh on the same row); " +
+    "electricalLoad (kw or kva, volts, phase, amps; powerFactor for a motor load, default 1); overcurrent " +
+    "(breaker, and mca and/or mocp); voltage (the equipment's volts and phase, and sourceSystem, the feeding " +
+    "panel's system as written, e.g. '480Y/277', plus source for its name and sourcePhase); capacity (count, " +
+    "capacity, what, of: e.g. 6 lighting zones against a controller that takes 4). `models` takes tag, model and " +
+    "description for every scheduled item and returns tags that describe different things with one model number. " +
+    "Pass ONLY numbers printed on the schedule: a row that lacks an input comes back 'cannot-check' and is " +
+    "reported as not checked, never completed with an assumed value. A flag means the row is not consistent with " +
+    "itself; it does not say which number is wrong or that the selection is wrong. Before recording a flag as a QA " +
+    "finding under qa-638, look at the row again (view_drawing) to confirm the values were read correctly, and " +
+    "write the finding as the question for the engineer, with both numbers. Standard air and water, IP units.",
+  inputSchema: z.object({
+    rows: z.array(z.object({
+      id: z.string().describe("The equipment tag, and the sheet when it helps: 'MAU-1 (M-601)'."),
+      kind: z.enum(ROW_KINDS as [string, ...string[]]),
+      cfm: SCHEDULE_NUM, gpm: SCHEDULE_NUM, mbh: SCHEDULE_NUM, btuh: SCHEDULE_NUM, kw: SCHEDULE_NUM, kva: SCHEDULE_NUM, tons: SCHEDULE_NUM,
+      eatF: SCHEDULE_NUM, latF: SCHEDULE_NUM, ewtF: SCHEDULE_NUM, lwtF: SCHEDULE_NUM, deltaTF: SCHEDULE_NUM, enteringH: SCHEDULE_NUM, leavingH: SCHEDULE_NUM, deltaH: SCHEDULE_NUM, fluidFactor: SCHEDULE_NUM,
+      volts: SCHEDULE_NUM, phase: z.union([z.number(), z.string()]).optional(), amps: SCHEDULE_NUM, powerFactor: SCHEDULE_NUM,
+      mca: SCHEDULE_NUM, mocp: SCHEDULE_NUM, breaker: SCHEDULE_NUM,
+      sourceSystem: z.string().optional(), source: z.string().optional(), sourcePhase: z.union([z.number(), z.string()]).optional(),
+      count: SCHEDULE_NUM, capacity: SCHEDULE_NUM, what: z.string().optional(), of: z.string().optional(),
+    })).max(300).optional().describe("Schedule rows to check."),
+    models: z.array(z.object({ tag: z.string(), model: z.string(), description: z.string().optional() })).max(600).optional()
+      .describe("Every scheduled item's tag, model number and description, to find one model under different descriptions."),
+    tolerancePct: z.number().min(2).max(50).optional().describe(`How far apart two numbers may be before a row is flagged. Default ${DEFAULT_TOLERANCE_PCT}. kW against MBH is always held to 5.`),
+  }),
+  handler: async ({ rows, models, tolerancePct }) => {
+    if (!rows?.length && !models?.length) return asText({ error: "Pass rows, models, or both." });
+    const r = checkSchedule({ rows, models, tolerancePct });
+    return asText({
+      ...r,
+      note: (r.flagged ? `${r.flagged} row(s) do not close. Confirm each was read correctly from the sheet, then record it under qa-638 as a question with both numbers.` : "Every row that could be checked is consistent with itself.") +
+        (r.notChecked ? ` ${r.notChecked} row(s) lacked an input and were not checked: say so in the coverage, do not estimate.` : "") +
+        " This checks consistency only: not that a selection is right or that a product is available as specified.",
     });
   },
 });
