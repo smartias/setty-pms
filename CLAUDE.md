@@ -173,6 +173,9 @@ browser (PMS pages) or from the connector (app permissions).
   A new file's timestamp must sort after every migration already in
   `supabase/migrations/` (some are dated ahead, e.g. `20261121100000`):
   Supabase rejects a file older than the last one applied.
+  The Tests workflow (`check-source.mjs`) fails a PR when two files share a
+  14-digit version or a new file does not sort after the newest on `main`:
+  Supabase silently skips the second file of a pair (PRs #564 and #565).
   So: never apply a migration by hand. Merge the file and let the integration
   apply it. If one truly must go in by hand, record it under the file's
   version afterwards:

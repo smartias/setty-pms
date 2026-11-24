@@ -9,7 +9,13 @@
 # What it runs (the same commands CLAUDE.md asks for before pushing):
 #   - node --test *.test.mjs                              (PMS page modules)
 #   - node --test supabase/functions/pms-mcp/*.test.mjs   (the connector)
-#   - .github/scripts/check-source.mjs                    (JSX parses; CRLF/LF)
+#   - .github/scripts/check-source.mjs                    (JSX parses; CRLF/LF;
+#                                                          migration versions)
+#
+# The migration check compares a pull request with main as it is when the run
+# starts. Two open PRs can each pass and still collide once the first merges,
+# unless main requires branches to be up to date before merging (same
+# Settings page as above), which makes the second PR re-run first.
 name: Tests
 
 on:
@@ -42,7 +48,14 @@ jobs:
       - name: Unit tests (pms-mcp connector)
         run: node --test supabase/functions/pms-mcp/*.test.mjs
 
-      - name: Source checks (JSX parses, line endings)
+      # The checkout is one commit deep; the migration check needs main's file list.
+      - name: Fetch main (for the migration version check)
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+
+      - name: Source checks (JSX parses, line endings, migration versions)
+        env:
+          MIGRATIONS_BASE_REF: ${{ github.event_name == 'pull_request' && 'origin/main' || '' }}
         run: |
           # No package.json in this repo: install the one tool the check needs.
           npm install --no-save --no-audit --no-fund @babel/parser@7
