@@ -702,7 +702,14 @@ is in the report header, and spend the budget accordingly:
 - **qa-632 Plan, schedule and spec agree on the small items.** qa-602 is
   major equipment (its capacity, model and electrical data against the
   spec); this is everything smaller, and also the tags and room names that
-  panel schedule descriptions give for any equipment.
+  panel schedule descriptions give for any equipment. The comparing is
+  automatic: collect what each document says in the steps below and pass it
+  to `check_document_agreement` (`statements` for materials, ratings and
+  heights, with the same subject and attribute wording for the statements
+  meant to be compared; `circuits` for each panel, plan homeruns against
+  schedule rows). Do not judge agreement yourself. It returns only the
+  disagreements; confirm each at both places before recording it, and
+  report what came back not compared in the coverage.
   1. *Circuiting, at two depths.* For every panel, set level: each circuit
      on the schedule has a homerun on a plan, and each homerun has a
      schedule row. This is cheap; do all panels. For at least three panels,

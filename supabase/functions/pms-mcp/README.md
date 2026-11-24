@@ -916,6 +916,29 @@ so no arithmetic is left to the model. Read-only: it touches no project data.
   number is wrong, that the selection is wrong, or that the product exists.
   Product-availability lessons belong in the knowledge layer.
 
+## Document agreement (`check_document_agreement`, QA item qa-632)
+
+Whether plan, schedule, detail and specification say the same thing about the
+same item. The reviewer collects what each document says and passes it; the
+comparing is done in `documentAgreement.js` (pure;
+`documentAgreement.test.mjs`, whose cases replay the RFIs behind qa-632).
+Read-only: it touches no project data.
+
+- `statements` (subject, attribute, source, value): entries with the same
+  subject and attribute are compared. Materials by name, grade and
+  construction (double wall, lined, flexible or hard connection); quantities
+  after conversion to one unit; anything else as text. `limit: max | min`
+  marks a statement the others must meet. `silent: true` marks a document
+  that should state it and does not.
+- `circuits` (per panel: `plan` homeruns, `schedule` rows): drawn but not
+  scheduled, drawn on a spare or space, given to a different room or load, a
+  different device count, and with `plansComplete` scheduled but on no plan.
+- Homerun numbers are read from the rendered plan. On the text layer they are
+  bare numbers that cannot be told from keynotes, so this is not a text match.
+- A conflict does not say which document is right. A subject only one
+  document states is `not-compared`.
+- Migration `20261124260000` marks qa-632 `auto` and rewrites its hint.
+
 ## Fee Calculator write (`set_project_fee`, 1.25.0; inputs 1.26.0)
 
 When a PM tells Claude a fee, this puts it in the PMS so nobody retypes it. It

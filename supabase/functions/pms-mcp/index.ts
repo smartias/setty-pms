@@ -96,6 +96,8 @@ import {
 import { planProposals, PROPOSAL_PHASES, PROPOSAL_AUTOMATION, MIN_PROJECTS, MIN_RFIS, MIN_LESSONS, MIN_LESSON_PROJECTS, MIN_FIRM_WIDE, MIN_PREFERENCES, MIN_AGENCIES, PROPOSALS_MAX } from "./qaRoutine.js";
 // check_schedule_arithmetic (QA item qa-638): whether a schedule row's numbers agree. Pure; see its tests.
 import { checkSchedule, ROW_KINDS, DEFAULT_TOLERANCE_PCT } from "./scheduleArithmetic.js";
+// check_document_agreement (QA item qa-632): whether plan, schedule, detail and spec say the same thing. Pure; see its tests.
+import { checkAgreement } from "./documentAgreement.js";
 // The line-by-line detail of a reviewed estimate (pms_cost_estimate_lines). Pure; see its tests.
 import {
   extractSheetLines, normalizeSuppliedLines, summarizeLines, checkAgainstReview, toRows, LINES_MAX,
@@ -1533,7 +1535,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-qa-routine-agency-preferences";
+const BUILD = "2026-11-24-document-agreement";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.31.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -13832,6 +13834,78 @@ mcp.tool("check_schedule_arithmetic", {
       note: (r.flagged ? `${r.flagged} row(s) do not close. Confirm each was read correctly from the sheet, then record it under qa-638 as a question with both numbers.` : "Every row that could be checked is consistent with itself.") +
         (r.notChecked ? ` ${r.notChecked} row(s) lacked an input and were not checked: say so in the coverage, do not estimate.` : "") +
         " This checks consistency only: not that a selection is right or that a product is available as specified.",
+    });
+  },
+});
+
+// ─── DOCUMENT AGREEMENT: check_document_agreement (QA item qa-632) ───────────
+// Whether plan, schedule, detail and specification say the same thing about
+// the same item. The reviewer collects what each document says and passes the
+// statements; the comparing is done here (documentAgreement.js) so none is
+// left to the model. Read-only, no project data touched.
+mcp.tool("check_document_agreement", {
+  description:
+    "COMPARE what the documents say about the same item (QA checklist item qa-632: plan, schedule, detail and " +
+    "specification agree on the small items). You collect the statements; this tool does the comparing and returns " +
+    "only the disagreements, each naming both documents. Never judge agreement yourself. Two inputs, either or both. " +
+    "`statements`: one entry for each place a document states an attribute of a subject: subject ('Outdoor supply " +
+    "duct'), attribute ('jacket material', 'thickness', 'mounting height', 'candela', 'gauge'), source ('Detail " +
+    "5/M-701', 'Spec 233113 2.4 E', 'H-003 schedule note 5'), and value AS PRINTED ('aluminum jacket', '18 ga', " +
+    "'+42\"AFF', '177cd'). Entries with the same subject and attribute are compared: materials by name, grade and " +
+    "construction (double wall, lined, flexible or hard connection), quantities after converting to one unit (4'-0\" " +
+    "equals 48 in.), anything else as text. Set limit:'max' or 'min' on a statement that is a limit the others must " +
+    "meet (a note that strobes are 110 cd maximum). Set silent:true for a document that should state it and does " +
+    "not (spec part 3 says nothing about a coating part 2 lists; a schedule with no drain size): that is reported " +
+    "as a conflict too. Use the SAME subject and attribute wording for statements meant to be compared. " +
+    "`circuits`: for one panel, `plan` is each homerun as drawn (circuit numbers, the load or room it serves, the " +
+    "sheet, and count when you counted devices) and `schedule` is the panel schedule's rows from " +
+    "read_drawing_schedule (circuit, load description, breaker, count when the description gives one). It returns " +
+    "circuits drawn but not scheduled, drawn on a circuit scheduled as spare or space, given to a different room " +
+    "or load, and with a different device count. Set plansComplete:true only when you read every plan the panel " +
+    "serves: then scheduled circuits that no plan shows are returned as well. Give circuit numbers only, never the " +
+    "panel name inside `circuit`. Homerun numbers must be read from the rendered plan (view_drawing), paired with " +
+    "the device or room beside them; the text layer alone cannot tell a circuit number from a keynote. A conflict " +
+    "does not say which document is right. Before recording one as a QA finding under qa-632, look at both places " +
+    "again to confirm they describe the same thing and were read correctly, then write it as a question naming " +
+    "both. A subject only one document states comes back not compared: say so in the coverage.",
+  inputSchema: z.object({
+    statements: z.array(z.object({
+      subject: z.string().describe("What is being described, worded the same for every statement about it."),
+      attribute: z.string().optional().describe("Which property: 'material', 'jacket material', 'thickness', 'gauge', 'mounting height', 'candela', 'rating'."),
+      source: z.string().describe("Where it is stated: sheet and detail or note number, schedule and column, or spec section and paragraph."),
+      value: z.string().optional().describe("The value as printed. Leave out with silent:true."),
+      limit: z.enum(["max", "min"]).optional().describe("This statement is a maximum or minimum the others must meet."),
+      silent: z.boolean().optional().describe("This document should state it and does not."),
+    })).max(600).optional(),
+    circuits: z.array(z.object({
+      panel: z.string().describe("The panel name as on its schedule."),
+      plansComplete: z.boolean().optional().describe("True only when every plan this panel serves was read."),
+      plan: z.array(z.object({
+        circuit: z.union([z.string(), z.number()]).describe("Circuit number(s) at the homerun: '12', '15,17'."),
+        load: z.string().optional().describe("The room, equipment tag or device group the homerun serves, as the plan shows."),
+        sheet: z.string().optional(),
+        count: z.number().optional().describe("Devices counted on this circuit, when counted."),
+      })).max(400).optional(),
+      schedule: z.array(z.object({
+        circuit: z.union([z.string(), z.number()]),
+        load: z.string().optional().describe("The load description on the schedule row, as printed. SPARE and SPACE as printed."),
+        breaker: z.string().optional(),
+        count: z.number().optional().describe("The device count the description gives, when it gives one."),
+      })).max(400).optional(),
+    })).max(60).optional(),
+  }),
+  handler: async ({ statements, circuits }) => {
+    if (!statements?.length && !circuits?.length) return asText({ error: "Pass statements, circuits, or both." });
+    const r = checkAgreement({ statements, circuits });
+    const single = r.statementsNotCompared.length, noSched = r.circuitsNotCompared.length;
+    return asText({
+      ...r,
+      note: (r.flagged
+        ? `${r.flagged} disagreement(s). Look at both places again to confirm each describes the same thing and was read correctly, then record it under qa-632 as a question naming both documents.`
+        : "Nothing that could be compared disagrees.") +
+        (single ? ` ${single} subject(s) had fewer than two comparable statements and were not compared: say so in the coverage.` : "") +
+        (noSched ? ` ${noSched} panel(s) had no schedule rows and were not compared.` : "") +
+        " This compares only what you passed: a document you did not read is not covered. It does not say which document is right.",
     });
   },
 });
