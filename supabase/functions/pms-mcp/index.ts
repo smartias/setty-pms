@@ -101,6 +101,8 @@ import { checkAgreement } from "./documentAgreement.js";
 // check_tag_schedule_coverage (QA item qa-622): every tag on a plan is scheduled, and the reverse. Pure; see its tests.
 import { tagCoverage } from "./tagCoverage.js";
 // check_deferred_decisions (QA item qa-637): where the documents leave a decision to someone else. Pure; see its tests.
+// check_controls_coverage (QA item qa-633): scheduled equipment the controls sheets never mention. Pure; see its tests.
+import { controlsCoverage, BMS_CONDITIONAL_PG } from "./controlsCoverage.js";
 import { pgPattern as deferredPgPattern, scanText as deferredScanText, groupHits as deferredGroupHits } from "./deferredDecisions.js";
 // The line-by-line detail of a reviewed estimate (pms_cost_estimate_lines). Pure; see its tests.
 import {
@@ -1539,7 +1541,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-deferred-decisions";
+const BUILD = "2026-11-24-controls-coverage";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.31.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -14074,6 +14076,84 @@ mcp.tool("check_deferred_decisions", {
         "A place is not a finding: check whether the answer is stated elsewhere in the set, in the agency preferences and in the knowledge layer, and record under qa-637 only what is stated nowhere. " +
         (specItemIds?.length ? "" : "Specifications were NOT searched: pass their PDFs in specItemIds, or say so in the coverage. ") +
         "Bare 'as required' is not searched.",
+    });
+  },
+});
+
+// ─── CONTROLS COVERAGE: check_controls_coverage (QA item qa-633) ─────────────
+// Which scheduled mechanical equipment the controls sheets never mention, for
+// a whole set in one call from the drawing text index (pms_tag_controls_kinds,
+// migration 20261124290000), plus every "BMS if applicable"
+// (pms_sheet_phrase_hits). What counts is decided in controlsCoverage.js.
+// Read-only.
+mcp.tool("check_controls_coverage", {
+  description:
+    "FIND SCHEDULED EQUIPMENT THE CONTROLS SHEETS NEVER MENTION, for a whole drawing set in one call (QA checklist " +
+    "item qa-633: every controlled item names what controls it). It takes each equipment family (tag prefix) that " +
+    "is on a mechanical or plumbing schedule and drawn on a plan, and looks for it on the controls sheets. It " +
+    "returns: `notMentioned`, families no controls sheet mentions by tag or by name (each is either stand-alone, " +
+    "and then its thermostat or switch must be on a plan, or nobody assigned it: this is what the RFIs were); " +
+    "`byTypeOnly`, families with no tag on a controls sheet but the prefix printed there (shown as a type); " +
+    "`partlyShown`, families with some tags on controls sheets and others not (usually 'typical of', sometimes the " +
+    "odd unit out is the finding); and `bmsConditional`, every place a sheet says BMS, BAS or DDC 'if applicable', " +
+    "'where available' or the like. Run it once at the start of qa-633. HOW IT DECIDES: a controls sheet is one " +
+    "whose title says CONTROL(S), BMS, BAS, DDC, ATC, AUTOMATION, SEQUENCE or POINTS LIST (not LIGHTING); " +
+    "`controlsSheets` in the answer lists the ones it used. If the controls diagrams or points list sit on a " +
+    "sheet titled something else, pass it in controlsSheets and run again. If it finds NO controls sheet, that is " +
+    "itself worth a finding when the set has controlled equipment: the documents do not say BMS or stand-alone. " +
+    "Tagged items nothing controls (grilles, drains, tanks, plumbing fixtures) are left out by prefix; pass " +
+    "`ignore` for more, or `families` to look at named prefixes only. LIMITS, say them in the coverage: it reads " +
+    "text, so it cannot see whether a thermostat is drawn or whether a sequence can do what it says; hyphenated " +
+    "tags only; untagged controlled items (dampers, detectors, trap primers, what the fire alarm matrix operates) " +
+    "are not in its list and are still yours; the controls specification is not read. For each family returned, " +
+    "look for its thermostat or switch (search_drawings for THERMOSTAT, T-STAT, STAND-ALONE, and the tag) before " +
+    "recording it under qa-633. Issued drawings by default; pass subfolder for a pre-issuance QA set. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    subfolder: z.string().optional().describe("Limit to ONE set folder, spelled as list_project_documents reports it. Required for a pre-issuance QA set."),
+    controlsSheets: z.array(z.string()).max(60).optional().describe("Sheets that carry controls diagrams, sequences or the points list although their title does not say so, e.g. ['M-701']."),
+    families: z.array(z.string()).max(40).optional().describe("Only these tag prefixes, e.g. ['EUH', 'FCU']."),
+    ignore: z.array(z.string()).max(40).optional().describe("Tag prefixes nothing controls on this project, to leave out."),
+  }),
+  handler: async ({ projectNumber, subfolder, controlsSheets, families, ignore }) => {
+    const folder = subfolder?.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "") : null;
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const numPrefix = String(project).toLowerCase().trim();
+    let indexedFiles = 0, filesPending = 0;
+    try {
+      const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+      indexedFiles = known.filter((k) => k.status === "done").length;
+      filesPending = known.filter((k) => k.status === "pending").length;
+    } catch { /* coverage is advisory */ }
+    const coverage = { indexedFiles, filesPending, ...(filesPending ? { note: "Index incomplete: a controls sheet not read yet makes equipment look unassigned. search_drawings indexOnly:true fills it; then run this again." } : {}) };
+    if (!indexedFiles) return asText({ project, coverage, error: "Nothing is indexed for this project yet.", nextStep: "Run search_drawings with indexOnly:true first." });
+    const exclude = folder ? null : PRE_ISSUE_FOLDER_SQL_RE;
+    let rows: any[];
+    try {
+      rows = (await sbRpc("pms_tag_controls_kinds", { p_prefix: numPrefix, p_folder: folder, p_exclude: exclude, p_controls_sheets: controlsSheets?.length ? controlsSheets : null })) || [];
+    } catch (e) {
+      const m = String((e as any)?.message ?? e);
+      return asText({ project, coverage, error: /404|PGRST202|does not exist/.test(m) ? "The controls check is not available yet: the database has not run migration 20261124290000." : `Controls check failed: ${m.slice(0, 240)}`,
+        nextStep: "find_equipment and search_drawings on the controls sheets still do it by hand." });
+    }
+    const r = controlsCoverage(rows, { families, ignore });
+    let bmsConditional: any[] = [];
+    let phraseNote: string | undefined;
+    try {
+      const hits: any[] = (await sbRpc("pms_sheet_phrase_hits", { p_prefix: numPrefix, p_pattern: BMS_CONDITIONAL_PG, p_folder: folder, p_exclude: exclude })) || [];
+      bmsConditional = hits.slice(0, 60).map((h: any) => ({ sheet: h.sheet_no, phrase: h.phrase, text: `…${h.before || ""}${h.phrase || ""}${h.after || ""}…`.replace(/\s+/g, " ") }));
+    } catch (e) { phraseNote = `"BMS if applicable" was not searched: ${String((e as any)?.message ?? e).slice(0, 120)}`; }
+    return asText({
+      project, ...(folder ? { scope: `Sheets from "${folder}" only.` } : { scope: PRE_ISSUE_NOTE }), coverage, ...r, bmsConditional,
+      ...(phraseNote ? { phraseNote } : {}),
+      note: (!r.controlsSheets.length
+        ? "NO controls sheet was found by title. If the controls diagrams or points list are on a sheet titled something else, pass it in controlsSheets and run again; if the set has none, the documents do not say what controls the equipment, which is a finding where the set has controlled equipment. "
+        : r.flagged ? `${r.flagged} equipment famil${r.flagged === 1 ? "y is" : "ies are"} on no controls sheet. For each, find its thermostat or switch on a plan, or record it under qa-633. ` : "Every scheduled family checked is mentioned on a controls sheet. ") +
+        (bmsConditional.length ? `${bmsConditional.length} place(s) hedge on the BMS: each is a finding unless the set says elsewhere whether there is one. ` : "") +
+        "This reads text: it cannot see whether a thermostat is drawn, and it does not cover untagged dampers, detectors or the controls specification. Say so in the coverage.",
     });
   },
 });

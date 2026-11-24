@@ -980,6 +980,26 @@ decision to the owner, the authority or an unnamed code edition. Read-only.
 - A place is somewhere to look, not a finding. Deciding whether the answer is
   stated elsewhere is the reviewer's step.
 
+## Controls coverage (`check_controls_coverage`, QA item qa-633)
+
+Which scheduled mechanical equipment the controls sheets never mention. One
+call for a whole set, from the drawing text index. Read-only.
+
+- `pms_tag_controls_kinds` (migration `20261124290000`) returns each tag's
+  schedule sheets, controls sheets and plans, plus every short word printed on
+  the controls sheets. A controls sheet is one titled CONTROL(S), BMS, BAS,
+  DDC, ATC, AUTOMATION, SEQUENCE or POINTS LIST (not LIGHTING), or one passed
+  in `controlsSheets`.
+- `controlsCoverage.js` (pure; `controlsCoverage.test.mjs`) works by FAMILY,
+  because a controls diagram draws one unit and calls it typical:
+  `notMentioned` (no tag and no bare prefix on any controls sheet),
+  `byTypeOnly`, `partlyShown`. Passive prefixes (grilles, drains, tanks,
+  fixtures) are left out (`PASSIVE`, plus `ignore`).
+- `bmsConditional`: "BMS if applicable" and the like, through
+  `pms_sheet_phrase_hits`.
+- qa-633 stays `assisted`: whether a thermostat is drawn, untagged dampers and
+  detectors, and the controls specification still need a reviewer.
+
 ## Fee Calculator write (`set_project_fee`, 1.25.0; inputs 1.26.0)
 
 When a PM tells Claude a fee, this puts it in the PMS so nobody retypes it. It

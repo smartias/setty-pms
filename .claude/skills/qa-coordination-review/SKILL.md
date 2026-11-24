@@ -740,7 +740,14 @@ is in the report header, and spend the budget accordingly:
   5. Quote both sources word for word. Where the sources can be read as two
      layers of one requirement (an insulation jacket, then a protective
      enclosure), say so and raise it as a flag, not a conflict.
-- **qa-633 Every controlled item names its controller.**
+- **qa-633 Every controlled item names its controller.** Start with
+  `check_controls_coverage`: one call lists the scheduled equipment families
+  that no controls sheet mentions, the ones shown only as a type, the ones
+  partly shown, and every "BMS if applicable". Look at `controlsSheets` in
+  its answer first; if the diagrams or points list are on a sheet not listed,
+  pass that sheet and run it again. It reads text only: it cannot see a
+  thermostat symbol, and it does not list untagged items, so the steps below
+  still apply to what it returns and to what it cannot see.
   1. *Build the list from more than the equipment schedules.* Schedules
      give the fans, pumps, heaters and units. Add what has no schedule row:
      fire smoke dampers and motorized dampers from the plans and risers,
