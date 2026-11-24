@@ -286,6 +286,38 @@ and the preventable RFIs that no checklist item covers.
   findings for this project, and nothing in it is quoted in the report as a
   fact about this set.
 
+### Construction cost at this deliverable
+
+Each project keeps a dated history of its construction cost, separate from
+the Fee Calculator. It is what the firm's second RFI measure divides by
+(preventable RFIs per $1M of construction value), so it is checked at every
+deliverable. A cost estimate often arrives for review just before the set
+goes out; this step is where its total gets recorded.
+
+1. `record_construction_cost` with only the project: read the figure on
+   record and the history.
+2. Look for a cost document belonging to this deliverable:
+   `list_project_documents` and `find_document` for "estimate", "cost",
+   "budget", "bid tab", in the set's folder first and then the project
+   folder. `search_emails` for an estimate sent for review.
+3. If there is one, `read_document` and take the **total construction cost**
+   for the base scope, with contingency and escalation. Not one trade's
+   subtotal, not the A/E fee, not soft costs. If the document gives several
+   totals and it is not clear which is the total, do not record: put the
+   question in the report.
+4. Record it: `record_construction_cost` with `constructionCost`, `source`
+   (`cost-estimate`, `owner-budget`, `bid`, `contract`), `deliverable` (the
+   milestone name or the phase code), `document` (the file name) and a `note`
+   saying which total was taken. A move of 25% or more comes back with a
+   warning: put it in the report header.
+5. No cost document: do not record and do not guess. Say in the report
+   header "No cost estimate found for this deliverable; construction cost on
+   record is $X as of <date>" (or "none on record"), so the PM can confirm it
+   in the PMS Schedule tab.
+
+This is not a QA finding and gets no checklist row. A refusal for missing
+permissions is reported in one line and the review goes on.
+
 ## Step 1 — Carry-over: prior comments and open findings
 
 Run this in EVERY review, not just back-checks. Reviewer comments on
