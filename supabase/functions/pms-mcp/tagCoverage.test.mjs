@@ -63,7 +63,7 @@ test("the families filter, and nothing to check", () => {
 test("the tool, the database function and the checklist item are in step", () => {
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
   assert.ok(src.includes('mcp.tool("check_tag_schedule_coverage"') && src.includes('sbRpc("pms_tag_sheet_kinds"') && src.includes("tagCoverage(rows"));
-  const sql = readFileSync(new URL("../../migrations/20261124270000_qa_tag_schedule_coverage.sql", import.meta.url), "utf8");
+  const sql = readFileSync(new URL("../../migrations/20261125130000_qa_tag_schedule_coverage.sql", import.meta.url), "utf8");
   for (const col of ["tag_prefix text", "tag_num int", "spellings text[]", "sched_sheets text[]", "plan_sheets text[]", "other_sheets text[]", "sheet_count bigint", "total_sheets bigint", "schedule_sheet_list text[]", "plan_sheet_count bigint"]) assert.ok(sql.includes(col), col);
   assert.ok(sql.includes("grant execute on function public.pms_tag_sheet_kinds(text, text, text, text[]) to service_role") && sql.includes("from anon"));
   assert.ok(sql.includes("where item_id = 'qa-622'") && sql.includes("check_tag_schedule_coverage"));

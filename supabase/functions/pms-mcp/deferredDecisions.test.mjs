@@ -70,7 +70,7 @@ test("the pattern Postgres gets is the same alternation, with its word boundary"
   for (const p of PHRASES) assert.ok(!/\\[dDSWB]|\(\?[=!<]|\*\?|\+\?/.test(p.re), "only constructs both engines read the same way: " + p.key);
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
   assert.ok(src.includes('mcp.tool("check_deferred_decisions"') && src.includes('sbRpc("pms_sheet_phrase_hits"') && src.includes("deferredPgPattern()"));
-  const sql = readFileSync(new URL("../../migrations/20261124280000_qa_deferred_decisions.sql", import.meta.url), "utf8");
+  const sql = readFileSync(new URL("../../migrations/20261125140000_qa_deferred_decisions.sql", import.meta.url), "utf8");
   assert.ok(sql.includes("regexp_count(l.text, p_pattern, 1, 'i')") && sql.includes("regexp_instr(l.text, p_pattern, 1, n, 0, 'i')"), "each occurrence by position, so neighbours are not swallowed");
   assert.ok(sql.includes("to service_role") && sql.includes("from anon"));
   assert.ok(sql.includes("where item_id = 'qa-637'") && sql.includes("automation = 'auto'"));

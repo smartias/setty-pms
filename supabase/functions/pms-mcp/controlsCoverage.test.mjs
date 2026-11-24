@@ -56,7 +56,7 @@ test("the filters, tag runs, and no controls sheets at all", () => {
 test("the tool, the database function and the checklist item are in step", () => {
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
   assert.ok(src.includes('mcp.tool("check_controls_coverage"') && src.includes('sbRpc("pms_tag_controls_kinds"') && src.includes("p_pattern: BMS_CONDITIONAL_PG"));
-  const sql = readFileSync(new URL("../../migrations/20261124290000_qa_controls_coverage.sql", import.meta.url), "utf8");
+  const sql = readFileSync(new URL("../../migrations/20261125150000_qa_controls_coverage.sql", import.meta.url), "utf8");
   for (const col of ["tag_prefix text", "tag_num int", "sched_sheets text[]", "controls_sheets text[]", "plan_sheets text[]", "sheet_count bigint", "total_sheets bigint", "controls_sheet_list text[]", "controls_words text[]"]) assert.ok(sql.includes(col), col);
   assert.ok(sql.includes("grant execute on function public.pms_tag_controls_kinds(text, text, text, text[]) to service_role") && sql.includes("from anon"));
   assert.ok(sql.includes("where item_id = 'qa-633'") && sql.includes("check_controls_coverage"));

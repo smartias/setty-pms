@@ -937,14 +937,14 @@ Read-only: it touches no project data.
   bare numbers that cannot be told from keynotes, so this is not a text match.
 - A conflict does not say which document is right. A subject only one
   document states is `not-compared`.
-- Migration `20261124260000` marks qa-632 `auto` and rewrites its hint.
+- Migration `20261125120000` marks qa-632 `auto` and rewrites its hint.
 
 ## Tags against schedules (`check_tag_schedule_coverage`, QA item qa-622)
 
 Every equipment tag on a plan has a schedule row, and every scheduled tag is
 drawn. One call for a whole set, from the drawing text index. Read-only.
 
-- `pms_tag_sheet_kinds` (migration `20261124270000`) returns each hyphenated
+- `pms_tag_sheet_kinds` (migration `20261125130000`) returns each hyphenated
   tag on the newest indexed revision of every sheet in scope, with the sheets
   it is on split into schedule sheets (title contains SCHEDULE, or passed in
   `scheduleSheets`), plans (PLAN or LAYOUT) and others.
@@ -971,7 +971,7 @@ decision to the owner, the authority or an unnamed code edition. Read-only.
   "as required" is left out: it is on a fifth of the sheets and says nothing.
 - The patterns are written once and used in both engines: Postgres over the
   drawing text index (`pgPattern`, `\b` becomes `\y`) through
-  `pms_sheet_phrase_hits` (migration `20261124280000`), and JS over spec pages.
+  `pms_sheet_phrase_hits` (migration `20261125140000`), and JS over spec pages.
   The SQL function finds each occurrence by position (`regexp_instr`), so two
   phrases close together on a sheet are both returned.
 - Specification books are not in the drawing index, so up to three PDFs per
@@ -985,7 +985,7 @@ decision to the owner, the authority or an unnamed code edition. Read-only.
 Which scheduled mechanical equipment the controls sheets never mention. One
 call for a whole set, from the drawing text index. Read-only.
 
-- `pms_tag_controls_kinds` (migration `20261124290000`) returns each tag's
+- `pms_tag_controls_kinds` (migration `20261125150000`) returns each tag's
   schedule sheets, controls sheets and plans, plus every short word printed on
   the controls sheets. A controls sheet is one titled CONTROL(S), BMS, BAS,
   DDC, ATC, AUTOMATION, SEQUENCE or POINTS LIST (not LIGHTING), or one passed
@@ -999,6 +999,46 @@ call for a whole set, from the drawing text index. Read-only.
   `pms_sheet_phrase_hits`.
 - qa-633 stays `assisted`: whether a thermostat is drawn, untagged dampers and
   detectors, and the controls specification still need a reviewer.
+## Space fit (`check_space_fit`, QA items qa-614 and qa-070; 1.32.0)
+
+Whether what is drawn fits the space it is drawn in. The reviewer reads the
+dimensions off the sheets and passes them as drawn (`9'-6"`, `114"`, `9.5'`
+or a number of inches); the conversion and the sums are done in
+`spaceCheck.js` (pure; `spaceCheck.test.mjs`). Read-only: it touches no
+project data.
+
+Why it exists: qa-614 is the checklist item the RFI log rewards most (63
+preventable RFIs on 14 projects at 2026-11-24). Read one by one, about a third
+are congested routes that need a person; the rest are sums nobody did.
+
+- `plenum`: floor to floor less structure less ceiling height (or underside
+  of structure less ceiling height, or a dimensioned plenum) against the
+  things stacked at one spot. Insulation counts on both sides; a sloped pipe
+  adds its fall over the run. A flag also says what ceiling height the stack
+  would take.
+  `beamDepth` takes a beam below the deck off what is available; a row
+  that fits with neither `beamDepth` nor `noBeam` is marked `toDeckOnly` and
+  counted apart, because RCP and wall-section elevations usually stop at the
+  deck.
+- `fit`: one dimension of a room, closet, shaft or pit against the parts
+  along it, clearances included. Also a corridor's clear width against what
+  runs side by side above its ceiling.
+- `workingSpace`: clear depth, width and headroom against NEC 110.26(A).
+  Depth by voltage to ground and condition (0 to 150 V: 36 in.; 151 to 600 V:
+  36, 42, 48 in.; 601 to 1000 V: 36, 48, 60 in.); width 30 in. or the
+  equipment's; headroom 6'-6" or the equipment's. With no condition given, a
+  depth between the condition 1 and condition 3 values is not checked.
+- Results: `ok`, `tight` (less than 2 in. left, or `tightIn`), `flag`,
+  `cannot-check`. A row that lacks a dimension is never estimated.
+- Tried on two projects' RFIs (2026-11-24). Sinclair Hall: not checkable, the
+  bid set prints no ceiling heights and the architect's set is not on file.
+  Tabler: caught the cable tray elevation against the plank and the corridor
+  ducts under the tray; missed a corridor that was short on width (hence the
+  width sum) and a bathroom that passed to the plank while something below
+  it set the duct low (hence `toDeckOnly`).
+- It does not choose the locations, does not know what was not passed, and
+  does not find congested routes. The table values are the model code's: the
+  adopted edition and local amendments are the engineer's to confirm.
 
 ## Fee Calculator write (`set_project_fee`, 1.25.0; inputs 1.26.0)
 
@@ -1946,7 +1986,7 @@ Anyone with the Admin Console can start it: QA Checklist tab, "Run with Claude".
   lessons with no project. Each is already a firm-level statement a person
   approved, so ONE can carry a proposal. Links go to
   `pms_qa_practice_coverage` (best practices) or `pms_qa_lesson_coverage`.
-- Agency preferences (`20261124250000_qa_routine_agency_preferences.sql`): the
+- Agency preferences (`20261125110000_qa_routine_agency_preferences.sql`): the
   routine also reads active agency preferences. The checklist has no agency
   scope, so a preference earns an item only when at least 2 preferences from
   at least 2 different agencies ask for the same thing; the item is then
@@ -1954,4 +1994,4 @@ Anyone with the Admin Console can start it: QA Checklist tab, "Run with Claude".
 - Migrations: `20261124220000_qa_checklist_routine.sql`,
   `20261124230000_qa_routine_lessons.sql`,
   `20261124240000_qa_routine_best_practices.sql`,
-  `20261124250000_qa_routine_agency_preferences.sql`.
+  `20261125110000_qa_routine_agency_preferences.sql`.

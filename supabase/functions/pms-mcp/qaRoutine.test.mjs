@@ -139,7 +139,7 @@ test("the routine's tools, tables, approval function and console tab are in step
   for (const x of ["create table if not exists public.pms_qa_practice_coverage", "insert into public.pms_qa_practice_coverage", "insert into public.pms_qa_lesson_coverage",
     "if not public.is_pms_admin() then", "update public.pms_rfi_root_causes rc", "revoke all on function public.pms_decide_qa_item_proposal"]) assert.ok(sql3.includes(x), x);
   assert.ok(src.includes('"pms_qa_practice_coverage?on_conflict=practice_id"') && src.includes("pms_best_practices?select="));
-  const sql4 = readFileSync(new URL("../../migrations/20261124250000_qa_routine_agency_preferences.sql", import.meta.url), "utf8");
+  const sql4 = readFileSync(new URL("../../migrations/20261125110000_qa_routine_agency_preferences.sql", import.meta.url), "utf8");
   for (const x of ["create table if not exists public.pms_qa_preference_coverage", "insert into public.pms_qa_preference_coverage", "insert into public.pms_qa_practice_coverage",
     "insert into public.pms_qa_lesson_coverage", "if not public.is_pms_admin() then", "update public.pms_rfi_root_causes rc", "revoke all on function public.pms_decide_qa_item_proposal"]) assert.ok(sql4.includes(x), x);
   assert.ok(src.includes('"pms_qa_preference_coverage?on_conflict=pref_id"') && src.includes("pms_agency_preferences?select="));

@@ -134,6 +134,6 @@ test("one call returns both, and the tool and checklist item are in step", () =>
   assert.equal(checkAgreement({}).flagged, 0);
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
   assert.ok(src.includes('mcp.tool("check_document_agreement"') && src.includes('from "./documentAgreement.js"'));
-  const sql = readFileSync(new URL("../../migrations/20261124260000_qa_document_agreement_check.sql", import.meta.url), "utf8");
+  const sql = readFileSync(new URL("../../migrations/20261125120000_qa_document_agreement_check.sql", import.meta.url), "utf8");
   assert.ok(sql.includes("where item_id = 'qa-632'") && sql.includes("check_document_agreement") && sql.includes("automation = 'auto'"));
 });
