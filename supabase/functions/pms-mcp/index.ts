@@ -1513,9 +1513,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-sheet-numbers-part-suffix";
+const BUILD = "2026-11-24-submittal-default-responses";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.28.0",
+  name: "setty-pms", version: "1.29.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -4441,13 +4441,51 @@ async function packetListFiles(p: any, item: any, type: "rfi" | "submittal"): Pr
   return { files: [], folderUrl: null, note: "The record has no SharePoint folder, so no attachments are filed with it. The contractor's files may be on the source email or still in the portal: ask before reviewing." };
 }
 
+// The firm's standing submittal review notes: a folder named "Submittal
+// Default Responses" in the templates project. Looked for inside "Templates
+// for MCP Connector", then beside it, then at the project's root, so it can be
+// filed wherever suits; matched by name-contains like the template folders.
+// The listing is kept for five minutes: every submittal review asks for it.
+const DEFAULT_RESPONSES_FOLDER = "submittal default responses";
+let _defaultResponses: { at: number; value: { found: boolean; folderUrl?: string | null; files: PacketFile[] } } | null = null;
+async function submittalDefaultResponses(): Promise<{ found: boolean; folderUrl?: string | null; files: PacketFile[] }> {
+  if (_defaultResponses && Date.now() - _defaultResponses.at < 5 * 60 * 1000) return _defaultResponses.value;
+  const { driveId, itemId } = await templatesFolder();
+  const childFolder = async (parentId: string): Promise<any | null> => {
+    const r = await listChildren(`/drives/${driveId}/items/${encodeURIComponent(parentId)}/children?$select=id,name,folder,webUrl&$top=200`);
+    return r.value.find((it: any) => it.folder && String(it.name).toLowerCase().includes(DEFAULT_RESPONSES_FOLDER)) || null;
+  };
+  let folder = await childFolder(itemId);
+  // Up two levels: "01 Project Management", then the templates project itself.
+  let cursor = itemId;
+  for (let up = 0; !folder && up < 2; up++) {
+    const meta = await graphGet(`/drives/${driveId}/items/${encodeURIComponent(cursor)}?$select=id,parentReference`);
+    const parent = meta?.parentReference?.id;
+    if (!parent) break;
+    folder = await childFolder(parent);
+    cursor = parent;
+  }
+  let value: { found: boolean; folderUrl?: string | null; files: PacketFile[] };
+  if (!folder) value = { found: false, files: [] };
+  else {
+    const r = await listChildren(`/drives/${driveId}/items/${encodeURIComponent(folder.id)}/children?$select=id,name,size,file,lastModifiedDateTime,webUrl&$top=200`);
+    value = {
+      found: true, folderUrl: folder.webUrl ?? null,
+      files: r.value.filter((it: any) => it.file).map((it: any) => ({ itemId: `${driveId}|${it.id}`, name: it.name, path: folder.name, size: it.size ?? null, modified: it.lastModifiedDateTime ?? null, webUrl: it.webUrl ?? null, ext: extOf(it.name) })),
+    };
+  }
+  _defaultResponses = { at: Date.now(), value };
+  return value;
+}
+
 mcp.tool("get_ca_review_packet", {
   description:
     "START HERE when reviewing ONE RFI or submittal. One call returns what a review needs: the item (question / " +
     "description, response so far, spec section, dates, any Claude suggestion already on it); every file in the " +
     "item's folder with the TEXT of the contractor's attachments already extracted; the email it was logged from; " +
     "the sheets it names, matched to the current issued set with ready view_drawing arguments; the governing spec " +
-    "section's text when the issued register has it; QA-ledger rows on those sheets; and related items (earlier " +
+    "section's text when the issued register has it; for a submittal, the firm's default review notes for that " +
+    "spec section (`defaultResponse`); QA-ledger rows on those sheets; and related items (earlier " +
     "rounds, same spec section, same sheet). It also marks the item as under review in the PMS, so there is no " +
     "need to call mark_ca_review_started, read_rfi_submittal, list_project_documents, read_document, " +
     "get_current_set, trace_references or read_email first. `coverage.gaps` lists what could NOT be gathered " +
@@ -4606,6 +4644,7 @@ mcp.tool("get_ca_review_packet", {
         const hit = await packetPdfText(got.key, got.bytes, { maxPages: 10, find, scanCap: PACKET_SPEC_SCAN_PAGES });
         return { ...hit, itemId, ...(hit.text ? { note: `Spec book of ${hit.totalPages} pages: these are the pages whose text names the section. read_document {itemId, pages:"X-Y"} reads around them.` } : {}) };
       },
+      defaultResponses: () => submittalDefaultResponses(),
       ledger: async (sheets) => {
         const rows = await qaLedgerFor(project, { sheets }, { relevantOnly: true });
         return rows.map((r: any) => ({

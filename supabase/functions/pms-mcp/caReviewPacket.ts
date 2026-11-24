@@ -153,6 +153,64 @@ export function matchSpecs(wanted: string[], specifications: any[]): Array<{ wan
   });
 }
 
+// ── Firm default responses ───────────────────────────────────────────────────
+// The "Submittal Default Responses" folder in the templates project holds the
+// firm's standing review notes, one Word file per spec section, named with the
+// section number ("262416 Panelboards.docx", "260573 & 260574 Short Circuit
+// ….docx") or, where no single section applies, with the equipment
+// ("Switchboard.docx"). A submittal is matched by section number first; when
+// several files share the number (the O&M manual set), by the words of the
+// file name that the submittal's own text contains; and only when no number
+// matches, by equipment name alone.
+const DEFAULT_NAME_STOP = new Set(["and", "for", "the", "with", "system", "systems", "docx", "doc", "manual", "manuals"]);
+// Plural-insensitive: "devices" and "device", "switches" and "switch".
+const stem = (w: string) => { const x = w.toLowerCase(); return /(?:ch|sh|x|ss)es$/.test(x) ? x.slice(0, -2) : x.replace(/s$/, ""); };
+
+export function defaultFileSections(name: string): string[] {
+  // Section numbers lead the name; a later number is a model or a date.
+  const head = String(name || "").split(/[A-Za-z]{3,}/)[0] || "";
+  return [...head.matchAll(/(?<!\d)(\d{6})(?!\d)/g)].map((m) => m[1]);
+}
+export function defaultFileWords(name: string): string[] {
+  const base = String(name || "").replace(/\.[A-Za-z0-9]+$/, "");
+  return [...new Set((base.match(/[A-Za-z]{3,}/g) || []).map(stem).filter((w) => !DEFAULT_NAME_STOP.has(w)))];
+}
+
+export function matchDefaultResponses<T extends { name: string }>(files: T[], item: any, max = 3): Array<{ file: T; matchedOn: string }> {
+  const list = (Array.isArray(files) ? files : []).filter((f) => f && /\.docx?$/i.test(f.name));
+  const text = [item?.title, item?.description, item?.fullDescription, item?.specSection].map((x) => String(x || "").replace(/<[^>]+>/g, " ")).join(" ");
+  const have = new Set((text.match(/[A-Za-z]{3,}/g) || []).map(stem));
+  const overlap = (f: T) => { const w = defaultFileWords(f.name); return { w, hit: w.filter((x) => have.has(x)).length }; };
+  const want = specKeyOf(item?.specSection || "").slice(0, 6);
+  if (/^\d{6}$/.test(want)) {
+    const same = list.filter((f) => defaultFileSections(f.name).includes(want));
+    if (same.length === 1) return [{ file: same[0], matchedOn: "spec section " + want }];
+    if (same.length > 1) {
+      // Several files for one section: the ones whose names the submittal's
+      // text speaks to, else the general one (the shortest name).
+      const scored = same.map((f) => ({ f, ...overlap(f) })).sort((a, b) => b.hit - a.hit || a.f.name.length - b.f.name.length);
+      const best = scored.filter((x) => x.hit > 0 && x.hit === scored[0].hit);
+      const general = [...same].sort((a, b) => a.name.length - b.name.length)[0];
+      const picked = best.length ? best.map((x) => x.f) : [general];
+      if (best.length && !picked.includes(general)) picked.push(general);
+      return picked.slice(0, max).map((f) => ({ file: f, matchedOn: "spec section " + want + (f === general && best.length ? " (general notes)" : best.length ? " and the description" : " (general notes)") }));
+    }
+  }
+  // No file carries the section number: a file named for the equipment, when
+  // every word of its name appears in the submittal's own text.
+  return list.filter((f) => !defaultFileSections(f.name).length)
+    .map((f) => ({ f, ...overlap(f) })).filter((x) => x.w.length > 0 && x.hit === x.w.length)
+    .sort((a, b) => b.hit - a.hit).slice(0, max)
+    .map((x) => ({ file: x.f, matchedOn: "equipment name" }));
+}
+
+export const DEFAULT_RESPONSE_NOTE =
+  "The firm's standing review notes for this kind of submittal: a starting point, not the review. Keep only the " +
+  "lines that apply to what was actually submitted, and check each against the cut sheet and the spec. Text in " +
+  "parentheses such as \"(Reminder to check.)\" and scope tags such as \"(Base Building)\" are notes to the " +
+  "reviewer: act on them, never send them to the contractor. The stamp named in the file is the usual outcome, " +
+  "not a decision: the stamp follows from what you find.";
+
 // ── Related items ────────────────────────────────────────────────────────────
 // "121.1" follows "121"; "23 22 16-2.0" resubmits "23 22 16-1.0". The family
 // root is the number with a trailing revision part removed.
@@ -259,6 +317,9 @@ export interface PacketDeps {
   specText: (spec: any, wanted: string) => Promise<FileText & { itemId?: string }>;
   // QA-ledger rows on these sheets.
   ledger: (sheets: string[]) => Promise<any[]>;
+  // Files in the firm's "Submittal Default Responses" folder (submittals only).
+  // `found` false when the folder is not in the templates project.
+  defaultResponses?: () => Promise<{ found: boolean; folderUrl?: string | null; files: PacketFile[] }>;
 }
 
 export interface PacketArgs {
@@ -401,6 +462,34 @@ export async function buildCaReviewPacket(deps: PacketDeps, a: PacketArgs): Prom
     if (specRows.some((r) => r.text)) included.push("governing spec text");
   }
 
+  // ── Firm default response for this spec section (submittals) ──
+  let defaultResponse: any = null;
+  if (!isRFI && deps.defaultResponses) {
+    try {
+      const lib = await deps.defaultResponses();
+      if (!lib.found) gaps.push("The firm's \"Submittal Default Responses\" folder was not found in the templates project, so no standing review notes were looked up.");
+      else {
+        const hits = matchDefaultResponses(lib.files, a.item);
+        if (!hits.length) {
+          gaps.push(`No firm default response matches this submittal${a.item?.specSection ? " (spec " + a.item.specSection + ")" : ""}; the folder holds ${lib.files.length} file(s). Review from the spec and drawings alone.`);
+        } else {
+          const rows: any[] = [];
+          for (const h of hits) {
+            const row: Record<string, unknown> = { name: h.file.name, matchedOn: h.matchedOn, itemId: h.file.itemId, ...(h.file.webUrl ? { webUrl: h.file.webUrl } : {}) };
+            try {
+              const t = await deps.fileText(h.file, { maxPages: 6 });
+              if (t.error) row.error = t.error;
+              else { const clip = clipToBudget(t.text || "", 5000, 5000); row.text = clip.text; if (clip.truncated) row.truncated = true; }
+            } catch (e) { row.error = msg(e); }
+            rows.push(row);
+          }
+          defaultResponse = { matches: rows, note: DEFAULT_RESPONSE_NOTE, ...(lib.folderUrl ? { folderUrl: lib.folderUrl } : {}) };
+          if (rows.some((r) => r.text)) included.push("firm default response");
+        }
+      }
+    } catch (e) { gaps.push("The firm default responses could not be read: " + msg(e)); }
+  }
+
   // ── QA ledger on the sheets, and related items ──
   let qaLedger: any = null;
   const ledgerSheets = resolved.sheets.map((s) => String(s.sheet));
@@ -426,13 +515,14 @@ export async function buildCaReviewPacket(deps: PacketDeps, a: PacketArgs): Prom
     sheets: resolved.sheets,
     reviewedAgainstSet: (set as any)?.label ?? null,
     specs: specRows,
+    ...(defaultResponse ? { defaultResponse } : {}),
     ...(qaLedger ? { qaLedger } : {}),
     ...(related.length ? { related } : {}),
     coverage: { included, gaps },
     nextSteps: [
       "Look at the sheets with view_drawing (each sheet row carries ready `view` arguments) and at image-only attachment pages with view_drawing {itemId, page}. Nothing here replaces looking at the drawing.",
       isRFI ? "Check related items first: a follow-up or neighbouring RFI may already have settled the question."
-            : "Reconcile the submitted model, size and options against the schedule (read_drawing_schedule) and the spec text above.",
+            : "Reconcile the submitted model, size and options against the schedule (read_drawing_schedule) and the spec text above." + (defaultResponse ? " Start the suggested response from defaultResponse, keeping only the lines that apply." : ""),
       "Carry every line of coverage.gaps into the review's coverage note, then finish with save_ca_review (reviewedAgainstSet above).",
     ],
   };

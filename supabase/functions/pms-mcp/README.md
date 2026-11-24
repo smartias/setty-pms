@@ -653,6 +653,7 @@ What it returns, for `{projectNumber, type, number}`:
 | `sheets` | Sheets a person confirmed on the item, plus the ones its text, email and attachments name, kept only when the current set or the drawing index knows them. Each row carries the current revision and a ready `view` argument for `view_drawing`. |
 | `reviewedAgainstSet` | One line naming the newest issued set, for `save_ca_review`. |
 | `specs` | The record's spec section (and any the text names) matched to the register's specifications, with the section's text. A spec book over 40 pages is searched for the pages that name the section. |
+| `defaultResponse` | Submittals only (1.29.0): the firm's standing review notes for the spec section, from the "Submittal Default Responses" folder. See below. |
 | `qaLedger`, `related` | Ledger rows on those sheets; earlier rounds of the same item, same spec section, same sheet. |
 | `coverage` | `included` and, above all, `gaps`: what could not be gathered and why. |
 
@@ -677,6 +678,27 @@ Rules worth knowing before changing it:
 - **Telemetry:** it is in `RECORD_TOOLS`, so an empty `files` list does not log
   the call as "empty". To see whether it worked, compare calls per review
   before and after (sessions ending in `save_ca_review`).
+
+**Default responses (1.29.0).** A folder whose name contains "Submittal Default
+Responses" in the templates project (`SAPX26XXX - NY 2026 Templates and
+Standards`) holds one Word file per spec section. It is looked for inside
+"Templates for MCP Connector", then beside it, then at the project root, and
+the listing is cached for five minutes. Drop a file in and it is used on the
+next review, no redeploy. `matchDefaultResponses` picks the file(s):
+
+- by the six-digit section number(s) that lead the file name
+  ("262416 Panelboards.docx", "260573 & 260574 Short Circuit ….docx");
+- when several files share a number (the fifteen "017823 O & M Manuals - …"
+  files), by the words of the name that the submittal's own text contains,
+  plus the general file;
+- only when no file carries the section number, by equipment name
+  ("Switchboard.docx" for a 26 24 13 submittal that says switchboards).
+
+Nothing is guessed for a section the folder does not cover: the packet says so
+in `coverage.gaps`. The returned `note` tells the reviewer that parenthesised
+text ("(Reminder to check.)", "(Base Building)") is addressed to them and that
+the file's stamp is the usual outcome, not a decision. Name new files the same
+way, section number first.
 
 The logic is `caReviewPacket.ts` (pure, tested with fake fetchers in
 `caReviewPacket.test.mjs`); `index.ts` supplies the fetchers.
