@@ -1,5 +1,6 @@
 // qaRoutine.js — the QA checklist review routine: turning the preventable
-// RFIs that no checklist item covers into PROPOSED checklist items.
+// RFIs that no checklist item covers, and the approved lessons that recur
+// across projects, into PROPOSED checklist items.
 // (tools start_checklist_routine / propose_checklist_items, tables
 // pms_qa_routine_runs / pms_qa_item_proposals, Admin Console "QA Checklist" tab)
 //
@@ -15,6 +16,10 @@ export const PROPOSAL_AUTOMATION = ["auto", "assisted", "manual"];
 // that project's problem, not a firm check.
 export const MIN_PROJECTS = 2;
 export const MIN_RFIS = 3;
+// A lesson is already a distilled, human-approved statement, so fewer are
+// needed: the same thing learned on two projects is a pattern.
+export const MIN_LESSONS = 2;
+export const MIN_LESSON_PROJECTS = 2;
 export const PROPOSALS_MAX = 12;
 
 const text = (v, max) => String(v == null ? "" : v).replace(/\s+/g, " ").trim().slice(0, max);
@@ -36,11 +41,16 @@ export function runState(run, nowMs) {
 //   uncovered  rows of pms_rfi_root_causes that are preventable with no qa_item:
 //              [{ project, item_number }]
 //   existing   [{ text }] items and open proposals already on file, to refuse a repeat
+//   lessons    approved lessons no checklist item describes yet:
+//              [{ lesson_id, project_id, lesson_summary }]
 // Returns { accepted: [...], refused: [{ text, why }] }. An accepted proposal
-// carries only the RFIs that really are uncovered, and its counts are computed
-// here, never taken from the caller.
-export function planProposals(proposals, uncovered, existing) {
+// carries only the RFIs that really are uncovered and the lessons that really
+// are candidates, and its counts are computed here, never taken from the
+// caller. It must meet the RFI rule or the lesson rule; evidence of one kind
+// below its own bar does not top up the other.
+export function planProposals(proposals, uncovered, existing, lessons) {
   const open = new Set((Array.isArray(uncovered) ? uncovered : []).map((r) => keyOf(r.project, r.item_number)));
+  const lessonById = new Map((Array.isArray(lessons) ? lessons : []).map((l) => [String(l.lesson_id || "").toLowerCase(), l]));
   const known = new Set((Array.isArray(existing) ? existing : []).map((e) => text(e && e.text, 2000).toLowerCase()).filter(Boolean));
   const accepted = [], refused = [];
   const claimed = new Set();
@@ -61,13 +71,27 @@ export function planProposals(proposals, uncovered, existing) {
       rfis.push({ project: text(r.project, 60), number: text(r.number, 60) });
     }
     const projects = new Set(rfis.map((r) => r.project.toUpperCase()));
-    if (rfis.length < MIN_RFIS || projects.size < MIN_PROJECTS) {
-      refuse(`It rests on ${rfis.length} uncovered preventable RFI(s) on ${projects.size} project(s). A new item needs at least ${MIN_RFIS} RFIs on at least ${MIN_PROJECTS} projects; RFIs that are already tagged to an item, or not tagged preventable, do not count.`);
+    const seenL = new Set();
+    const les = [];
+    for (const id of Array.isArray(p.lessons) ? p.lessons : []) {
+      const k = String((id && id.id) || id || "").trim().toLowerCase();
+      const row = lessonById.get(k);
+      if (!row || seenL.has(k)) continue;
+      seenL.add(k);
+      les.push({ id: k, project: text(row.project_id, 60), summary: text(row.lesson_summary, 300) });
+    }
+    const lessonProjects = new Set(les.map((l) => l.project.toUpperCase()).filter(Boolean));
+    const rfiRule = rfis.length >= MIN_RFIS && projects.size >= MIN_PROJECTS;
+    const lessonRule = les.length >= MIN_LESSONS && lessonProjects.size >= MIN_LESSON_PROJECTS;
+    if (!rfiRule && !lessonRule) {
+      refuse(`It rests on ${rfis.length} uncovered preventable RFI(s) on ${projects.size} project(s) and ${les.length} approved lesson(s) from ${lessonProjects.size} project(s). A new item needs at least ${MIN_RFIS} RFIs on at least ${MIN_PROJECTS} projects, or at least ${MIN_LESSONS} lessons from at least ${MIN_LESSON_PROJECTS} projects. RFIs already tagged to an item or not tagged preventable, and lessons that are not approved, have no project, or are already linked to an item, do not count.`);
       continue;
     }
-    const overlap = rfis.filter((r) => claimed.has(keyOf(r.project, r.number))).length;
-    if (overlap > rfis.length / 2) { refuse("More than half of its RFIs are already claimed by an earlier proposal in this run: merge the two."); continue; }
-    for (const r of rfis) claimed.add(keyOf(r.project, r.number));
+    const evidence = [...rfis.map((r) => keyOf(r.project, r.number)), ...les.map((l) => "lesson|" + l.id)];
+    const overlap = evidence.filter((k) => claimed.has(k)).length;
+    if (overlap > evidence.length / 2) { refuse("More than half of its RFIs and lessons are already claimed by an earlier proposal in this run: merge the two."); continue; }
+    for (const k of evidence) claimed.add(k);
+    for (const l of les) if (l.project) projects.add(l.project.toUpperCase());
     const phases = (Array.isArray(p.phases) ? p.phases : []).filter((x) => PROPOSAL_PHASES.includes(x));
     accepted.push({
       text: t, details,
@@ -75,7 +99,7 @@ export function planProposals(proposals, uncovered, existing) {
       automation_hint: text(p.how, 800) || null,
       phases: phases.length ? phases : ["CD", "Permit", "Bid", "Addendum"],
       rationale: text(p.rationale, 1200) || null,
-      rfis, rfi_count: rfis.length, project_count: projects.size,
+      rfis, rfi_count: rfis.length, lessons: les, lesson_count: les.length, project_count: projects.size,
     });
     known.add(t.toLowerCase());
   }
