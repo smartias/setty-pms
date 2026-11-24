@@ -1514,7 +1514,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-knowledge-by-meaning";
+const BUILD = "2026-11-24-email-meaning-floor";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.29.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3699,7 +3699,7 @@ mcp.tool("search_emails", {
       };
       const perProject = await Promise.all(pids.map(async (proj) => {
         const args: Record<string, unknown> = { q, proj, lim };
-        if (embedding !== undefined) args.p_embedding = embedding;
+        if (embedding !== undefined) { args.p_embedding = embedding; args.p_min_similarity = EMAIL_MIN_SIMILARITY; }
         try {
           return await searchOnce(args);
         } catch (e) {
@@ -3708,6 +3708,7 @@ mcp.tool("search_emails", {
           semanticNote = "Meaning-based ranking was unavailable for this call; results are keyword-ranked.";
           usedEmbedding = false;
           delete args.p_embedding;
+          delete args.p_min_similarity;
           return await searchOnce(args);
         }
       }));
@@ -4009,6 +4010,14 @@ const CA_ITEMS_SEMANTIC = Deno.env.get("CA_ITEMS_SEMANTIC") !== "0";
 // keyword 2 of 10, nothing lost, no thread repeated). The function secret
 // EMAILS_SEMANTIC=0 is the kill switch, no redeploy.
 const EMAILS_SEMANTIC = Deno.env.get("EMAILS_SEMANTIC") !== "0";
+// How close an email must be to the question to come back by meaning alone.
+// The database default is 0.75, which let unrelated questions through: seven
+// live searches on 2026-11-24 scored four off-topic questions (banana bread,
+// hiking, football, a puppy) at 0.75 to 0.80 for their best rows, and the
+// expected threads of five real questions at 0.85 to 0.87. 0.82 sits between
+// the two with room on both sides. An email that matches the WORDS comes back
+// whatever its similarity.
+const EMAIL_MIN_SIMILARITY = 0.82;
 let _embedSession: any = null;
 function embedSession(): any {
   if (_embedSession) return _embedSession;
