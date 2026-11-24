@@ -91,7 +91,7 @@ function summarizeDisciplines(sheets) {
 }
 
 const DRAWING_LIST_ANCHOR = /DRAWING LIST\s+SHEET\s+DRAWING TITLE/;
-const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?\d{2,4}(?:\.\d{2})?[A-Z]?)(?=\s)/g;
+const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?\d{2,4}(?:\.\d{2})?[A-Z]?(?:-[A-Z0-9]{1,2})?)(?=\s)/g;
 const DRAWING_LIST_TAIL =
   /\b((?:NYC|NEW YORK CITY)\s+BUILDING\s+DEPARTMENT|SPECIAL\s+INSPECTIONS?|ABBREVIATIONS\s+SYMBOLS|No\.\s+Date\s+Revision|Revisions\s+Rev\s+Description|NO\.\s+REVISIONS\s+DATE)\b/;
 const DRAWING_LIST_MAX_TITLE = 80;
@@ -509,6 +509,16 @@ has("const TITLE_BLOCK_DOB_NOW", "the DOB-NOW pattern (modeled by titleBlock.tes
 has("function parseDrawingIndex", "the DRAWING INDEX cover fallback");
 has("function parseDrawingIndexBare", "the format-C bare cover index fallback");
 has(DRAWING_INDEX_BARE_ROW.source, "format-C row regex literal (byte-identical)");
+has(DRAWING_LIST_ROW.source, "format-A row regex literal (byte-identical)");
+// A sheet split into parts ("E101-A"): the row is read, and the title of the
+// row before it no longer swallows it (2026-11-24).
+{
+  const parts = parseDrawingList("ELECTRICAL DRAWING LIST SHEET DRAWING TITLE 1 E034 FIRE ALARM OPERATIONAL MATRIX " +
+    "2 E100-B ELECTRICAL LIGHTING PLAN - GARAGE LEVEL 3 E101-A ELECTRICAL LIGHTING PLAN - PART A 4 E501 DETAILS");
+  check(parts.map((r) => r.sheetNo).join(",") === "E034,E100-B,E101-A,E501", "part-suffixed sheets are rows of the list: " + parts.map((r) => r.sheetNo).join(","));
+  check(parts[0].sheetTitle === "FIRE ALARM OPERATIONAL MATRIX", "the row before a part-suffixed sheet keeps its own title");
+  check(parts[1].sheetTitle === "ELECTRICAL LIGHTING PLAN - GARAGE LEVEL", "a title with a spaced dash is kept whole");
+}
 has("return b.length ? b : parseDrawingIndexBare(pageText);", "format C chained after formats A and B");
 const shippedLayoutCount = (shipped.match(/\n\s*layout: "/g) || []).length;
 check(shippedLayoutCount === 3,

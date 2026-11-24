@@ -31,6 +31,27 @@ test("the number must stand alone", () => {
   assert.equal(sheetTokenRe("COVER"), null);
 });
 
+test("a sheet split into parts is its own sheet", () => {
+  // E101-A and E101-B are two sheets; neither is "E101".
+  assert.ok(sheetTokenRe("E101-A").test("LIGHTING PLAN PART A E101-A"));
+  assert.ok(!sheetTokenRe("E101-A").test("LIGHTING PLAN PART B E101-B"));
+  assert.ok(!sheetTokenRe("E101").test("SEE E101-A"));
+  assert.ok(sheetTokenRe("E101").test("SEE E101 - TYPICAL"), "a spaced dash is not a part suffix");
+  assert.ok(sheetTokenRe("E101").test("E101-GARAGE"), "nor is a word");
+  const list = [
+    { sheetNo: "E034", sheetTitle: "FIRE ALARM OPERATIONAL MATRIX" },
+    { sheetNo: "E101-A", sheetTitle: "LIGHTING PLAN - FIRST FLOOR - PART A" },
+    { sheetNo: "E101-B", sheetTitle: "LIGHTING PLAN - FIRST FLOOR - PART B" },
+  ];
+  const out = assignSheetsFromList([
+    page(1, "cover"),
+    page(2, "FIRE ALARM OPERATIONAL MATRIX E034"),
+    page(3, "LIGHTING PLAN - FIRST FLOOR - PART A MATCHLINE SEE E101-B E-502 E101-A"),
+    page(4, "LIGHTING PLAN - FIRST FLOOR - PART B MATCHLINE SEE E101-A E-502 E101-B"),
+  ], list, [1]);
+  assert.deepEqual(out.map((a) => [a.page, a.sheetNo]), [[2, "E034"], [3, "E101-A"], [4, "E101-B"]]);
+});
+
 test("a page with its number and its title is that sheet", () => {
   const out = assignSheetsFromList([
     page(1, COVER),
@@ -143,7 +164,7 @@ test("on real books with known sheet numbers it is never wrong", () => {
 
 test("the connector runs this rule and only fills empty rows", () => {
   const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-  assert.equal(DRAWING_LIST_LAYOUT, "drawing-list.1");
+  assert.equal(DRAWING_LIST_LAYOUT, "drawing-list.2");
   assert.ok(shipped.includes('"&sheet_no=is.null&select=page"'), "a sheet number read off a title block is never overwritten");
   assert.ok(shipped.includes("title_block_layout: DRAWING_LIST_LAYOUT,"), "rows it fills are stamped, so they can be found and undone");
   assert.ok(shipped.includes('{ sheets_rule: DRAWING_LIST_LAYOUT }'), "a file is marked done under the rule's name");
