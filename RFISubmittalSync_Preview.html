@@ -123,6 +123,7 @@
   .formerr { color:var(--danger-txt); font-size:12px; font-weight:600; }
   .filterbar button.chip { font-size:12px; padding:5px 10px; background:transparent; }
   /* Counts in a section head double as filters; controls on a row edit it in place. */
+  .req { color:var(--late); font-weight:700; }
   .countbtn { background:none; border:0; padding:0; font:inherit; color:inherit; cursor:pointer; text-decoration:underline dotted; }
   .rowsel, .rowdate { font:inherit; font-size:12px; background:transparent; color:inherit; border:1px solid transparent; border-radius:5px; padding:1px 3px; cursor:pointer; max-width:150px; }
   select.rowsel.pill { width:auto; max-width:190px; padding:2px 6px; font-weight:600; }
@@ -279,7 +280,8 @@ const ALL_STATUS = [...new Set([...RFI_STATUSES, ...SUB_STATUSES])];
 const OPEN_STATUSES = ["Open","Pending Sub Response","Received","Under Review","Pending Sub Review"];
 
 /* ---- utils ---- */
-const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// Escapes the apostrophe too: record ids and sheet names sit inside single-quoted onclick='…' attributes.
+const esc = s => String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const uid = () => Math.random().toString(36).slice(2,10);
 // The LOCAL calendar day: toISOString() is UTC, which dated an item logged after about 7 pm Eastern as tomorrow.
 const today = () => localISO(new Date());
@@ -294,12 +296,13 @@ let _toastTimer=null;
 function toast(msg, ok, action){
   const t=document.getElementById("toast"); clearTimeout(_toastTimer);
   t.setAttribute("role", ok?"status":"alert"); t.className="toast show "+(ok?"ok":"bad");
-  t.innerHTML=`<span>${esc(ok?msg:"Error: "+msg)}</span>`+
+  t.innerHTML=`<span>${esc(msg)}</span>`+
     (action?`<button type="button" class="primary" onclick="hideToast();(${action.fn})()">${esc(action.label)}</button>`:"")+
     (ok?"":`<button type="button" class="ghost" aria-label="Dismiss" onclick="hideToast()">✕</button>`);
   // Success fades on its own; an error stays until dismissed so a long
   // message (the save-conflict one, for instance) can actually be read.
-  if(ok) _toastTimer=setTimeout(hideToast, 3500);
+  // A success toast that carries a button ("Claude review ready [Open]") stays long enough to be clicked.
+  if(ok) _toastTimer=setTimeout(hideToast, action?20000:3500);
 }
 function hideToast(){ const t=document.getElementById("toast"); t.className="toast"; t.innerHTML=""; }
 // Every failed write lands here: a save conflict gets a one-click reload of the project.
@@ -459,7 +462,9 @@ async function init(){
       .sort((a,b)=>(b.activity-a.activity)||(a.number||a.name).localeCompare(b.number||b.name));
     const caActive=PROJECTS.filter(p=>p.activity).length, unset=PROJECTS.filter(p=>!p.platform).length;
     document.getElementById("picknote").textContent=`${PROJECTS.length} In Construction Administration · ${caActive} with portal email${unset?` · ${unset} platform not set`:""}`;
-    if(PROJECTS.length){ comboSelect("__ALL__"); }
+    // Reopen where the person left off. The all-projects view downloads every CA job's whole log
+    // (about 6 MB), so it is the landing view only for someone who has not picked a project yet.
+    if(PROJECTS.length){ const last=loadView(); comboSelect(last&&PROJECTS.some(p=>p.id===last)?last:"__ALL__"); }
     else if(window.settyAuth&&settyAuth.isSignedIn&&!settyAuth.isSignedIn()) document.getElementById("out").innerHTML=`<p class="empty">Sign in (top right) to see the projects in Construction Administration.</p>`;
     else document.getElementById("out").innerHTML=`<p class="empty">No projects are marked "In Construction Administration".</p>`;
   }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">${esc(e.message)} <button onclick="init()">Retry</button></p>`; }
@@ -514,7 +519,7 @@ async function savePortal(){
   const p=PROJECTS.find(x=>x.id===CURRENT.proj.id); if(!p) return;
   const platform=document.getElementById("pfPlat").value, gc=document.getElementById("pfGc").value.trim();
   let url=platform==="Email only"?"":document.getElementById("pfUrl").value.trim();
-  if(!platform){ toast("Choose a platform",false); return; }
+  if(!platform){ toast("Choose a platform first.",false); return; }
   if(url&&!/^https:\/\//i.test(url)){ toast("The link must start with https://",false); return; }
   const who=getWho(), at=new Date().toISOString();
   try{
@@ -577,8 +582,16 @@ function comboClose(restore){
   if(restore) inp.value=comboSelectedLabel();
 }
 function comboPick(i){ const p=COMBO.items[i]; if(p) comboSelect(p.id); }
+// Last project and filters, per browser. The search text is not kept: a forgotten search hides rows silently.
+function saveView(){ try{ localStorage.setItem("rfiTrackView", JSON.stringify({proj:COMBO.selectedId, filter:{...FILTER, text:""}})); }catch(e){} }
+function loadView(){
+  try{ const v=JSON.parse(localStorage.getItem("rfiTrackView")||"null"); if(!v) return null;
+    if(v.filter){ FILTER={...FILTER_DEFAULT(), ...v.filter, text:""}; try{ syncFilterUi(); }catch(e){} }
+    return v.proj||null;
+  }catch(e){ return null; }
+}
 function comboSelect(id){
-  COMBO.selectedId=id; const inp=document.getElementById("projInput");
+  COMBO.selectedId=id; saveView(); const inp=document.getElementById("projInput");
   inp.value=comboSelectedLabel(); comboClose(false); inp.blur();
   selectProject(id);
 }
@@ -599,10 +612,12 @@ function comboKey(e){
 function rebuildPicker(){ const inp=document.getElementById("projInput"); if(inp&&!COMBO.open) inp.value=comboSelectedLabel(); }
 
 async function selectAll(){
-  document.getElementById("out").innerHTML=`<p class="empty">Loading all Construction-Admin projects…</p>`;
+  const seq=++LOAD_SEQ;
+  document.getElementById("out").innerHTML=`<p class="empty">Loading all Construction-Admin projects… (every CA job's log; picking one project is much faster)</p>`;
   try{
     const ids=PROJECTS.map(p=>p.id); if(!ids.length){ document.getElementById("out").innerHTML=`<p class="empty">No CA projects.</p>`; return; }
     const rows=await fetchJson(`pms_projects?id=in.(${ids.join(",")})&select=id,name:project->>name,number:project->>projectNumber,rfis:project->rfis,submittals:project->submittals,team:project->teamMembers,rfiDueDays:project->>rfiDueDays,submittalDueDays:project->>submittalDueDays`);
+    if(seq!==LOAD_SEQ) return;
     const tag=(arr,row)=>(arr||[]).map(r=>({...r,__projId:row.id,__projName:row.name||"",__projNum:row.number||""}));
     const rfis=[], subs=[], teams={}, dueDays={};
     for(const row of rows){ rfis.push(...tag(row.rfis,row)); subs.push(...tag(row.submittals,row)); teams[row.id]=row.team||[]; dueDays[row.id]={rfi:+row.rfiDueDays||5, sub:+row.submittalDueDays||10}; }
@@ -612,9 +627,11 @@ async function selectAll(){
     renderProject();
   }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">${esc(e.message)} <button onclick="selectProject('__ALL__')">Retry</button></p>`; }
 }
+let LOAD_SEQ=0; // the newest load wins: an older response that arrives late is dropped
 async function selectProject(pid){
   PORTAL_EDIT=false;
   if(pid==="__ALL__") return selectAll();
+  const seq=++LOAD_SEQ;
   const proj=PROJECTS.find(p=>p.id===pid); if(!proj)return;
   document.getElementById("out").innerHTML=`<p class="empty">Loading ${esc(proj.name)}…</p>`;
   try{
@@ -625,6 +642,7 @@ async function selectProject(pid){
       // imports as open even when the filed log holds Setty's own response.
       fetchAll(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*,subject.ilike.*Responded%20to%20and%20Closed*,subject.ilike.*Sent%20and%20Closed*,from_address.ilike.*kahua*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
     ]);
+    if(seq!==LOAD_SEQ) return;
     const logged=projRows[0]||{}; const loggedRFIs=logged.rfis||[], loggedSubs=logged.submittals||[];
     const CI=window.CaIntake; if(!CI) throw new Error("caIntake.js did not load — reload the page.");
     const inbox=CI.buildInbox(emails,loggedRFIs,loggedSubs,pid);
@@ -641,6 +659,7 @@ function setF(k,v){
   if(k==="text"){ clearTimeout(_textTimer); _textTimer=setTimeout(()=>{ FILTER.text=v.toLowerCase(); renderProject(); },150); return; }
   FILTER[k]=v; syncFilterUi(); renderProject();
 }
+window.addEventListener("pagehide", ()=>{ try{ if(PROJECTS.length) saveView(); }catch(e){} });
 function syncFilterUi(){
   const g=id=>document.getElementById(id);
   g("fType").value=FILTER.type; g("fDisc").value=FILTER.disc; g("fStatus").value=FILTER.status; if(g("fText").value.toLowerCase()!==FILTER.text) g("fText").value=FILTER.text;
@@ -767,7 +786,9 @@ function sortForDisplay(kind, rows){
 function statusPill(s){ const slug=String(s||"").toLowerCase().replace(/[^a-z0-9]+/g,"-"); return `<span class="pill${slug?" st-"+slug:""}">${esc(s||"—")}</span>`; }
 function teamOf(r){ return (CURRENT.teams&&CURRENT.teams[r.__projId||CURRENT.proj.id])||[]; }
 function assigneeNames(r){ const team=teamOf(r); const names=(r.assignedTo||[]).map(id=>{const m=team.find(t=>t.id===id);return m?(m.name||m.role):null;}).filter(Boolean); let s=names.join(", "); if(r.subAssigned) s+=(s?" · ":"")+"sub: "+r.subAssigned; return s; }
-function csvCell(v){ v=String(v==null?"":v); return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
+// A cell that starts with = + - or @ is run as a formula by Excel: a contractor's text must never be one.
+// A leading apostrophe makes Excel show it as text (a date or a negative number is left alone).
+function csvCell(v){ v=String(v==null?"":v); if(/^[=+@]/.test(v)||(/^-/.test(v)&&!/^-?\d[\d.,]*$/.test(v))) v="'"+v; return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
 function exportCSV(kind){
   const rows=sortForDisplay(kind,(kind==="rfi"?CURRENT.rfis:CURRENT.submittals).filter(passFilter)); const am=CURRENT.allMode;
   const cols = kind==="rfi"
@@ -801,7 +822,8 @@ function renderSection(kind, title, logged, inbox){
     (am?`<span class="muted" style="font-size:12px">pick one project to add / import</span>`:
        `<a href="${esc(caBackloadSeatUrl(kind, CURRENT.proj.name||"", CURRENT.proj.number||""))}" target="_blank" rel="noreferrer" title="For items still in Newforma: open a Claude seat to find the filed PDF / notification email, log it here (backfill), then review it against the current set and specs." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--accent);font-weight:600">🤖 Log from filed PDF/email</a>`+
        `<button class="primary" onclick="openEditor('${kind}',null)">+ Add ${kind==='rfi'?'RFI':'Submittal'}</button>`)+`</div>`;
-  if(news.length){
+  const updates=inbox.filter(i=>i.verdict==="update");
+  if(news.length||updates.length){
     const head = kind==="rfi" ? "<th scope='col'>RFI</th><th scope='col'>Title</th><th scope='col'>Status</th><th scope='col'>Due</th><th scope='col'>Asked by</th><th scope='col'>Discipline</th><th scope='col' class='right'>Import</th>"
                               : "<th scope='col'>Item</th><th scope='col'>Title</th><th scope='col'>Spec</th><th scope='col'>Status</th><th scope='col'>Due</th><th scope='col'>Discipline</th><th scope='col' class='right'>Import</th>";
     const vocab = kind==="rfi"?RFI_DISC:SUB_DISC;
@@ -815,7 +837,7 @@ function renderSection(kind, title, logged, inbox){
         : `<td class="num">#${esc(it.extNum)}${it.rev?` <span class=muted>r${it.rev}</span>`:""}</td><td class="title">${esc(it.title)}</td><td>${esc(it.specSection||"")}</td><td>${statusPill(it.status)}</td>${dateCell(it.dueDate)}`;
       return `<tr>${c}${dcell}<td class="right">${verdictBadge(it)}${stale?` <span class="badge old" title="Latest portal email is ${-daysUntil(it.lastDate)} days old. Only the assignment email is on file, so the log cannot tell whether it was ever answered — it would import as ${esc(it.status)} with no way to know. Tick it only if it really is still open.">old · status unknown</span>`:""} ${cb}</td></tr>`; }).join("");
     const staleCount=news.filter(isStaleImport).length;
-    html+=`<div class="inbox"><div class="ihead"><span>📥 To import from portal emails (Procore / Forma / Newforma / Kahua) — ${news.length} new</span>`+
+    html+=`<div class="inbox"><div class="ihead"><span>📥 To import from portal emails (Procore / Forma / Newforma / Kahua) — ${news.length} new${updates.length?` · ${updates.length} with a newer revision to review by hand`:""}</span>`+
       `<div class="legend"><span><span class="badge new">NEW</span> not yet logged</span><span><span class="badge matched">matched</span> already logged</span><span><span class="badge update">UPDATE</span> newer revision — review by hand</span></div></div>`+
       `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`+
       `<div class="actions"><button class="primary" onclick="importSelected('${kind}')">Import selected → log</button><span class="muted" style="font-size:12px">Tick the new ones, then import. Already-logged items are skipped.${staleCount?` <b>${staleCount} unticked</b>: their latest portal email is over ${STALE_IMPORT_DAYS} days old and no closing notice is on file, so they would import as open with no way to know. Tick those only if they really are still open.`:""}</span></div></div>`;
@@ -857,8 +879,10 @@ function renderSection(kind, title, logged, inbox){
         : `<td class="num">${numBtn}</td><td class="title">${esc(r.description||r.title||"—")}${aiMark}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${asgBtn}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td>${dateCell(r.dateReceived)}${dueIn}<td>${stSel}${unrevBadge(r)}${readyBadge(r)}</td>`;
       const nw=JUST_IMPORTED.has(r.id)?" justnew":"";
       return pc+`<tr class="click${nw}${lateRow}" onclick='${open}'>${c}</tr>`; }).join("");
-    if(news.length) html+=`<div class="lhead">Logged — ${shown.length===logged.length?logged.length:shown.length+" of "+logged.length}</div>`;
-    html+=`<table><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan=8 class="empty">No ${kind}s match the current filters.</td></tr>`}</tbody></table>`;
+    if(news.length||updates.length) html+=`<div class="lhead">Logged — ${shown.length===logged.length?logged.length:shown.length+" of "+logged.length}</div>`;
+    html+=`<table><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan=9 class="empty">${logged.length&&FILTER.status==="__open__"&&!logged.some(r=>OPEN_STATUSES.includes(r.status||""))
+        ? `All ${logged.length} ${kind==="rfi"?"RFIs":"submittals"} here are closed. <button type="button" onclick="setF('status','all')">Show all</button>`
+        : `No ${kind==="rfi"?"RFIs":"submittals"} match the current filters. <button type="button" onclick="clearFilters()">Reset filters</button>`}</td></tr>`}</tbody></table>`;
   }
   sec.innerHTML=html; return {el:sec, total:logged.length, shown:shown.length};
 }
@@ -1097,6 +1121,8 @@ function menuHtml(id, label, items){
 }
 document.getElementById("overlay").addEventListener("keydown", e=>{
   if(e.key==="Escape"){ e.preventDefault(); if(document.querySelector(".menu.open")){ const b=document.querySelector(".menu.open > button"); closeMenus(); if(b) b.focus(); } else if(document.getElementById("closeAsk")&&document.getElementById("closeAsk").style.display==="flex") keepEditing(); else requestCloseEditor(); return; }
+  // Ctrl+Enter (Cmd+Enter on a Mac) saves from anywhere in the editor, including inside a text box.
+  if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)&&EDIT&&EDIT.base){ e.preventDefault(); saveEditor(); return; }
   if(e.key!=="Tab") return;
   const f=[...document.getElementById("modal").querySelectorAll("button,input,select,textarea,a[href]")].filter(el=>!el.disabled&&el.offsetParent!==null);
   if(!f.length) return;
@@ -1130,7 +1156,8 @@ async function openEditor(kind, id){
     if(f.sel) input=`<select id="f_${f.k}">${f.sel.includes(v)?"":`<option value="${esc(v)}" selected>${v===""?"— not set —":esc(v)}</option>`}${f.sel.map(o=>`<option ${o===v?"selected":""}>${esc(o)}</option>`).join("")}</select>`;
     else if(f.ta) input=`<textarea id="f_${f.k}">${esc(v)}</textarea>`;
     else input=`<input id="f_${f.k}" type="${f.t||"text"}" value="${esc(v)}">`;
-    return `<div class="fld ${f.full?"full":""}"><label for="f_${f.k}">${esc(f.l)}</label>${input}</div>`;
+    const req=REQUIRED[kind].some(([k])=>k===f.k);
+    return `<div class="fld ${f.full?"full":""}"><label for="f_${f.k}">${esc(f.l)}${req?` <span class="req" title="Required" aria-hidden="true">*</span>`:""}</label>${req?input.replace(/^<(input|textarea|select) /, '<$1 aria-required="true" '):input}</div>`;
   }).join("");
   const cur=new Set(rec.assignedTo||[]);
   const asgHtml = asgHtmlFor(team, cur);
@@ -1542,7 +1569,7 @@ async function importSelected(kind){
   });
   const picked=new Set([...document.querySelectorAll(`.pick[data-k="${kind}"]:checked`)].map(c=>c.dataset.ext));
   const records=inbox.filter(i=>i.verdict==="new"&&picked.has(i.extNum)).map(i=>i.record);
-  if(!records.length){ toast("Nothing selected.", false); return; }
+  if(!records.length){ toast("Tick at least one item to import.", false); return; }
   // A blank discipline would import as an empty cell nobody notices — ask for it now.
   const missing=[...document.querySelectorAll(`.discSel[data-k="${kind}"]`)].filter(sel=>picked.has(sel.dataset.ext)&&!sel.value);
   if(missing.length){ missing.forEach(sel=>sel.setAttribute("aria-invalid","true")); missing[0].focus();
