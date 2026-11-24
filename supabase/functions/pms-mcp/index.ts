@@ -82,6 +82,13 @@ import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventabl
 import { isIssuedSetRow, notASetReason } from "./issuedSet.ts";
 import { needsOcr, ocrPage, ocrNote, OCR_SYSTEM_PROMPT, OCR_MAX_PAGES_PER_CALL } from "./ocrPages.ts";
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
+// record_construction_cost and the per-$1M RFI measure: the dated construction
+// cost history kept beside the Fee Calculator. A byte-identical copy of the
+// repo-root module the PMS loads (constructionCostDrift.test.mjs).
+import {
+  planCostCheck, latestConstructionCost, costLogOf, rfisPerMillion, costSourceLabel, COST_SOURCES,
+  looksLikeCostDocument, planCostDocFlags, openCostDocFlags,
+} from "./constructionCost.js";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
 // classifier, RPC arguments and row mapping are pure. See caItems.ts.
@@ -248,7 +255,7 @@ function projectVisible(caps: ResolvedCaps, projectNumber?: string | null): bool
 const FEE_KEY_EXACT = new Set([
   "fee", "fees", "feetype", "feestructure", "feeschedulefinalized", "feeauditlog",
   "feecalculatorsubs", "phasesubfees", "lockedsettyfee", "manualsettyfee",
-  "manualconstructioncost", "manualrsmeanscostpersf", "reimbursablebudget",
+  "manualconstructioncost", "constructioncostlog", "costdocflags", "manualrsmeanscostpersf", "reimbursablebudget",
   "invoices", "invoiced", "billingmethod", "hourlyrates",
   "contractrateschedule", "contractrateschedulelockedat", "ceilingvalue", "contractvalue",
 ]);
@@ -1514,9 +1521,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-sheet-numbers-decimal";
+const BUILD = "2026-11-24-cost-document-flags";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.29.0",
+  name: "setty-pms", version: "1.30.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -12640,9 +12647,35 @@ mcp.tool("rfi_root_cause_summary", {
       return asText({ ...(project ? { project } : {}), tagged: 0,
         note: "No RFIs carry a root-cause tag" + (project ? " on this project" : "") + " yet. Tags are written when an RFI is reviewed (save_ca_review rootCause) or back-filled with tag_rfi_root_causes." });
     }
+    // Preventable RFIs per $1M of construction value: the second measure
+    // beside the preventable share. Construction cost is fee data, so it is
+    // reported only to a caller who may see fees, and only as a total unless
+    // one project was asked for.
+    let perMillion: Record<string, unknown> | undefined;
+    try {
+      const caps = await resolveCaps();
+      const byProject = new Map<string, number>();
+      for (const r of rows) byProject.set(r.project, (byProject.get(r.project) || 0) + (r.preventable ? 1 : 0));
+      const projs = await getProjects();
+      const costOf = new Map<string, number | null>(projs.map((x: any) => [String(x.projectNumber || ""), latestConstructionCost(x).value]));
+      const may = [...byProject.keys()].filter((pn) => capFor(caps, "fees.view", pn));
+      if (may.length) {
+        const m = rfisPerMillion(may.map((pn) => ({ project: pn, preventable: byProject.get(pn) || 0, cost: costOf.get(pn) ?? null })));
+        perMillion = {
+          preventablePerMillion: m.perMillion, constructionValue: m.constructionValue,
+          projectsWithConstructionCost: m.projectsWithCost, projectsCounted: m.projects,
+          ...(m.missingCost.length ? { noConstructionCostOnRecord: m.missingCost } : {}),
+          note: "Preventable tagged RFIs per $1M of construction value, over the projects that have a construction cost on record (history first, else the Fee Calculator's typed cost). Projects without one are left out of both sides: record theirs with record_construction_cost.",
+        };
+      }
+    } catch (e) {
+      // The summary stands without the measure, but say that it is missing and why.
+      perMillion = { error: `Could not compute RFIs per $1M: ${String((e as any)?.message ?? e).slice(0, 160)}` };
+    }
     return asText({
       ...(project ? { project } : { projects: s.projects }),
       ...s,
+      ...(perMillion ? { perMillionConstructionValue: perMillion } : {}),
       ...(listRfis ? { rfis: rows.slice(0, 300) } : {}),
       note: "Counts cover TAGGED RFIs only. byQaItem says which checks the log would have rewarded: run those first and widest. noCheckExamples are preventable RFIs with no checklist item: a kind that recurs across projects is a candidate for a new item (tell the user; do not add items yourself). Internal: never quote to the contractor.",
     });
@@ -13038,6 +13071,161 @@ mcp.tool("set_project_fee", {
       note: done.changed
         ? "Staged in the Fee Calculator and recorded in the Fee Schedule Audit Log. Not locked: the Schedule tab's Fee column and invoicing fill in when a person clicks 'Finalize & Lock Fee Schedule' in the PMS. Anyone with this project open in the PMS should refresh the tab before editing."
         : "The Fee Calculator already holds these values; nothing was written.",
+    });
+  },
+});
+
+// ─── CONSTRUCTION COST AT EACH DELIVERABLE: record_construction_cost (1.30.0) ─
+// project.constructionCostLog is a dated history kept BESIDE the Fee
+// Calculator's construction cost (constructionCost.js). It exists so the
+// construction value used for the RFI measure (preventable RFIs per $1M) can
+// follow each cost estimate without ever moving a fee: this tool never touches
+// manualConstructionCost. Same fences as set_project_fee: signed-in callers
+// only, fees.view AND projects.edit on the project, and the write goes through
+// updateProjectRecord. Unlike set_project_fee it MAY record a figure read from
+// a document, because that is the point (the cost estimate that arrives with a
+// deliverable); the entry then names the document, and the figure is reported
+// back to the user.
+// Files in a project's folder whose NAME reads like a construction cost
+// estimate, newest first, from the pms_documents index (refreshed about
+// daily). The name filter runs in the database so a large project does not
+// stream its whole file list; looksLikeCostDocument then decides.
+async function costDocumentsInIndex(scope: string, sinceIso?: string): Promise<Array<{ itemId: string; name: string; folderPath: string; ext: string | null; webUrl: string | null; seenAt: string }>> {
+  const like = ["estimate", "cost", "budget", "bid*tab", "gmp", "opc"].map((w) => `name.ilike.*${w}*`).join(",");
+  const rows: any[] = await sbGetAll(
+    "pms_documents?select=item_id,name,folder_path,ext,web_url,first_seen_at&scope=eq." + encodeURIComponent(scope) +
+    "&deleted_at=is.null&or=(" + like + ")" + (sinceIso ? "&first_seen_at=gte." + encodeURIComponent(sinceIso) : "") +
+    "&order=first_seen_at.desc");
+  return rows
+    .map((r) => ({ itemId: String(r.item_id), name: String(r.name || ""), folderPath: String(r.folder_path || ""), ext: r.ext || null, webUrl: r.web_url || null, seenAt: r.first_seen_at }))
+    .filter((d) => looksLikeCostDocument(d));
+}
+
+// Called by the nightly file sync after a project's rows are written: a cost
+// estimate saved to the project folder since the last few runs is flagged on
+// the project record (project.costDocFlags), and the PMS Schedule tab asks
+// for the figure. The window is a week, not one run, so a night that failed
+// part-way is made up; a file already flagged, answered or dismissed is
+// skipped by planCostDocFlags. Never throws: the sync must not fail over it.
+const COST_DOC_FLAG_WINDOW_DAYS = 7;
+async function flagNewCostDocuments(p: any, scope: string): Promise<number> {
+  try {
+    const since = new Date(Date.now() - COST_DOC_FLAG_WINDOW_DAYS * 86400000).toISOString();
+    const docs = await costDocumentsInIndex(scope, since);
+    if (!docs.length) return 0;
+    const pid = await resolveProjectId(String(p.projectNumber));
+    if (!pid) return 0;
+    let added = 0;
+    await updateProjectRecord(pid, (proj) => {
+      const plan = planCostDocFlags(proj, docs, new Date().toISOString());
+      added = plan.added.length;
+      return plan.project; // same reference when nothing is new: no write
+    });
+    return added;
+  } catch (e) {
+    console.warn("[documents-sync] cost document flags failed for", scope, String((e as any)?.message ?? e));
+    return 0;
+  }
+}
+
+mcp.tool("record_construction_cost", {
+  description:
+    "Record the project's CONSTRUCTION COST as of a deliverable, or read the history. Each project keeps a dated " +
+    "history of its construction cost (proposal, each cost estimate, bid, contract), separate from the Fee " +
+    "Calculator: recording here never changes a fee. Use it (1) when the user gives a construction cost or " +
+    "confirms it has not changed, (2) during a QA review of a deliverable, when a cost estimate, budget or bid " +
+    "tabulation is filed with the set or in the project folder: read the document, take the TOTAL CONSTRUCTION " +
+    "COST (not a single trade's subtotal, not the A/E fee, not total project cost with soft costs unless that is " +
+    "all the document gives, and then say so in note), record it with source and the document's name, and tell " +
+    "the user the figure and where it came from. If the document gives several totals (with and without " +
+    "contingency or escalation, base bid and alternates), record the total with contingency and escalation for " +
+    "the base scope and name the choice in note; if you cannot tell which is the total, do not record: ask. " +
+    "Call with only projectNumber to READ the figure on record, the history, any cost documents FLAGGED as newly " +
+    "saved to the project folder and not yet answered (costDocumentsFlagged), and the cost-looking files in the " +
+    "folder (costDocumentsInFolder, matched by name only, from the daily file index): read the newest relevant " +
+    "one before recording. Recording a figure answers the open flags. `unchanged: true` confirms the " +
+    "figure already on record without retyping it. Needs a signed-in caller with the fees and edit-project " +
+    "permissions. The figure feeds the RFI measure 'preventable RFIs per $1M of construction value' " +
+    "(rfi_root_cause_summary).",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    constructionCost: z.number().positive().optional().describe("Total construction cost in dollars, e.g. 18500000. Construction only. Omit to read, or with unchanged:true."),
+    unchanged: z.boolean().optional().describe("true = the construction cost on record still stands as of this deliverable. Refused when nothing is on record."),
+    source: z.enum(COST_SOURCES.map((s) => s.key) as [string, ...string[]]).optional().describe("Where the figure came from: " + COST_SOURCES.map((s) => `${s.key} (${s.label})`).join(", ") + ". Required to record."),
+    deliverable: z.string().optional().describe("The deliverable this figure belongs to: the milestone name as in the PMS schedule, or a phase code (SD, DD, CD). Matched to a milestone when it can be; kept as text otherwise."),
+    document: z.string().optional().describe("File name of the document the figure was read from, e.g. '100% DD Cost Estimate.pdf'. Give it whenever the figure came from a document."),
+    note: z.string().optional().describe("Anything a reader of the history needs: which total was taken, what it includes or leaves out, the estimate's date."),
+  }),
+  handler: async ({ projectNumber, constructionCost, unchanged, source, deliverable, document, note }) => {
+    const c = currentCaller();
+    if (c.kind !== "user" || !c.email) {
+      return asText({ error: "The construction cost history needs a signed-in Setty user behind it.", nextStep: "Connect the connector with your Microsoft sign-in and try again." });
+    }
+    const pid = await resolveProjectId(projectNumber);
+    const p = pid ? await getProjectById(pid) : null;
+    if (!pid || !p) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const pn = p.projectNumber || null;
+    const project = pn || p.name || projectNumber;
+    const caps = await resolveCaps();
+    if (!capFor(caps, "fees.view", pn)) {
+      return asText({ error: "Your PMS role cannot see construction cost on this project (it is kept with the fee data).", nextStep: "A PMS admin can grant the fees permission." });
+    }
+    const view = (proj: any) => {
+      const l = latestConstructionCost(proj);
+      return {
+        onRecord: l.value, asOf: l.at, source: l.source ? costSourceLabel(l.source) : null, deliverable: l.deliverable,
+        basis: l.basis === "log" ? "history" : l.basis === "fee-calculator" ? "Fee Calculator (never checked at a deliverable)" : "nothing on record",
+        history: costLogOf(proj).map((e: any) => ({
+          date: String(e.at).slice(0, 10), constructionCost: e.value, unchanged: !!e.unchanged, source: costSourceLabel(e.source),
+          deliverable: e.deliverable || undefined, document: e.document || undefined, note: e.note || undefined, by: e.by || undefined,
+        })),
+      };
+    };
+    const reading = constructionCost === undefined && unchanged !== true;
+    if (reading) {
+      let inFolder: unknown = undefined;
+      if (pn) {
+        try {
+          inFolder = (await costDocumentsInIndex(String(pn).trim().toLowerCase())).slice(0, 10)
+            .map((d) => ({ name: d.name, folder: d.folderPath, firstSeen: String(d.seenAt).slice(0, 10), url: d.webUrl || undefined }));
+        } catch (e) {
+          inFolder = { error: `Could not read the file index: ${String((e as any)?.message ?? e).slice(0, 160)}` };
+        }
+      }
+      const flagged = openCostDocFlags(p).map((f: any) => ({ name: f.name, folder: f.folderPath || undefined, firstSeen: String(f.seenAt).slice(0, 10), url: f.webUrl || undefined }));
+      return asText({
+        project, ...view(p),
+        costDocumentsFlagged: flagged,
+        ...(inFolder !== undefined ? { costDocumentsInFolder: inFolder } : {}),
+        ...(flagged.length ? { nextStep: "A cost document was saved since the last check. Read it (read_document), then record the total construction cost with this tool, or tell the user it is not a cost estimate so they can dismiss it in the PMS." } : {}),
+      });
+    }
+    if (!capFor(caps, "projects.edit", pn)) {
+      return asText({ error: "Your PMS role cannot edit this project. Nothing was recorded.", nextStep: "Recording a construction cost needs the edit-project permission." });
+    }
+    let plan: any = null;
+    try {
+      await updateProjectRecord(pid, (proj) => {
+        plan = planCostCheck(proj, { value: constructionCost, unchanged, source, deliverable, document, note }, {
+          at: new Date().toISOString(), id: crypto.randomUUID().slice(0, 8), by: c.name || c.email!, via: "connector",
+        });
+        // Returning the same reference tells updateProjectRecord to write nothing.
+        return plan.ok ? plan.project : proj;
+      });
+    } catch (e) {
+      return asText({ error: `Could not record the construction cost: ${String((e as any)?.message ?? e)}` });
+    }
+    if (!plan) return asText({ error: "Could not record the construction cost: the project record could not be read." });
+    if (!plan.ok) return asText({ project, error: plan.error });
+    const big = plan.changePct !== null && Math.abs(plan.changePct) >= 25;
+    return asText({
+      project, recorded: true, recordedBy: c.email,
+      constructionCost: plan.entry.value, source: costSourceLabel(plan.entry.source),
+      deliverable: plan.entry.deliverable, document: plan.entry.document,
+      previous: plan.previous.value, changePct: plan.changePct,
+      ...(big ? { warning: `This is ${plan.changePct > 0 ? "up" : "down"} ${Math.abs(plan.changePct)}% from the figure on record. Tell the user and confirm it is the total construction cost for the same scope.` } : {}),
+      ...view(plan.project),
+      note: "Added to the project's construction cost history (Schedule tab). The Fee Calculator and every fee are unchanged. Tell the user the figure and where it came from. Anyone with this project open in the PMS should refresh the tab before editing.",
     });
   },
 });
@@ -14749,7 +14937,7 @@ const DOCS_LIBRARY_RE = /proposal|contract/i;
 
 type DocsScopeResult = {
   scope: string; files: number; skippedImages: number; complete: boolean;
-  tombstoned: number; linkedTo?: string | null; error?: string;
+  tombstoned: number; linkedTo?: string | null; error?: string; costDocsFlagged?: number;
 };
 
 async function writeDocsSyncState(scope: string, patch: Record<string, unknown>) {
@@ -14844,7 +15032,8 @@ async function syncProjectDocuments(p: any): Promise<DocsScopeResult> {
       last_completed_at: new Date().toISOString(), complete, file_count: rows.length,
       skipped_images: skippedImages, error: null,
     });
-    return { scope, files: rows.length, skippedImages, complete, tombstoned };
+    const costDocsFlagged = await flagNewCostDocuments(p, scope);
+    return { scope, files: rows.length, skippedImages, complete, tombstoned, ...(costDocsFlagged ? { costDocsFlagged } : {}) };
   } catch (e) {
     const msg = String((e as any)?.message ?? e).slice(0, 500);
     await writeDocsSyncState(scope, { error: msg });
