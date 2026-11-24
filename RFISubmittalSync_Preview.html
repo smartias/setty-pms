@@ -122,6 +122,14 @@
   .fld input[aria-invalid="true"], .fld textarea[aria-invalid="true"], .fld select[aria-invalid="true"], .discSel[aria-invalid="true"] { border-color:var(--danger); box-shadow:0 0 0 1px var(--danger); }
   .formerr { color:var(--danger-txt); font-size:12px; font-weight:600; }
   .filterbar button.chip { font-size:12px; padding:5px 10px; background:transparent; }
+  /* Counts in a section head double as filters; controls on a row edit it in place. */
+  .countbtn { background:none; border:0; padding:0; font:inherit; color:inherit; cursor:pointer; text-decoration:underline dotted; }
+  .rowsel, .rowdate { font:inherit; font-size:12px; background:transparent; color:inherit; border:1px solid transparent; border-radius:5px; padding:1px 3px; cursor:pointer; max-width:150px; }
+  select.rowsel.pill { width:auto; max-width:190px; padding:2px 6px; font-weight:600; }
+  .rowsel:hover, .rowdate:hover, .rowsel:focus, .rowdate:focus, .rowasg:hover { border-color:var(--line); }
+  .rowasg { background:none; border:1px solid transparent; border-radius:5px; padding:1px 4px; font:inherit; font-size:12px; color:inherit; cursor:pointer; text-align:left; }
+  #asgPop { position:absolute; z-index:70; min-width:200px; max-height:280px; overflow:auto; background:var(--bg2); border:1px solid var(--line); border-radius:8px; padding:6px; box-shadow:0 8px 24px rgba(0,0,0,.35); font-size:12px; }
+  #asgPop label { display:flex; align-items:center; gap:6px; padding:3px 4px; white-space:nowrap; cursor:pointer; }
   .filterbar button.chip[aria-pressed="true"] { background:var(--plat-bg); color:var(--plat-txt); border-color:var(--plat-txt); }
   th.sortable { padding:0; } th.sortable button { all:unset; box-sizing:border-box; display:block; width:100%; padding:7px 12px; cursor:pointer; font:inherit; color:inherit; white-space:nowrap; }
   th.sortable button:hover, th.sortable button:focus-visible { color:var(--txt); text-decoration:underline; text-underline-offset:3px; }
@@ -190,8 +198,10 @@
   <select id="fType" aria-label="Filter by type" onchange="setF('type',this.value)"><option value="all">RFIs + Submittals</option><option value="rfi">RFIs only</option><option value="submittal">Submittals only</option></select>
   <select id="fDisc" aria-label="Filter by discipline" onchange="setF('disc',this.value)"></select>
   <select id="fStatus" aria-label="Filter by status" onchange="setF('status',this.value)"></select>
-  <input id="fText" aria-label="Search by number, title, spec, or sender" placeholder="search # · title · spec · from…" oninput="setF('text',this.value)" style="width:220px" />
+  <input id="fText" aria-label="Search by number, title, spec, sender, assignee or status" placeholder="search # · title · spec · from · assignee…" oninput="setF('text',this.value)" style="width:220px" />
   <button type="button" class="chip" id="fMine" aria-pressed="false" onclick="toggleMine()" title="Only items assigned to you (matched by your sign-in)">👤 Mine</button>
+  <button type="button" class="chip" id="fOverdue" aria-pressed="false" onclick="toggleFlag('overdue')" title="Only open items past their due date">⏰ Overdue</button>
+  <button type="button" class="chip" id="fUnassigned" aria-pressed="false" onclick="toggleFlag('unassigned')" title="Only items with nobody assigned (no team member and no subconsultant)">∅ Unassigned</button>
   <button type="button" class="chip" id="fUnrev" aria-pressed="false" onclick="toggleUnrev()" title="Only auto-imported items nobody has confirmed yet">📥 Unreviewed</button>
   <button type="button" class="chip" id="fReady" aria-pressed="false" onclick="toggleReady()" title="Answered by the engineer and waiting for someone to issue it to the contractor">📤 Ready to issue</button>
   <button class="ghost" onclick="clearFilters()" title="Back to the default view: all types, all disciplines, open items">Reset</button>
@@ -429,7 +439,7 @@ function srUndecide(sheet){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsW
 function srRestore(){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsWork||[]).filter(x=>x.status==="confirmed"); srPaint(); }
 
 /* =========================== STATE + PICKER =========================== */
-const FILTER_DEFAULT=()=>({type:"all",disc:"all",status:"__open__",text:"",mine:false,ready:false});
+const FILTER_DEFAULT=()=>({type:"all",disc:"all",status:"__open__",text:"",mine:false,ready:false,overdue:false,unassigned:false});
 let PROJECTS=[], CURRENT=null, FILTER=FILTER_DEFAULT();
 async function init(){
   try{ applyTheme(localStorage.getItem("rfiTrackTheme")==="light"?"light":"dark"); }catch(e){}
@@ -635,12 +645,17 @@ function syncFilterUi(){
   const g=id=>document.getElementById(id);
   g("fType").value=FILTER.type; g("fDisc").value=FILTER.disc; g("fStatus").value=FILTER.status; if(g("fText").value.toLowerCase()!==FILTER.text) g("fText").value=FILTER.text;
   g("fMine").setAttribute("aria-pressed",String(!!FILTER.mine)); g("fUnrev").setAttribute("aria-pressed",String(FILTER.status==="__unreviewed__")); g("fReady").setAttribute("aria-pressed",String(!!FILTER.ready));
+  g("fOverdue").setAttribute("aria-pressed",String(!!FILTER.overdue)); g("fUnassigned").setAttribute("aria-pressed",String(!!FILTER.unassigned));
 }
 // Reset = back to the view the page opens on (open items), not "everything".
 function clearFilters(){ FILTER=FILTER_DEFAULT(); syncFilterUi(); renderProject(); }
 function toggleMine(){ if(!FILTER.mine&&!myIdentity()){ toast("Sign in so the Mine filter knows who you are.", false); return; } FILTER.mine=!FILTER.mine; syncFilterUi(); renderProject(); }
 function toggleUnrev(){ FILTER.status=FILTER.status==="__unreviewed__"?"__open__":"__unreviewed__"; syncFilterUi(); renderProject(); }
 function toggleReady(){ FILTER.ready=!FILTER.ready; syncFilterUi(); renderProject(); }
+function toggleFlag(k){ FILTER[k]=!FILTER[k]; syncFilterUi(); renderProject(); }
+// Overdue = still ours to answer, confirmed, and past its due date (the same rule the row chip and the counts use).
+function isOverdueRow(r){ const n=daysUntil(r.dueDate); return OPEN_STATUSES.includes(r.status||"")&&!isUnreviewed(r)&&n!==null&&n<0; }
+function isUnassigned(r){ return !((r.assignedTo||[]).length)&&!r.subAssigned; }
 // Who "me" is: the sign-in email and display name, matched against the
 // project's team members by email, then by name.
 function myIdentity(){ const email=String(window.settyAuth&&settyAuth.email&&settyAuth.email()||"").trim().toLowerCase(); const name=getWho().toLowerCase(); return (email||name)?{email,name}:null; }
@@ -650,12 +665,14 @@ function isMine(r){ const me=myIdentity(); if(!me) return false; const team=team
 function passFilter(r){
   if(FILTER.mine&&!isMine(r)) return false;
   if(FILTER.ready&&!isAnswerReady(r)) return false;
+  if(FILTER.overdue&&!isOverdueRow(r)) return false;
+  if(FILTER.unassigned&&!isUnassigned(r)) return false;
   if(FILTER.disc==="__unset__"){ if((r.discipline||"")!=="") return false; }
   else if(FILTER.disc!=="all" && (r.discipline||"")!==FILTER.disc) return false;
   if(FILTER.status==="__open__"){ if(!OPEN_STATUSES.includes(r.status||"")) return false; }
   else if(FILTER.status==="__unreviewed__"){ if(!isUnreviewed(r)) return false; }
   else if(FILTER.status!=="all" && (r.status||"")!==FILTER.status) return false;
-  if(FILTER.text){ const hay=((r.number||"")+" "+(r.title||"")+" "+(r.description||"")+" "+(r.specSection||"")+" "+(r.from||"")+" "+(r.__projNum||"")+" "+(r.__projName||"")).toLowerCase(); if(!hay.includes(FILTER.text)) return false; }
+  if(FILTER.text){ const hay=((r.number||"")+" "+(r.title||"")+" "+(r.description||"")+" "+(r.specSection||"")+" "+(r.from||"")+" "+(r.__projNum||"")+" "+(r.__projName||"")+" "+assigneeNames(r)+" "+(r.status||"")+" "+(r.discipline||"")).toLowerCase(); if(!hay.includes(FILTER.text)) return false; }
   return true;
 }
 
@@ -778,8 +795,8 @@ function renderSection(kind, title, logged, inbox){
   const news=inbox.filter(i=>i.verdict==="new");
   const shown=sortForDisplay(kind, logged.filter(passFilter));
   const am=CURRENT.allMode;
-  const late=logged.filter(r=>{const s=dueState(kind,r);return s&&s.cls==="late"&&daysUntil(r.dueDate)<0;}).length, unrev=logged.filter(isUnreviewed).length, ready=logged.filter(isAnswerReady).length;
-  let html=`<div class="head"><h2>${title}</h2><span class="count">${shown.length===logged.length?logged.length:shown.length+" of "+logged.length} logged${late?` · <span class="late">${late} overdue</span>`:""}${unrev?` · <span class="unrev">${unrev} unreviewed</span>`:""}${ready?` · <span style="color:var(--due-ok);font-weight:700">${ready} ready to issue</span>`:""}${news.length?` · ${news.length} to import`:""}</span><span class="spacer"></span>`+
+  const late=logged.filter(r=>{const s=dueState(kind,r);return s&&s.cls==="late"&&daysUntil(r.dueDate)<0;}).length, unrev=logged.filter(isUnreviewed).length, ready=logged.filter(isAnswerReady).length, unasg=logged.filter(r=>OPEN_STATUSES.includes(r.status||"")&&isUnassigned(r)).length;
+  let html=`<div class="head"><h2>${title}</h2><span class="count">${shown.length===logged.length?logged.length:shown.length+" of "+logged.length} logged${late?` · <button type="button" class="countbtn late" onclick="toggleFlag('overdue')" title="Show only the overdue items (click again to clear)">${late} overdue</button>`:""}${unrev?` · <button type="button" class="countbtn unrev" onclick="toggleUnrev()" title="Show only the unreviewed items">${unrev} unreviewed</button>`:""}${ready?` · <button type="button" class="countbtn" style="color:var(--due-ok);font-weight:700" onclick="toggleReady()" title="Show only the items ready to issue">${ready} ready to issue</button>`:""}${unasg?` · <button type="button" class="countbtn" onclick="toggleFlag('unassigned')" title="Show only the open items with nobody assigned">${unasg} unassigned</button>`:""}${news.length?` · ${news.length} to import`:""}</span><span class="spacer"></span>`+
     `<button class="ghost" style="font-size:12px" onclick="exportCSV('${kind}')">⬇ CSV</button>`+
     (am?`<span class="muted" style="font-size:12px">pick one project to add / import</span>`:
        `<a href="${esc(caBackloadSeatUrl(kind, CURRENT.proj.name||"", CURRENT.proj.number||""))}" target="_blank" rel="noreferrer" title="For items still in Newforma: open a Claude seat to find the filed PDF / notification email, log it here (backfill), then review it against the current set and specs." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--accent);font-weight:600">🤖 Log from filed PDF/email</a>`+
@@ -817,6 +834,13 @@ function renderSection(kind, title, logged, inbox){
       if(am&&r.__projId!==lastProj){ lastProj=r.__projId; const pp=PROJECTS.find(x=>x.id===r.__projId); const n=perProj[r.__projId];
         pc=`<tr class="grp"><td colspan="8"><button type="button" class="rowbtn" onclick="pickProject(${esc(JSON.stringify(r.__projId))})" title="Open this project">${esc(r.__projNum?r.__projNum+" — ":"")}${esc(r.__projName||r.__projNum||"(unnamed)")}</button>${pp?platTagHtml(pp):""} <span class="muted" style="font-weight:400">· ${n} item${n===1?"":"s"}</span></td></tr>`; }
       const asg=esc(assigneeNames(r));
+      // Status, due date and assignee change on the row (rowPatch): the three edits CA staff make most.
+      const idArg=esc(JSON.stringify(String(r.id)));
+      const stList=kind==="rfi"?RFI_STATUSES:SUB_STATUSES;
+      const stSlug=String(r.status||"").toLowerCase().replace(/[^a-z0-9]+/g,"-"); // same colour classes as statusPill
+      const stSel=`<select class="rowsel pill${stSlug?" st-"+stSlug:""}" aria-label="Status of ${esc(r.number||"item")}" title="Change status" onclick="event.stopPropagation()" onchange="rowPatch('${kind}',${idArg},{status:this.value})">${stList.includes(r.status||"")?"":`<option selected>${esc(r.status||"")}</option>`}${stList.map(o=>`<option ${o===r.status?"selected":""}>${esc(o)}</option>`).join("")}</select>`;
+      const dueIn=`<td class="date"><input type="date" class="rowdate" aria-label="Due date of ${esc(r.number||"item")}" title="Change due date" value="${esc(String(r.dueDate||"").slice(0,10))}" onclick="event.stopPropagation()" onchange="rowPatch('${kind}',${idArg},{dueDate:this.value})">${dueChip(kind,r)}</td>`;
+      const asgBtn=`<button type="button" class="rowasg" aria-label="Assign ${esc(r.number||"item")}" title="Change who it is assigned to" onclick="event.stopPropagation();rowAssign('${kind}',${idArg},this)">${asg||'<span class="muted">Unassigned</span>'} ▾</button>`;
       const open=`openEditor("${kind}",${esc(JSON.stringify(r.id))})`;
       // Keyboard path: real button on the number cell (stopPropagation so the
       // row's mouse-convenience onclick doesn't fire the editor twice).
@@ -829,8 +853,8 @@ function renderSection(kind, title, logged, inbox){
         :aiSt.state==="stalled"?` <span title="Claude started this review ${agoLabel(aiSt.mins)} and has not finished — open to re-send" style="font-size:11px" role="img" aria-label="Claude review stalled">⏳</span>`:"";
       const ds=dueState(kind,r); const lateRow=ds&&ds.cls==="late"?" late":"";
       const c = kind==="rfi"
-        ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}${aiMark}</td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${esc(r.from||"")}</td><td>${asg||'<span class="muted">—</span>'}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}${readyBadge(r)}</td>`
-        : `<td class="num">${numBtn}</td><td class="title">${esc(r.description||r.title||"—")}${aiMark}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${asg||'<span class="muted">—</span>'}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td>${dateCell(r.dateReceived)}${dateCell(r.dueDate, dueChip(kind,r))}<td>${statusPill(r.status)}${unrevBadge(r)}${readyBadge(r)}</td>`;
+        ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}${aiMark}</td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${esc(r.from||"")}</td><td>${asgBtn}</td>${dateCell(r.dateReceived)}${dueIn}<td>${stSel}${unrevBadge(r)}${readyBadge(r)}</td>`
+        : `<td class="num">${numBtn}</td><td class="title">${esc(r.description||r.title||"—")}${aiMark}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${r.discipline?esc(r.discipline):'<span class="muted">not set</span>'}</td><td>${asgBtn}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td>${dateCell(r.dateReceived)}${dueIn}<td>${stSel}${unrevBadge(r)}${readyBadge(r)}</td>`;
       const nw=JUST_IMPORTED.has(r.id)?" justnew":"";
       return pc+`<tr class="click${nw}${lateRow}" onclick='${open}'>${c}</tr>`; }).join("");
     if(news.length) html+=`<div class="lhead">Logged — ${shown.length===logged.length?logged.length:shown.length+" of "+logged.length}</div>`;
@@ -897,6 +921,55 @@ document.addEventListener("change", e=>{
   if(t.id==="f_discipline") asgSuggest("auto");
   else if(t.classList&&t.classList.contains("asg")){ EDIT.asgTouched=true; EDIT.asgAuto=false; asgSuggest(""); }
 });
+// ── Inline edits on a row ────────────────────────────────────────────────────
+// One field written straight from the list. It goes through the same guarded
+// write as the editor (only that field, on the record as it is NOW) and the
+// same rules: an "answered" status gets its date, and an item that is no
+// longer open drops its answer-ready flag. The list is patched in memory and
+// redrawn; nothing is reloaded.
+async function rowPatch(kind, id, patch){
+  const arrKey=kind==="rfi"?"rfis":"submittals"; const rec=findRec(kind,id); if(!rec) return;
+  const projId=rec.__projId||CURRENT.proj.id; const who=getWho()||"(unknown)"; const now=new Date().toISOString();
+  const type=kind==="rfi"?"rfi":"submittal"; let saved=null;
+  try{
+    await writeArray(arrKey, arr=>arr.map(r=>{ if(r.id!==id) return r;
+      let m={...r, ...patch, syncEditedBy:who, syncEditedAt:now};
+      if(window.CaStatus) m=window.CaStatus.applyStatusRules(r, m, type);
+      if(m.answerReady&&!OPEN_STATUSES.includes(m.status||"")) delete m.answerReady;
+      saved=m; return m; }), false, projId);
+    if(saved) applySavedRecord(rec, saved);
+    renderProject();
+    const what=Object.keys(patch)[0]; toast(`${rec.number||"Item"}: ${what==="status"?"status":what==="dueDate"?"due date":"assignment"} saved ✓`, true);
+  }catch(err){ renderProject(); toastErr(err); } // redraw puts the control back to the stored value
+}
+// Replace an in-memory record's fields with what was just written, keeping the all-projects tags on it.
+function applySavedRecord(rec, saved){
+  const keep={__projId:rec.__projId,__projNum:rec.__projNum,__projName:rec.__projName};
+  for(const k of Object.keys(rec)) delete rec[k];
+  Object.assign(rec, saved); for(const k of Object.keys(keep)) if(keep[k]!==undefined) rec[k]=keep[k];
+}
+function closeAsgPop(){ const p=document.getElementById("asgPop"); if(p) p.remove(); document.removeEventListener("mousedown", _asgAway, true); document.removeEventListener("keydown", _asgEsc, true); }
+function _asgAway(e){ const p=document.getElementById("asgPop"); if(p&&!p.contains(e.target)) closeAsgPop(); }
+function _asgEsc(e){ if(e.key==="Escape"){ e.stopPropagation(); closeAsgPop(); } }
+// The assignee picker on a row: the project team as tick boxes, and the engineer for the item's discipline one click away.
+function rowAssign(kind, id, btn){
+  closeAsgPop();
+  const rec=findRec(kind,id); if(!rec) return;
+  const team=teamOf(rec).filter(t=>t&&t.id&&(t.name||t.role)); const cur=new Set(rec.assignedTo||[]);
+  const pm=(PROJECTS.find(x=>x.id===(rec.__projId||CURRENT.proj.id))||{}).pm||"";
+  const sug=window.CaAssign?window.CaAssign.suggestAssignees(team, rec.discipline, pm):null;
+  const pop=document.createElement("div"); pop.id="asgPop"; pop.setAttribute("role","group"); pop.setAttribute("aria-label","Assigned to");
+  const idArg=esc(JSON.stringify(String(id)));
+  pop.innerHTML=(team.length?"":`<div class="muted" style="padding:4px">No team members on this project yet. Add them on the Team tab in the PMS.</div>`)+
+    ((!cur.size&&sug&&sug.ids.length)?`<button type="button" class="primary" style="width:100%;margin-bottom:4px;font-size:12px;white-space:normal" onclick='closeAsgPop();rowPatch("${kind}",${idArg},{assignedTo:${esc(JSON.stringify(sug.ids))}})'>Assign ${esc(sug.names.join(", "))}${sug.basis==="discipline"?" ("+esc(rec.discipline||"discipline")+")":" (PM)"}</button>`:"")+
+    team.map(t=>`<label><input type="checkbox" value="${esc(t.id)}" ${cur.has(t.id)?"checked":""}> ${esc(t.name||t.role)}</label>`).join("")+
+    (team.length?`<div style="text-align:right;margin-top:4px"><button type="button" class="go" style="font-size:12px" id="asgPopSave">Save</button></div>`:"");
+  document.body.appendChild(pop);
+  const b=btn.getBoundingClientRect(); pop.style.left=Math.max(8, Math.min(window.scrollX+b.left, window.scrollX+document.documentElement.clientWidth-pop.offsetWidth-8))+"px"; pop.style.top=(window.scrollY+b.bottom+4)+"px";
+  const save=document.getElementById("asgPopSave");
+  if(save) save.onclick=()=>{ const ids=[...pop.querySelectorAll("input:checked")].map(c=>c.value); closeAsgPop(); rowPatch(kind, id, {assignedTo:ids}); };
+  setTimeout(()=>{ document.addEventListener("mousedown", _asgAway, true); document.addEventListener("keydown", _asgEsc, true); const f=pop.querySelector("button,input"); if(f) f.focus(); },0);
+}
 function validateEditor(kind){
   document.querySelectorAll("#modal [aria-invalid]").forEach(e=>e.removeAttribute("aria-invalid"));
   const bad=[]; const list=kind==="rfi"?CURRENT.rfis:CURRENT.submittals;
@@ -1383,7 +1456,7 @@ async function saveEditor(){
   const edits=collectEdits(kind); const who=getWho(); const now=new Date().toISOString();
   const type=kind==="rfi"?"rfi":"submittal";
   const sheetsChanged=JSON.stringify(EDIT.sheetRefsWork||[])!==EDIT.sheetBase;
-  let movedTo="";
+  let movedTo="", savedRec=null;
   setEditorBusy(true);
   try{
     await writeArray(arrKey, arr=>{
@@ -1413,11 +1486,15 @@ async function saveEditor(){
         // present here with a newer aiReview.at — deleting unconditionally would
         // silently discard that fresh output. Match on .at before removing.
         if(EDIT.dismissAi && m.aiReview && (!EDIT.ai || m.aiReview.at===EDIT.ai.at)) delete m.aiReview;
-        return m; });
+        savedRec=m; return m; });
     }, false, EDIT.projId);
     clearUndoBar(); // any other edit makes a blind import-undo unsafe (only once this one has landed)
     const confirmed=EDIT.confirmIntake;
-    closeEditor(); toast(isNew?(movedTo?`Added to log as ${movedTo} ✓ (the number you were shown was taken meanwhile)`:"Added to log ✓"):confirmed?"Confirmed and saved ✓":"Saved ✓", true); selectProject(CURRENT.proj.id);
+    // An edit that kept its number is patched into the list as it stands (no reload, scroll and filters stay);
+    // a new item or a renumbered one reloads, because the import strip's matching depends on the numbers.
+    const rec=!isNew&&savedRec?findRec(kind,id):null; const sameNumber=rec&&String(rec.number||"")===String(savedRec.number||"");
+    closeEditor(); toast(isNew?(movedTo?`Added to log as ${movedTo} ✓ (the number you were shown was taken meanwhile)`:"Added to log ✓"):confirmed?"Confirmed and saved ✓":"Saved ✓", true);
+    if(sameNumber){ applySavedRecord(rec, savedRec); renderProject(); } else selectProject(CURRENT.proj.id);
   }catch(err){
     setEditorBusy(false);
     if(err&&err.fieldConflict&&EDIT){
