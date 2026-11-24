@@ -1778,3 +1778,22 @@ The tenant and client IDs appearing as literals in the code are public identifie
 The Microsoft sign-in is an **authentication gate, not an identity**. `verifyEntraToken()` validates signature, issuer, audience and tenant, then returns a boolean and discards the payload. No user claim reaches any query, and every read uses the service-role key, which bypasses RLS by design.
 
 So the Phase 5 role capabilities enforced in the database do **not** narrow what this connector returns. That is deliberate: it is read-only and surfaces what staff already see in PMS. But it means per-role visibility would be a build, not a configuration change, and it is not one line away.
+
+## From the RFI log to a lesson (`list_lesson_candidates`)
+
+Root-cause tags say which RFIs a document review could have prevented
+(`save_ca_review` `rootCause`, `tag_rfi_root_causes`). A lesson is what carries
+that to the next project, and until 2026-11-24 nothing connected the two: 483
+RFIs were tagged preventable and 64 lessons came from RFIs.
+
+- `list_lesson_candidates` (read-only) returns the preventable RFIs no lesson
+  covers, grouped by the QA checklist item that would have caught them, or by
+  cause when no item does (`noChecklistItem`: also a candidate for a new
+  checklist item, which a person adds). Patterns on the most projects first.
+- One lesson per GROUP, saved with `save_knowledge {automated: true,
+  linkedRfis}`. An automated save is always `suggested`: a reviewer approves it
+  in the Intelligence console before any review reads it.
+- An RFI is covered when an approved or suggested lesson links to it
+  (`linked_records`, the shape the mining passes write) or, on the same
+  project, names it in `source_reference`. Rules and tests: `rfiRootCause.ts`.
+- `rfi_root_cause_summary` reports `coverage`: RFIs in the log with no tag.
