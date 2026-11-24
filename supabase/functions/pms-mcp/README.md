@@ -250,6 +250,36 @@ one indexed query.
 node supabase/functions/pms-mcp/searchDrawings.test.mjs
 ```
 
+### Knowledge search: words, then meaning (`knowledgeQuery.ts`)
+
+`search_knowledge`, `search_engineering_standards` and
+`search_agency_preferences` answer a query in up to three parts:
+
+- **Results** (`lessons` / `bestPractices` / `standards` / `preferences`): rows
+  carrying every meaningful word of the query, at the start of a word; rows
+  carrying the query as a phrase first.
+- **`closeMatches`**: only when nothing carries every word, the rows carrying at
+  least half, with `matchedTerms` and `missingTerms`.
+- **`relatedByMeaning`**: up to 5 served rows nearest the query by vector, with
+  `similarity`, that are not already in the results. This is what finds an entry
+  written in other words.
+
+The vectors are gte-small, the model the email and CA item search use, kept in
+`pms_knowledge_embeddings` (migration `20261124140000`), one row per served
+knowledge row. The once-a-minute email embed job embeds knowledge rows when no
+email is waiting (`knowledge` in its answer); a changed entry is re-embedded on
+the next pass. A meaning hit is looked up in the rows the tool has already
+filtered, so status, agency, discipline and project visibility apply to it as
+they do to a word match.
+
+Any failure of the meaning lookup returns the word results alone. Kill switch:
+function secret `KNOWLEDGE_SEMANTIC=0`. The similarity floor is
+`KNOWLEDGE_MIN_SIMILARITY` in `index.ts`.
+
+```
+node --test supabase/functions/pms-mcp/knowledgeQuery.test.mjs
+```
+
 ### Sheet numbers for combined books (`sheetFromDrawingList.ts`)
 
 `parseTitleBlock` reads a title block with a pattern per architect's template,
