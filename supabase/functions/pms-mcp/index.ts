@@ -102,6 +102,7 @@ import {
   FOLLOWUP_KINDS, FOLLOWUP_SOURCES, FOLLOWUP_CADENCE_DAYS, type FollowupKind,
   addDays, nextFollowupAfter, toneForReminder, daysOutstanding, isDue,
 } from "./followups.ts";
+import { findCaItemLoose, caMissMessage } from "./caLookup.ts";
 // file_meeting_minutes: validation, owner resolution and the note text. Pure; see its tests.
 import {
   MEETING_ITEM_TYPES, MEETING_KINDS, MEETING_NOTE_CATEGORY, isIsoDate, cleanMinutesItems,
@@ -1463,7 +1464,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-23-onenote-sections-by-record-link";
+const BUILD = "2026-11-24-ca-number-lookup-email-filters-telemetry";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1597,13 +1598,19 @@ const RESULT_ARRAY_KEYS = [
   "results", "items", "emails", "notes", "projects", "documents", "files", "sheets",
   "findings", "entries", "matches", "milestones", "contacts", "companies", "photos",
 ] as const;
-function classifyResult(payload: any): { outcome: TelemetryOutcome; resultCount: number | null; detail: string | null } {
+// Tools that answer with ONE record. The record's own lists say nothing about
+// whether the call was served: get_project returns the project with its
+// `emails: []` (filed emails moved to their own table), and the array fallback
+// below read that as "0 results", so 102 of 164 found projects were logged
+// `empty` in a month (2026-11). For these only `error` and `count` are read.
+const RECORD_TOOLS = new Set(["get_project"]);
+function classifyResult(payload: any, recordTool = false): { outcome: TelemetryOutcome; resultCount: number | null; detail: string | null } {
   if (!payload || typeof payload !== "object") return { outcome: "hit", resultCount: null, detail: null };
   if (payload.error) {
     return { outcome: "error", resultCount: null, detail: String(payload.error).slice(0, 300) };
   }
   let count: number | null = typeof payload.count === "number" ? payload.count : null;
-  if (count === null) {
+  if (count === null && !recordTool) {
     for (const k of RESULT_ARRAY_KEYS) {
       if (Array.isArray(payload[k])) { count = payload[k].length; break; }
     }
@@ -1660,7 +1667,7 @@ const _rawTool = mcp.tool.bind(mcp);
         } else {
           res = await _resolveScope.run(scope, () => inner(args));
           try {
-            cls = classifyResult(JSON.parse(res?.content?.[0]?.text ?? "null"));
+            cls = classifyResult(JSON.parse(res?.content?.[0]?.text ?? "null"), RECORD_TOOLS.has(name));
           } catch { /* not JSON: treat as a hit, the tool answered something */ }
         }
         // REDACT second: fee/billing fields for callers without fees.view.
@@ -3530,6 +3537,30 @@ mcp.tool("firm_overview", {
   },
 });
 
+// search_emails' sender/direction filters as search_project_emails parameters
+// (migration 20261124100000). Empty when neither is set, so an unfiltered
+// call sends exactly what it sent before.
+function emailFilterArgs(sender?: string | null, direction?: string | null): Record<string, string> {
+  const out: Record<string, string> = {};
+  const s = String(sender ?? "").trim();
+  if (s) out.p_sender = s;
+  if (direction === "outgoing" || direction === "incoming") out.p_direction = direction;
+  return out;
+}
+// PostgREST's answer when a function is called with parameters it does not
+// have (PGRST202): the sign that the migration above has not applied.
+function isMissingFunctionError(e: unknown): boolean {
+  return /PGRST202|Could not find the function/i.test(String((e as any)?.message ?? e));
+}
+// The same two filters over rows already returned: the fallback only.
+function filterEmailRows(rows: any[], sender?: string | null, direction?: string | null): any[] {
+  const s = String(sender ?? "").trim().toLowerCase();
+  let out = rows;
+  if (s) out = out.filter((r: any) => String(r.from_address ?? "").toLowerCase().includes(s));
+  if (direction) out = out.filter((r: any) => r.direction === direction);
+  return out;
+}
+
 mcp.tool("search_emails", {
   description:
     "Full-text search the filed project email log across subject, sender, body, AND " +
@@ -3579,6 +3610,7 @@ mcp.tool("search_emails", {
     let searchMode: string | undefined;
     let semanticNote: string | undefined;
     let keywordNote: string | undefined;
+    let filterNote: string | undefined;
     if (q) {
       // Embed the query unless EMAILS_SEMANTIC=0; keyword ranking is the
       // fallback at every step (model down, migration not applied), and the
@@ -3595,18 +3627,40 @@ mcp.tool("search_emails", {
       // is one call per project, merged on rank (the same query ranks every
       // project on the same scale).
       let usedEmbedding = embedding !== undefined;
+      // The sender and direction filters go INTO the search (migration
+      // 20261124100000), so they narrow the candidates before the limit.
+      // Filtering the returned rows instead dropped every match ranked below
+      // the limit: "from jane@ about the chiller" answered with nothing while
+      // her email sat 26th. If the database function does not take the two
+      // parameters (the migration has not applied), the call is repeated
+      // without them and the rows are filtered here, with a note saying so.
+      const filterArgs = emailFilterArgs(sender, direction);
+      const wantsFilter = Object.keys(filterArgs).length > 0;
+      let filteredInDb = wantsFilter;
+      const searchOnce = async (args: Record<string, unknown>) => {
+        if (filteredInDb) {
+          try {
+            return await sbRpc("search_project_emails", { ...args, ...filterArgs });
+          } catch (e) {
+            if (!isMissingFunctionError(e)) throw e;
+            console.warn("[search_emails] search_project_emails does not take sender/direction yet; filtering after the search");
+            filteredInDb = false;
+          }
+        }
+        return await sbRpc("search_project_emails", args);
+      };
       const perProject = await Promise.all(pids.map(async (proj) => {
         const args: Record<string, unknown> = { q, proj, lim };
         if (embedding !== undefined) args.p_embedding = embedding;
         try {
-          return await sbRpc("search_project_emails", args);
+          return await searchOnce(args);
         } catch (e) {
           if (!("p_embedding" in args)) throw e;
           console.warn("[search_emails] hybrid call failed, retrying keyword only:", String((e as any)?.message ?? e));
           semanticNote = "Meaning-based ranking was unavailable for this call; results are keyword-ranked.";
           usedEmbedding = false;
           delete args.p_embedding;
-          return await sbRpc("search_project_emails", args);
+          return await searchOnce(args);
         }
       }));
       rows = perProject.flatMap((r: any) => Array.isArray(r) ? r : []);
@@ -3618,11 +3672,12 @@ mcp.tool("search_emails", {
       if (searchMode === "hybrid" && rows.length && rows.every((r: any) => r.keyword_hit === false)) {
         keywordNote = "No filed email contains these words; the rows are the closest by meaning. Check the subject and project before relying on one.";
       }
-      if (sender && sender.trim()) {
-        const s = sender.trim().toLowerCase();
-        rows = rows.filter((r: any) => (r.from_address ?? "").toLowerCase().includes(s));
+      // Only the fallback path filters here; rows the database filtered pass
+      // through unchanged.
+      if (wantsFilter && !filteredInDb) {
+        rows = filterEmailRows(rows, sender, direction);
+        filterNote = `The sender/direction filter was applied to the best ${lim} matches only, so matching emails ranked lower are missing. Narrow the query, or drop it to list by sender newest first.`;
       }
-      if (direction) rows = rows.filter((r: any) => r.direction === direction);
     } else {
       const params = new URLSearchParams({
         select: "record_id,project_id,subject,from_name,from_address,to_addresses,direction,email_date,preview,has_attachments",
@@ -3639,6 +3694,7 @@ mcp.tool("search_emails", {
       ...(searchMode ? { searchMode } : {}),
       ...(semanticNote ? { semanticNote } : {}),
       ...(keywordNote ? { note: keywordNote } : {}),
+      ...(filterNote ? { filterNote } : {}),
       ...(relatedNote ? { relatedProjects: relatedNote } : {}),
       ...(!rows.length && projectNumber ? {
         note: "No filed emails matched. This log only holds emails filed with the Setty PMS Outlook add-in; emails left in a mailbox or saved to the office drive never reach it.",
@@ -4077,11 +4133,23 @@ mcp.tool("read_rfi_submittal", {
     if (!pid) return asText({ error: `No project matching \"${projectNumber}\"` });
     const p = await getProjectById(pid);
     const arr = type === "rfi" ? (p?.rfis ?? []) : (p?.submittals ?? []);
-    const item = arr.find((x: any) => String(x.number) === String(number)) || arr.find((x: any) => String(x.id) === String(number));
-    if (!item) return asText({ error: `No ${type} \"${number}\" on project ${projectNumber}` });
+    // The number as a person types it ("011" for "RFI-011"): caLookup.ts.
+    const found = findCaItemLoose(arr, number, type);
+    const item = found.item;
+    if (!item) {
+      return asText({
+        error: caMissMessage(found, type, number, `on project ${projectNumber}`, arr.length),
+        ...(found.candidates.length ? { candidates: found.candidates } : {}),
+        ...(found.similar.length ? { similarNumbers: found.similar } : {}),
+        nextStep: found.candidates.length
+          ? "Ask the user which one they mean, then call again with that number exactly as written."
+          : `search_rfis_submittals lists this project's ${type} log. An item that was never logged can be added with backload_ca_item.`,
+      });
+    }
     const cap = (t: string) => t.length > MAX_DOC_CHARS ? t.slice(0, MAX_DOC_CHARS) + "\n…[truncated]" : t;
     return asText({
       project: p?.projectNumber || projectNumber, type, number: item.number,
+      ...(found.matchedBy === "format" ? { numberNote: `Asked for "${number}"; the log writes it "${item.number}".` } : {}),
       subject: item.title || item.description || null, discipline: item.discipline || null,
       specSection: item.specSection || null, status: item.status || null, reviewAction: item.stamp || null,
       from: item.from || null, dueDate: item.dueDate || null, received: item.dateReceived || null,
@@ -11669,6 +11737,18 @@ const caArrKey = (type: string) => (type === "rfi" ? "rfis" : "submittals");
 const findCaItem = (arr: any[], number: string) =>
   arr.find((x: any) => String(x.number) === String(number)) ||
   arr.find((x: any) => String(x.id) === String(number));
+// For tools that act on an item that must already be logged (save_ca_review,
+// mark_ca_review_started): the number written another way finds it when it
+// fits ONE item (caLookup.ts). backload_ca_item keeps the exact findCaItem:
+// its duplicate check is rfiLikelyDuplicates, and it must not update an item
+// the caller did not name exactly. Throws with the tool's own next step.
+function requireCaItem(arr: any[], number: string, type: "rfi" | "submittal", tail: string): any {
+  const found = findCaItemLoose(arr, number, type);
+  if (found.item) return found.item;
+  throw new Error(found.candidates.length
+    ? caMissMessage(found, type, number, "on this project", arr.length)
+    : `No ${type} "${number}" on this project — ${tail}` + (found.similar.length ? ` Closest numbers in the log: ${found.similar.join(", ")}.` : ""));
+}
 
 // One root-cause tag per RFI (pms_rfi_root_causes, migration 20261116230000).
 // Shared by save_ca_review (the tag rides with the review) and
@@ -11794,8 +11874,7 @@ mcp.tool("save_ca_review", {
       await updateProjectRecord(pid, (proj) => {
         const key = caArrKey(type);
         const arr = Array.isArray(proj[key]) ? proj[key] : [];
-        const item = findCaItem(arr, number);
-        if (!item) throw new Error(`No ${type} "${number}" on this project — run backload_ca_item first to log it.`);
+        const item = requireCaItem(arr, number, type, "run backload_ca_item first to log it.");
         itemSubject = item.title || item.description || null;
         itemNumber = String(item.number || number);
         const block = merge && item.aiReview ? { ...item.aiReview, ...providedOnly } : fullBlock;
@@ -11873,7 +11952,7 @@ mcp.tool("save_ca_review", {
           await updateProjectRecord(pid, (proj) => {
             const key = caArrKey(type);
             const arr = Array.isArray(proj[key]) ? proj[key] : [];
-            const item = findCaItem(arr, number);
+            const item = findCaItem(arr, itemNumber);
             if (!item || !item.aiReview) return proj;
             const next = arr.map((x: any) => (x === item ? { ...x, aiReview: { ...x.aiReview, ledgerReviewId: reviewId } } : x));
             return { ...proj, [key]: next };
@@ -12173,8 +12252,7 @@ mcp.tool("mark_ca_review_started", {
       await updateProjectRecord(pid, (proj) => {
         const key = caArrKey(type);
         const arr = Array.isArray(proj[key]) ? proj[key] : [];
-        const item = findCaItem(arr, number);
-        if (!item) throw new Error(`No ${type} "${number}" on this project — run backload_ca_item first, then call this again.`);
+        const item = requireCaItem(arr, number, type, "run backload_ca_item first, then call this again.");
         itemNumber = String(item.number || number);
         return { ...proj, [key]: arr.map((x: any) => (x === item ? { ...x, aiReviewStarted: { at, by: who.email } } : x)) };
       });

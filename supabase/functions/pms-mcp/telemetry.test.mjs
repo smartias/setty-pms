@@ -28,13 +28,13 @@ const RESULT_ARRAY_KEYS = [
   "results", "items", "emails", "notes", "projects", "documents", "files", "sheets",
   "findings", "entries", "matches", "milestones", "contacts", "companies", "photos",
 ];
-function classifyResult(payload) {
+function classifyResult(payload, recordTool = false) {
   if (!payload || typeof payload !== "object") return { outcome: "hit", resultCount: null, detail: null };
   if (payload.error) {
     return { outcome: "error", resultCount: null, detail: String(payload.error).slice(0, 300) };
   }
   let count = typeof payload.count === "number" ? payload.count : null;
-  if (count === null) {
+  if (count === null && !recordTool) {
     for (const k of RESULT_ARRAY_KEYS) {
       if (Array.isArray(payload[k])) { count = payload[k].length; break; }
     }
@@ -55,6 +55,13 @@ check(classifyResult({ documents: [1, 2] }).resultCount === 2, "documents array 
 check(classifyResult({ error: "boom", nextStep: "x" }).outcome === "error", "payload.error is an error");
 check(classifyResult({ error: "boom" }).detail === "boom", "error detail carried");
 check(classifyResult({ count: 0, reason: "no folder" }).detail === "no folder", "empty reason carried");
+// A one-record tool (get_project): the record's own empty lists are not the result.
+check(classifyResult({ name: "Tabler", emails: [], notes: [] }, true).outcome === "hit" &&
+      classifyResult({ name: "Tabler", emails: [], notes: [] }, true).resultCount === null,
+  "a found record with empty emails/notes lists is a hit, not empty");
+check(classifyResult({ name: "Tabler", emails: [] }).outcome === "empty", "the same payload from a list tool is still empty");
+check(classifyResult({ error: "No project matching" }, true).outcome === "error", "a record tool's error is still an error");
+check(classifyResult({ count: 0, emails: [] }, true).outcome === "empty", "a record tool's explicit count 0 is still empty");
 check(classifyResult({ project: {} }).outcome === "hit" && classifyResult({ project: {} }).resultCount === null,
   "a payload with no count and no known array is a hit with unknown count");
 check(classifyResult("plain text").outcome === "hit" && classifyResult(null).outcome === "hit",
@@ -100,6 +107,8 @@ for (const fn of ["classifyResult", "projectArgName"]) {
 }
 const has = (needle, label) => check(shipped.includes(needle), `${label} has DRIFTED from this test's anchor`);
 has('"findings", "entries", "matches", "milestones", "contacts", "companies", "photos",', "result array key list");
+has('const RECORD_TOOLS = new Set(["get_project"]);', "get_project is classified as a one-record tool");
+has('classifyResult(JSON.parse(res?.content?.[0]?.text ?? "null"), RECORD_TOOLS.has(name))', "the wrapper tells classifyResult which tools return one record");
 has('type TelemetryOutcome = "hit" | "empty" | "error" | "hidden";', "hidden is its own outcome");
 has('cls = { outcome: "hidden", resultCount: null, detail: `caps: projects.view denied for "${ref}"`.slice(0, 300) };',
   "the caps hide path logs hidden, not error");
