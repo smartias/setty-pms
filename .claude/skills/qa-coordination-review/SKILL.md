@@ -295,7 +295,10 @@ deliverable. A cost estimate often arrives for review just before the set
 goes out; this step is where its total gets recorded.
 
 1. `record_construction_cost` with only the project: read the figure on
-   record and the history.
+   record and the history. `costDocumentsFlagged` lists cost documents saved
+   to the project folder since the last check (the nightly file sync flags
+   them by name); `costDocumentsInFolder` lists every file whose name reads
+   like a cost estimate. Start with those.
 2. Look for a cost document belonging to this deliverable:
    `list_project_documents` and `find_document` for "estimate", "cost",
    "budget", "bid tab", in the set's folder first and then the project

@@ -26,3 +26,14 @@ test("record_construction_cost is registered, fenced and redacted like fee data"
   assert.ok(/"manualconstructioncost", "constructioncostlog"/.test(src), "the history is redacted with the other fee keys");
   assert.ok(src.includes("rfisPerMillion("), "rfi_root_cause_summary reports the per-$1M measure");
 });
+
+// The nightly file sync flags a cost estimate saved to the project folder.
+test("the file sync flags new cost documents and cannot fail over it", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  const sync = src.slice(src.indexOf("async function syncProjectDocuments("), src.indexOf("async function walkLibraryFolder("));
+  assert.ok(sync.includes("await flagNewCostDocuments(p, scope)"), "project folders only, after the rows are written");
+  const fn = src.slice(src.indexOf("async function flagNewCostDocuments("), src.indexOf('mcp.tool("record_construction_cost"'));
+  assert.ok(fn.includes("try {") && fn.includes("return 0;"), "a failure is logged and swallowed, never thrown into the sync");
+  assert.ok(fn.includes("updateProjectRecord(pid") && fn.includes("planCostDocFlags("));
+  assert.ok(/"constructioncostlog", "costdocflags"/.test(src), "flags are redacted with the fee keys");
+});

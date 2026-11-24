@@ -8249,7 +8249,9 @@ function costCheckOnComplete(project, milestoneId, oldPct, newPct) {
 // marked complete, and the history. project.constructionCostLog is separate
 // from the Fee Calculator's construction cost on purpose: a new estimate must
 // never move a fee. Figures can be recorded at any time, since the cost
-// estimate often arrives for review before the deliverable goes out.
+// estimate often arrives for review before the deliverable goes out. The
+// connector's nightly file sync also flags a cost estimate saved to the project
+// folder (project.costDocFlags); the panel then asks for its figure.
 function ConstructionCostPanel({ project, onChange }) {
   const CC = window.ConstructionCost;
   const [open, setOpen] = useState(false);
@@ -8262,6 +8264,8 @@ function ConstructionCostPanel({ project, onChange }) {
   if (!CC) return null;
   const latest = CC.latestConstructionCost(project);
   const pending = CC.pendingCostChecks(project)[0] || null;
+  const docFlags = CC.openCostDocFlags(project);
+  const due = !!pending || docFlags.length > 0;
   const log = CC.costLogOf(project);
   const stamp = () => ({ at: new Date().toISOString(), id: Math.random().toString(36).slice(2, 10), by: getCurrentUser(), via: "pms" });
   const save = (input) => {
@@ -8275,13 +8279,13 @@ function ConstructionCostPanel({ project, onChange }) {
     ? CC.costSourceLabel(latest.source) + (latest.deliverable ? ", " + latest.deliverable : "") + ", " + fmtDate(String(latest.at).slice(0, 10))
     : latest.basis === "fee-calculator" ? "from the Fee Calculator, not yet checked at a deliverable" : "";
   return (
-    <div style={{ border: `1px solid ${pending ? P.yellow : P.border}`, background: pending ? P.yellowDim : "transparent", borderRadius: 6, padding: "10px 12px", marginBottom: 14 }}>
+    <div style={{ border: `1px solid ${due ? P.yellow : P.border}`, background: due ? P.yellowDim : "transparent", borderRadius: 6, padding: "10px 12px", marginBottom: 14 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <div style={{ fontSize: 12, color: P.textDim }}>
           Construction cost on record: <strong style={{ color: P.text }}>{latest.value ? fmt(latest.value) : "none"}</strong>
           {meta ? <span> ({meta})</span> : null}
         </div>
-        {!pending && !open && <button style={btn} onClick={() => { setOpen(true); setErr(""); }}>Record a figure</button>}
+        {!due && !open && <button style={btn} onClick={() => { setOpen(true); setErr(""); }}>Record a figure</button>}
         {log.length > 0 && <button style={btn} onClick={() => setShowHistory(v => !v)}>{showHistory ? "Hide history" : "History (" + log.length + ")"}</button>}
       </div>
       {pending && !open && (
@@ -8294,6 +8298,19 @@ function ConstructionCostPanel({ project, onChange }) {
           <button style={btn} onClick={() => onChange(CC.skipCostCheck(project, pending.id), { notifyTeams: false })}>Not known yet</button>
         </div>
       )}
+      {!open && docFlags.slice(0, 3).map(f => (
+        <div key={f.itemId} style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 12, color: P.text }}>
+            Cost document saved {fmtDate(String(f.seenAt).slice(0, 10))}:{" "}
+            {f.webUrl ? <a href={f.webUrl} target="_blank" rel="noopener noreferrer" style={{ color: P.accentLight, fontWeight: 600 }}>{f.name}</a> : <strong>{f.name}</strong>}
+            . Does it change the construction cost?
+          </div>
+          <button style={btn} onClick={() => { setDoc(f.name); setSource("cost-estimate"); setOpen(true); setErr(""); }}>Enter its figure</button>
+          {latest.value ? <button style={btn} onClick={() => save({ unchanged: true, source: "cost-estimate", document: f.name })}>Still {fmt(latest.value)}</button> : null}
+          <button style={btn} onClick={() => onChange(CC.dismissCostDocFlag(project, f.itemId), { notifyTeams: false })}>Not a cost estimate</button>
+        </div>
+      ))}
+      {!open && docFlags.length > 3 && <div style={{ marginTop: 6, fontSize: 11, color: P.textDim }}>and {docFlags.length - 3} more cost documents saved since the last check.</div>}
       {open && (
         <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <input type="number" value={value} onChange={e => setValue(e.target.value)} placeholder="Construction cost, $" style={{ width: 170 }} />
@@ -8307,7 +8324,7 @@ function ConstructionCostPanel({ project, onChange }) {
         </div>
       )}
       {err && <div style={{ marginTop: 6, fontSize: 12, color: P.red }}>{err}</div>}
-      {(open || pending) && <div style={{ marginTop: 6, fontSize: 11, color: P.textDim }}>Construction only, not Setty's fee. Kept apart from the Fee Calculator: recording a figure here never changes a fee.</div>}
+      {(open || due) && <div style={{ marginTop: 6, fontSize: 11, color: P.textDim }}>Construction only, not Setty's fee. Kept apart from the Fee Calculator: recording a figure here never changes a fee.</div>}
       {showHistory && log.length > 0 && (
         <table style={{ marginTop: 8, fontSize: 12, width: "100%" }}>
           <thead><tr><th style={{ textAlign: "left" }}>Date</th><th style={{ textAlign: "left" }}>Construction cost</th><th style={{ textAlign: "left" }}>Source</th><th style={{ textAlign: "left" }}>Deliverable</th><th style={{ textAlign: "left" }}>Recorded by</th></tr></thead>

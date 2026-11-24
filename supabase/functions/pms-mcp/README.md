@@ -822,7 +822,16 @@ Schedule tab loads (`constructionCostDrift.test.mjs`).
   tagged RFIs per $1M, over projects with a cost on record (history first,
   else the Fee Calculator's typed cost, never SF x cost per SF). Projects
   with none are listed, not guessed.
-- The log is redacted with the other fee keys for callers without `fees.view`.
+- The nightly file sync (`syncProjectDocuments`) flags a cost estimate saved
+  to the project folder: files first seen in the last 7 days whose NAME reads
+  like one (`looksLikeCostDocument`; pdf, Excel, Word, csv; not fee, proposal
+  or invoice paper) go on `project.costDocFlags` as `open`. The Schedule tab
+  shows each with "Enter its figure / Still $X / Not a cost estimate";
+  recording a figure answers the open flags, and a file is never flagged
+  twice. The flag is a prompt to look: no figure is read from the file by the
+  sync. Flags appear the morning after the file is saved, not at once.
+- The log and the flags are redacted with the other fee keys for callers
+  without `fees.view`.
 
 ## Fee Calculator write (`set_project_fee`, 1.25.0; inputs 1.26.0)
 

@@ -162,13 +162,88 @@ export function planCostCheck(project, input, stamp) {
   };
   const log = project && Array.isArray(project.constructionCostLog) ? project.constructionCostLog : [];
   const ms = project && Array.isArray(project.milestones) ? project.milestones : [];
+  const flags = costDocFlagsOf(project);
   const next = {
     ...project,
     constructionCostLog: [...log, entry],
     ...(m && m.costCheckPending ? { milestones: ms.map((x) => (x === m ? { ...x, costCheckPending: null } : x)) } : {}),
+    // Recording a figure answers every cost document flagged so far.
+    ...(flags.some((f) => f.status === "open")
+      ? { costDocFlags: flags.map((f) => (f.status === "open" ? { ...f, status: "recorded", entryId: entry.id } : f)) }
+      : {}),
   };
   const changePct = previous.value ? Math.round(((value - previous.value) / previous.value) * 1000) / 10 : null;
   return { ok: true, project: next, entry, previous, changePct };
+}
+
+// ── Cost documents saved to the project folder ───────────────────────────────
+// The connector's nightly file sync (pms_documents) calls planCostDocFlags with
+// the files it saw for the first time. One that reads like a construction cost
+// estimate is flagged on the project (project.costDocFlags) and the Schedule
+// tab asks for the figure. The match is on the file and folder NAME only: it
+// is a prompt to look, never a figure.
+
+const COST_DOC_EXT = ["pdf", "xlsx", "xls", "xlsm", "docx", "doc", "csv"];
+const COST_DOC_STRONG = /cost est|construction (cost|budget|estimate)|probable (construction )?cost|opinion of (probable )?cost|\bopcc?\b|cost plan|cost model|bid tab|budget estimate|\bgmp\b/;
+const COST_DOC_WEAK = /\bestimates?\b/;
+// Estimates of something else, and the firm's own commercial paper.
+const COST_DOC_NEVER = /\bfees?\b|proposal|invoice/;
+const COST_DOC_NOT_WEAK = /\bloads?\b|energy|\bhours?\b|labor|schedule|\btime\b|\bflow\b|demand|\bfault\b/;
+const COST_DOC_NOT_FOLDER = /proposal|contract|invoice|billing|\bfees?\b|accounting/;
+export const COST_DOC_FLAG_MAX = 50;
+
+const words = (v) => String(v == null ? "" : v).toLowerCase().replace(/[_\-.,()\[\]]+/g, " ").replace(/\s+/g, " ").trim();
+
+// doc: { name, folderPath, ext }
+export function looksLikeCostDocument(doc) {
+  if (!doc || !doc.name) return false;
+  const raw = String(doc.name);
+  const ext = String(doc.ext || (raw.includes(".") ? raw.split(".").pop() : "")).toLowerCase().replace(/^\./, "");
+  if (!COST_DOC_EXT.includes(ext)) return false;
+  const name = words(raw.replace(/\.[A-Za-z0-9]+$/, ""));
+  if (COST_DOC_NEVER.test(name) || COST_DOC_NOT_FOLDER.test(words(doc.folderPath))) return false;
+  if (COST_DOC_STRONG.test(name)) return true;
+  return COST_DOC_WEAK.test(name) && !COST_DOC_NOT_WEAK.test(name);
+}
+
+export function costDocFlagsOf(project) {
+  return project && Array.isArray(project.costDocFlags) ? project.costDocFlags.filter((f) => f && f.itemId) : [];
+}
+export function openCostDocFlags(project) {
+  return costDocFlagsOf(project).filter((f) => f.status === "open");
+}
+
+// docs: [{ itemId, name, folderPath, ext, webUrl, seenAt }] newly seen files.
+// Adds an open flag for each cost-looking one the project has not been asked
+// about before (an answered or dismissed file is never flagged again).
+// Returns { project, added }; the SAME project reference when nothing is added.
+export function planCostDocFlags(project, docs, now) {
+  const have = costDocFlagsOf(project);
+  const known = new Set(have.map((f) => f.itemId));
+  const added = [];
+  for (const d of Array.isArray(docs) ? docs : []) {
+    if (!d || !d.itemId || known.has(d.itemId) || !looksLikeCostDocument(d)) continue;
+    known.add(d.itemId);
+    added.push({
+      itemId: String(d.itemId), name: str(d.name, 300), folderPath: str(d.folderPath, 500) || null,
+      webUrl: /^https:\/\//i.test(String(d.webUrl || "")) ? String(d.webUrl) : null,
+      seenAt: d.seenAt || now, flaggedAt: now, status: "open",
+    });
+  }
+  if (!added.length) return { project, added };
+  // Keep the newest; open flags are never the ones dropped while a closed one remains.
+  const all = [...have, ...added];
+  const closed = all.filter((f) => f.status !== "open");
+  const open = all.filter((f) => f.status === "open");
+  const keepClosed = closed.slice(Math.max(0, closed.length - Math.max(0, COST_DOC_FLAG_MAX - open.length)));
+  return { project: { ...project, costDocFlags: [...keepClosed, ...open].slice(-COST_DOC_FLAG_MAX) }, added };
+}
+
+// "Not a cost estimate": close one flag without recording anything.
+export function dismissCostDocFlag(project, itemId) {
+  const have = costDocFlagsOf(project);
+  if (!have.some((f) => f.itemId === itemId && f.status === "open")) return project;
+  return { ...project, costDocFlags: have.map((f) => (f.itemId === itemId && f.status === "open" ? { ...f, status: "dismissed" } : f)) };
 }
 
 // Preventable RFIs per $1M of construction value.

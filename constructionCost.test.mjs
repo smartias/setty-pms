@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import {
   COST_SOURCES, costLogOf, latestConstructionCost, isCostCheckMilestone, flagCostCheck,
   pendingCostChecks, skipCostCheck, planCostCheck, rfisPerMillion, costSourceLabel,
+  looksLikeCostDocument, planCostDocFlags, openCostDocFlags, dismissCostDocFlag, costDocFlagsOf, COST_DOC_FLAG_MAX,
 } from "./constructionCost.js";
 
 const stamp = (n = 1) => ({ at: `2027-01-0${n}T12:00:00.000Z`, id: "e" + n, by: "PM", via: "pms" });
@@ -127,6 +128,58 @@ test("source labels", () => {
   assert.equal(costSourceLabel("cost-estimate"), "Cost estimate");
   assert.equal(costSourceLabel("nope"), "Other");
   assert.ok(COST_SOURCES.length >= 5);
+});
+
+test("a file that reads like a construction cost estimate is recognized by name", () => {
+  const yes = [
+    "100% DD Cost Estimate.pdf", "SAPX_CD_Estimate_2027-03-01.xlsx", "Opinion of Probable Construction Cost.pdf",
+    "OPC rev2.xlsx", "Bid Tabulation.pdf", "Construction Budget.xlsx", "GMP - Amendment 1.pdf", "MEP estimate.xls",
+  ];
+  for (const name of yes) assert.equal(looksLikeCostDocument({ name, folderPath: "Incoming/2027-03-01" }), true, name);
+  const no = [
+    "Fee Estimate.xlsx", "Setty Proposal - Cost Estimate.pdf", "Load Estimate.xlsx", "Energy estimate.pdf",
+    "Estimated schedule.pdf", "Hours estimate.xlsx", "Cost Estimate.png", "M-101.pdf", "Invoice 12 - estimate.pdf",
+  ];
+  for (const name of no) assert.equal(looksLikeCostDocument({ name, folderPath: "Incoming" }), false, name);
+  assert.equal(looksLikeCostDocument({ name: "Cost Estimate.pdf", folderPath: "Contract/Fee" }), false, "the firm's own commercial folders");
+  assert.equal(looksLikeCostDocument({ name: "Cost Estimate", ext: "pdf", folderPath: "" }), true, "ext given apart from the name");
+  assert.equal(looksLikeCostDocument(null), false);
+});
+
+test("newly saved cost documents are flagged once, and never again once answered", () => {
+  const now = "2027-03-02T08:00:00.000Z";
+  const docs = [
+    { itemId: "d1", name: "DD Cost Estimate.pdf", folderPath: "Incoming", webUrl: "https://setty.sharepoint.com/x", seenAt: "2027-03-01T20:00:00Z" },
+    { itemId: "d2", name: "M-101.pdf", folderPath: "Outgoing" },
+    { itemId: "d3", name: "Bid Tab.xlsx", folderPath: "Bid", webUrl: "javascript:alert(1)" },
+  ];
+  const p0 = project();
+  const plan = planCostDocFlags(p0, docs, now);
+  assert.deepEqual(plan.added.map((f) => f.itemId), ["d1", "d3"]);
+  assert.equal(plan.added[1].webUrl, null, "only https links are stored");
+  assert.equal(p0.costDocFlags, undefined, "input project is not mutated");
+  assert.equal(openCostDocFlags(plan.project).length, 2);
+  const again = planCostDocFlags(plan.project, docs, now);
+  assert.equal(again.project, plan.project, "nothing new: same reference, so nothing is written");
+  const dismissed = dismissCostDocFlag(plan.project, "d3");
+  assert.deepEqual(openCostDocFlags(dismissed).map((f) => f.itemId), ["d1"]);
+  assert.equal(planCostDocFlags(dismissed, docs, now).project, dismissed, "a dismissed file is not flagged again");
+  assert.equal(dismissCostDocFlag(dismissed, "d3"), dismissed);
+  const rec = planCostCheck(dismissed, { value: 21000000, source: "cost-estimate", document: "DD Cost Estimate.pdf" }, stamp());
+  assert.equal(openCostDocFlags(rec.project).length, 0, "recording a figure answers the open flags");
+  const f1 = costDocFlagsOf(rec.project).find((f) => f.itemId === "d1");
+  assert.equal(f1.status, "recorded");
+  assert.equal(f1.entryId, rec.entry.id);
+  assert.equal(planCostDocFlags(rec.project, docs, now).project, rec.project);
+});
+
+test("the flag list is capped and open flags are the last to go", () => {
+  const closed = Array.from({ length: COST_DOC_FLAG_MAX }, (_, i) => ({ itemId: "old" + i, name: "x", status: "dismissed" }));
+  const plan = planCostDocFlags(project({ costDocFlags: closed }), [{ itemId: "new", name: "CD Cost Estimate.pdf" }], "2027-01-01T00:00:00Z");
+  const flags = costDocFlagsOf(plan.project);
+  assert.equal(flags.length, COST_DOC_FLAG_MAX);
+  assert.equal(flags[flags.length - 1].itemId, "new");
+  assert.equal(flags[0].itemId, "old1");
 });
 
 // Drift anchors: the page loads the module and flags a milestone at 100%.
