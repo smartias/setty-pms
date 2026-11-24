@@ -86,8 +86,8 @@ response wording on any contested RFI or rejected submittal.
      not on the register, no sheet named). Each gap is either a call you still
      have to make from the steps below, or a line in your coverage note.
    - For a submittal, **`defaultResponse`** holds the firm's standing review
-     notes for that spec section (from the "Submittal Default Responses"
-     folder in the templates project). Start the suggested response from
+     notes for that spec section (from the submittal-standards folders in
+     the templates project, e.g. "Electrical Submittal Standards"). Start the suggested response from
      them, and treat them as a starting point only: keep the lines that apply
      to what was actually submitted, check each against the cut sheet and the
      spec, and add what the submittal itself calls for. Text in parentheses

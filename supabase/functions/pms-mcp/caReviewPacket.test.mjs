@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   buildCaReviewPacket, pickFilesToRead, fileRank, clipToBudget, specSectionsIn, matchSpecs,
-  caFamilyRoot, relatedItems, resolveSheets, PACKET_LIMITS, matchDefaultResponses, defaultFileSections, defaultFileWords,
+  caFamilyRoot, relatedItems, resolveSheets, PACKET_LIMITS, matchDefaultResponses, defaultFileSections, defaultFileWords, isSubmittalStandardsFolder,
 } from "./caReviewPacket.ts";
 
 const here = new URL("./", import.meta.url);
@@ -231,9 +231,16 @@ test("packet: a submittal carries the default response; an RFI does not ask for 
 test("packet: says so when no default matches, or the folder is missing", async () => {
   const args = { ...ARGS, type: "submittal", item: { id: "s", number: "SUB-1", specSection: "23 09 23", description: "VAV" }, itemTexts: [["description", "VAV"]] };
   const a = await buildCaReviewPacket(deps({ defaultResponses: async () => ({ found: true, files: DEFAULTS }), sourceEmail: async () => null }).d, args);
-  assert.ok(a.coverage.gaps.some((g) => /No firm default response matches this submittal \(spec 23 09 23\); the folder holds 46 file/.test(g)));
+  assert.ok(a.coverage.gaps.some((g) => /No firm default response matches this submittal \(spec 23 09 23\); the firm's submittal standards hold 46 file/.test(g)));
   const b = await buildCaReviewPacket(deps({ defaultResponses: async () => ({ found: false, files: [] }), sourceEmail: async () => null }).d, args);
-  assert.ok(b.coverage.gaps.some((g) => /"Submittal Default Responses" folder was not found/.test(g)));
+  assert.ok(b.coverage.gaps.some((g) => /No submittal-standards folder .* was found in the templates project/.test(g)));
+});
+
+test("the standards folders are recognised by name, wherever the discipline sits", () => {
+  for (const n of ["Electrical Submittal Standards", "Mechanical Submittal Standards", "Submittal Default Responses", "05 submittal standard"]) assert.equal(isSubmittalStandardsFolder(n), true, n);
+  for (const n of ["Templates for MCP Connector", "Submittals", "Electrical Standards", "CAD Standards", ""]) assert.equal(isSubmittalStandardsFolder(n), false, n);
+  const src = readFileSync(new URL("index.ts", here), "utf8");
+  assert.match(src, /isSubmittalStandardsFolder\(it\.name\)/, "the connector finds the folders with the same rule");
 });
 
 // ── anchors ─────────────────────────────────────────────────────────────────

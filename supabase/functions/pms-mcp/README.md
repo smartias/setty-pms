@@ -653,7 +653,7 @@ What it returns, for `{projectNumber, type, number}`:
 | `sheets` | Sheets a person confirmed on the item, plus the ones its text, email and attachments name, kept only when the current set or the drawing index knows them. Each row carries the current revision and a ready `view` argument for `view_drawing`. |
 | `reviewedAgainstSet` | One line naming the newest issued set, for `save_ca_review`. |
 | `specs` | The record's spec section (and any the text names) matched to the register's specifications, with the section's text. A spec book over 40 pages is searched for the pages that name the section. |
-| `defaultResponse` | Submittals only (1.29.0): the firm's standing review notes for the spec section, from the "Submittal Default Responses" folder. See below. |
+| `defaultResponse` | Submittals only (1.29.0): the firm's standing review notes for the spec section, from the templates project's "Electrical Submittal Standards" folder. See below. |
 | `qaLedger`, `related` | Ledger rows on those sheets; earlier rounds of the same item, same spec section, same sheet. |
 | `coverage` | `included` and, above all, `gaps`: what could not be gathered and why. |
 
@@ -679,10 +679,14 @@ Rules worth knowing before changing it:
   the call as "empty". To see whether it worked, compare calls per review
   before and after (sessions ending in `save_ca_review`).
 
-**Default responses (1.29.0).** A folder whose name contains "Submittal Default
-Responses" in the templates project (`SAPX26XXX - NY 2026 Templates and
-Standards`) holds one Word file per spec section. It is looked for inside
-"Templates for MCP Connector", then beside it, then at the project root, and
+**Default responses (1.29.0).** The firm's standing submittal review notes are
+Word files, one per spec section, in the templates project (`SAPX26XXX - NY 2026
+Templates and Standards`). The electrical set is in **Electrical Submittal
+Standards** at the project root. Any folder named like "<Discipline> Submittal
+Standards" (or "Submittal Default Responses") is read, at the project root,
+under "01 Project Management" or inside "Templates for MCP Connector"
+(`isSubmittalStandardsFolder`), so a mechanical or plumbing folder named the
+same way joins in with no code change;
 the listing is cached for five minutes. Drop a file in and it is used on the
 next review, no redeploy. `matchDefaultResponses` picks the file(s):
 

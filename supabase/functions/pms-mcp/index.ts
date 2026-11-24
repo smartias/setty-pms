@@ -104,7 +104,7 @@ import {
   addDays, nextFollowupAfter, toneForReminder, daysOutstanding, isDue,
 } from "./followups.ts";
 import { findCaItemLoose, caMissMessage, canonicalCaStatus, CA_STATUSES } from "./caLookup.ts";
-import { buildCaReviewPacket, type PacketFile, type FileText, type SheetToken } from "./caReviewPacket.ts";
+import { buildCaReviewPacket, isSubmittalStandardsFolder, type PacketFile, type FileText, type SheetToken } from "./caReviewPacket.ts";
 import {
   SEARCH_STOPWORDS, searchTerms, projectSearchExtras, searchProjectPool, matchDriveCandidates,
 } from "./projectSearch.ts";
@@ -4441,39 +4441,39 @@ async function packetListFiles(p: any, item: any, type: "rfi" | "submittal"): Pr
   return { files: [], folderUrl: null, note: "The record has no SharePoint folder, so no attachments are filed with it. The contractor's files may be on the source email or still in the portal: ask before reviewing." };
 }
 
-// The firm's standing submittal review notes: a folder named "Submittal
-// Default Responses" in the templates project. Looked for inside "Templates
-// for MCP Connector", then beside it, then at the project's root, so it can be
-// filed wherever suits; matched by name-contains like the template folders.
-// The listing is kept for five minutes: every submittal review asks for it.
-const DEFAULT_RESPONSES_FOLDER = "submittal default responses";
+// The firm's standing submittal review notes: every folder in the templates
+// project named like "Electrical Submittal Standards" (isSubmittalStandardsFolder),
+// which is where the electrical set is filed, at the project's root. Looked
+// for at three levels (inside "Templates for MCP Connector", beside it, and at
+// the root) and all matches are read, so a second discipline's folder joins in
+// without a code change. The listing is kept for five minutes: every
+// submittal review asks for it.
 let _defaultResponses: { at: number; value: { found: boolean; folderUrl?: string | null; files: PacketFile[] } } | null = null;
 async function submittalDefaultResponses(): Promise<{ found: boolean; folderUrl?: string | null; files: PacketFile[] }> {
   if (_defaultResponses && Date.now() - _defaultResponses.at < 5 * 60 * 1000) return _defaultResponses.value;
   const { driveId, itemId } = await templatesFolder();
-  const childFolder = async (parentId: string): Promise<any | null> => {
+  const standardsFolders = async (parentId: string): Promise<any[]> => {
     const r = await listChildren(`/drives/${driveId}/items/${encodeURIComponent(parentId)}/children?$select=id,name,folder,webUrl&$top=200`);
-    return r.value.find((it: any) => it.folder && String(it.name).toLowerCase().includes(DEFAULT_RESPONSES_FOLDER)) || null;
+    return r.value.filter((it: any) => it.folder && isSubmittalStandardsFolder(it.name));
   };
-  let folder = await childFolder(itemId);
+  const folders: any[] = await standardsFolders(itemId);
   // Up two levels: "01 Project Management", then the templates project itself.
   let cursor = itemId;
-  for (let up = 0; !folder && up < 2; up++) {
+  for (let up = 0; up < 2; up++) {
     const meta = await graphGet(`/drives/${driveId}/items/${encodeURIComponent(cursor)}?$select=id,parentReference`);
     const parent = meta?.parentReference?.id;
     if (!parent) break;
-    folder = await childFolder(parent);
+    folders.push(...(await standardsFolders(parent)));
     cursor = parent;
   }
-  let value: { found: boolean; folderUrl?: string | null; files: PacketFile[] };
-  if (!folder) value = { found: false, files: [] };
-  else {
+  const files: PacketFile[] = [];
+  for (const folder of folders.slice(0, 6)) {
     const r = await listChildren(`/drives/${driveId}/items/${encodeURIComponent(folder.id)}/children?$select=id,name,size,file,lastModifiedDateTime,webUrl&$top=200`);
-    value = {
-      found: true, folderUrl: folder.webUrl ?? null,
-      files: r.value.filter((it: any) => it.file).map((it: any) => ({ itemId: `${driveId}|${it.id}`, name: it.name, path: folder.name, size: it.size ?? null, modified: it.lastModifiedDateTime ?? null, webUrl: it.webUrl ?? null, ext: extOf(it.name) })),
-    };
+    for (const it of r.value) {
+      if (it.file) files.push({ itemId: `${driveId}|${it.id}`, name: it.name, path: folder.name, size: it.size ?? null, modified: it.lastModifiedDateTime ?? null, webUrl: it.webUrl ?? null, ext: extOf(it.name) });
+    }
   }
+  const value = { found: folders.length > 0, folderUrl: folders.length === 1 ? (folders[0].webUrl ?? null) : null, files };
   _defaultResponses = { at: Date.now(), value };
   return value;
 }

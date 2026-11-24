@@ -154,7 +154,8 @@ export function matchSpecs(wanted: string[], specifications: any[]): Array<{ wan
 }
 
 // ── Firm default responses ───────────────────────────────────────────────────
-// The "Submittal Default Responses" folder in the templates project holds the
+// The submittal-standards folders in the templates project ("Electrical
+// Submittal Standards" today; see isSubmittalStandardsFolder) hold the
 // firm's standing review notes, one Word file per spec section, named with the
 // section number ("262416 Panelboards.docx", "260573 & 260574 Short Circuit
 // ….docx") or, where no single section applies, with the equipment
@@ -162,6 +163,13 @@ export function matchSpecs(wanted: string[], specifications: any[]): Array<{ wan
 // several files share the number (the O&M manual set), by the words of the
 // file name that the submittal's own text contains; and only when no number
 // matches, by equipment name alone.
+// A folder of standing submittal notes, by name: "<Discipline> Submittal
+// Standards" (where the electrical set is filed) or "Submittal Default
+// Responses". A new discipline's folder named the same way is picked up
+// without a code change.
+export function isSubmittalStandardsFolder(name: unknown): boolean {
+  return /submittal\s+(?:standards?|default\s+responses?)/i.test(String(name || ""));
+}
 const DEFAULT_NAME_STOP = new Set(["and", "for", "the", "with", "system", "systems", "docx", "doc", "manual", "manuals"]);
 // Plural-insensitive: "devices" and "device", "switches" and "switch".
 const stem = (w: string) => { const x = w.toLowerCase(); return /(?:ch|sh|x|ss)es$/.test(x) ? x.slice(0, -2) : x.replace(/s$/, ""); };
@@ -317,8 +325,8 @@ export interface PacketDeps {
   specText: (spec: any, wanted: string) => Promise<FileText & { itemId?: string }>;
   // QA-ledger rows on these sheets.
   ledger: (sheets: string[]) => Promise<any[]>;
-  // Files in the firm's "Submittal Default Responses" folder (submittals only).
-  // `found` false when the folder is not in the templates project.
+  // Files in the firm's submittal-standards folder(s) (submittals only).
+  // `found` false when no such folder is in the templates project.
   defaultResponses?: () => Promise<{ found: boolean; folderUrl?: string | null; files: PacketFile[] }>;
 }
 
@@ -467,11 +475,11 @@ export async function buildCaReviewPacket(deps: PacketDeps, a: PacketArgs): Prom
   if (!isRFI && deps.defaultResponses) {
     try {
       const lib = await deps.defaultResponses();
-      if (!lib.found) gaps.push("The firm's \"Submittal Default Responses\" folder was not found in the templates project, so no standing review notes were looked up.");
+      if (!lib.found) gaps.push("No submittal-standards folder (a folder named like \"Electrical Submittal Standards\") was found in the templates project, so no standing review notes were looked up.");
       else {
         const hits = matchDefaultResponses(lib.files, a.item);
         if (!hits.length) {
-          gaps.push(`No firm default response matches this submittal${a.item?.specSection ? " (spec " + a.item.specSection + ")" : ""}; the folder holds ${lib.files.length} file(s). Review from the spec and drawings alone.`);
+          gaps.push(`No firm default response matches this submittal${a.item?.specSection ? " (spec " + a.item.specSection + ")" : ""}; the firm's submittal standards hold ${lib.files.length} file(s), none for it. Review from the spec and drawings alone.`);
         } else {
           const rows: any[] = [];
           for (const h of hits) {
