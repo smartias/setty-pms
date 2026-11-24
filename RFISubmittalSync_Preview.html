@@ -143,7 +143,10 @@
   .menu .items .hint { display:block; font-size:11px; color:var(--muted); font-weight:400; margin-top:1px; white-space:normal; }
   .intake { display:flex; align-items:center; gap:10px; flex-wrap:wrap; background:var(--intake-bg); border:1px solid var(--new); border-radius:8px; padding:8px 12px; margin:12px 18px 0; font-size:12.5px; }
   .mfoot .spacer { flex:1; } .mfoot .by { font-size:11px; color:var(--muted); }
-  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--bg2); border:1px solid var(--line); border-radius:10px; padding:10px 16px; font-size:13px; font-weight:600; display:none; z-index:60; }
+  /* The toast floats over the editor's footer: clicks pass through it (an error message used to sit on the Save
+     button and block it), except on its own action button. */
+  .toast button, .toast a { pointer-events:auto; }
+  .toast { pointer-events:none; position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--bg2); border:1px solid var(--line); border-radius:10px; padding:10px 16px; font-size:13px; font-weight:600; display:none; z-index:60; }
   .toast.show { display:flex; align-items:center; gap:12px; max-width:min(720px, calc(100vw - 32px)); }
   .toast button { font-size:12px; padding:4px 9px; white-space:nowrap; } .toast.ok { color:var(--ok); border-color:var(--ok-line); } .toast.bad { color:var(--danger-txt); border-color:var(--danger-line); }
   .undobar { position:fixed; bottom:64px; left:50%; transform:translateX(-50%); background:var(--bg2); border:1px solid var(--ok-line); border-radius:10px; padding:8px 14px; font-size:13px; display:none; align-items:center; gap:10px; z-index:60; }
@@ -234,7 +237,8 @@ const H = { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + SUPABASE_A
 const settyAuthReady = (window.settyAuth ? settyAuth.init() : Promise.resolve(null)).catch(() => null)
   .then(() => { if (window.settyAuth) H.Authorization = "Bearer " + settyAuth.token(); });
 if (window.settyAuth) {
-  settyAuth.onChange(() => { H.Authorization = "Bearer " + settyAuth.token(); placePill(); });
+  // Signing in after the page loaded empty (signed out) loads the projects; it never reloads a list already on screen.
+  settyAuth.onChange(() => { H.Authorization = "Bearer " + settyAuth.token(); placePill(); try{ if(!PROJECTS.length&&settyAuth.isSignedIn&&settyAuth.isSignedIn()) init(); }catch(e){} });
   settyAuth.mountPill();
 }
 // "You" comes from the sign-in when there is one (read-only then); the free-text
@@ -300,7 +304,49 @@ function toggleTheme(){ const t=document.documentElement.getAttribute("data-them
 
 // PostgREST returns at most 1000 rows per request; page past it.
 async function fetchAll(path){ const out=[]; for(let off=0;;off+=1000){ const page=await fetchJson(path+(path.includes("?")?"&":"?")+"limit=1000&offset="+off); out.push(...page); if(page.length<1000) return out; } }
-async function fetchJson(path){ const r=await fetch(SUPABASE_URL+"/rest/v1/"+path,{headers:H}); if(!r.ok)throw new Error(path+" -> HTTP "+r.status+" "+(await r.text()).slice(0,120)); return r.json(); }
+// ── FAILURE REASONS (begin) ──────────────────────────────────────────────────
+// What to tell the person when a read or a save fails, from the HTTP status.
+// A write that answers 200 with no rows is EITHER a version race (retry) or a
+// row the signed-in person may not edit; saveOutcome tells them apart.
+function loadFailureText(status, body){
+  if(status===401||/jwt|expired/i.test(String(body||""))) return "Your sign-in has expired. Sign in again (top right), then retry.";
+  if(status===403) return "Your account is not allowed to read this. Ask the PMS admin for access.";
+  if(status===0) return "No connection to the PMS database. Check your network or VPN, then retry.";
+  return "The PMS database did not answer (HTTP "+status+"). Wait a moment, then retry.";
+}
+// ok: the PATCH's ok flag; rows: rows it returned; versionNow: the project's
+// version read back after an empty result (null if that read failed).
+function saveOutcome(ok, status, body, rows, versionSent, versionNow){
+  if(!ok){
+    if(status===401||/jwt|expired/i.test(String(body||""))) return {kind:"signin", text:"Your sign-in has expired, so nothing was saved. Sign in again (top right) and press Save: what you typed is still here."};
+    if(status===403) return {kind:"denied", text:"Your account cannot edit this project, so nothing was saved. Ask the PMS admin for edit access."};
+    return {kind:"server", text:"The save did not go through (the database answered HTTP "+status+"). Nothing was written. Wait a moment and press Save again."};
+  }
+  if(rows>0) return {kind:"saved"};
+  if(versionNow!=null&&versionNow!==versionSent) return {kind:"race"};
+  return {kind:"denied", text:"Nothing was saved: your account can open this project but not edit it. Ask the PMS admin for edit access."};
+}
+// ── FAILURE REASONS (end) ────────────────────────────────────────────────────
+async function fetchJson(path){
+  let r; try{ r=await fetch(SUPABASE_URL+"/rest/v1/"+path,{headers:H}); }catch(e){ console.warn("[load]", path, e); throw new Error(loadFailureText(0)); }
+  if(!r.ok){ const body=(await r.text()).slice(0,200); console.warn("[load]", path, r.status, body); throw new Error(loadFailureText(r.status, body)); }
+  return r.json();
+}
+// One guarded write of a whole project: PATCH filtered on the version just
+// read. Returns "saved", or "race" when someone saved in between (the caller
+// re-reads and re-applies its change); throws with the real reason otherwise.
+async function patchProject(pid, ver, updated){
+  let r; try{ r=await fetch(SUPABASE_URL+`/rest/v1/pms_projects?id=eq.${pid}&version=eq.${ver}`,{
+    method:"PATCH", headers:{...H,"Content-Type":"application/json","Prefer":"return=representation"},
+    body:JSON.stringify({project:updated, version:ver+1, updated_at:new Date().toISOString()}) }); }
+  catch(e){ throw new Error("No connection to the PMS database, so nothing was saved. Check your network or VPN and press Save again: what you typed is still here."); }
+  const text=await r.text(); let back=[]; try{ back=JSON.parse(text); }catch(e){}
+  let versionNow=null;
+  if(r.ok&&!(Array.isArray(back)&&back.length)){ try{ const v=await fetchJson(`pms_projects?id=eq.${pid}&select=version`); versionNow=v[0]?v[0].version:null; }catch(e){} }
+  const out=saveOutcome(r.ok, r.status, text, Array.isArray(back)?back.length:0, ver, versionNow);
+  if(out.kind==="saved"||out.kind==="race") return out.kind;
+  throw new Error(out.text);
+}
 
 /* ---- Sheet-reference chips (mirror of SettyPMS SheetRefChips: same matcher
    module, same authenticated RPC lookups, same confirm/dismiss semantics;
@@ -404,8 +450,9 @@ async function init(){
     const caActive=PROJECTS.filter(p=>p.activity).length, unset=PROJECTS.filter(p=>!p.platform).length;
     document.getElementById("picknote").textContent=`${PROJECTS.length} In Construction Administration · ${caActive} with portal email${unset?` · ${unset} platform not set`:""}`;
     if(PROJECTS.length){ comboSelect("__ALL__"); }
+    else if(window.settyAuth&&settyAuth.isSignedIn&&!settyAuth.isSignedIn()) document.getElementById("out").innerHTML=`<p class="empty">Sign in (top right) to see the projects in Construction Administration.</p>`;
     else document.getElementById("out").innerHTML=`<p class="empty">No projects are marked "In Construction Administration".</p>`;
-  }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
+  }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">${esc(e.message)} <button onclick="init()">Retry</button></p>`; }
 }
 /* =========================== CA PLATFORM (per project) ===========================
    Which portal a job's RFIs/submittals run through, saved on the project as
@@ -479,11 +526,12 @@ async function writeProject(pid, mutate){
   const rows=await fetchJson(`pms_projects?id=eq.${pid}&select=id,project,version`);
   if(!rows.length) throw new Error("Project not found.");
   const updated=mutate(rows[0].project), ver=rows[0].version;
-  const r=await fetch(SUPABASE_URL+`/rest/v1/pms_projects?id=eq.${pid}&version=eq.${ver}`,{
-    method:"PATCH", headers:{...H,"Content-Type":"application/json","Prefer":"return=representation"},
-    body:JSON.stringify({project:updated, version:ver+1, updated_at:new Date().toISOString()}) });
-  const back=await r.json();
-  if(!r.ok||!back.length){ const e=new Error("Project changed since you opened it (someone else saved). Reload the project and retry — nothing was written."); e.conflict=true; throw e; }
+  if((await patchProject(pid, ver, updated))==="race"){
+    // Someone saved in the instant between the read and the write: read again and re-apply, once.
+    const again=await fetchJson(`pms_projects?id=eq.${pid}&select=id,project,version`);
+    if(!again.length) throw new Error("Project not found.");
+    if((await patchProject(pid, again[0].version, mutate(again[0].project)))==="race"){ const e=new Error("Two other saves landed on this project in a row, so yours was not written. Press Save again."); e.conflict=true; throw e; }
+  }
   return true;
 }
 
@@ -552,7 +600,7 @@ async function selectAll(){
     rfis.sort(byP); subs.sort(byP);
     CURRENT={ proj:{id:"__ALL__",name:"All Construction-Admin projects"}, allMode:true, rfis, submittals:subs, inbox:{rfi:[],submittal:[]}, teams, dueDays };
     renderProject();
-  }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
+  }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">${esc(e.message)} <button onclick="selectProject('__ALL__')">Retry</button></p>`; }
 }
 async function selectProject(pid){
   PORTAL_EDIT=false;
@@ -565,14 +613,14 @@ async function selectProject(pid){
       // Newforma closing notices ("Responded to and Closed", "Sent and Closed")
       // must come along with the forwards: without them every Newforma item
       // imports as open even when the filed log holds Setty's own response.
-      fetchJson(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*,subject.ilike.*Responded%20to%20and%20Closed*,subject.ilike.*Sent%20and%20Closed*,from_address.ilike.*kahua*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
+      fetchAll(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*,subject.ilike.*Responded%20to%20and%20Closed*,subject.ilike.*Sent%20and%20Closed*,from_address.ilike.*kahua*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
     ]);
     const logged=projRows[0]||{}; const loggedRFIs=logged.rfis||[], loggedSubs=logged.submittals||[];
     const CI=window.CaIntake; if(!CI) throw new Error("caIntake.js did not load — reload the page.");
     const inbox=CI.buildInbox(emails,loggedRFIs,loggedSubs,pid);
     CURRENT={ proj, rfis:loggedRFIs, submittals:loggedSubs, inbox, teams:{[pid]:(logged.team||[])}, dueDays:{[pid]:{rfi:+logged.rfiDueDays||5, sub:+logged.submittalDueDays||10}} };
     renderProject();
-  }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
+  }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">${esc(e.message)} <button onclick="selectProject('${esc(pid)}')">Retry</button></p>`; }
 }
 
 /* =========================== FILTERS =========================== */
@@ -741,10 +789,10 @@ function renderSection(kind, title, logged, inbox){
                               : "<th scope='col'>Item</th><th scope='col'>Title</th><th scope='col'>Spec</th><th scope='col'>Status</th><th scope='col'>Due</th><th scope='col'>Discipline</th><th scope='col' class='right'>Import</th>";
     const vocab = kind==="rfi"?RFI_DISC:SUB_DISC;
     const rows=inbox.map(it=>{ const stale=isStaleImport(it);
-      const cb=it.verdict==="new"?`<input type="checkbox" class="pick" aria-label="Import ${kind==="rfi"?"RFI":"submittal"} #${esc(it.extNum)}" data-k="${kind}" data-ext="${esc(it.extNum)}" ${stale?"":"checked"}>`:"";
+      const cb=it.verdict==="new"?`<input type="checkbox" class="pick" aria-label="Import ${kind==="rfi"?"RFI":"submittal"} #${esc(it.extNum)}" data-k="${kind}" data-ext="${esc(it.extNum)}" ${(it._pick===undefined?!stale:it._pick)?"checked":""} onchange="impSet('${kind}',this.dataset.ext,'pick',this.checked)">`:"";
       const dv=(it.record&&it.record.discipline)||"";
       const dcell = it.verdict==="new"
-        ? `<td><select class="discSel" data-k="${kind}" data-ext="${esc(it.extNum)}" aria-label="Discipline for #${esc(it.extNum)}" title="Discipline — inferred from spec section / title; pick one before import" onchange="this.removeAttribute('aria-invalid')"><option value="" ${dv?"":"selected"}>—</option>${vocab.map(d=>`<option ${d===dv?"selected":""}>${esc(d)}</option>`).join("")}</select></td>`
+        ? `<td><select class="discSel" data-k="${kind}" data-ext="${esc(it.extNum)}" aria-label="Discipline for #${esc(it.extNum)}" title="Discipline — inferred from spec section / title; pick one before import" onchange="this.removeAttribute('aria-invalid');impSet('${kind}',this.dataset.ext,'disc',this.value)"><option value="" ${dv?"":"selected"}>—</option>${vocab.map(d=>`<option ${d===dv?"selected":""}>${esc(d)}</option>`).join("")}</select></td>`
         : `<td class="muted">${esc(dv||"—")}</td>`;
       const c = kind==="rfi" ? `<td class="num">#${esc(it.extNum)}</td><td class="title">${esc(it.title)}</td><td>${statusPill(it.status)}</td>${dateCell(it.dueDate)}<td>${esc(it.from||"")}</td>`
         : `<td class="num">#${esc(it.extNum)}${it.rev?` <span class=muted>r${it.rev}</span>`:""}</td><td class="title">${esc(it.title)}</td><td>${esc(it.specSection||"")}</td><td>${statusPill(it.status)}</td>${dateCell(it.dueDate)}`;
@@ -1175,6 +1223,21 @@ function caItemDeepLink(kind, num){
   if(!(EDIT&&EDIT.projId&&num)||!/^http/.test(location.protocol)) return "";
   return location.origin+location.pathname.replace(/[^\/]*$/,"SettyPMS.html")+"#project:"+EDIT.projId+":"+(kind==="rfi"?"rfi":"submittal")+":"+encodeURIComponent(num);
 }
+// Writes the ticked assignees (and subconsultant) of the open item, if they
+// differ from what the form opened with. Sending the assignment email and then
+// pressing Cancel used to leave the item unassigned in the log.
+async function saveAssignment(kind){
+  if(!EDIT||EDIT.isNew||!EDIT.base) return;
+  const form=collectEdits(kind); const keys=changedKeys(EDIT.base, form).filter(k=>k==="assignedTo"||k==="subAssigned");
+  if(!keys.length) return;
+  const id=EDIT.id, arrKey=kind==="rfi"?"rfis":"submittals", who=getWho()||"(unknown)", now=new Date().toISOString();
+  try{
+    await writeArray(arrKey, arr=>arr.map(r=>{ if(r.id!==id) return r; const m={...r, syncEditedBy:who, syncEditedAt:now}; for(const k of keys) m[k]=form[k]; return m; }), false, EDIT.projId);
+    if(EDIT&&EDIT.id===id){ for(const k of keys) EDIT.base[k]=form[k]; }
+    const rec=findRec(kind,id); if(rec){ for(const k of keys) rec[k]=form[k]; }
+    toast("Assignment saved ✓", true);
+  }catch(err){ toastErr(err); }
+}
 function emailAction(kind, which){
   const g=k=>{const e=document.getElementById("f_"+k);return e?e.value:"";};
   const num=g("number"), title=g("title")||g("description"), desc=g("description"), from=g("from"), due=g("dueDate"), resp=g("response"), spec=g("specSection"), comments=g("comments"), stamp=g("stamp");
@@ -1190,7 +1253,11 @@ function emailAction(kind, which){
     // it. No review yet → warn, offer the review link, and let them assign anyway.
     if(!(EDIT&&EDIT.ai)&&!(EDIT&&EDIT.assignAnyway)){ showAssignWarn(kind); return; }
     hideAssignWarn();
-    const to=[...document.querySelectorAll(".asg:checked")].map(c=>{const m=EDIT_TEAM.find(t=>t.id===c.value);return m&&m.email;}).filter(Boolean).join(",");
+    const ticked=[...document.querySelectorAll(".asg:checked")].map(c=>EDIT_TEAM.find(t=>t.id===c.value)).filter(Boolean);
+    const to=ticked.map(m=>m.email).filter(Boolean).join(",");
+    const noEmail=ticked.filter(m=>!m.email).map(m=>m.name||m.role);
+    if(noEmail.length) toast(`No email on file for ${noEmail.join(", ")}: add ${noEmail.length>1?"them":"them"} to the draft by hand, and add the address on the project's Team tab.`, false);
+    saveAssignment(kind); // the draft is only a draft: record who it is assigned to now
     // The reviewer gets the steps, not just the facts: where the item is, where
     // the files are, where to write, how to issue it, and who to tell if it is
     // not theirs. Plain text (mailto), so the structure is numbered lines.
@@ -1382,6 +1449,13 @@ async function deleteRecord(){
 let JUST_IMPORTED=new Set(); // ids added by the most recent import (row highlight; ids embed the project id, so no cross-project bleed)
 let UNDO=null;               // {arrKey, ids, projId, record?, timer} — one-shot revert window for the last import or delete
 
+// A tick or a discipline chosen in the import strip is kept on the inbox item:
+// the strip is redrawn on every search keystroke, sort click and review poll,
+// and used to come back with everything ticked again.
+function impSet(kind, ext, what, value){
+  const it=((CURRENT&&CURRENT.inbox&&CURRENT.inbox[kind])||[]).find(i=>String(i.extNum)===String(ext)); if(!it) return;
+  if(what==="pick") it._pick=!!value; else if(it.record) it.record.discipline=value;
+}
 async function importSelected(kind){
   const arrKey=kind==="rfi"?"rfis":"submittals"; const inbox=CURRENT.inbox[kind];
   // Apply the preview's per-row Discipline choices onto the records before import.
@@ -1441,18 +1515,17 @@ async function undoLast(){
 /* =========================== WRITE (version-guarded, mirrors saveProjectV2) =========================== */
 async function writeArray(arrKey, mutate, returnAdded, projId){
   const pid=projId||CURRENT.proj.id;
-  const rows=await fetchJson(`pms_projects?id=eq.${pid}&select=id,project,version`);
-  if(!rows.length) throw new Error("Project not found.");
-  const proj=rows[0].project, ver=rows[0].version;
-  const cur=(proj[arrKey]||[]).slice(); cur._added=0;
-  const next=mutate(cur); const added=cur._added||0;
-  const updated={...proj, [arrKey]:next};
-  const r=await fetch(SUPABASE_URL+`/rest/v1/pms_projects?id=eq.${pid}&version=eq.${ver}`,{
-    method:"PATCH", headers:{...H,"Content-Type":"application/json","Prefer":"return=representation"},
-    body:JSON.stringify({project:updated, version:ver+1, updated_at:new Date().toISOString()}) });
-  const back=await r.json();
-  if(!r.ok||!back.length){ const e=new Error("Project changed since you opened it (someone else saved). Reload the project and retry — nothing was written."); e.conflict=true; throw e; }
-  return returnAdded?added:true;
+  // Each attempt reads the project fresh and re-applies the change to it, so
+  // retrying after someone else's save is safe: nothing of theirs is undone.
+  for(let attempt=1;;attempt++){
+    const rows=await fetchJson(`pms_projects?id=eq.${pid}&select=id,project,version`);
+    if(!rows.length) throw new Error("Project not found.");
+    const proj=rows[0].project, ver=rows[0].version;
+    const cur=(proj[arrKey]||[]).slice(); cur._added=0;
+    const next=mutate(cur); const added=cur._added||0;
+    if((await patchProject(pid, ver, {...proj, [arrKey]:next}))==="saved") return returnAdded?added:true;
+    if(attempt>=3){ const e=new Error("Other saves kept landing on this project, so yours was not written. Press Save again."); e.conflict=true; throw e; }
+  }
 }
 
 /* =========================== OPEN-ITEMS REPORT (by PM) ===========================
