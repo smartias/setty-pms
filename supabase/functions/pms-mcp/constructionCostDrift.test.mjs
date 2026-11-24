@@ -69,10 +69,17 @@ test("the estimate line tools are registered, fenced and tied to the project", (
   assert.ok(save.includes("deleteCostLines(g.pn, review.id)") && save.includes("setReviewLines("));
   assert.ok(save.includes("verifyLinesAgainstPages(") && save.includes("extractSheetLines("));
   assert.ok(read.includes("costReviewGate(projectNumber, false)"));
+  // Both file reads go through one gate. The index ties a file to the project;
+  // a file the index has not seen must be visible to the caller AND either sit
+  // in the project's folder or have been attached to the project by a person.
   for (const fn of ["async function projectWorkbookRows(", "async function projectPdfPageTexts("]) {
-    const body = src.slice(src.indexOf(fn), src.indexOf(fn) + 900);
-    assert.ok(body.includes('"&scope=eq." + encodeURIComponent(pn.trim().toLowerCase())'), fn + " checks the file belongs to the project");
+    const body = src.slice(src.indexOf(fn), src.indexOf(fn) + 500);
+    assert.ok(body.includes("await costFileForProject(pn, proj, itemId)"), fn + " checks the file belongs to the project");
   }
+  const gate = src.slice(src.indexOf("async function costFileForProject("), src.indexOf("async function projectWorkbookRows("));
+  assert.ok(gate.includes('"&scope=eq." + encodeURIComponent(pn.trim().toLowerCase())'));
+  assert.ok(gate.includes("await sharePointItemVisible(drive, meta)"));
+  assert.ok(gate.includes("if (!inProjectFolder && !attached)") && gate.includes("f.manual === true"));
   const skill = readFileSync(new URL("../../../.claude/skills/cost-estimate-review/SKILL.md", import.meta.url), "utf8");
   for (const t of ["save_cost_estimate_lines", "get_cost_estimate_lines"]) assert.ok(skill.includes("`" + t + "`"), t);
   const html = readFileSync(new URL("../../../SettyPMS.html", import.meta.url), "utf8");

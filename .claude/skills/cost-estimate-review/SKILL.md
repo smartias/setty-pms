@@ -36,8 +36,14 @@ given). It marks the review as under way in the PMS and returns:
 - `startedNote`: read it. If it says the review cannot be saved, tell the user
   before doing the work.
 
+A candidate marked `attachedOnTheCostsTab` was uploaded or linked by a person
+on the PMS Construction Costs tab because the nightly sync missed it: treat it
+as the estimate to review unless the request names another.
+
 If the estimate is not in `candidateDocuments` (the file index is refreshed
-about daily), find it with `find_document` or `list_project_documents`; an
+about daily), find it with `find_document` or `list_project_documents`, or
+ask the user to add it on the Construction Costs tab ("Upload a file" or
+"Paste a SharePoint link"); an
 estimate that came by email is under the project's Emails folder
 (`search_emails`, `read_email`).
 

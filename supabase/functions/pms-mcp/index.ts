@@ -13303,7 +13303,8 @@ mcp.tool("get_cost_estimate_packet", {
   description:
     "START of a COST ESTIMATE REVIEW (the cost-estimate-review skill, or a 'Send to Claude for review' request from " +
     "the PMS Construction Costs tab). One call: marks the review as under way in the PMS and returns what the review needs: " +
-    "the estimate to read (the one the request named, else the documents flagged as newly saved, else the files in " +
+    "the estimate to read (the one the request named, else a document a person attached on the Construction Costs " +
+    "tab, else the documents flagged as newly saved, else the files in " +
     "the project folder whose name reads like a cost estimate, each with its itemId for read_document), whether the " +
     "user asked to reconcile against the drawings, the construction cost on record and its history, the previous " +
     "estimate reviews with their mechanical / electrical / plumbing totals (what this one is compared with), and " +
@@ -13349,6 +13350,16 @@ mcp.tool("get_cost_estimate_packet", {
       ...(reviewed.has(d.name.toLowerCase()) ? { alreadyReviewed: true } : {}),
       ...(wanted && d.name.toLowerCase() === wanted.toLowerCase() ? { requested: true } : {}),
     }));
+    // A document a person uploaded or pointed at on the Construction Costs tab
+    // may not be in the index yet: list it from the project record.
+    for (const f of openCostDocFlags(p) as any[]) {
+      if (cand.some((c) => c.itemId === f.itemId)) continue;
+      cand.unshift({
+        itemId: f.itemId, name: f.name, folder: f.folderPath || "", firstSeen: String(f.seenAt || f.flaggedAt || "").slice(0, 10), url: f.webUrl || undefined,
+        ...(f.manual ? { attachedBy: f.addedBy || "a person", attachedOnTheCostsTab: true } : { flaggedAsNew: true }),
+        ...(wanted && String(f.name).toLowerCase() === wanted.toLowerCase() ? { requested: true } : {}),
+      } as any);
+    }
     const l = latestConstructionCost(p);
     return asText({
       project: g.project,
@@ -13487,22 +13498,50 @@ const costLinesTableError = (e: unknown): string => {
     : m.slice(0, 240);
 };
 
-// The sheets of a SharePoint workbook as arrays of rows. itemId must be the
-// 'driveId|itemId' form and indexed under this project's scope.
-async function projectWorkbookRows(pn: string, itemId: string): Promise<{ ok: true; name: string; sheets: Record<string, any[][]> } | { ok: false; error: string; nextStep?: string }> {
-  if (isAzId(itemId) || itemId.indexOf("|") <= 0) {
-    return { ok: false, error: "Only a SharePoint workbook (an itemId of the form driveId|itemId) can be read by layout.", nextStep: "Pass the lines yourself in `lines` instead." };
-  }
+// May this file be read for THIS project's cost estimate? Two ways in:
+//  - the file index ties it to the project (pms_documents, scope = project); or
+//  - the index has not seen it yet (it is refreshed about daily, and a person
+//    can upload or point at an estimate from the Construction Costs tab): then
+//    Graph is asked for the item, the caller must be allowed to see it
+//    (sharePointItemVisible, the gate read_document uses), and it must either
+//    sit in this project's folder or be a document a person attached to this
+//    project (project.costDocFlags, manual).
+// Returns the file's name, ext and size.
+async function costFileForProject(pn: string, proj: any, itemId: string): Promise<{ ok: true; name: string; ext: string; size: number } | { ok: false; why: string }> {
+  if (isAzId(itemId) || itemId.indexOf("|") <= 0) return { ok: false, why: "the file is not a SharePoint item (an itemId of the form driveId|itemId)" };
   const rows: any[] = await sbGet("pms_documents?select=name,ext,size_bytes&item_id=eq." + encodeURIComponent(itemId) +
     "&scope=eq." + encodeURIComponent(pn.trim().toLowerCase()) + "&deleted_at=is.null&limit=1");
-  if (!rows?.length) {
-    return { ok: false, error: "That file is not in this project's file index, so it cannot be read by layout.", nextStep: "The index is refreshed about daily: a file saved today appears tomorrow. Until then, pass the lines yourself in `lines`, or check the itemId came from get_cost_estimate_packet for this project." };
+  if (rows?.length) {
+    const name = String(rows[0].name || "");
+    return { ok: true, name, ext: String(rows[0].ext || extOf(name)).toLowerCase(), size: Number(rows[0].size_bytes) || 0 };
   }
-  const name = String(rows[0].name || "");
-  if (!["xlsx", "xls", "xlsm"].includes(String(rows[0].ext || extOf(name)).toLowerCase())) {
+  const bar = itemId.indexOf("|");
+  const drive = itemId.slice(0, bar);
+  let meta: any;
+  try { meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(itemId.slice(bar + 1))}?$select=id,name,size,file,folder,webUrl,parentReference`); }
+  catch (e) { return { ok: false, why: `the file could not be found in SharePoint (${String((e as any)?.message ?? e).slice(0, 100)})` }; }
+  if (!meta?.id || meta.folder) return { ok: false, why: "that id is not a file" };
+  const gate = await sharePointItemVisible(drive, meta);
+  if (!gate.ok) return { ok: false, why: "the file is not visible to you" };
+  const inProjectFolder = (projectNumberOfFolder(sharePointItemTopFolder(meta)) || "").toLowerCase() === pn.trim().toLowerCase();
+  const attached = (Array.isArray(proj?.costDocFlags) ? proj.costDocFlags : []).some((f: any) => f && f.itemId === itemId && f.manual === true);
+  if (!inProjectFolder && !attached) {
+    return { ok: false, why: "the file is neither in this project's folder nor attached to the project on its Construction Costs tab" };
+  }
+  const name = String(meta.name || "");
+  return { ok: true, name, ext: extOf(name).toLowerCase(), size: Number(meta.size) || 0 };
+}
+
+// The sheets of a SharePoint workbook as arrays of rows, for a file
+// costFileForProject allows.
+async function projectWorkbookRows(pn: string, proj: any, itemId: string): Promise<{ ok: true; name: string; sheets: Record<string, any[][]> } | { ok: false; error: string; nextStep?: string }> {
+  const f = await costFileForProject(pn, proj, itemId);
+  if (!f.ok) return { ok: false, error: `That workbook cannot be read by layout: ${f.why}.`, nextStep: "Check the itemId came from get_cost_estimate_packet for this project, or pass the lines yourself in `lines`." };
+  const name = f.name;
+  if (!["xlsx", "xls", "xlsm"].includes(f.ext)) {
     return { ok: false, error: `"${name}" is not an Excel workbook.`, nextStep: "For a PDF estimate pass the lines yourself in `lines`." };
   }
-  if (Number(rows[0].size_bytes) > COST_WORKBOOK_MAX_BYTES) return { ok: false, error: `"${name}" is over 25 MB and is not read by layout.`, nextStep: "Pass the lines yourself in `lines`." };
+  if (f.size > COST_WORKBOOK_MAX_BYTES) return { ok: false, error: `"${name}" is over 25 MB and is not read by layout.`, nextStep: "Pass the lines yourself in `lines`." };
   const bar = itemId.indexOf("|");
   const res = await fetch(
     `https://graph.microsoft.com/v1.0/drives/${itemId.slice(0, bar)}/items/${encodeURIComponent(itemId.slice(bar + 1))}/content`,
@@ -13521,14 +13560,12 @@ async function projectWorkbookRows(pn: string, itemId: string): Promise<{ ok: tr
 // typed amounts (verifyLinesAgainstPages). Text layer only: a scanned page
 // comes back empty and its lines are left unchecked, which the caller reports.
 const COST_PDF_VERIFY_MAX_PAGES = 400;
-async function projectPdfPageTexts(pn: string, itemId: string): Promise<{ ok: true; pages: Record<number, string>; totalPages: number } | { ok: false; why: string }> {
-  if (isAzId(itemId) || itemId.indexOf("|") <= 0) return { ok: false, why: "the file is not a SharePoint item" };
-  const rows: any[] = await sbGet("pms_documents?select=name,ext,size_bytes&item_id=eq." + encodeURIComponent(itemId) +
-    "&scope=eq." + encodeURIComponent(pn.trim().toLowerCase()) + "&deleted_at=is.null&limit=1");
-  if (!rows?.length) return { ok: false, why: "the file is not in this project's file index yet (it is refreshed about daily)" };
-  const name = String(rows[0].name || "");
-  if (String(rows[0].ext || extOf(name)).toLowerCase() !== "pdf") return { ok: false, why: `"${name}" is not a PDF` };
-  if (Number(rows[0].size_bytes) > readDocMaxBytes(name)) return { ok: false, why: `"${name}" is too large to read here` };
+async function projectPdfPageTexts(pn: string, proj: any, itemId: string): Promise<{ ok: true; pages: Record<number, string>; totalPages: number } | { ok: false; why: string }> {
+  const f = await costFileForProject(pn, proj, itemId);
+  if (!f.ok) return { ok: false, why: f.why };
+  const name = f.name;
+  if (f.ext !== "pdf") return { ok: false, why: `"${name}" is not a PDF` };
+  if (f.size > readDocMaxBytes(name)) return { ok: false, why: `"${name}" is too large to read here` };
   let bytes = pdfCacheGet(itemId);
   if (!bytes) {
     const bar = itemId.indexOf("|");
@@ -13617,7 +13654,7 @@ mcp.tool("save_cost_estimate_lines", {
     let verification: Record<string, unknown> | undefined;
     if (byWorkbook) {
       let wb: Awaited<ReturnType<typeof projectWorkbookRows>>;
-      try { wb = await projectWorkbookRows(g.pn, itemId!); }
+      try { wb = await projectWorkbookRows(g.pn, g.p, itemId!); }
       catch (e) { return asText({ project: g.project, error: `Could not read the workbook: ${String((e as any)?.message ?? e).slice(0, 200)}` }); }
       if (!wb.ok) return asText({ project: g.project, error: wb.error, ...(wb.nextStep ? { nextStep: wb.nextStep } : {}) });
       const names = Object.keys(wb.sheets);
@@ -13637,7 +13674,7 @@ mcp.tool("save_cost_estimate_lines", {
       // Typed lines: look for each amount in the PDF's own text.
       const pdfId = itemId || review.document?.itemId || "";
       try {
-        const pdf = pdfId ? await projectPdfPageTexts(g.pn, pdfId) : { ok: false as const, why: "no itemId was given for the estimate" };
+        const pdf = pdfId ? await projectPdfPageTexts(g.pn, g.p, pdfId) : { ok: false as const, why: "no itemId was given for the estimate" };
         if (pdf.ok) {
           const v = verifyLinesAgainstPages(all, pdf.pages);
           verification = v.readable
