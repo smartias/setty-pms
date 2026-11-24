@@ -1342,7 +1342,7 @@ a save: the trigger warns and returns, and `pms_ca_items_reconcile()` repairs.
   `stoppedEarly`; the ~2,900-row backfill takes about two and a half hours of
   one-minute calls. On a prose query the query is embedded too and `search_ca_items` fuses
   the keyword ranking with the nearest vectors (reciprocal rank, similarity
-  floor 0.75); the answer says `searchMode: "hybrid"`. Numbers, spec sections
+  floor 0.82, `CA_MIN_SIMILARITY`); the answer says `searchMode: "hybrid"`. Numbers, spec sections
   and plain listings never use it. ON by default since the ten-question
   experiment passed on hit counts (`EXPERIMENT-ca-items-semantic.md`, run
   2026-10-20: hybrid found 9 of 10, keyword 2 of 10, nothing lost); the
@@ -1375,7 +1375,7 @@ keyword search behaves exactly as before.
   wrapper returns the lexical rows in the lexical order, `search_mode:
   "keyword"`. The two migrations can be applied in either order.
 - **Hybrid mode** (an embedding and a non-blank query): the lexical list and a
-  cosine nearest-neighbour list (floor `p_min_similarity`, default 0.75) are
+  cosine nearest-neighbour list (floor `p_min_similarity`: 0.75 in the function, 0.82 sent by the connector) are
   fused by reciprocal rank as `search_ca_items` does, then collapsed to **one
   row per exchange**: first by Outlook `conversation_id` (or the project and
   subject minus RE:/FW: when it is missing), then groups that share a project

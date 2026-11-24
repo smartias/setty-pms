@@ -58,7 +58,13 @@ export function clampCaLimit(limit: number | null | undefined): number {
 // name is pinned here and in the migration comment; change both together.
 export const CA_EMBED_MODEL = "gte-small";
 export const CA_EMBED_DIMS = 384;
-export const CA_MIN_SIMILARITY = 0.75;
+// Measured 2026-11-24, once search_ca_items returned similarities. Four
+// questions with nothing to do with construction (banana bread, a football
+// score, a puppy, a marketing budget) scored 0.774 to 0.807 for their best
+// rows; five real questions scored 0.861 to 0.900 for their best and 0.848 to
+// 0.856 for their sixth. The database default of 0.75 let all of the first
+// group through. 0.82 sits in the gap (the email search uses the same value).
+export const CA_MIN_SIMILARITY = 0.82;
 
 // A pgvector literal as PostgREST wants it on an RPC call: "[0.1,0.2,...]".
 export function vectorLiteral(v: ArrayLike<number>): string {
