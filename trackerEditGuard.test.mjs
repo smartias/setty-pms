@@ -66,3 +66,33 @@ test("the editor uses the guard: close asks first, save is single-flight and wri
   assert.match(src, /else requestCloseEditor\(\); return; \}/, "Escape asks before discarding");
   assert.match(src, /const today = \(\) => localISO\(new Date\(\)\);/, "new items are dated with the local day");
 });
+
+// ── failure reasons ─────────────────────────────────────────────────────────
+{
+  const a2 = src.indexOf("// ── FAILURE REASONS (begin)"), b2 = src.indexOf("// ── FAILURE REASONS (end)");
+  assert.ok(a2 > 0 && b2 > a2, "failure-reason markers must exist in the Tracker");
+  const { loadFailureText, saveOutcome } = new Function(src.slice(a2, b2) + "\nreturn { loadFailureText, saveOutcome };")();
+
+  test("a save that returns no rows is a race only when the version moved; otherwise it is permission", () => {
+    assert.deepEqual(saveOutcome(true, 200, "[]", 1, 5, null), { kind: "saved" });
+    assert.deepEqual(saveOutcome(true, 200, "[]", 0, 5, 6), { kind: "race" });
+    const denied = saveOutcome(true, 200, "[]", 0, 5, 5);
+    assert.equal(denied.kind, "denied"); assert.match(denied.text, /can open this project but not edit it/);
+    assert.equal(saveOutcome(true, 200, "[]", 0, 5, null).kind, "denied", "an unreadable version is not assumed to be a race");
+  });
+
+  test("an expired sign-in, a refusal and a server error each say so", () => {
+    assert.match(saveOutcome(false, 401, '{"message":"JWT expired"}', 0, 5, null).text, /sign-in has expired.*still here/);
+    assert.match(saveOutcome(false, 403, "", 0, 5, null).text, /cannot edit this project/);
+    assert.match(saveOutcome(false, 503, "", 0, 5, null).text, /HTTP 503.*Nothing was written/);
+    assert.match(loadFailureText(401), /sign-in has expired/); assert.match(loadFailureText(0), /No connection/);
+    assert.ok(!/pms_projects|select=/.test(loadFailureText(500)), "no query text in what the person reads");
+  });
+
+  test("the old catch-all conflict message is gone, and every write goes through patchProject", () => {
+    assert.ok(!src.includes("Project changed since you opened it"));
+    assert.equal(src.split("await patchProject(").length - 1, 3, "writeProject (twice: first try and the one re-read) and writeArray");
+    assert.match(src, /impSet\('\$\{kind\}',this\.dataset\.ext,'pick',this\.checked\)/, "import ticks are kept in state");
+    assert.match(src, /saveAssignment\(kind\);/, "the assignment email records the assignment");
+  });
+}
