@@ -296,7 +296,7 @@ unnumbered. Against the 177 pages whose title blocks do parse, this numbered 146
 and got none wrong.
 
 It works from the text already in `pms_drawing_text`; no PDF is re-read. Rows it
-fills carry `title_block_layout = 'drawing-list.N'` (the rule's name, now `.2`), and a file it has been
+fills carry `title_block_layout = 'drawing-list.N'` (the rule's name, now `.3`), and a file it has been
 through carries `pms_drawing_index_files.sheets_rule`. It runs for one project
 when `search_drawings`, `view_drawing` or `read_drawing_schedule` is called on
 it, and across all projects in the background sweep (`sheetNumbering` in its

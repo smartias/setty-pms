@@ -91,7 +91,7 @@ function summarizeDisciplines(sheets) {
 }
 
 const DRAWING_LIST_ANCHOR = /DRAWING LIST\s+SHEET\s+DRAWING TITLE/;
-const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?\d{2,4}(?:\.\d{2})?[A-Z]?(?:-[A-Z0-9]{1,2})?)(?=\s)/g;
+const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?(?:\d{2,4}(?:\.\d{1,2})?|\d\.\d{1,2})[A-Z]?(?:-[A-Z0-9]{1,2})?)(?=\s)/g;
 const DRAWING_LIST_TAIL =
   /\b((?:NYC|NEW YORK CITY)\s+BUILDING\s+DEPARTMENT|SPECIAL\s+INSPECTIONS?|ABBREVIATIONS\s+SYMBOLS|No\.\s+Date\s+Revision|Revisions\s+Rev\s+Description|NO\.\s+REVISIONS\s+DATE)\b/;
 const DRAWING_LIST_MAX_TITLE = 80;
@@ -518,6 +518,15 @@ has(DRAWING_LIST_ROW.source, "format-A row regex literal (byte-identical)");
   check(parts.map((r) => r.sheetNo).join(",") === "E034,E100-B,E101-A,E501", "part-suffixed sheets are rows of the list: " + parts.map((r) => r.sheetNo).join(","));
   check(parts[0].sheetTitle === "FIRE ALARM OPERATIONAL MATRIX", "the row before a part-suffixed sheet keeps its own title");
   check(parts[1].sheetTitle === "ELECTRICAL LIGHTING PLAN - GARAGE LEVEL", "a title with a spaced dash is kept whole");
+}
+// Sheets numbered by floor and decimal ("M0.1", "MD1.0"): 111 of the 631 books
+// with a drawing list on 2026-11-24, and none of their rows were read.
+{
+  const dec = parseDrawingList("DRAWING LIST SHEET DRAWING TITLE 1 M0.1 GENERAL NOTES, SYMBOLS & ABBREVIATIONS " +
+    "2 MD1.0 BASEMENT FLOOR PLAN - MECHANICAL DEMOLITION 3 M1.2 FIRST FLOOR PLAN - PHASE 2 M1 AREA 4 M5.10 DETAILS");
+  check(dec.map((r) => r.sheetNo).join(",") === "M0.1,MD1.0,M1.2,M5.10", "decimal sheet numbers are rows of the list: " + dec.map((r) => r.sheetNo).join(","));
+  check(dec[2].sheetTitle === "FIRST FLOOR PLAN - PHASE 2 M1 AREA", "a single digit with no point inside a title is not a row: " + dec[2].sheetTitle);
+  check(dec[1].sheetTitle === "BASEMENT FLOOR PLAN - MECHANICAL DEMOLITION", "decimal row titles are whole");
 }
 has("return b.length ? b : parseDrawingIndexBare(pageText);", "format C chained after formats A and B");
 const shippedLayoutCount = (shipped.match(/\n\s*layout: "/g) || []).length;

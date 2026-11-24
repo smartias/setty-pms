@@ -31,6 +31,26 @@ test("the number must stand alone", () => {
   assert.equal(sheetTokenRe("COVER"), null);
 });
 
+test("sheets numbered by floor and decimal are matched whole", () => {
+  assert.ok(sheetTokenRe("M1.1").test("FIRST FLOOR PLAN M1.1"));
+  assert.ok(!sheetTokenRe("M1.1").test("SEE M1.10"), "M1.10 is another sheet");
+  assert.ok(!sheetTokenRe("M1.1").test("SEE MD1.1"), "so is MD1.1");
+  assert.ok(sheetTokenRe("MD1.0").test("DEMOLITION PLAN MD1.0"));
+  const list = [
+    { sheetNo: "M0.1", sheetTitle: "GENERAL NOTES, SYMBOLS & ABBREVIATIONS" },
+    { sheetNo: "MD1.0", sheetTitle: "BASEMENT FLOOR PLAN - MECHANICAL DEMOLITION" },
+    { sheetNo: "M1.0", sheetTitle: "BASEMENT FLOOR PLAN - MECHANICAL DUCTWORK" },
+    { sheetNo: "M1.1", sheetTitle: "GROUND FLOOR PLANS - MECHANICAL DUCTWORK" },
+  ];
+  const out = assignSheetsFromList([
+    page(1, "cover"),
+    page(2, "BASEMENT FLOOR PLAN - MECHANICAL DEMOLITION SEE M1.0 FOR NEW WORK MD1.0"),
+    page(3, "BASEMENT FLOOR PLAN - MECHANICAL DUCTWORK MATCHLINE SEE M1.1 M1.0"),
+    page(4, "GROUND FLOOR PLANS - MECHANICAL DUCTWORK M1.1"),
+  ], list, [1]);
+  assert.deepEqual(out.map((a) => [a.page, a.sheetNo]), [[2, "MD1.0"], [3, "M1.0"], [4, "M1.1"]]);
+});
+
 test("a sheet split into parts is its own sheet", () => {
   // E101-A and E101-B are two sheets; neither is "E101".
   assert.ok(sheetTokenRe("E101-A").test("LIGHTING PLAN PART A E101-A"));
@@ -164,7 +184,7 @@ test("on real books with known sheet numbers it is never wrong", () => {
 
 test("the connector runs this rule and only fills empty rows", () => {
   const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-  assert.equal(DRAWING_LIST_LAYOUT, "drawing-list.2");
+  assert.equal(DRAWING_LIST_LAYOUT, "drawing-list.3");
   assert.ok(shipped.includes('"&sheet_no=is.null&select=page"'), "a sheet number read off a title block is never overwritten");
   assert.ok(shipped.includes("title_block_layout: DRAWING_LIST_LAYOUT,"), "rows it fills are stamped, so they can be found and undone");
   assert.ok(shipped.includes('{ sheets_rule: DRAWING_LIST_LAYOUT }'), "a file is marked done under the rule's name");
