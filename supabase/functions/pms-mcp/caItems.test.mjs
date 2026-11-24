@@ -309,3 +309,13 @@ test("20261124190000 adds similarity and keyword_hit to search_ca_items and chan
   assert.ok(/from public, anon, authenticated;\s+grant execute on function public\.search_ca_items\([^)]*\)\s+to service_role;/.test(mig), "grants are repeated after the drop");
   assert.ok(!mig.includes("\r"), "migrations are LF");
 });
+
+test("the meaning cut-off sits between the measured off-topic and on-topic scores", () => {
+  // 2026-11-24, firm-wide: best rows of four off-topic questions, and the
+  // sixth-best rows of five real ones.
+  const offTopicBest = [0.774, 0.799, 0.807, 0.797];
+  const onTopicSixth = [0.848, 0.852, 0.856, 0.849, 0.858];
+  assert.ok(offTopicBest.every((x) => x < CA_MIN_SIMILARITY), "off-topic questions return nothing by meaning");
+  assert.ok(onTopicSixth.every((x) => x >= CA_MIN_SIMILARITY), "real questions keep their rows");
+  assert.equal(buildCaSearchArgs({ query: "radiator hookup question", rowIds: ["r"], embedding: new Array(CA_EMBED_DIMS).fill(0.1) }).args.p_min_similarity, 0.82);
+});
