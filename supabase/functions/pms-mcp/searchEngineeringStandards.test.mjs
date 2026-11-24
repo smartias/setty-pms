@@ -1,3 +1,4 @@
+import { rankByQuery } from "./knowledgeQuery.ts";
 // Tests for search_engineering_standards' filtering in index.ts.
 //   node supabase/functions/pms-mcp/searchEngineeringStandards.test.mjs
 // The function is COPIED below (index.ts boots a server at import); a drift
@@ -17,13 +18,7 @@ function filterEngineeringStandards(rows, f) {
   let out = rows.filter((r) => served.includes(r.status));
   if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r) => knowledgeTrades(r).some((t) => has(t, d))); }
   if (f.system) { const s = f.system.toLowerCase().trim(); out = out.filter((r) => has(r.system, s)); }
-  if (f.query) {
-    const q = f.query.toLowerCase().trim();
-    out = out.filter((r) =>
-      [r.standard_text, ...knowledgeTrades(r), r.system, r.basis, r.source_reference]
-        .some((v) => has(v, q)));
-  }
-  return out;
+  return rankByQuery(out, (r) => [r.standard_text, ...knowledgeTrades(r), r.system, r.basis, r.source_reference], f.query);
 }
 
 const ROWS = [

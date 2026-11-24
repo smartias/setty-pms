@@ -62,6 +62,7 @@ import { pickRecordedFolderName, matchRecordedFolder } from "./recordedFolder.ts
 // title blocks no pattern reads. Pure; see sheetFromFilename.test.mjs.
 import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OLD } from "./sheetFromFilename.ts";
 import { assignSheetsFromList, DRAWING_LIST_LAYOUT } from "./sheetFromDrawingList.ts";
+import { rankByQuery, closeByQuery, CLOSE_QUERY_NOTE } from "./knowledgeQuery.ts";
 // set_project_fee: what may be written into the Fee Calculator and what is
 // refused. Pure; see feeCalculator.test.mjs.
 import { extractSheetTables, orientSheetItems, type SheetTextItem, type SheetTable } from "./scheduleExtract.ts";
@@ -1513,7 +1514,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-submittal-default-responses";
+const BUILD = "2026-11-24-knowledge-word-matching";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.29.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -13452,6 +13453,18 @@ const knowledgeTrades = (r: any): string[] => {
   return set.length ? set : (r.discipline ? [r.discipline] : []);
 };
 
+// The fields a free-text query reads on each kind of knowledge row. Matching is
+// word by word (knowledgeQuery.ts), not the whole query as one phrase.
+const agencyPrefFields = (r: any): unknown[] =>
+  [r.requirement_or_preference, r.preference_type, r.discipline, r.applies_to, r.notes, r.source];
+const standardFields = (r: any): unknown[] =>
+  [r.standard_text, ...knowledgeTrades(r), r.system, r.basis, r.source_reference];
+const lessonFields = (r: any): unknown[] =>
+  [r.lesson_summary, r.agency, ...knowledgeTrades(r), r.system, r.issue_type, r.source_reference,
+   Array.isArray(r.tags) ? r.tags.join(" ") : r.tags];
+const practiceFields = (r: any): unknown[] =>
+  [r.title, r.practice_text, r.coord_theme, r.system, r.issue_type, ...knowledgeTrades(r)];
+
 mcp.tool("search_agency_preferences", {
   description:
     "Setty's KNOWLEDGE LAYER on how each client agency actually works: mined, verified process rules and " +
@@ -13476,23 +13489,25 @@ mcp.tool("search_agency_preferences", {
     let out = includeArchived ? rows : rows.filter((r: any) => r.status !== "archived");
     if (agency) { const a = agency.toLowerCase().trim(); out = out.filter((r: any) => has(r.agency, a)); }
     if (discipline) { const d = discipline.toLowerCase().trim(); out = out.filter((r: any) => knowledgeTrades(r).some((t) => has(t, d))); }
-    if (query) {
-      const q = query.toLowerCase().trim();
-      out = out.filter((r: any) =>
-        [r.requirement_or_preference, r.preference_type, r.discipline, r.applies_to, r.notes, r.source]
-          .some((f: unknown) => has(f, q)));
-    }
+    const beforeQuery = out;
+    out = rankByQuery(out, agencyPrefFields, query);
+    const slim = (r: any) => ({
+      agency: r.agency, type: r.preference_type, discipline: r.discipline || undefined,
+      disciplines: knowledgeTrades(r).length > 1 ? knowledgeTrades(r) : undefined,
+      requirement: r.requirement_or_preference, appliesTo: r.applies_to || undefined,
+      notes: r.notes || undefined, source: r.source || undefined,
+      verified: r.date_verified || undefined, status: r.status,
+    });
+    const close = out.length ? [] : closeByQuery(beforeQuery, agencyPrefFields, query);
     const CAP = 200;
     return asText({
       count: out.length,
       truncated: out.length > CAP,
-      preferences: out.slice(0, CAP).map((r: any) => ({
-        agency: r.agency, type: r.preference_type, discipline: r.discipline || undefined,
-        disciplines: knowledgeTrades(r).length > 1 ? knowledgeTrades(r) : undefined,
-        requirement: r.requirement_or_preference, appliesTo: r.applies_to || undefined,
-        notes: r.notes || undefined, source: r.source || undefined,
-        verified: r.date_verified || undefined, status: r.status,
-      })),
+      preferences: out.slice(0, CAP).map(slim),
+      ...(close.length ? {
+        closeMatches: close.map((c) => ({ ...slim(c.row), matchedTerms: c.matchedTerms, missingTerms: c.missingTerms })),
+        closeMatchesNote: CLOSE_QUERY_NOTE,
+      } : {}),
     });
   },
 });
@@ -13510,13 +13525,7 @@ function filterEngineeringStandards(
   let out = rows.filter((r: any) => served.includes(r.status));
   if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => knowledgeTrades(r).some((t) => has(t, d))); }
   if (f.system) { const s = f.system.toLowerCase().trim(); out = out.filter((r: any) => has(r.system, s)); }
-  if (f.query) {
-    const q = f.query.toLowerCase().trim();
-    out = out.filter((r: any) =>
-      [r.standard_text, ...knowledgeTrades(r), r.system, r.basis, r.source_reference]
-        .some((v: unknown) => has(v, q)));
-  }
-  return out;
+  return rankByQuery(out, standardFields, f.query);
 }
 
 mcp.tool("search_engineering_standards", {
@@ -13540,17 +13549,24 @@ mcp.tool("search_engineering_standards", {
       "pms_engineering_standards?select=*&order=discipline.asc,system.asc",
     );
     const out = filterEngineeringStandards(rows, { query, discipline, system, includeArchived });
+    const slim = (r: any) => ({
+      discipline: r.discipline || undefined, system: r.system || undefined,
+      disciplines: knowledgeTrades(r).length > 1 ? knowledgeTrades(r) : undefined,
+      standard: r.standard_text, basis: r.basis || undefined,
+      source: r.source_reference || undefined,
+      verified: r.date_verified || undefined, status: r.status,
+    });
+    const close = out.length ? []
+      : closeByQuery(filterEngineeringStandards(rows, { discipline, system, includeArchived }), standardFields, query);
     const CAP = 200;
     return asText({
       count: out.length,
       truncated: out.length > CAP,
-      standards: out.slice(0, CAP).map((r: any) => ({
-        discipline: r.discipline || undefined, system: r.system || undefined,
-        disciplines: knowledgeTrades(r).length > 1 ? knowledgeTrades(r) : undefined,
-        standard: r.standard_text, basis: r.basis || undefined,
-        source: r.source_reference || undefined,
-        verified: r.date_verified || undefined, status: r.status,
-      })),
+      standards: out.slice(0, CAP).map(slim),
+      ...(close.length ? {
+        closeMatches: close.map((c) => ({ ...slim(c.row), matchedTerms: c.matchedTerms, missingTerms: c.missingTerms })),
+        closeMatchesNote: CLOSE_QUERY_NOTE,
+      } : {}),
     });
   },
 });
@@ -13570,14 +13586,7 @@ function filterKnowledge(rows: any[], f: { query?: string; agency?: string; disc
   let out = rows;
   if (f.agency) { const a = f.agency.toLowerCase().trim(); out = out.filter((r: any) => has(r.agency, a)); }
   if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => knowledgeTrades(r).some((t) => has(t, d))); }
-  if (f.query) {
-    const q = f.query.toLowerCase().trim();
-    out = out.filter((r: any) =>
-      [r.lesson_summary, r.agency, ...knowledgeTrades(r), r.system, r.issue_type, r.source_reference,
-       Array.isArray(r.tags) ? r.tags.join(" ") : r.tags]
-        .some((v: unknown) => has(v, q)));
-  }
-  return out;
+  return rankByQuery(out, lessonFields, f.query);
 }
 
 const slimLesson = (r: any) => ({
@@ -13602,13 +13611,7 @@ function filterPractices(rows: any[], f: { query?: string; discipline?: string }
     const d = f.discipline.toLowerCase().trim();
     out = out.filter((r: any) => knowledgeTrades(r).some((t) => has(t, d)));
   }
-  if (f.query) {
-    const q = f.query.toLowerCase().trim();
-    out = out.filter((r: any) =>
-      [r.title, r.practice_text, r.coord_theme, r.system, r.issue_type, ...knowledgeTrades(r)]
-        .some((v: unknown) => has(v, q)));
-  }
-  return out;
+  return rankByQuery(out, practiceFields, f.query);
 }
 const slimPractice = (r: any) => ({
   practiceId: r.practice_id, title: r.title, discipline: r.discipline || undefined,
@@ -13676,6 +13679,7 @@ mcp.tool("search_knowledge", {
     // answer. A projectNumber scope does NOT exclude them — they are firm-wide
     // and apply to any project the discipline/query matches.
     let practices: any[] = [];
+    let practicePool: any[] = [];
     if (!agency?.trim()) {
       const pRows = await sbGetAll(
         // select=* rather than a column list: it reads `disciplines` once the
@@ -13685,7 +13689,12 @@ mcp.tool("search_knowledge", {
         "&order=date_added.desc",
       );
       practices = filterPractices(pRows, { query, discipline });
+      practicePool = filterPractices(pRows, { discipline });
     }
+    // Nothing carries every word: the entries that carry at least half of them.
+    const closeLessons = out.length || practices.length ? []
+      : closeByQuery(filterKnowledge(visible, { agency, discipline }), lessonFields, query);
+    const closePractices = out.length || practices.length ? [] : closeByQuery(practicePool, practiceFields, query);
 
     let own: any[] | undefined;
     if (mine) {
@@ -13706,6 +13715,13 @@ mcp.tool("search_knowledge", {
       lessons: out.slice(0, KNOWLEDGE_RESULT_CAP).map(slimLesson),
       bestPracticeCount: practices.length,
       bestPractices: practices.slice(0, KNOWLEDGE_RESULT_CAP).map(slimPractice),
+      ...(closeLessons.length || closePractices.length ? {
+        closeMatches: {
+          lessons: closeLessons.map((c) => ({ ...slimLesson(c.row), matchedTerms: c.matchedTerms, missingTerms: c.missingTerms })),
+          bestPractices: closePractices.map((c) => ({ ...slimPractice(c.row), matchedTerms: c.matchedTerms, missingTerms: c.missingTerms })),
+        },
+        closeMatchesNote: CLOSE_QUERY_NOTE,
+      } : {}),
       ...(agency?.trim() ? { bestPracticesNote: "Best practices carry no agency, so they are omitted from agency-filtered searches — repeat without the agency filter to see them." } : {}),
       ...(own !== undefined ? {
         mySubmissions: own,
