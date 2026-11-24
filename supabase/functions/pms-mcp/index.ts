@@ -1514,7 +1514,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-email-meaning-floor";
+const BUILD = "2026-11-24-sheet-numbers-decimal";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.29.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -7331,7 +7331,10 @@ const DRAWING_LIST_ANCHOR = /DRAWING LIST\s+SHEET\s+DRAWING TITLE/;
 // "E101-B"). Without it in the pattern the row was not seen at all, and its
 // text ran on into the title of the row before it (2026-11-24: a 67-page
 // electrical book lost all 32 of its plan sheets this way).
-const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?\d{2,4}(?:\.\d{2})?[A-Z]?(?:-[A-Z0-9]{1,2})?)(?=\s)/g;
+// Sheets are also numbered by floor and decimal ("M0.1", "MD1.0", "P1.3"):
+// one digit, a point, one or two more. A single digit with no point is not
+// taken, or "PHASE 2 M1 AREA" in a title would read as a row.
+const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?(?:\d{2,4}(?:\.\d{1,2})?|\d\.\d{1,2})[A-Z]?(?:-[A-Z0-9]{1,2})?)(?=\s)/g;
 // The final row has no following row to bound it, so it runs on into whatever
 // page section comes next. Cut at the headings that actually follow these lists.
 // Includes the revision-table headings, because on SCA's sheets the revision
