@@ -114,7 +114,7 @@
 </script>
 <!-- Construction cost at each deliverable: a dated history kept beside the Fee
      Calculator. Own block, same reason: without it the page works and the
-     Schedule tab shows no cost panel. -->
+     Construction Costs tab is empty. -->
 <script type="module">
   import * as ConstructionCost from "./constructionCost.js";
   window.ConstructionCost = ConstructionCost;
@@ -8236,7 +8236,8 @@ function rowHighlightStyle(isRecentlyEdited) {
 
 // ─── CONSTRUCTION COST AT EACH DELIVERABLE (constructionCost.js) ────────────
 // A billable base-contract milestone reaching 100% is flagged for a cost check;
-// the Schedule tab's panel below asks for the figure. Called from every place a
+// the Construction Costs tab (Overview group) asks for the figure, and the
+// Schedule tab shows a one-line notice. Called from every place a
 // milestone's % is edited. Returns the project unchanged when the module did
 // not load.
 function costCheckOnComplete(project, milestoneId, oldPct, newPct) {
@@ -8252,6 +8253,97 @@ function costCheckOnComplete(project, milestoneId, oldPct, newPct) {
 // estimate often arrives for review before the deliverable goes out. The
 // connector's nightly file sync also flags a cost estimate saved to the project
 // folder (project.costDocFlags); the panel then asks for its figure.
+// Every line of a reviewed cost estimate (pms_cost_estimate_lines, written by
+// the connector's save_cost_estimate_lines). Loaded only when opened: an
+// estimate can run to thousands of lines. Readable with the fees permission
+// (row-level security), so a failed load usually means the role lacks it.
+// "workbook" lines were read from the Excel cells by the connector;
+// "transcribed" lines were typed from a PDF, and one whose amount was not
+// found printed in the PDF is marked for checking.
+const COST_LINES_SHOWN = 300;
+function CostEstimateLinesTable({ project, review }) {
+  const CC = window.ConstructionCost;
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const [disc, setDisc] = useState("");
+  const [q, setQ] = useState("");
+  React.useEffect(() => {
+    let live = true;
+    setRows(null); setErr("");
+    fetchAllAnon(
+      "pms_cost_estimate_lines?select=line_no,row_ref,section,code,discipline,description,quantity,unit,unit_cost,amount,is_subtotal,source,verified" +
+      "&project=eq." + encodeURIComponent(project.projectNumber || "") + "&review_id=eq." + encodeURIComponent(review.id) + "&order=line_no",
+      "cost estimate lines")
+      .then(r => { if (live) setRows(r || []); })
+      .catch(e => { if (live) setErr("Could not load the line items: " + ((e && e.message) || e) + ". Seeing them needs the fees permission."); });
+    return () => { live = false; };
+  }, [project.projectNumber, review.id]);
+  if (err) return <div style={{ fontSize: 12, color: P.red, margin: "6px 0" }}>{err}</div>;
+  if (!rows) return <div style={{ fontSize: 12, color: P.textDim, margin: "6px 0" }}>Loading line items…</div>;
+  const term = q.trim().toLowerCase();
+  const shown = rows.filter(r => (!disc || (disc === "none" ? !r.discipline : r.discipline === disc)) &&
+    (!term || [r.description, r.section, r.code].some(x => String(x || "").toLowerCase().includes(term))));
+  const sum = shown.reduce((t, r) => t + (!r.is_subtotal && r.amount != null ? +r.amount : 0), 0);
+  const unverified = rows.filter(r => r.source === "transcribed" && r.verified === false).length;
+  const transcribed = rows.some(r => r.source === "transcribed");
+  const num = v => v == null ? "" : (+v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const downloadCsv = () => {
+    const cell = v => { const t = v == null ? "" : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+    const head = ["Line", "Source row", "Section", "Code", "Discipline", "Description", "Quantity", "Unit", "Unit cost", "Amount", "Subtotal row", "Read by", "Amount found in PDF"];
+    const body = shown.map(r => [r.line_no, r.row_ref, r.section, r.code, r.discipline ? CC.estimateDisciplineLabel(r.discipline) : "", r.description, r.quantity, r.unit, r.unit_cost, r.amount,
+      r.is_subtotal ? "yes" : "", r.source === "workbook" ? "read from workbook" : "typed from PDF", r.source === "workbook" || r.verified == null ? "" : r.verified ? "yes" : "NO"].map(cell).join(","));
+    const url = URL.createObjectURL(new Blob([[head.join(","), ...body].join("\r\n")], { type: "text/csv" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = String((review.document && review.document.name) || "estimate").replace(/\.[A-Za-z0-9]+$/, "") + " - line items.csv"; a.click();
+    URL.revokeObjectURL(url);
+  };
+  const btn = { padding: "3px 8px", borderRadius: 4, fontSize: 11, cursor: "pointer", background: "transparent", border: `1px solid ${P.border}`, color: P.textMuted };
+  return (
+    <div style={{ margin: "6px 0 8px" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6, fontSize: 12, color: P.textDim }}>
+        <select value={disc} onChange={e => setDisc(e.target.value)}>
+          <option value="">All disciplines</option>
+          {CC.ESTIMATE_DISCIPLINES.map(d => <option key={d.key} value={d.key}>{d.label}</option>)}
+          <option value="none">Not MEP / unassigned</option>
+        </select>
+        <input type="text" value={q} onChange={e => setQ(e.target.value)} placeholder="Find in description, section or code" style={{ width: 240 }} />
+        <span>{shown.length.toLocaleString()} of {rows.length.toLocaleString()} lines, {fmt(sum)} without subtotal rows</span>
+        <button style={btn} onClick={downloadCsv}>Download CSV</button>
+      </div>
+      <div style={{ fontSize: 11, color: unverified ? P.yellow : P.textDim, marginBottom: 6 }}>
+        {transcribed
+          ? "Typed from the PDF by Claude. " + (unverified ? unverified + (unverified === 1 ? " amount was not found printed in the PDF and is marked ⚠: check it against the document." : " amounts were not found printed in the PDF and are marked ⚠: check them against the document.") : "Each amount was looked for in the PDF's text; none is marked as missing.")
+          : "Read cell by cell from the workbook."}
+      </div>
+      <div style={{ maxHeight: 420, overflow: "auto", border: `1px solid ${P.border}`, borderRadius: 4 }}>
+        <table style={{ fontSize: 12, width: "100%" }}>
+          <thead><tr>
+            <th style={{ textAlign: "left" }}>Section</th><th style={{ textAlign: "left" }}>Description</th><th style={{ textAlign: "right" }}>Qty</th>
+            <th style={{ textAlign: "left" }}>Unit</th><th style={{ textAlign: "right" }}>Unit cost</th><th style={{ textAlign: "right" }}>Amount</th><th style={{ textAlign: "left" }}>From</th>
+          </tr></thead>
+          <tbody>
+            {shown.slice(0, COST_LINES_SHOWN).map(r => (
+              <tr key={r.line_no} style={{ verticalAlign: "top", fontWeight: r.is_subtotal ? 700 : 400 }}>
+                <td style={{ color: P.textDim }}>{r.section || ""}</td>
+                <td>{r.code ? r.code + " " : ""}{r.description}</td>
+                <td style={{ textAlign: "right" }}>{num(r.quantity)}</td>
+                <td>{r.unit || ""}</td>
+                <td style={{ textAlign: "right" }}>{r.unit_cost == null ? "" : fmt(r.unit_cost)}</td>
+                <td style={{ textAlign: "right", color: r.source === "transcribed" && r.verified === false ? P.yellow : P.text }}
+                    title={r.source === "transcribed" && r.verified === false ? "This amount was not found printed in the PDF. Check it against the document." : ""}>
+                  {r.amount == null ? "" : (r.amount < 0 ? "-" : "") + fmt(Math.abs(r.amount))}{r.source === "transcribed" && r.verified === false ? " ⚠" : ""}
+                </td>
+                <td style={{ color: P.textDim, whiteSpace: "nowrap" }}>{r.row_ref || ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {shown.length > COST_LINES_SHOWN && <div style={{ fontSize: 11, color: P.textDim, marginTop: 4 }}>Showing the first {COST_LINES_SHOWN}. Narrow with the filter or the search, or download the CSV for all {shown.length.toLocaleString()}.</div>}
+    </div>
+  );
+}
+
 function ConstructionCostPanel({ project, onChange }) {
   const CC = window.ConstructionCost;
   const [open, setOpen] = useState(false);
@@ -8272,13 +8364,14 @@ function ConstructionCostPanel({ project, onChange }) {
   // click records who asked and for which document, the connector stamps the
   // start, and save_cost_estimate_review writes the review this panel shows.
   const [showReview, setShowReview] = useState(false);
+  const [showLines, setShowLines] = useState(false);
   const review = CC.latestCostEstimateReview(project);
   const rstate = CC.costReviewState(project);
   const projLabel = (project.name || "Project") + (project.projectNumber ? " (" + project.projectNumber + ")" : "");
   const reviewUrl = (docName, reconcile) => "https://claude.ai/new?q=" + encodeURIComponent([
     "Review " + (docName ? "this cost estimate for " + projLabel + ": \"" + docName + "\"." : "the latest cost estimate for " + projLabel + "."),
     "",
-    "Use the Setty PMS connector and the cost-estimate-review skill: start with get_cost_estimate_packet for the project" + (docName ? " and that document" : "") + " (one call: it marks the review as under way in the PMS and returns the estimate to read, the previous estimates and the method; if the skill is not installed, follow the method the packet returns). Work out the total construction cost and what the estimate carries for mechanical, electrical and plumbing, and tell me what changed since the previous estimate." + (reconcile ? " Then reconcile the estimate's MEP scope against the current issued drawing set and list where they differ, with sheets." : " Do not reconcile against the drawings this time.") + " Save it with save_cost_estimate_review and summarize it for me here. Use only numbers the document contains.",
+    "Use the Setty PMS connector and the cost-estimate-review skill: start with get_cost_estimate_packet for the project" + (docName ? " and that document" : "") + " (one call: it marks the review as under way in the PMS and returns the estimate to read, the previous estimates and the method; if the skill is not installed, follow the method the packet returns). Work out the total construction cost and what the estimate carries for mechanical, electrical and plumbing, and tell me what changed since the previous estimate." + (reconcile ? " Then reconcile the estimate's MEP scope against the current issued drawing set and list where they differ, with sheets." : " Do not reconcile against the drawings this time.") + " Save it with save_cost_estimate_review, store every line of the estimate with save_cost_estimate_lines, and summarize it for me here. Use only numbers the document contains.",
   ].join("\n"));
   const askReview = (docName, reconcile) => onChange(CC.markCostReviewRequested(project, { at: new Date().toISOString(), by: getCurrentUser(), document: docName || null, reconcile }), { notifyTeams: false });
   const link = { fontSize: 11, fontWeight: 600, color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" };
@@ -8414,6 +8507,14 @@ function ConstructionCostPanel({ project, onChange }) {
                   </table>
                 </details>
               )}
+              {review.lines && review.lines.count > 0 ? (
+                <div style={{ marginBottom: 8 }}>
+                  <button style={btn} onClick={() => setShowLines(v => !v)}>{showLines ? "Hide line items" : "Line items (" + review.lines.count.toLocaleString() + ")"}</button>
+                  {showLines && <CostEstimateLinesTable project={project} review={review} />}
+                </div>
+              ) : (
+                <div style={{ marginBottom: 8, fontSize: 11, color: P.textDim }}>The estimate's line-by-line detail has not been stored for this review.</div>
+              )}
               {review.notes && <div style={{ whiteSpace: "pre-wrap", marginBottom: 8 }}>{review.notes}</div>}
               {(review.unknowns || []).length > 0 && (
                 <div style={{ marginBottom: 8 }}>
@@ -8463,6 +8564,37 @@ function ConstructionCostPanel({ project, onChange }) {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+// The Construction Costs tab, in the Overview group beside Contract. Shown only
+// with the fees permission (the tab filter): construction cost is fee data.
+function ConstructionCostsView({ project, onChange }) {
+  return (
+    <div>
+      <SectionTitle>Construction Costs</SectionTitle>
+      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 14 }}>
+        The construction cost on record at each deliverable, the cost estimates saved to the project folder, and Claude's review of them. Kept apart from the Fee Calculator: nothing here changes a fee.
+      </div>
+      {window.ConstructionCost
+        ? <ConstructionCostPanel project={project} onChange={onChange} />
+        : <div style={{ fontSize: 12, color: P.textDim }}>This page did not finish loading. Refresh the tab.</div>}
+    </div>
+  );
+}
+
+// On the Schedule tab: one line when a cost check is due, pointing at the
+// Construction Costs tab. Nothing when none is due or the role cannot see fees.
+function CostCheckNotice({ project }) {
+  const CC = window.ConstructionCost;
+  if (!CC || !pmsCan("fees.view")) return null;
+  const pending = CC.pendingCostChecks(project)[0] || null;
+  const docs = CC.openCostDocFlags(project).length;
+  if (!pending && !docs) return null;
+  return (
+    <div style={{ border: `1px solid ${P.yellow}`, background: P.yellowDim, borderRadius: 6, padding: "8px 12px", marginBottom: 14, fontSize: 12, color: P.text }}>
+      Construction cost check due{pending ? ": " + pending.name + " was marked complete" : ""}{pending && docs ? ", and " : docs ? ": " : ""}{docs ? docs + " cost document" + (docs === 1 ? " was" : "s were") + " saved to the project folder" : ""}. Open <strong>Construction Costs</strong> (under Overview) to confirm or update the figure.
     </div>
   );
 }
@@ -8998,7 +9130,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
         Phase % complete is automatically calculated from its associated Milestone below. Update the milestone % to track progress.
       </div>
 
-      <ConstructionCostPanel project={project} onChange={onChange} />
+      <CostCheckNotice project={project} />
 
       {/* Start date row + override entry point. Edits to startDate happen here
           (not in the Fee tab) once a project is awarded — this panel is the
@@ -22070,7 +22202,7 @@ function ProjectIntelligencePanel({ projectNumber }) {
   );
 }
 
-const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Construction Changes", "Closeout", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos", "QA Reviews"];
+const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Construction Costs", "Change Orders", "RFIs", "Submittals", "Construction Changes", "Closeout", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos", "QA Reviews"];
 
 // Tab groupings — top-level "sections" the user navigates by, with the existing
 // tabs as their sub-pages. Order reflects the natural project workflow.
@@ -22078,7 +22210,7 @@ const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator
 // content (still driven by the `tab === "..."` conditionals below); it only
 // changes which section the tab nests under.
 const TAB_GROUPS = [
-  { name: "Overview",                    tabs: ["Overview", "Directory", "Scope", "Contract"] },
+  { name: "Overview",                    tabs: ["Overview", "Directory", "Scope", "Contract", "Construction Costs"] },
   { name: "Project Record",              tabs: ["Timeline", "Investigation", "Notes", "Emails"] },
   { name: "Fee",                         tabs: ["Fee Calculator", "Change Orders"] },
   { name: "Team",                        tabs: ["Team"] },
@@ -23066,7 +23198,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
 	        const closeoutOn = caSettyIsPrime(project) || ((project.closeout || {}).items || []).length > 0;
 	        const subsOn = (project.subconsultants || []).length > 0 || !!project.subsEnabled;
 	        const visibleGroups = TAB_GROUPS
-	          .map(g => ({ ...g, visibleTabs: g.tabs.filter(t => (!projIsPipeline || !PIPELINE_HIDDEN_TABS.includes(t)) && (t !== "Construction Changes" || changesOn) && (t !== "Closeout" || closeoutOn)) }))
+	          .map(g => ({ ...g, visibleTabs: g.tabs.filter(t => (!projIsPipeline || !PIPELINE_HIDDEN_TABS.includes(t)) && (t !== "Construction Changes" || changesOn) && (t !== "Closeout" || closeoutOn) && (t !== "Construction Costs" || pmsCan("fees.view"))) }))
 	          .filter(g => g.visibleTabs.length > 0)
 	          .filter(g => {
 	            if (g.name === "Construction Administration") return projInCA;
@@ -23308,6 +23440,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         {tab === "Construction Changes" && <ConstructionChangesView project={project} onChange={onUpdate} />}
         {tab === "Closeout" && <CloseoutView project={project} onChange={onUpdate} />}
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} onEagerSave={onEagerSave} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} clients={clients} onUpdateClient={onUpdateClient} />}
+        {tab === "Construction Costs" && <ConstructionCostsView project={project} onChange={onUpdate} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
         {tab === "Directory" && <ProjectDirectoryView project={project} onChange={onUpdate} clients={clients} />}
         {tab === "QA Reviews" && <ProjectQAReviewsView project={project} onChange={onUpdate} />}

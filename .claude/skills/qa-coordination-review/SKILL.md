@@ -316,7 +316,7 @@ goes out; this step is where its total gets recorded.
 5. No cost document: do not record and do not guess. Say in the report
    header "No cost estimate found for this deliverable; construction cost on
    record is $X as of <date>" (or "none on record"), so the PM can confirm it
-   in the PMS Schedule tab.
+   in the PMS Construction Costs tab.
 
 This is not a QA finding and gets no checklist row. A refusal for missing
 permissions is reported in one line and the review goes on.

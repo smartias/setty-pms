@@ -1,6 +1,6 @@
 ---
 name: cost-estimate-review
-description: Read a construction cost estimate for a Setty project with the Setty PMS connector (setty-pms) and save a review of it to the PMS, where the engineer sees it on the Schedule tab. Works out the total construction cost and what the estimate carries for mechanical, electrical and plumbing (plus fire protection and technology when broken out), says what changed since the previous estimate, and, when asked, reconciles the estimate's MEP scope against the current issued drawing set. Use whenever someone asks to review, ingest, read, check or compare a cost estimate, opinion of probable cost, budget estimate or bid tabulation ("review the DD cost estimate on Tabler", "what is the MEP cost in this estimate", "what changed since the last estimate", "does the estimate match the drawings"), or sends one from the PMS with "Send to Claude for review". It records the estimate's total in the project's construction cost history. It never changes a fee, never prices anything itself, and never states a number the document does not contain.
+description: Read a construction cost estimate for a Setty project with the Setty PMS connector (setty-pms) and save a review of it to the PMS, where the engineer sees it on the Construction Costs tab. Works out the total construction cost and what the estimate carries for mechanical, electrical and plumbing (plus fire protection and technology when broken out), says what changed since the previous estimate, and, when asked, reconciles the estimate's MEP scope against the current issued drawing set. Use whenever someone asks to review, ingest, read, check or compare a cost estimate, opinion of probable cost, budget estimate or bid tabulation ("review the DD cost estimate on Tabler", "what is the MEP cost in this estimate", "what changed since the last estimate", "does the estimate match the drawings"), or sends one from the PMS with "Send to Claude for review". It records the estimate's total in the project's construction cost history. It never changes a fee, never prices anything itself, and never states a number the document does not contain.
 ---
 
 # Cost estimate review
@@ -10,7 +10,7 @@ usually asked to review the MEP part before a deliverable goes out. This skill
 reads the estimate, pulls out what it carries for each of our disciplines,
 compares it with the last estimate reviewed, and, when asked, checks its scope
 against the drawings. The result is saved to the project and shown on the PMS
-Schedule tab. The engineer decides what to say back to the estimator.
+Construction Costs tab. The engineer decides what to say back to the estimator.
 
 Three rules hold throughout:
 
@@ -140,7 +140,7 @@ If the reconciliation cannot be done (no issued set in the index, an estimate
 with no quantities or equipment lines), set `reconciliation.notRun` to the
 reason and do not invent findings.
 
-## Step 6 — Save and report
+## Step 6 — Save the review
 
 `save_cost_estimate_review` with the document (name and `itemId`),
 `deliverable`, `estimateDate`, `preparedBy`, `total` and `totalBasis`,
@@ -153,14 +153,66 @@ Step 5 ran. The tool:
 - adds the total to the construction cost history, unless `recordTotal` is
   false. No fee changes.
 
-Then tell the user, briefly:
+## Step 7 — Store every line
+
+After the review is saved, store the estimate's full line-by-line detail with
+`save_cost_estimate_lines`, passing the `reviewId` the save returned. The PMS
+shows the lines under the review, and the next estimate is compared with them.
+
+**A PDF estimate (most of them).** You read the lines and pass them in
+`lines`, up to 400 a call, `append: true` on the second and later calls:
+
+- One entry per line of the estimate, in order: `description`, `amount`,
+  and where the estimate gives them `quantity`, `unit`, `unitCost`, `code`.
+  Give `section` (the heading the line sits under) and `page` on every line.
+- Keep total and subtotal rows, with `isSubtotal: true`.
+- Pass the estimate's `itemId`. The connector then looks for every amount you
+  typed in the PDF's own text and returns `amountsAgainstThePdf`. Each entry
+  in `linesToCheck` is an amount it could not find: re-read that line on its
+  page, correct it, and resend the batch. An amount that is right and still
+  not found (the PDF prints it split across cells) stays, and you tell the
+  user how many could not be confirmed.
+- A scanned PDF has no text to check against: say so plainly.
+- Type what is printed. Never fill a blank, round, or compute an amount.
+
+**An Excel estimate.** Do not type the lines. Describe each sheet's layout
+and the connector reads the cells itself:
+
+- `itemId`, and one `sheets` entry per sheet that holds lines: the `sheet`
+  name as `read_document` printed it, `headerRow`, and `columns` naming the
+  description and amount columns (and quantity, unit, unit cost, code) by
+  heading text, letter or number.
+- Call with `preview: true` first. Check `firstLines`: are description,
+  quantity, unit cost and amount in the right places, and were headings
+  picked up as sections? Fix the layout and preview again until it reads
+  right, then call without `preview`.
+- Leave out summary sheets that repeat the trade sheets, or their lines are
+  counted twice. Use `lastRow` to stop before a grand total or notes block.
+- Set `discipline` on a sheet that is one trade; add `sections` rules where a
+  heading does not name its discipline.
+
+**Check the result.** `checkAgainstReview` compares the sum of the stored
+lines per discipline with the amounts in the review. A gap usually means
+markups applied at the bottom of the estimate, a subtotal read as a line, or
+lines with no discipline. Explain it to the user; do not adjust numbers to
+close it.
+
+To compare with the previous estimate line by line, or to answer what an
+estimate carried for an item, read stored lines back with
+`get_cost_estimate_lines` (filter by `discipline` or `search`).
+
+## Step 8 — Report
+
+Tell the user, briefly:
 
 1. The total and its basis.
 2. Mechanical, electrical, plumbing: amount and share.
 3. What moved since the previous estimate and why, where the document shows it.
 4. Reconciliation findings, highest first, with sheets.
 5. What could not be determined.
+6. How many lines were stored, and for a PDF how many amounts could not be
+   confirmed against the document.
 
-The review is on the project's Schedule tab in the PMS. It is a reading aid
+The review is on the project's Construction Costs tab in the PMS. It is a reading aid
 for the engineer, not an approval of the estimate, and nothing is sent to the
 estimator.

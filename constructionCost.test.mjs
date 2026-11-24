@@ -11,7 +11,7 @@ import {
   pendingCostChecks, skipCostCheck, planCostCheck, rfisPerMillion, costSourceLabel,
   looksLikeCostDocument, planCostDocFlags, openCostDocFlags, dismissCostDocFlag, costDocFlagsOf, COST_DOC_FLAG_MAX,
   planCostEstimateReview, compareEstimates, costEstimateReviewsOf, latestCostEstimateReview, costReviewState,
-  markCostReviewRequested, markCostReviewStarted, ESTIMATE_DISCIPLINES, estimateDisciplineLabel,
+  markCostReviewRequested, markCostReviewStarted, ESTIMATE_DISCIPLINES, estimateDisciplineLabel, setReviewLines,
 } from "./constructionCost.js";
 
 const stamp = (n = 1) => ({ at: `2027-01-0${n}T12:00:00.000Z`, id: "e" + n, by: "PM", via: "pms" });
@@ -290,6 +290,16 @@ test("request, started and ready states", () => {
   assert.equal(costReviewState(again, now).state, "waiting", "a re-send after a review waits again");
 });
 
+test("a review records that its lines are stored, how many and how they were read", () => {
+  const p1 = planCostEstimateReview(project(), dd, stamp(1)).project;
+  const id = latestCostEstimateReview(p1).id;
+  const p2 = setReviewLines(p1, id, { count: 412.4, source: "workbook", at: "2027-01-01T13:00:00.000Z" });
+  assert.deepEqual(latestCostEstimateReview(p2).lines, { count: 412, source: "workbook", at: "2027-01-01T13:00:00.000Z" });
+  assert.equal(latestCostEstimateReview(p1).lines, undefined, "input project is not mutated");
+  assert.equal(setReviewLines(p1, "nope", { count: 3 }), p1, "unknown review: same reference");
+  assert.equal(latestCostEstimateReview(setReviewLines(p1, id, { count: 9, source: "typed" })).lines.source, "transcribed");
+});
+
 test("discipline labels", () => {
   assert.deepEqual(ESTIMATE_DISCIPLINES.slice(0, 3).map((d) => d.key), ["mechanical", "electrical", "plumbing"]);
   assert.equal(estimateDisciplineLabel("plumbing"), "Plumbing");
@@ -302,4 +312,11 @@ test("SettyPMS.html loads the module and uses it where milestones complete", () 
   assert.ok(html.includes("window.ConstructionCost = ConstructionCost;"));
   assert.ok(html.split("costCheckOnComplete(").length - 1 >= 3, "defined once and called from the Schedule tab and the Dashboard");
   assert.ok(html.includes("function ConstructionCostPanel("));
+  // The panel lives on its own tab in the Overview group, beside Contract, and
+  // is hidden without the fees permission; the Schedule tab only points at it.
+  assert.ok(html.includes('tabs: ["Overview", "Directory", "Scope", "Contract", "Construction Costs"]'));
+  assert.ok(html.includes('{tab === "Construction Costs" && <ConstructionCostsView project={project} onChange={onUpdate} />}'));
+  assert.ok(html.includes('(t !== "Construction Costs" || pmsCan("fees.view"))'));
+  assert.ok(html.includes("<CostCheckNotice project={project} />"));
+  assert.equal(html.split("<ConstructionCostPanel ").length - 1, 1, "rendered in one place only");
 });

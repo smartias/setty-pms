@@ -89,7 +89,13 @@ import {
   planCostCheck, latestConstructionCost, costLogOf, rfisPerMillion, costSourceLabel, COST_SOURCES,
   looksLikeCostDocument, planCostDocFlags, openCostDocFlags,
   planCostEstimateReview, costEstimateReviewsOf, markCostReviewStarted, ESTIMATE_DISCIPLINES, estimateDisciplineLabel,
+  setReviewLines,
 } from "./constructionCost.js";
+// The line-by-line detail of a reviewed estimate (pms_cost_estimate_lines). Pure; see its tests.
+import {
+  extractSheetLines, normalizeSuppliedLines, summarizeLines, checkAgainstReview, toRows, LINES_MAX,
+  verifyLinesAgainstPages,
+} from "./costEstimateLines.js";
 // search_rfis_submittals reads pms_ca_items (a trigger-maintained projection of
 // the RFI/submittal arrays) through the search_ca_items RPC; the query
 // classifier, RPC arguments and row mapping are pure. See caItems.ts.
@@ -1522,7 +1528,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-cost-estimate-review";
+const BUILD = "2026-11-24-cost-estimate-lines";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.31.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -13104,7 +13110,7 @@ async function costDocumentsInIndex(scope: string, sinceIso?: string): Promise<A
 
 // Called by the nightly file sync after a project's rows are written: a cost
 // estimate saved to the project folder since the last few runs is flagged on
-// the project record (project.costDocFlags), and the PMS Schedule tab asks
+// the project record (project.costDocFlags), and the PMS Construction Costs tab asks
 // for the figure. The window is a week, not one run, so a night that failed
 // part-way is made up; a file already flagged, answered or dismissed is
 // skipped by planCostDocFlags. Never throws: the sync must not fail over it.
@@ -13226,14 +13232,14 @@ mcp.tool("record_construction_cost", {
       previous: plan.previous.value, changePct: plan.changePct,
       ...(big ? { warning: `This is ${plan.changePct > 0 ? "up" : "down"} ${Math.abs(plan.changePct)}% from the figure on record. Tell the user and confirm it is the total construction cost for the same scope.` } : {}),
       ...view(plan.project),
-      note: "Added to the project's construction cost history (Schedule tab). The Fee Calculator and every fee are unchanged. Tell the user the figure and where it came from. Anyone with this project open in the PMS should refresh the tab before editing.",
+      note: "Added to the project's construction cost history (Construction Costs tab, under Overview). The Fee Calculator and every fee are unchanged. Tell the user the figure and where it came from. Anyone with this project open in the PMS should refresh the tab before editing.",
     });
   },
 });
 
 // ─── COST ESTIMATE REVIEW: get_cost_estimate_packet / save_cost_estimate_review (1.31.0) ─
 // The read and write sides of the cost-estimate-review skill and of the
-// Schedule tab's "Send to Claude for review" on a cost document, built like
+// Construction Costs tab's "Send to Claude for review" on a cost document, built like
 // get_ca_review_packet / save_ca_review. The packet marks the review as under
 // way and hands over what the review needs to start; the save writes ONE entry
 // to project.costEstimateReviews (rules in constructionCost.js) and records the
@@ -13272,7 +13278,7 @@ async function costReviewGate(projectNumber: string, needEdit: boolean): Promise
 mcp.tool("get_cost_estimate_packet", {
   description:
     "START of a COST ESTIMATE REVIEW (the cost-estimate-review skill, or a 'Send to Claude for review' request from " +
-    "the PMS Schedule tab). One call: marks the review as under way in the PMS and returns what the review needs: " +
+    "the PMS Construction Costs tab). One call: marks the review as under way in the PMS and returns what the review needs: " +
     "the estimate to read (the one the request named, else the documents flagged as newly saved, else the files in " +
     "the project folder whose name reads like a cost estimate, each with its itemId for read_document), whether the " +
     "user asked to reconcile against the drawings, the construction cost on record and its history, the previous " +
@@ -13337,10 +13343,11 @@ mcp.tool("get_cost_estimate_packet", {
         "1. Read the estimate in full with read_document (itemId above). A workbook has a summary sheet and trade sheets: read both. Note who prepared it, its date, and the design phase it prices.",
         "2. Total construction cost: the estimate's bottom line for the base scope, with general conditions, overhead and profit, contingency and escalation. Say in totalBasis exactly what it includes and leaves out (alternates, soft costs, owner's contingency).",
         "3. Mechanical, electrical, plumbing (and fire protection, technology when broken out): take each from the estimate's own trade or division subtotal. State the basis of each in its `basis` (direct cost only, or with the estimate's markups spread in). Put all disciplines on the SAME basis; if the estimate marks up only at the bottom, give direct costs and say so. Never split a combined line by guessing: if plumbing and fire protection are one number, report it under one and say so in its note, and list the gap in unknowns.",
-        "4. The larger line items go in breakdown (major equipment, distribution, controls), so the next estimate can be compared line by line.",
+        "4. The larger line items go in breakdown (major equipment, distribution, controls). The full line-by-line detail is stored after the review is saved, with save_cost_estimate_lines (step 8).",
         "5. Changes since the previous estimate are computed for you from previousReviews when you save. In notes, explain the moves you can see a reason for (scope added, quantities, unit prices, a different markup), and say when two estimates are not on the same basis.",
         "6. Only if reconcileAgainstDrawings is true or the user asks: compare the estimate's MEP scope with the current issued set (get_current_set, read_drawing_schedule, find_equipment, search_drawings). Check major equipment counts and sizes against the schedules, systems drawn that the estimate does not price, items priced that the drawings do not show, and quantities that are far apart. Each difference is a finding with the sheet. This is a scope check, not a re-estimate: do not price anything yourself.",
         "7. Save with save_cost_estimate_review, then tell the user the totals, what moved, and the findings. Never state a number the document does not contain.",
+        "8. Store every line: save_cost_estimate_lines with the reviewId the save returned. For a workbook, describe the layout of each sheet that holds lines (sheet name, heading row, which column is which) and the connector reads the cells itself; call it with preview:true first and check the sample. For a PDF, pass the lines you read, in batches. Compare the returned sums with the review's discipline amounts and tell the user about any gap.",
       ],
     });
   },
@@ -13358,7 +13365,7 @@ mcp.tool("save_cost_estimate_review", {
     "estimate', naming the document) unless recordTotal is false; no fee changes. Every number must come from the " +
     "document: an amount you derived (summing lines, removing a markup) is allowed only when its basis or note " +
     "says how. Discipline amounts must be on one basis and cannot add up to more than the total. The review shows " +
-    "in the PMS Schedule tab for the engineer; it is a reading aid, not an approval of the estimate. Needs a " +
+    "in the PMS Construction Costs tab for the engineer; it is a reading aid, not an approval of the estimate. Needs a " +
     "signed-in caller with the fees and edit-project permissions.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number OR project name."),
@@ -13417,14 +13424,297 @@ mcp.tool("save_cost_estimate_review", {
     const big = (plan.changes || []).filter((c: any) => c.deltaPct !== null && Math.abs(c.deltaPct) >= 10);
     return asText({
       project: g.project, saved: true, savedBy: g.who.email,
+      reviewId: plan.review.id,
       review: estimateReviewView(plan.review),
+      nextStep: "Store the estimate's full line-by-line detail with save_cost_estimate_lines, passing this reviewId.",
       comparedWith: plan.previous ? { document: plan.previous.document?.name, reviewedAt: plan.previous.at } : null,
       changesSincePrevious: plan.changes,
       ...(big.length ? { movesOfTenPercentOrMore: big.map((c: any) => `${c.label}: ${c.deltaPct > 0 ? "up" : "down"} ${Math.abs(c.deltaPct)}%`) } : {}),
       ...(plan.previous ? {} : { firstReviewNote: "This is the first estimate reviewed on the project, so there is nothing to compare it with yet." }),
       constructionCostRecorded: plan.recorded ? plan.recorded.value : null,
-      note: "Saved to the project's cost estimate reviews (Schedule tab)." + (plan.recorded ? " The total was added to the construction cost history." : " The construction cost history was not changed.") +
+      note: "Saved to the project's cost estimate reviews (Construction Costs tab, under Overview)." + (plan.recorded ? " The total was added to the construction cost history." : " The construction cost history was not changed.") +
         " The Fee Calculator and every fee are unchanged. Tell the user the totals, what moved since the previous estimate and why where the document shows it, and any reconciliation findings. Anyone with this project open in the PMS should refresh the tab before editing.",
+    });
+  },
+});
+
+// ─── COST ESTIMATE LINES: save_cost_estimate_lines / get_cost_estimate_lines (1.31.0) ─
+// Every line of a reviewed estimate, in pms_cost_estimate_lines (migration
+// 20261124180000). For a workbook the reviewer describes the layout and the
+// cells are read HERE (costEstimateLines.js), so no number passes through the
+// model. The file must be one the index ties to this project, which is what
+// stops a layout call from reading some other project's workbook. For a PDF
+// the reviewer supplies the lines and they are stored as 'transcribed'.
+const COST_LINES_BATCH = 500;
+const COST_LINES_SUPPLIED_MAX = 400;
+const COST_WORKBOOK_MAX_BYTES = 25 * 1048576;
+
+async function deleteCostLines(project: string, reviewId: string): Promise<void> {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/pms_cost_estimate_lines?project=eq.${encodeURIComponent(project)}&review_id=eq.${encodeURIComponent(reviewId)}`,
+    { method: "DELETE", headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, Prefer: "return=minimal" } },
+  );
+  if (!res.ok) throw new Error(`delete lines ${res.status}: ${(await res.text()).slice(0, 200)}`);
+}
+const costLinesTableError = (e: unknown): string => {
+  const m = String((e as any)?.message ?? e);
+  return /404|not exist|PGRST205|42P01/.test(m)
+    ? "Line storage is not available yet: the database has not run migration 20261124180000."
+    : m.slice(0, 240);
+};
+
+// The sheets of a SharePoint workbook as arrays of rows. itemId must be the
+// 'driveId|itemId' form and indexed under this project's scope.
+async function projectWorkbookRows(pn: string, itemId: string): Promise<{ ok: true; name: string; sheets: Record<string, any[][]> } | { ok: false; error: string; nextStep?: string }> {
+  if (isAzId(itemId) || itemId.indexOf("|") <= 0) {
+    return { ok: false, error: "Only a SharePoint workbook (an itemId of the form driveId|itemId) can be read by layout.", nextStep: "Pass the lines yourself in `lines` instead." };
+  }
+  const rows: any[] = await sbGet("pms_documents?select=name,ext,size_bytes&item_id=eq." + encodeURIComponent(itemId) +
+    "&scope=eq." + encodeURIComponent(pn.trim().toLowerCase()) + "&deleted_at=is.null&limit=1");
+  if (!rows?.length) {
+    return { ok: false, error: "That file is not in this project's file index, so it cannot be read by layout.", nextStep: "The index is refreshed about daily: a file saved today appears tomorrow. Until then, pass the lines yourself in `lines`, or check the itemId came from get_cost_estimate_packet for this project." };
+  }
+  const name = String(rows[0].name || "");
+  if (!["xlsx", "xls", "xlsm"].includes(String(rows[0].ext || extOf(name)).toLowerCase())) {
+    return { ok: false, error: `"${name}" is not an Excel workbook.`, nextStep: "For a PDF estimate pass the lines yourself in `lines`." };
+  }
+  if (Number(rows[0].size_bytes) > COST_WORKBOOK_MAX_BYTES) return { ok: false, error: `"${name}" is over 25 MB and is not read by layout.`, nextStep: "Pass the lines yourself in `lines`." };
+  const bar = itemId.indexOf("|");
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/drives/${itemId.slice(0, bar)}/items/${encodeURIComponent(itemId.slice(bar + 1))}/content`,
+    { headers: { Authorization: "Bearer " + (await graphToken()) } },
+  );
+  if (!res.ok) return { ok: false, error: `Could not download "${name}" (Graph ${res.status}).` };
+  const mod: any = await import("npm:xlsx@0.18.5");
+  const XLSX: any = mod.read ? mod : mod.default;
+  const wb = XLSX.read(new Uint8Array(await res.arrayBuffer()), { type: "array" });
+  const sheets: Record<string, any[][]> = {};
+  for (const sn of (wb.SheetNames || [])) sheets[sn] = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: null, blankrows: true });
+  return { ok: true, name, sheets };
+}
+
+// The text of each page of a PDF the index ties to this project, for checking
+// typed amounts (verifyLinesAgainstPages). Text layer only: a scanned page
+// comes back empty and its lines are left unchecked, which the caller reports.
+const COST_PDF_VERIFY_MAX_PAGES = 400;
+async function projectPdfPageTexts(pn: string, itemId: string): Promise<{ ok: true; pages: Record<number, string>; totalPages: number } | { ok: false; why: string }> {
+  if (isAzId(itemId) || itemId.indexOf("|") <= 0) return { ok: false, why: "the file is not a SharePoint item" };
+  const rows: any[] = await sbGet("pms_documents?select=name,ext,size_bytes&item_id=eq." + encodeURIComponent(itemId) +
+    "&scope=eq." + encodeURIComponent(pn.trim().toLowerCase()) + "&deleted_at=is.null&limit=1");
+  if (!rows?.length) return { ok: false, why: "the file is not in this project's file index yet (it is refreshed about daily)" };
+  const name = String(rows[0].name || "");
+  if (String(rows[0].ext || extOf(name)).toLowerCase() !== "pdf") return { ok: false, why: `"${name}" is not a PDF` };
+  if (Number(rows[0].size_bytes) > readDocMaxBytes(name)) return { ok: false, why: `"${name}" is too large to read here` };
+  let bytes = pdfCacheGet(itemId);
+  if (!bytes) {
+    const bar = itemId.indexOf("|");
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/drives/${itemId.slice(0, bar)}/items/${encodeURIComponent(itemId.slice(bar + 1))}/content`,
+      { headers: { Authorization: "Bearer " + (await graphToken()) } },
+    );
+    if (!res.ok) return { ok: false, why: `the file could not be downloaded (Graph ${res.status})` };
+    bytes = new Uint8Array(await res.arrayBuffer());
+    pdfCachePut(itemId, bytes);
+  }
+  const { getDocumentProxy } = await import("unpdf");
+  const pdf: any = await getDocumentProxy(bytes.byteLength > PDF_CACHE_MAX_BYTES ? bytes : bytes.slice());
+  const total: number = pdf.numPages;
+  const pages: Record<number, string> = {};
+  for (let i = 1; i <= Math.min(total, COST_PDF_VERIFY_MAX_PAGES); i++) {
+    const tc = await (await pdf.getPage(i)).getTextContent();
+    pages[i] = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+  }
+  return { ok: true, pages, totalPages: total };
+}
+
+const LINE_COLUMN = z.union([z.string(), z.number()]);
+mcp.tool("save_cost_estimate_lines", {
+  description:
+    "Store EVERY LINE of a reviewed cost estimate (after save_cost_estimate_review, with the reviewId it returned), " +
+    "so the PMS can show the estimate line by line and the next estimate can be compared with it. Two ways. " +
+    "(1) WORKBOOK, preferred for Excel: give the file's itemId and, for each sheet that holds lines, its layout: " +
+    "the sheet name, headerRow (the 1-based row the column headings are on), and which column is the description, " +
+    "the amount (the extended line total), and where present the quantity, unit, unit cost and code, each named " +
+    "by its heading text, a letter ('F') or a 1-based number. The connector then reads the cells itself: no number " +
+    "is retyped. A row with a description and no numbers is taken as a section heading; a row whose description " +
+    "says total or subtotal is stored and left out of sums. Disciplines come from the headings and CSI codes; set " +
+    "`discipline` on a sheet that is one trade, or `sections` rules where the headings do not say. ALWAYS call " +
+    "with preview:true first: nothing is written, and you get the first lines of each sheet, the sums per " +
+    "discipline and a comparison with the review's amounts. Fix the layout until the sample reads right, then " +
+    "call again without preview. Do not list summary sheets that repeat the trade sheets' totals: the lines would " +
+    "be counted twice. (2) LINES, for a PDF (most estimates): pass the lines you read, up to " + COST_LINES_SUPPLIED_MAX + " per call, " +
+    "each with the page it is on, and the estimate's itemId; append:true on the second and later calls. They are " +
+    "stored marked 'transcribed', and the connector looks for each amount in the PDF's own text: " +
+    "amountsAgainstThePdf lists the lines whose amount it could not find (a mistyped digit, or a number the PDF " +
+    "prints differently). Re-read those and resend. A scanned PDF cannot be checked this way. Without append, a " +
+    "review's stored lines are REPLACED. Relay the returned check to the user: a gap between the lines and the review's " +
+    "discipline amounts usually means markups applied at the bottom, a subtotal read as a line, or lines with no " +
+    "discipline. Needs a signed-in caller with the fees and edit-project permissions.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    reviewId: z.string().optional().describe("The review these lines belong to (from save_cost_estimate_review). Omit for the latest review on the project."),
+    itemId: z.string().optional().describe("WORKBOOK: the estimate's itemId, from get_cost_estimate_packet."),
+    sheets: z.array(z.object({
+      sheet: z.string().describe("Sheet name exactly as read_document printed it after '# Sheet:'."),
+      headerRow: z.number().int().min(1).optional().describe("1-based row of the column headings. Needed when a column is named by its heading text."),
+      firstRow: z.number().int().min(1).optional().describe("First row to read. Default: the row after headerRow."),
+      lastRow: z.number().int().min(1).optional().describe("Last row to read. Default: the end of the sheet. Set it to stop before a grand total or a notes block."),
+      columns: z.object({
+        description: LINE_COLUMN.describe("Required. Heading text, letter or 1-based number."),
+        amount: LINE_COLUMN.describe("Required. The line's extended total."),
+        quantity: LINE_COLUMN.optional(), unit: LINE_COLUMN.optional(), unitCost: LINE_COLUMN.optional(),
+        code: LINE_COLUMN.optional().describe("Item or CSI code column."),
+      }),
+      discipline: z.enum(ESTIMATE_DISCIPLINE_KEYS).optional().describe("When the whole sheet is one trade."),
+      sections: z.array(z.object({ match: z.string().describe("Text a section heading contains, any case."), discipline: z.enum(ESTIMATE_DISCIPLINE_KEYS) })).optional()
+        .describe("Rules for headings that do not name their discipline, e.g. { match: 'BMS', discipline: 'mechanical' }."),
+    })).max(40).optional().describe("WORKBOOK: one entry per sheet that holds lines."),
+    lines: z.array(z.object({
+      description: z.string(), amount: z.number().optional(), quantity: z.number().optional(), unit: z.string().optional(),
+      unitCost: z.number().optional(), code: z.string().optional(), section: z.string().optional().describe("The heading the line sits under."),
+      discipline: z.enum(ESTIMATE_DISCIPLINE_KEYS).optional(), isSubtotal: z.boolean().optional(), page: z.union([z.string(), z.number()]).optional().describe("PDF page it was read from."),
+    })).max(COST_LINES_SUPPLIED_MAX).optional().describe("LINES: for a PDF estimate."),
+    append: z.boolean().optional().describe("LINES only: add to the lines already stored for this review instead of replacing them."),
+    preview: z.boolean().optional().describe("Read and report, write nothing. Always do this first for a workbook."),
+  }),
+  handler: async ({ projectNumber, reviewId, itemId, sheets, lines, append, preview }) => {
+    const g = await costReviewGate(projectNumber, !preview);
+    if (!g.ok) return g.response;
+    if (!g.pn) return asText({ error: "This project has no project number yet, so lines cannot be stored against it." });
+    const reviews = costEstimateReviewsOf(g.p);
+    const review = reviewId ? reviews.find((r: any) => r.id === reviewId) : reviews[reviews.length - 1];
+    if (!review) return asText({ project: g.project, error: reviewId ? `No cost estimate review "${reviewId}" on this project.` : "This project has no cost estimate review yet.", nextStep: "Save the review first with save_cost_estimate_review; it returns the reviewId." });
+    const byWorkbook = !!(itemId && sheets?.length);
+    if (byWorkbook === !!lines?.length) return asText({ error: "Give either itemId with sheets (a workbook) or lines (a PDF), not both and not neither." });
+
+    let all: any[] = [];
+    const warnings: string[] = [];
+    let perSheet: unknown = undefined;
+    let verification: Record<string, unknown> | undefined;
+    if (byWorkbook) {
+      let wb: Awaited<ReturnType<typeof projectWorkbookRows>>;
+      try { wb = await projectWorkbookRows(g.pn, itemId!); }
+      catch (e) { return asText({ project: g.project, error: `Could not read the workbook: ${String((e as any)?.message ?? e).slice(0, 200)}` }); }
+      if (!wb.ok) return asText({ project: g.project, error: wb.error, ...(wb.nextStep ? { nextStep: wb.nextStep } : {}) });
+      const names = Object.keys(wb.sheets);
+      const out: Array<Record<string, unknown>> = [];
+      for (const sp of sheets!) {
+        const key = names.find((n) => n === sp.sheet) || names.find((n) => n.trim().toLowerCase() === sp.sheet.trim().toLowerCase());
+        if (!key) return asText({ project: g.project, error: `No sheet "${sp.sheet}" in "${wb.name}".`, sheetsInWorkbook: names });
+        const r = extractSheetLines(wb.sheets[key], { ...sp, sheet: key });
+        if ((r as any).error) return asText({ project: g.project, error: (r as any).error, sheetsInWorkbook: names });
+        all.push(...(r as any).lines); warnings.push(...(r as any).warnings);
+        out.push({ sheet: key, rowsInSheet: wb.sheets[key].length, lines: (r as any).lines.length,
+          firstLines: (r as any).lines.slice(0, 6).map((l: any) => ({ row: l.rowRef, section: l.section, discipline: l.discipline, description: l.description, quantity: l.quantity, unit: l.unit, unitCost: l.unitCost, amount: l.amount, isSubtotal: l.isSubtotal || undefined })) });
+      }
+      perSheet = out;
+    } else {
+      all = normalizeSuppliedLines(lines);
+      // Typed lines: look for each amount in the PDF's own text.
+      const pdfId = itemId || review.document?.itemId || "";
+      try {
+        const pdf = pdfId ? await projectPdfPageTexts(g.pn, pdfId) : { ok: false as const, why: "no itemId was given for the estimate" };
+        if (pdf.ok) {
+          const v = verifyLinesAgainstPages(all, pdf.pages);
+          verification = v.readable
+            ? { amountsChecked: v.checked, foundInThePdf: v.verified, notFound: v.notFoundCount, ...(v.notFound.length ? { linesToCheck: v.notFound } : {}),
+                ...(pdf.totalPages > COST_PDF_VERIFY_MAX_PAGES ? { note: `Only the first ${COST_PDF_VERIFY_MAX_PAGES} of ${pdf.totalPages} pages were read for the check.` } : {}) }
+            : { notChecked: "The PDF has no readable text (a scan), so the typed amounts could not be checked against it." };
+        } else {
+          verification = { notChecked: `The typed amounts were not checked against the document: ${pdf.why}.` };
+        }
+      } catch (e) {
+        verification = { notChecked: `The typed amounts could not be checked against the document: ${String((e as any)?.message ?? e).slice(0, 160)}.` };
+      }
+    }
+    if (!all.length) return asText({ project: g.project, error: "No lines were found.", warnings, ...(perSheet ? { sheets: perSheet } : {}) });
+    if (all.length > LINES_MAX) return asText({ project: g.project, error: `That is ${all.length} lines; at most ${LINES_MAX} are stored per review. Narrow the rows (lastRow) or leave out sheets that repeat others.` });
+
+    const summary = summarizeLines(all);
+    const check = checkAgainstReview(summary, review);
+    const report = {
+      project: g.project, reviewId: review.id, document: review.document?.name,
+      source: byWorkbook ? "workbook (read from the cells)" : "transcribed (typed from the document)",
+      ...summary, checkAgainstReview: check, ...(verification ? { amountsAgainstThePdf: verification } : {}),
+      ...(warnings.length ? { warnings } : {}), ...(perSheet ? { sheets: perSheet } : {}),
+    };
+    if (preview) return asText({ ...report, written: false, note: "Preview only: nothing was stored. Check firstLines against the document (description, quantity, unit cost and amount in the right places, headings picked up as sections), then call again without preview." });
+
+    let startAt = 0;
+    try {
+      if (append && !byWorkbook) {
+        const last: any[] = await sbGet("pms_cost_estimate_lines?select=line_no&project=eq." + encodeURIComponent(g.pn) + "&review_id=eq." + encodeURIComponent(review.id) + "&order=line_no.desc&limit=1");
+        startAt = last?.[0]?.line_no || 0;
+        if (startAt + all.length > LINES_MAX) return asText({ project: g.project, error: `Adding these would pass ${LINES_MAX} lines for one review.` });
+      } else {
+        await deleteCostLines(g.pn, review.id);
+      }
+      const rows = toRows(all, { project: g.pn, reviewId: review.id, documentName: review.document?.name, itemId: itemId || review.document?.itemId, source: byWorkbook ? "workbook" : "transcribed", by: g.who.email, startAt });
+      for (let i = 0; i < rows.length; i += COST_LINES_BATCH) await sbUpsert("pms_cost_estimate_lines", "project,review_id,line_no", rows.slice(i, i + COST_LINES_BATCH));
+    } catch (e) {
+      return asText({ project: g.project, error: `Could not store the lines: ${costLinesTableError(e)}`, nextStep: "The review itself is saved. Tell the user the line detail was not stored and why." });
+    }
+    const stored = startAt + all.length;
+    let markNote: string | undefined;
+    try {
+      await updateProjectRecord(g.pid, (proj) => setReviewLines(proj, review.id, { count: stored, source: byWorkbook ? "workbook" : "transcribed", at: new Date().toISOString() }));
+    } catch (e) {
+      markNote = `The lines are stored, but the review could not be marked as having them (${String((e as any)?.message ?? e).slice(0, 120)}): call this tool again with the same content.`;
+    }
+    return asText({
+      ...report, written: true, linesStoredForReview: stored, ...(markNote ? { markNote } : {}),
+      note: "Stored. The PMS Construction Costs tab shows them under the review ('Line items')." + (byWorkbook ? "" : " These were typed from the document. amountsAgainstThePdf says how many amounts were found printed in the PDF: re-read every line in linesToCheck against its page and resend the corrected batch, and tell the user how many could not be confirmed.") +
+        " Tell the user how many lines were stored and relay any gap in checkAgainstReview.",
+    });
+  },
+});
+
+mcp.tool("get_cost_estimate_lines", {
+  description:
+    "READ the stored line-by-line detail of a reviewed cost estimate (written by save_cost_estimate_lines). Use it " +
+    "to compare an estimate with the previous one line by line, to answer what an estimate carried for an item " +
+    "('what did the DD estimate have for the chillers'), or to total a section. Filter by discipline or by words " +
+    "in the description, section or code. Returns the matching lines, their sum without subtotal rows, and how " +
+    "many matched. reviewId picks the estimate (get_cost_estimate_packet lists the reviews); omit for the latest. " +
+    "Lines marked transcribed were typed from a PDF: check a number against the document before relying on it. " +
+    "Needs a signed-in caller with the fees permission.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    reviewId: z.string().optional().describe("Which reviewed estimate. Omit for the latest."),
+    discipline: z.enum(ESTIMATE_DISCIPLINE_KEYS).optional(),
+    search: z.string().optional().describe("Words to find in the description, section or code, e.g. 'chiller'."),
+    limit: z.number().int().min(1).max(1000).optional().describe("Lines to return (default 200)."),
+    offset: z.number().int().min(0).optional().describe("Skip this many matching lines, to page through a long estimate."),
+  }),
+  handler: async ({ projectNumber, reviewId, discipline, search, limit, offset }) => {
+    const g = await costReviewGate(projectNumber, false);
+    if (!g.ok) return g.response;
+    if (!g.pn) return asText({ project: g.project, lines: [], note: "This project has no project number, so no lines are stored for it." });
+    const reviews = costEstimateReviewsOf(g.p);
+    const review = reviewId ? reviews.find((r: any) => r.id === reviewId) : reviews[reviews.length - 1];
+    if (!review) return asText({ project: g.project, error: reviewId ? `No cost estimate review "${reviewId}" on this project.` : "This project has no cost estimate review yet.", reviews: reviews.map((r: any) => ({ reviewId: r.id, document: r.document?.name, reviewedAt: r.at })) });
+    let q = "pms_cost_estimate_lines?select=line_no,sheet,row_ref,section,code,discipline,description,quantity,unit,unit_cost,amount,is_subtotal,source" +
+      "&project=eq." + encodeURIComponent(g.pn) + "&review_id=eq." + encodeURIComponent(review.id) + "&order=line_no";
+    q = q.replace(",source", ",source,verified");
+    if (discipline) q += "&discipline=eq." + discipline;
+    const term = String(search || "").trim().replace(/[*,()]/g, " ").trim();
+    if (term) { const t = encodeURIComponent("*" + term + "*"); q += `&or=(description.ilike.${t},section.ilike.${t},code.ilike.${t})`; }
+    let rows: any[];
+    try { rows = await sbGetAll(q); } catch (e) { return asText({ project: g.project, error: `Could not read the lines: ${costLinesTableError(e)}` }); }
+    const cap = Math.min(Math.max(limit ?? 200, 1), 1000), skip = Math.max(offset ?? 0, 0);
+    const sum = rows.reduce((s2, r) => s2 + (!r.is_subtotal && r.amount !== null ? Number(r.amount) : 0), 0);
+    return asText({
+      project: g.project, reviewId: review.id, document: review.document?.name, reviewedAt: review.at,
+      matched: rows.length, sumWithoutSubtotals: Math.round(sum * 100) / 100,
+      ...(rows.some((r) => r.source === "transcribed") ? { transcribed: "Some or all of these lines were typed from a PDF, not read from a workbook." } : {}),
+      lines: rows.slice(skip, skip + cap).map((r) => ({
+        line: r.line_no, row: r.row_ref || undefined, section: r.section || undefined, code: r.code || undefined, discipline: r.discipline || undefined,
+        description: r.description, quantity: r.quantity === null ? undefined : Number(r.quantity), unit: r.unit || undefined,
+        unitCost: r.unit_cost === null ? undefined : Number(r.unit_cost), amount: r.amount === null ? undefined : Number(r.amount), isSubtotal: r.is_subtotal || undefined,
+        ...(r.source === "transcribed" && r.verified === false ? { amountNotFoundInPdf: true } : {}),
+      })),
+      ...(rows.length > skip + cap ? { more: `Showing ${cap} of ${rows.length} from line ${skip + 1}. Pass offset:${skip + cap} for the next page, or narrow with discipline or search.` } : {}),
+      ...(rows.length ? {} : { note: review.lines?.count ? "No line matches those filters." : "No lines are stored for this review. Store them with save_cost_estimate_lines." }),
     });
   },
 });

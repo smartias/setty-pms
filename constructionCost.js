@@ -248,7 +248,7 @@ export function dismissCostDocFlag(project, itemId) {
 
 // ── Cost estimate reviews ────────────────────────────────────────────────────
 // A cost estimate sent to Claude for review ("Send to Claude for review" on
-// the Schedule tab's cost panel, the same hand-off the RFI and submittal
+// the Construction Costs tab, the same hand-off the RFI and submittal
 // modals use). The connector's save_cost_estimate_review writes one entry to
 // project.costEstimateReviews: what the estimate carries for mechanical,
 // electrical and plumbing, what moved since the previous estimate reviewed,
@@ -434,6 +434,20 @@ export function planCostEstimateReview(project, input, stamp) {
     if (plan.ok) { next = plan.project; recorded = plan.entry; }
   }
   return { ok: true, project: next, review, previous, changes, recorded };
+}
+
+// The line-by-line detail of a review is stored in pms_cost_estimate_lines by
+// the connector (costEstimateLines.js). The review entry only says that lines
+// exist, how many, and how they were read, so the panel can offer them.
+//   source "workbook" = read cell by cell from the file; "transcribed" = typed
+//   out by the reviewer from a PDF.
+// Returns the same project reference when the review is not found.
+export function setReviewLines(project, reviewId, info) {
+  const list = project && Array.isArray(project.costEstimateReviews) ? project.costEstimateReviews : [];
+  if (!list.some((r) => r && r.id === reviewId)) return project;
+  const i = info || {};
+  const lines = { count: Math.max(0, Math.round(+i.count || 0)), source: i.source === "workbook" ? "workbook" : "transcribed", at: i.at || null };
+  return { ...project, costEstimateReviews: list.map((r) => (r && r.id === reviewId ? { ...r, lines } : r)) };
 }
 
 // Preventable RFIs per $1M of construction value.
