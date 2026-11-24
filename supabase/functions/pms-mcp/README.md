@@ -916,6 +916,47 @@ so no arithmetic is left to the model. Read-only: it touches no project data.
   number is wrong, that the selection is wrong, or that the product exists.
   Product-availability lessons belong in the knowledge layer.
 
+## Space fit (`check_space_fit`, QA items qa-614 and qa-070; 1.32.0)
+
+Whether what is drawn fits the space it is drawn in. The reviewer reads the
+dimensions off the sheets and passes them as drawn (`9'-6"`, `114"`, `9.5'`
+or a number of inches); the conversion and the sums are done in
+`spaceCheck.js` (pure; `spaceCheck.test.mjs`). Read-only: it touches no
+project data.
+
+Why it exists: qa-614 is the checklist item the RFI log rewards most (63
+preventable RFIs on 14 projects at 2026-11-24). Read one by one, about a third
+are congested routes that need a person; the rest are sums nobody did.
+
+- `plenum`: floor to floor less structure less ceiling height (or underside
+  of structure less ceiling height, or a dimensioned plenum) against the
+  things stacked at one spot. Insulation counts on both sides; a sloped pipe
+  adds its fall over the run. A flag also says what ceiling height the stack
+  would take.
+  `beamDepth` takes a beam below the deck off what is available; a row
+  that fits with neither `beamDepth` nor `noBeam` is marked `toDeckOnly` and
+  counted apart, because RCP and wall-section elevations usually stop at the
+  deck.
+- `fit`: one dimension of a room, closet, shaft or pit against the parts
+  along it, clearances included. Also a corridor's clear width against what
+  runs side by side above its ceiling.
+- `workingSpace`: clear depth, width and headroom against NEC 110.26(A).
+  Depth by voltage to ground and condition (0 to 150 V: 36 in.; 151 to 600 V:
+  36, 42, 48 in.; 601 to 1000 V: 36, 48, 60 in.); width 30 in. or the
+  equipment's; headroom 6'-6" or the equipment's. With no condition given, a
+  depth between the condition 1 and condition 3 values is not checked.
+- Results: `ok`, `tight` (less than 2 in. left, or `tightIn`), `flag`,
+  `cannot-check`. A row that lacks a dimension is never estimated.
+- Tried on two projects' RFIs (2026-11-24). Sinclair Hall: not checkable, the
+  bid set prints no ceiling heights and the architect's set is not on file.
+  Tabler: caught the cable tray elevation against the plank and the corridor
+  ducts under the tray; missed a corridor that was short on width (hence the
+  width sum) and a bathroom that passed to the plank while something below
+  it set the duct low (hence `toDeckOnly`).
+- It does not choose the locations, does not know what was not passed, and
+  does not find congested routes. The table values are the model code's: the
+  adopted edition and local amendments are the engineer's to confirm.
+
 ## Fee Calculator write (`set_project_fee`, 1.25.0; inputs 1.26.0)
 
 When a PM tells Claude a fee, this puts it in the PMS so nobody retypes it. It

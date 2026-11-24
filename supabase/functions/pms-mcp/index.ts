@@ -96,6 +96,8 @@ import {
 import { planProposals, PROPOSAL_PHASES, PROPOSAL_AUTOMATION, MIN_PROJECTS, MIN_RFIS, MIN_LESSONS, MIN_LESSON_PROJECTS, MIN_FIRM_WIDE, PROPOSALS_MAX } from "./qaRoutine.js";
 // check_schedule_arithmetic (QA item qa-638): whether a schedule row's numbers agree. Pure; see its tests.
 import { checkSchedule, ROW_KINDS, DEFAULT_TOLERANCE_PCT } from "./scheduleArithmetic.js";
+// check_space_fit (QA items qa-614 and qa-070): whether what is drawn fits the plenum, room or working space. Pure; see its tests.
+import { checkSpace, SPACE_KINDS, DEFAULT_TIGHT_IN } from "./spaceCheck.js";
 // The line-by-line detail of a reviewed estimate (pms_cost_estimate_lines). Pure; see its tests.
 import {
   extractSheetLines, normalizeSuppliedLines, summarizeLines, checkAgainstReview, toRows, LINES_MAX,
@@ -1533,9 +1535,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-qa-routine-best-practices";
+const BUILD = "2026-11-25-check-space-fit";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.31.0",
+  name: "setty-pms", version: "1.32.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -13832,6 +13834,86 @@ mcp.tool("check_schedule_arithmetic", {
       note: (r.flagged ? `${r.flagged} row(s) do not close. Confirm each was read correctly from the sheet, then record it under qa-638 as a question with both numbers.` : "Every row that could be checked is consistent with itself.") +
         (r.notChecked ? ` ${r.notChecked} row(s) lacked an input and were not checked: say so in the coverage, do not estimate.` : "") +
         " This checks consistency only: not that a selection is right or that a product is available as specified.",
+    });
+  },
+});
+
+// ─── SPACE FIT: check_space_fit (QA items qa-614 and qa-070) ─────────────────
+// The sums behind "does it fit": a plenum against what is stacked in it, one
+// dimension of a room, shaft or pit against what sits along it, and the clear
+// space in front of electrical equipment against NEC 110.26(A). The reviewer
+// reads the dimensions off the sheets and passes them as drawn (9'-6"); the
+// conversion and the sums are done in spaceCheck.js. Read-only, no project
+// data touched. It does not choose the locations: that stays with the reviewer.
+const SPACE_DIM = z.union([z.number(), z.string()]).optional();
+const SPACE_PART = z.object({
+  what: z.string().describe("What it is, with its tag or size: '14 in. supply duct', 'FCU-3-5', '4 in. sprinkler main'."),
+  size: SPACE_DIM.describe("Its dimension in the direction being added up (its depth in a plenum stack)."),
+  depth: SPACE_DIM.describe("Same as size; either name."),
+  insulation: SPACE_DIM.describe("Insulation or lining thickness on the OUTSIDE. Counted on both sides."),
+  slopeInPerFt: z.number().optional().describe("A sloped pipe's fall, inches per foot (1/8 in. per ft is 0.125). With runFt."),
+  runFt: z.number().optional().describe("Length of the sloped run across this space, feet."),
+});
+mcp.tool("check_space_fit", {
+  description:
+    "CHECK THAT WHAT IS DRAWN FITS (QA checklist items qa-614, ceiling space, chases and access, and qa-070, " +
+    "electrical working clearance). You read the dimensions off the drawings and pass them exactly as drawn " +
+    "(9'-6\", 114\", 9.5', or a number of inches); this tool converts and adds, and returns the locations that " +
+    "do not fit, the ones that fit with almost nothing to spare, and the ones it could not check. Never do this " +
+    "arithmetic, or the feet-and-inches conversion, yourself. Kinds: " +
+    "plenum: the space above a ceiling at ONE spot against the things drawn on top of each other there. Give " +
+    "what is available one of three ways: `plenum` when a section dimensions it; `structureBottomAff` (underside " +
+    "of beam or slab above the floor) with `ceilingHeight`; or `floorToFloor`, `structureDepth` (slab and beam " +
+    "together at that spot) and `ceilingHeight`. `stack` is everything that crosses at that spot, one above the " +
+    "other: the unit or duct with its insulation, the pipe that crosses it (with slope and run when it drains), " +
+    "the sprinkler main, the light fixture. Things side by side are not stacked. `allowance` adds a stated depth " +
+    "for hangers or the ceiling grid when the project gives one. Elevations on an RCP or wall section usually " +
+    "stop at the deck or plank: give `beamDepth`, the deepest beam, girder or joist crossing below it at that " +
+    "spot (framing plan), or `noBeam: true` when the framing plan shows none. Without either, a row that fits " +
+    "comes back marked toDeckOnly and is NOT a clean pass. " +
+    "fit: one dimension of a room, closet, shaft, pit or corridor (`available`, named in `of`) against the " +
+    "`parts` that sit along it: equipment depth plus its working or service clearance in a closet; risers with " +
+    "insulation and the space between them in a shaft; a unit and its pull space in a pit; and across a " +
+    "corridor's clear WIDTH, everything that runs side by side above its ceiling (the cassette or fan coil, the " +
+    "cable tray with its side clearances, the duct mains, the pipe mains with insulation). A corridor needs " +
+    "both sums: depth as plenum, width as fit. " +
+    "workingSpace: the clear `depth`, `width` and `headroom` in front of a panel, switchboard, transformer, " +
+    "disconnect, VFD or controller against NEC 110.26(A): give `system` as written ('480Y/277') or " +
+    "`voltsToGround`, and `condition` 1, 2 or 3 when you can tell what faces the equipment. " +
+    "Run it at the locations the QA skill names: the lowest ceiling on each floor, every corridor, every place a " +
+    "main crosses a beam line, every unit above a ceiling, every shaft with more than one riser, every " +
+    "electrical room and closet. Pass ONLY dimensions printed or dimensioned on the sheets, schedules or cut " +
+    "sheets: a row that lacks one comes back 'cannot-check' and is reported as not checked, never completed " +
+    "with a scaled or assumed value. A flag means the numbers passed do not fit; it does not mean the design is " +
+    "wrong, and a row that fits says nothing about what was not passed. Before recording a flag as a QA " +
+    "finding, open the sheets again (view_drawing) to confirm each dimension was read from the right place, " +
+    "and write the finding with the numbers. It does not find congested routes: those still need a person " +
+    "looking at the plans.",
+  inputSchema: z.object({
+    rows: z.array(z.object({
+      id: z.string().describe("The location, and the sheets it was read from: 'Corridor 200 at grid C/4 (M-102, A-301)'."),
+      kind: z.enum(SPACE_KINDS as [string, ...string[]]),
+      plenum: SPACE_DIM, structureBottomAff: SPACE_DIM, floorToFloor: SPACE_DIM, structureDepth: SPACE_DIM, ceilingHeight: SPACE_DIM, allowance: SPACE_DIM,
+      beamDepth: SPACE_DIM.describe("plenum: depth of the deepest beam, girder or joist crossing BELOW the deck or plank at this spot, from the framing plan (a W16 is about 16 in.: pass the depth the structural sheets or the steel table give, not a guess)."),
+      noBeam: z.boolean().optional().describe("plenum: true when the framing plan shows no member crossing below the deck at this spot."),
+      stack: z.array(SPACE_PART).max(30).optional().describe("plenum: what is drawn one above the other at this spot."),
+      available: SPACE_DIM, of: z.string().optional().describe("fit: which dimension of which space, e.g. 'Electrical Closet 123A depth'."),
+      parts: z.array(SPACE_PART).max(30).optional().describe("fit: what sits along that dimension, clearances included."),
+      system: z.string().optional(), voltsToGround: z.number().optional(), condition: z.union([z.number(), z.string()]).optional(),
+      depth: SPACE_DIM, width: SPACE_DIM, equipmentWidth: SPACE_DIM, headroom: SPACE_DIM, equipmentHeight: SPACE_DIM,
+      tightIn: SPACE_DIM,
+    })).min(1).max(300).describe("Locations to check."),
+    tightIn: SPACE_DIM.describe(`A plenum or fit with less than this left over is reported as tight. Default ${DEFAULT_TIGHT_IN} in.`),
+  }),
+  handler: async ({ rows, tightIn }) => {
+    const r = checkSpace({ rows, tightIn });
+    return asText({
+      ...r,
+      note: (r.flagged ? `${r.flagged} location(s) do not fit on the numbers passed. Confirm each dimension on the sheet, then record it (qa-614 for plenum and fit, qa-070 for working space) with the numbers.` : "Nothing passed fails to fit.") +
+        (r.tight ? ` ${r.tight} fit with almost nothing to spare: name them to the engineer as places to look at, not as findings.` : "") +
+        (r.toDeckOnly ? ` ${r.toDeckOnly} plenum row(s) fit to the underside of the deck only, with no beam depth given: report them as 'to deck only', not as checked, until the framing plan is read.` : "") +
+        (r.notChecked ? ` ${r.notChecked} could not be checked for a missing or unreadable dimension: say so in the coverage, do not estimate.` : "") +
+        " This checks the numbers you passed. It does not know what else is in the space, and it is not a substitute for a section through a tight spot. Working space is the NEC 110.26(A) minimum: confirm the edition and local amendments the project is under.",
     });
   },
 });

@@ -1068,17 +1068,59 @@ Pass 1) in the report's Cross-discipline table, with the sheets compared.
      minus ceiling height (RCP) minus structure depth at that spot
      (framing plan). Plenum needed = the unit's height from the schedule or
      cut sheet, plus the duct or pipe that crosses it, plus the light
-     fixture. Do the sum, with the numbers, at least for: the lowest
+     fixture. Do not do the sum yourself: pass the dimensions exactly as
+     drawn to `check_space_fit`, kind `plenum`, one row per location, with
+     everything that crosses at that spot in `stack` (insulation, and the
+     slope and run of a pipe that drains). Run it at least for: the lowest
      ceiling on each floor, every corridor, every place a duct main crosses
      a beam line, and every room under a stair, a skylight or a feature
-     ceiling. A location where needed exceeds available is a finding; one
-     where a number could not be read is `partial`, naming the number.
+     ceiling. A location that comes back `flag` is a finding once you have
+     opened the sheets again and confirmed each dimension; `tight` is named
+     to the engineer as a place to look at, not as a finding; one that
+     could not be checked is `partial`, naming the missing dimension. Only
+     dimensions printed on a sheet, schedule or cut sheet: never scale one
+     or fill one in. Many ceiling heights on one floor against one
+     structure depth is how nine "lower the ceiling" RFIs happened on one
+     project, so check every distinct ceiling height, not one per floor.
+     **Beams.** An RCP note or wall section gives the underside of the
+     deck or plank, not of the steel. At each location read the framing
+     plan and pass `beamDepth` (the deepest member crossing below the deck
+     there), or `noBeam` when it shows none. A row that fits with neither
+     comes back `toDeckOnly`: report it as "fits to deck only, framing not
+     read", never as checked. On Tabler a bathroom passed to the plank
+     with 11 in. to spare while the contractor found no room under the
+     return duct.
+     **Corridors need the width as well.** Pass the corridor's clear width
+     and everything that runs side by side above its ceiling (cassette or
+     fan coil, cable tray with its side clearances, duct mains, pipe mains
+     with insulation) to `check_space_fit`, kind `fit`. A corridor can pass
+     on depth and fail on width: on Tabler a cassette took nearly the full
+     width and left no room for the tray.
+     **Cable tray.** Check the tray's printed elevation against the
+     structure too: tray elevation, tray depth and the clearance the
+     technology sheets ask for above it, as kind `fit` against the
+     underside of deck.
   6. **Risers and drops.** Take every riser from the riser diagrams and
      find its chase or furred wall on the architectural plan on each floor
      it passes. Then every pipe drop to a fixture: the wall it drops in
      must exist on the architectural plan and be a partition that can hold
      it, not glazing, a movable partition or a wall the architect does not
      draw. A riser or drop with no wall to hide in is a finding.
+     Where a shaft carries more than one riser and its inside dimension
+     is given, pass the shaft dimension and the risers (with insulation
+     and the space between them) to `check_space_fit`, kind `fit`.
+  7. **Rooms and working space.** For every electrical room and closet,
+     and every panel, transformer, disconnect, VFD or controller drawn
+     elsewhere: pass the clear depth, width and headroom in front of it,
+     with the system voltage, to `check_space_fit`, kind `workingSpace`
+     (findings go under `qa-070`), and the room dimension against the
+     equipment depth plus its working space as kind `fit`. Use the depth
+     on the schedule or cut sheet, not the symbol on the plan: a transfer
+     switch drawn 12 in. deep that is 18 in. deep made a room too small.
+     The same `fit` sum works for a pit, a pump pad or a mechanical closet
+     where the schedule gives the unit size and its service clearance.
+  The tool checks the numbers you pass. It does not find a congested
+  corridor: steps 1 to 4 and the overlay of the plans are still yours.
   Report a table: room, item, ceiling type and height, access (panel shown
   or not), plenum available against needed where computed, result. State
   how many of the step 1 items were checked out of the total. If the RCPs
