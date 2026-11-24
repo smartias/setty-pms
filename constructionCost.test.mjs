@@ -12,6 +12,7 @@ import {
   looksLikeCostDocument, planCostDocFlags, openCostDocFlags, dismissCostDocFlag, costDocFlagsOf, COST_DOC_FLAG_MAX,
   planCostEstimateReview, compareEstimates, costEstimateReviewsOf, latestCostEstimateReview, costReviewState,
   markCostReviewRequested, markCostReviewStarted, ESTIMATE_DISCIPLINES, estimateDisciplineLabel, setReviewLines,
+  addCostDocument, COST_DOC_FOLDER_NAME, isCostDocumentType, costDocumentTypeError,
 } from "./constructionCost.js";
 
 const stamp = (n = 1) => ({ at: `2027-01-0${n}T12:00:00.000Z`, id: "e" + n, by: "PM", via: "pms" });
@@ -175,6 +176,39 @@ test("newly saved cost documents are flagged once, and never again once answered
   assert.equal(planCostDocFlags(rec.project, docs, now).project, rec.project);
 });
 
+test("a person can point at the estimate when the nightly sync did not flag it", () => {
+  const st = { at: "2027-03-02T15:00:00.000Z", by: "PM" };
+  const p0 = project();
+  const add = addCostDocument(p0, { itemId: "drv|abc", name: "Report rev3.pdf", folderPath: "Incoming", webUrl: "https://setty.sharepoint.com/r" }, st);
+  assert.equal(add.ok, true, "no name test: the person says it is the estimate");
+  assert.equal(p0.costDocFlags, undefined, "input project is not mutated");
+  assert.deepEqual([add.flag.status, add.flag.manual, add.flag.addedBy], ["open", true, "PM"]);
+  assert.deepEqual(openCostDocFlags(add.project).map((f) => f.name), ["Report rev3.pdf"]);
+  // The sync must not flag it a second time, and dismissing then re-adding opens it again.
+  assert.equal(planCostDocFlags(add.project, [{ itemId: "drv|abc", name: "Cost Estimate.pdf" }], st.at).project, add.project);
+  const gone = dismissCostDocFlag(add.project, "drv|abc");
+  assert.equal(openCostDocFlags(gone).length, 0);
+  const again = addCostDocument(gone, { itemId: "drv|abc", name: "Report rev3.pdf" }, st);
+  assert.equal(openCostDocFlags(again.project).length, 1);
+  assert.equal(costDocFlagsOf(again.project).length, 1, "one entry per file");
+  assert.equal(addCostDocument(p0, { itemId: "abc", name: "x.pdf" }, st).ok, false, "needs a drive and an item id");
+  assert.equal(addCostDocument(p0, { itemId: "drv|abc", name: "" }, st).ok, false);
+  assert.match(addCostDocument(p0, { itemId: "drv|abc", name: "photo.png" }, st).error, /PDF, Excel, Word or CSV/);
+  assert.equal(addCostDocument(p0, { itemId: "drv|abc", name: "x.pdf", webUrl: "javascript:1" }, st).flag.webUrl, null);
+  for (const n of ["a.pdf", "a.XLSX", "b.xlsm", "c.docx", "d.csv"]) assert.equal(isCostDocumentType(n), true, n);
+  for (const n of ["photo.png", "noext", "", "a.dwg", "a.zip"]) assert.equal(isCostDocumentType(n), false, n);
+  assert.match(costDocumentTypeError("photo.png"), /"photo.png" is not one of those/);
+});
+
+test("a file in the project's Cost Estimates folder is picked up whatever it is called", () => {
+  assert.equal(COST_DOC_FOLDER_NAME, "Cost Estimates");
+  assert.equal(looksLikeCostDocument({ name: "Report rev3.pdf", folderPath: "Cost Estimates" }), true);
+  assert.equal(looksLikeCostDocument({ name: "Report rev3.pdf", folderPath: "Design/Cost Estimates/DD" }), true);
+  assert.equal(looksLikeCostDocument({ name: "Report rev3.pdf", folderPath: "Incoming" }), false);
+  assert.equal(looksLikeCostDocument({ name: "Fee Proposal.pdf", folderPath: "Cost Estimates" }), false, "still not the firm's own commercial paper");
+  assert.equal(looksLikeCostDocument({ name: "site.png", folderPath: "Cost Estimates" }), false);
+});
+
 test("the flag list is capped and open flags are the last to go", () => {
   const closed = Array.from({ length: COST_DOC_FLAG_MAX }, (_, i) => ({ itemId: "old" + i, name: "x", status: "dismissed" }));
   const plan = planCostDocFlags(project({ costDocFlags: closed }), [{ itemId: "new", name: "CD Cost Estimate.pdf" }], "2027-01-01T00:00:00Z");
@@ -319,4 +353,17 @@ test("SettyPMS.html loads the module and uses it where milestones complete", () 
   assert.ok(html.includes('(t !== "Construction Costs" || pmsCan("fees.view"))'));
   assert.ok(html.includes("<CostCheckNotice project={project} />"));
   assert.equal(html.split("<ConstructionCostPanel ").length - 1, 1, "rendered in one place only");
+  // Adding an estimate by hand: an upload into the project's Cost Estimates
+  // folder (ensureSpSubfolder, never conflictBehavior replace, the result
+  // checked for an id) or a pasted link resolved by Graph. Both end in the
+  // shared rule.
+  const up = html.slice(html.indexOf("async function uploadCostDocument("), html.indexOf("function ConstructionCostPanel("));
+  assert.ok(up.includes("await ensureSpSubfolder(driveId, projFolderName, CC.COST_DOC_FOLDER_NAME)"));
+  assert.ok(up.includes("conflictBehavior=fail") && !up.includes("conflictBehavior=replace"));
+  assert.ok(up.includes("if (!r || !r.id) throw new Error("), "a null from graphFetch is not treated as saved");
+  assert.ok(up.indexOf("CC.isCostDocumentType(file.name)") > 0 && up.indexOf("CC.isCostDocumentType(file.name)") < up.indexOf("ensureSpSubfolder("), "the file type is refused before anything is saved to SharePoint");
+  const link = html.slice(html.indexOf("async function resolveCostDocLink("), html.indexOf("async function uploadCostDocument("));
+  assert.ok(link.includes('"/shares/u!" + b64 + "/driveItem') && link.includes("if (!item || !item.id) throw new Error("));
+  assert.ok(link.includes("webUrl: item.webUrl"), "the link stored is SharePoint's own, not assembled");
+  assert.equal(html.split("CC.addCostDocument(").length - 1, 1);
 });
