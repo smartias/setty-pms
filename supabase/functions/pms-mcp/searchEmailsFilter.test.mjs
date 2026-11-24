@@ -112,3 +112,37 @@ test("the snippet step works on a capped body, and nothing else changes", () => 
   // body_text feeds the snippet only: every other use is the alias from `scored`.
   assert.ok(!/e\.body_text(?!, 20000)/.test(after), "no step reads the uncapped body");
 });
+
+// How close an email must be to come back by meaning alone, and which emails
+// are never searched by meaning (2026-11-24). Scores are from seven live
+// searches: the best rows of four off-topic questions, and the expected
+// threads of five real ones.
+test("the similarity floor sits between unrelated questions and right answers", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  const floor = Number((/const EMAIL_MIN_SIMILARITY = ([0-9.]+);/.exec(src) || [])[1]);
+  const offTopicBest = [0.777, 0.762, 0.802, 0.769];
+  const expectedThreads = [0.854, 0.858, 0.864, 0.852, 0.872];
+  assert.ok(offTopicBest.every((s) => s < floor), "no off-topic question clears the floor");
+  assert.ok(expectedThreads.every((s) => s >= floor + 0.02), "every expected thread clears it with room");
+  assert.ok(src.includes("if (embedding !== undefined) { args.p_embedding = embedding; args.p_min_similarity = EMAIL_MIN_SIMILARITY; }"), "the floor rides with the embedding");
+  assert.ok(src.includes("delete args.p_embedding;\n          delete args.p_min_similarity;"), "the keyword-only retry sends neither");
+});
+
+test("calendar replies and subject-less records are kept out of meaning-based search", () => {
+  const mig = readFileSync(new URL("../../migrations/20261124150000_emails_meaning_skip_calendar_replies.sql", import.meta.url), "utf8");
+  // The rule as the migration writes it, run here on real subject shapes.
+  const skip = (subject) => ["", "{}"].includes(String(subject ?? "").trim())
+    || /^\s*(accepted|declined|tentative|tentatively accepted|canceled|cancelled)\s*:/i.test(String(subject ?? ""));
+  assert.ok(mig.includes("'^\\s*(accepted|declined|tentative|tentatively accepted|canceled|cancelled)\\s*:'"), "the pattern tested here is the one shipped");
+  assert.ok(mig.includes("btrim(coalesce(p_subject, '')) in ('', '{}')"));
+  for (const s of ["Declined: SAPX256018: 280 Broadway - Site Visit", "Accepted: Park View HS Thermal Imaging", "Canceled: Design Team meeting", "Tentatively Accepted: OAC", " declined: x", "{}", "", null]) {
+    assert.ok(skip(s), "skipped: " + s);
+  }
+  for (const s of ["RE: Declined: the substitution request", "Submittal accepted as noted", "Canceled order for AHU-2", "Accepted Alternates - Bid Form", "Re: 665 New Lots Ave - BPL - Filing Update"]) {
+    assert.ok(!skip(s), "kept: " + s);
+  }
+  assert.equal(mig.split("and not public.pms_emails_skip_meaning(e.subject)").length - 1, 2, "both branches of the queue leave them out");
+  assert.ok(/update public\.pms_project_emails e\s+set embedding = null, embedded_hash = null, embedded_at = null\s+where e\.embedding is not null\s+and public\.pms_emails_skip_meaning\(e\.subject\);/.test(mig), "their existing vectors are cleared, and nothing else is touched");
+  assert.ok(!/delete from/i.test(mig), "no email is removed from the log");
+  assert.ok(!mig.includes("\r"), "migrations are LF");
+});
