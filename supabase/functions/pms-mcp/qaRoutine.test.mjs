@@ -6,7 +6,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { planProposals, runState, MIN_PROJECTS, MIN_RFIS, MIN_LESSONS, MIN_LESSON_PROJECTS, MIN_FIRM_WIDE } from "./qaRoutine.js";
+import { planProposals, runState, MIN_PROJECTS, MIN_RFIS, MIN_LESSONS, MIN_LESSON_PROJECTS, MIN_FIRM_WIDE, MIN_PREFERENCES, MIN_AGENCIES } from "./qaRoutine.js";
 
 const uncovered = [
   { project: "SAPX1.00", item_number: "001" }, { project: "SAPX1.00", item_number: "002" },
@@ -95,6 +95,19 @@ test("one best practice, or one firm-wide lesson, carries a proposal; one projec
   assert.equal(MIN_FIRM_WIDE, 1);
 });
 
+test("agency preferences earn an item only when different agencies ask for the same thing", () => {
+  const A = (n, agency) => ({ lesson_id: `33333333-0000-0000-0000-00000000000${n}`, kind: "preference", project_id: null, agency, lesson_summary: `Pref ${n}` });
+  const pool = [...lessons, A(1, "SUNY"), A(2, "SUNY"), A(3, "DASNY")];
+  const run = (ids) => planProposals([{ ...good, rfis: [], lessons: ids }], uncovered, [], pool);
+  assert.match(run([pool[3].lesson_id]).refused[0].why, /1 agency preference\(s\) from 1 agency\./, "one preference is not a firm-wide entry");
+  assert.match(run([pool[3].lesson_id, pool[4].lesson_id]).refused[0].why, /2 agency preference\(s\) from 1 agency\..*from at least 2 different agencies/);
+  const a = run([pool[3].lesson_id, pool[5].lesson_id]).accepted[0];
+  assert.deepEqual([a.lesson_count, a.project_count], [2, 0]);
+  assert.deepEqual(a.lessons[1], { id: pool[5].lesson_id, kind: "preference", project: "", agency: "DASNY", summary: "Pref 3" });
+  assert.equal(run([pool[3].lesson_id, lessons[0].lesson_id]).accepted.length, 0, "a preference and a project lesson do not add up");
+  assert.deepEqual([MIN_PREFERENCES, MIN_AGENCIES], [2, 2]);
+});
+
 test("run state from the three timestamps", () => {
   const now = Date.parse("2027-01-01T12:00:00Z");
   assert.equal(runState(null, now).state, "never");
@@ -110,9 +123,9 @@ test("the routine's tools, tables, approval function and console tab are in step
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
   const a = src.indexOf('mcp.tool("start_checklist_routine"'), b = src.indexOf('mcp.tool("propose_checklist_items"');
   assert.ok(a > 0 && b > a);
-  const propose = src.slice(b, b + 9000);
+  const propose = src.slice(b, b + 11000);
   assert.ok(propose.includes("planProposals(") && propose.includes('"pms_qa_item_proposals"'));
-  assert.ok(!/pms_qa_checklist\?|sbUpsert\("pms_qa_checklist"/.test(src.slice(a, b + 9000).replace(/pms_qa_checklist\?select=[^"]*/g, "")), "the connector reads the checklist and never writes it");
+  assert.ok(!/pms_qa_checklist\?|sbUpsert\("pms_qa_checklist"/.test(src.slice(a, b + 11000).replace(/pms_qa_checklist\?select=[^"]*/g, "")), "the connector reads the checklist and never writes it");
   const sql = readFileSync(new URL("../../migrations/20261124220000_qa_checklist_routine.sql", import.meta.url), "utf8");
   for (const s of ["create table if not exists public.pms_qa_routine_runs", "create table if not exists public.pms_qa_item_proposals",
     "create or replace function public.pms_request_qa_routine()", "create or replace function public.pms_decide_qa_item_proposal("]) assert.ok(sql.includes(s), s);
@@ -126,6 +139,10 @@ test("the routine's tools, tables, approval function and console tab are in step
   for (const x of ["create table if not exists public.pms_qa_practice_coverage", "insert into public.pms_qa_practice_coverage", "insert into public.pms_qa_lesson_coverage",
     "if not public.is_pms_admin() then", "update public.pms_rfi_root_causes rc", "revoke all on function public.pms_decide_qa_item_proposal"]) assert.ok(sql3.includes(x), x);
   assert.ok(src.includes('"pms_qa_practice_coverage?on_conflict=practice_id"') && src.includes("pms_best_practices?select="));
+  const sql4 = readFileSync(new URL("../../migrations/20261124250000_qa_routine_agency_preferences.sql", import.meta.url), "utf8");
+  for (const x of ["create table if not exists public.pms_qa_preference_coverage", "insert into public.pms_qa_preference_coverage", "insert into public.pms_qa_practice_coverage",
+    "insert into public.pms_qa_lesson_coverage", "if not public.is_pms_admin() then", "update public.pms_rfi_root_causes rc", "revoke all on function public.pms_decide_qa_item_proposal"]) assert.ok(sql4.includes(x), x);
+  assert.ok(src.includes('"pms_qa_preference_coverage?on_conflict=pref_id"') && src.includes("pms_agency_preferences?select="));
   const html = readFileSync(new URL("../../../SettyAdmin.html", import.meta.url), "utf8");
   assert.ok(html.includes('{ key: "qachecklist"') && html.includes("async function renderQaChecklist()"));
   assert.ok(html.includes("rpc/pms_request_qa_routine") && html.includes("rpc/pms_decide_qa_item_proposal"));

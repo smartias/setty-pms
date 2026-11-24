@@ -93,7 +93,7 @@ import {
   setReviewLines,
 } from "./constructionCost.js";
 // The QA checklist review routine (start_checklist_routine / propose_checklist_items). Pure; see its tests.
-import { planProposals, PROPOSAL_PHASES, PROPOSAL_AUTOMATION, MIN_PROJECTS, MIN_RFIS, MIN_LESSONS, MIN_LESSON_PROJECTS, MIN_FIRM_WIDE, PROPOSALS_MAX } from "./qaRoutine.js";
+import { planProposals, PROPOSAL_PHASES, PROPOSAL_AUTOMATION, MIN_PROJECTS, MIN_RFIS, MIN_LESSONS, MIN_LESSON_PROJECTS, MIN_FIRM_WIDE, MIN_PREFERENCES, MIN_AGENCIES, PROPOSALS_MAX } from "./qaRoutine.js";
 // check_schedule_arithmetic (QA item qa-638): whether a schedule row's numbers agree. Pure; see its tests.
 import { checkSchedule, ROW_KINDS, DEFAULT_TOLERANCE_PCT } from "./scheduleArithmetic.js";
 // The line-by-line detail of a reviewed estimate (pms_cost_estimate_lines). Pure; see its tests.
@@ -1533,7 +1533,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-qa-routine-best-practices";
+const BUILD = "2026-11-24-qa-routine-agency-preferences";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.31.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -13858,7 +13858,7 @@ async function qaRoutineWrite(method: "POST" | "PATCH", path: string, body: unkn
 }
 const qaRoutineTableError = (e: unknown): string => {
   const m = String((e as any)?.message ?? e);
-  return /404|not exist|PGRST205|42P01/.test(m) ? "The routine's tables are not available yet: the database has not run migrations 20261124220000, 20261124230000 and 20261124240000." : m.slice(0, 240);
+  return /404|not exist|PGRST205|42P01/.test(m) ? "The routine's tables are not available yet: the database has not run migrations 20261124220000 through 20261124250000." : m.slice(0, 240);
 };
 const uncoveredRfiRows = (): Promise<any[]> =>
   sbGetAll("pms_rfi_root_causes?select=project,item_number,subject,phase,cause,note&item_type=eq.rfi&preventable=is.true&qa_item=is.null&order=project,item_number");
@@ -13866,20 +13866,25 @@ const uncoveredRfiRows = (): Promise<any[]> =>
 // Approved knowledge a checklist item could be made from: lessons (project or
 // firm-wide, not superseded) and best practices (20261124240000), not yet
 // linked to an item and not behind a proposal still waiting for a decision.
-// Best practices come back in the lesson shape with kind "practice", first.
+// Active agency preferences (20261124250000) come too. Best practices and
+// preferences come back in the lesson shape, kind "practice" / "preference".
 async function candidateLessonRows(): Promise<any[]> {
-  const [lessons, practices, covered, coveredP, open] = await Promise.all([
+  const [lessons, practices, prefs, covered, coveredP, coveredA, open] = await Promise.all([
     sbGetAll("pms_lessons?select=lesson_id,project_id,agency,discipline,system,issue_type,lesson_summary&status=eq.approved&superseded_by=is.null&order=discipline,project_id"),
     sbGetAll("pms_best_practices?select=practice_id,title,discipline,system,issue_type,practice_text&status=eq.approved&order=discipline,title"),
+    sbGetAll("pms_agency_preferences?select=pref_id,agency,preference_type,discipline,requirement_or_preference&status=eq.active&order=discipline,agency"),
     sbGetAll("pms_qa_lesson_coverage?select=lesson_id"),
     sbGetAll("pms_qa_practice_coverage?select=practice_id"),
+    sbGetAll("pms_qa_preference_coverage?select=pref_id"),
     sbGet("pms_qa_item_proposals?select=lessons&status=eq.proposed&limit=500"),
   ]);
-  const skip = new Set<string>([...(covered || []).map((c: any) => c.lesson_id), ...(coveredP || []).map((c: any) => c.practice_id)].map((x) => String(x).toLowerCase()));
+  const skip = new Set<string>([...(covered || []).map((c: any) => c.lesson_id), ...(coveredP || []).map((c: any) => c.practice_id), ...(coveredA || []).map((c: any) => c.pref_id)].map((x) => String(x).toLowerCase()));
   for (const p of open || []) for (const l of Array.isArray(p.lessons) ? p.lessons : []) skip.add(String(l?.id || "").toLowerCase());
   const rows = [
     ...(practices || []).map((b: any) => ({ lesson_id: b.practice_id, kind: "practice", project_id: null, discipline: b.discipline, system: b.system, issue_type: b.issue_type,
       lesson_summary: [b.title, b.practice_text].filter(Boolean).join(": ") })),
+    ...(prefs || []).map((a: any) => ({ lesson_id: a.pref_id, kind: "preference", project_id: null, agency: a.agency, discipline: a.discipline, issue_type: a.preference_type,
+      lesson_summary: a.requirement_or_preference })),
     ...(lessons || []).map((l: any) => ({ ...l, kind: "lesson" })),
   ];
   return rows.filter((l: any) => !skip.has(String(l.lesson_id).toLowerCase()));
@@ -13889,7 +13894,7 @@ mcp.tool("start_checklist_routine", {
   description:
     "START the QA checklist review routine (the Admin Console's 'Run with Claude' on its QA Checklist tab, or when " +
     "someone asks whether the checklist needs new items). One call: it marks the run as started in the console and " +
-    "returns every preventable RFI that NO checklist item covers, every approved lesson and best practice in the knowledge layer that " +
+    "returns every preventable RFI that NO checklist item covers, every approved lesson, best practice and active agency preference in the knowledge layer that " +
     "no checklist item describes yet, the current checklist, earlier proposals with what an admin decided, and the " +
     "method. Your job is to find the kinds of RFI, and the lessons, that recur across projects and are " +
     "not already covered, and draft one checklist item for each, then finish with propose_checklist_items. You do " +
@@ -13926,11 +13931,11 @@ mcp.tool("start_checklist_routine", {
       rfis: uncovered.slice(0, 400).map((r) => ({ project: r.project, number: r.item_number, phase: r.phase, cause: r.cause, subject: r.subject || undefined, note: r.note || undefined })),
       ...(uncovered.length > 400 ? { rfisNote: `Showing the first 400 of ${uncovered.length}. rfi_root_cause_summary with listRfis and a cause filter reads the rest.` } : {}),
       approvedLessonsWithNoItem: lessons.length,
-      lessons: lessons.slice(0, 450).map((l: any) => ({ id: l.lesson_id, kind: l.kind === "practice" ? "best practice" : l.project_id ? undefined : "firm-wide lesson", project: l.project_id || undefined, discipline: l.discipline || undefined, system: l.system || undefined, type: l.issue_type || undefined, agency: l.agency || undefined, summary: String(l.lesson_summary || "").replace(/\s+/g, " ").trim().slice(0, 420) })),
-      ...(lessons.length > 450 ? { lessonsNote: `Showing the first 450 of ${lessons.length}. The rest are read on a later run, once these are linked or proposed.` } : {}),
+      lessons: lessons.slice(0, 600).map((l: any) => ({ id: l.lesson_id, kind: l.kind === "practice" ? "best practice" : l.kind === "preference" ? "agency preference" : l.project_id ? undefined : "firm-wide lesson", project: l.project_id || undefined, discipline: l.discipline || undefined, system: l.system || undefined, type: l.issue_type || undefined, agency: l.agency || undefined, summary: String(l.lesson_summary || "").replace(/\s+/g, " ").trim().slice(0, 420) })),
+      ...(lessons.length > 600 ? { lessonsNote: `Showing the first 600 of ${lessons.length}. The rest are read on a later run, once these are linked or proposed.` } : {}),
       checklist: checklist.map((i: any) => ({ id: i.item_id, section: i.section, text: i.text })),
       earlierProposals: (earlier || []).map((p: any) => ({ text: p.text, status: p.status, becameItem: p.item_id || undefined, adminNote: p.decision_note || undefined, rfis: p.rfi_count, projects: p.project_count })),
-      rules: { minimumRfis: MIN_RFIS, minimumProjects: MIN_PROJECTS, minimumLessons: MIN_LESSONS, minimumLessonProjects: MIN_LESSON_PROJECTS, minimumBestPracticesOrFirmWideLessons: MIN_FIRM_WIDE, maximumProposalsPerRun: PROPOSALS_MAX },
+      rules: { minimumRfis: MIN_RFIS, minimumProjects: MIN_PROJECTS, minimumLessons: MIN_LESSONS, minimumLessonProjects: MIN_LESSON_PROJECTS, minimumBestPracticesOrFirmWideLessons: MIN_FIRM_WIDE, minimumAgencyPreferences: MIN_PREFERENCES, minimumAgencies: MIN_AGENCIES, maximumProposalsPerRun: PROPOSALS_MAX },
       method: [
         "1. Read every RFI's note. Many say '(subject only)': those were tagged from the title alone. Use read_rfi_submittal on any you plan to rely on, so a proposal rests on what was actually asked.",
         "2. Group the RFIs by what a reviewer could have checked before the set went out, not by trade or by project.",
@@ -13939,7 +13944,7 @@ mcp.tool("start_checklist_routine", {
         "5. Do not re-propose something an admin rejected (earlierProposals), unless new RFIs have changed the case, and then say so in the rationale.",
         "6. Write each item the way the checklist's items read: 'Verify ...', one sentence a reviewer can act on; details that say what to look at and what counts as a finding; `how` naming the connector tools that do it (search_drawings, read_drawing_schedule, view_drawing, read_document); the phases it applies to; a rationale with the counts; and the RFIs it rests on.",
         "7. A check nobody has time to do by hand is not a good item. Prefer one the review can do from the drawings; where it needs product or manufacturer knowledge, propose a lesson with save_knowledge instead.",
-        `8. LESSONS. Then read the lessons: each is an approved lesson from one project that no checklist item describes yet. Group the ones that say the same thing a reviewer could check on the drawings. A group earns an item with at least ${MIN_LESSONS} lessons from at least ${MIN_LESSON_PROJECTS} projects; pass their ids in the proposal's lessons. Entries marked 'best practice' or 'firm-wide lesson' are already firm-level statements a person approved, so ONE can carry a proposal, but only when it is a check a reviewer can do on the drawings and no existing item asks for it. Expect most best practices to be covered by an existing item already (step 9) or to be advice, not a check (step 10). A group of RFIs and a group of lessons about the same thing are ONE proposal carrying both.`,
+        `8. LESSONS. Then read the lessons: each is an approved lesson from one project that no checklist item describes yet. Group the ones that say the same thing a reviewer could check on the drawings. A group earns an item with at least ${MIN_LESSONS} lessons from at least ${MIN_LESSON_PROJECTS} projects; pass their ids in the proposal's lessons. Entries marked 'best practice' or 'firm-wide lesson' are already firm-level statements a person approved, so ONE can carry a proposal, but only when it is a check a reviewer can do on the drawings and no existing item asks for it. Expect most best practices to be covered by an existing item already (step 9) or to be advice, not a check (step 10). Entries marked 'agency preference' belong to ONE agency, and the checklist runs on every project with no agency scope: a preference earns an item only when at least ${MIN_PREFERENCES} preferences from at least ${MIN_AGENCIES} DIFFERENT agencies ask for the same thing, and then the item is written for every project, without naming an agency. Leave a preference only one agency has alone: a review on that agency's projects already reads it. A group of RFIs and a group of lessons about the same thing are ONE proposal carrying both.`,
         "9. Where an existing checklist item already describes a lesson, do not propose: list it in lessonsAlreadyCovered with that item's id, so later runs do not read it again. Only do this when the item really asks for the same check.",
         "10. Most lessons will NOT become items, and that is right: a lesson about process, schedule, fees, one agency's habit or one manufacturer's product stays a lesson, and every QA review already reads it. Leave those alone and do not list them anywhere. Summaries here are shortened; search_knowledge reads a lesson in full before you rely on it.",
         "11. Finish with propose_checklist_items, even when there is nothing to propose: pass no proposals and say why in summary. Then tell the user what you proposed, what you re-tagged or linked to existing items, and what you left out.",
@@ -13953,7 +13958,7 @@ mcp.tool("propose_checklist_items", {
     "FINISH the QA checklist review routine (after start_checklist_routine): store the proposed checklist items for " +
     "an admin to approve or reject in the Admin Console, and close the run with a summary. Nothing is added to the " +
     "checklist here. Each proposal is checked: its RFIs are matched against the preventable RFIs that still have no " +
-    `checklist item, and its lessons against the approved lessons and best practices no item describes. One that rests on fewer than ${MIN_RFIS} such RFIs on ${MIN_PROJECTS} projects, fewer than ${MIN_LESSONS} such lessons from ${MIN_LESSON_PROJECTS} projects, AND no best practice or firm-wide lesson is refused, as is ` +
+    `checklist item, and its lessons against the approved lessons and best practices no item describes. One that rests on fewer than ${MIN_RFIS} such RFIs on ${MIN_PROJECTS} projects, fewer than ${MIN_LESSONS} such lessons from ${MIN_LESSON_PROJECTS} projects, no best practice or firm-wide lesson, AND fewer than ${MIN_PREFERENCES} agency preferences from ${MIN_AGENCIES} agencies is refused, as is ` +
     "one whose text repeats an existing item or proposal, or that mostly reuses another proposal's RFIs. The " +
     "counts stored are computed from the tags, not taken from you. Refused proposals come back with the reason: " +
     "tell the user. With nothing to propose, call it with no proposals and a summary saying why, so the run is " +
@@ -13969,10 +13974,10 @@ mcp.tool("propose_checklist_items", {
       phases: z.array(z.enum(PROPOSAL_PHASES as [string, ...string[]])).optional().describe("Deliverable phases it applies to. Default CD, Permit, Bid, Addendum."),
       rationale: z.string().optional().describe("Why this earns a place: the counts, and why no existing item covers it."),
       rfis: z.array(z.object({ project: z.string(), number: z.string() })).max(80).optional().describe("The uncovered preventable RFIs it rests on, by project number and RFI number as start_checklist_routine listed them."),
-      lessons: z.array(z.string()).max(40).optional().describe("The approved lessons and best practices it rests on: their ids as start_checklist_routine listed them."),
+      lessons: z.array(z.string()).max(40).optional().describe("The approved lessons, best practices and agency preferences it rests on: their ids as start_checklist_routine listed them."),
     })).max(PROPOSALS_MAX).optional(),
     lessonsAlreadyCovered: z.array(z.object({
-      lessonId: z.string().describe("A lesson or best practice id from start_checklist_routine."),
+      lessonId: z.string().describe("A lesson, best practice or agency preference id from start_checklist_routine."),
       itemId: z.string().describe("The existing checklist item that already asks for the same check, e.g. qa-631."),
     })).max(200).optional().describe("Lessons and best practices an EXISTING checklist item already describes. Recorded so later runs skip them; the lesson or practice itself is not changed."),
   }),
@@ -13993,7 +13998,8 @@ mcp.tool("propose_checklist_items", {
       const inProposal = new Set<string>(plan.accepted.flatMap((a: any) => a.lessons.map((l: any) => l.id)));
       const candidateIds = new Set<string>(candidates.map((l: any) => String(l.lesson_id).toLowerCase()));
       const itemIds = new Map<string, string>(items.map((i: any) => [String(i.item_id).toLowerCase(), i.item_id]));
-      const practiceIds = new Set<string>(candidates.filter((l: any) => l.kind === "practice").map((l: any) => String(l.lesson_id).toLowerCase()));
+      const idsOf = (kind: string) => new Set<string>(candidates.filter((l: any) => l.kind === kind).map((l: any) => String(l.lesson_id).toLowerCase()));
+      const practiceIds = idsOf("practice"), prefIds = idsOf("preference");
       const links = new Map<string, string>();
       const linksRefused: any[] = [];
       for (const x of lessonsAlreadyCovered || []) {
@@ -14003,10 +14009,11 @@ mcp.tool("propose_checklist_items", {
         else if (inProposal.has(lid)) linksRefused.push({ lessonId: x.lessonId, why: "A proposal in this call rests on it." });
         else links.set(lid, item);
       }
-      const lessonLinks = [...links].filter(([id]) => !practiceIds.has(id)), practiceLinks = [...links].filter(([id]) => practiceIds.has(id));
+      const lessonLinks = [...links].filter(([id]) => !practiceIds.has(id) && !prefIds.has(id)), practiceLinks = [...links].filter(([id]) => practiceIds.has(id)), prefLinks = [...links].filter(([id]) => prefIds.has(id));
       const linked: any[] = [
         ...(lessonLinks.length ? await qaRoutineWrite("POST", "pms_qa_lesson_coverage?on_conflict=lesson_id", lessonLinks.map(([lesson_id, qa_item]) => ({ lesson_id, qa_item, set_by: c.email }))) : []),
         ...(practiceLinks.length ? await qaRoutineWrite("POST", "pms_qa_practice_coverage?on_conflict=practice_id", practiceLinks.map(([practice_id, qa_item]) => ({ practice_id, qa_item, set_by: c.email }))) : []),
+        ...(prefLinks.length ? await qaRoutineWrite("POST", "pms_qa_preference_coverage?on_conflict=pref_id", prefLinks.map(([pref_id, qa_item]) => ({ pref_id, qa_item, set_by: c.email }))) : []),
       ];
       const stored: any[] = plan.accepted.length
         ? await qaRoutineWrite("POST", "pms_qa_item_proposals", plan.accepted.map((a: any) => ({ ...a, run_id: runId, created_by: c.email })))

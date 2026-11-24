@@ -1862,6 +1862,12 @@ Anyone with the Admin Console can start it: QA Checklist tab, "Run with Claude".
   lessons with no project. Each is already a firm-level statement a person
   approved, so ONE can carry a proposal. Links go to
   `pms_qa_practice_coverage` (best practices) or `pms_qa_lesson_coverage`.
+- Agency preferences (`20261124250000_qa_routine_agency_preferences.sql`): the
+  routine also reads active agency preferences. The checklist has no agency
+  scope, so a preference earns an item only when at least 2 preferences from
+  at least 2 different agencies ask for the same thing; the item is then
+  written for every project. Links go to `pms_qa_preference_coverage`.
 - Migrations: `20261124220000_qa_checklist_routine.sql`,
   `20261124230000_qa_routine_lessons.sql`,
-  `20261124240000_qa_routine_best_practices.sql`.
+  `20261124240000_qa_routine_best_practices.sql`,
+  `20261124250000_qa_routine_agency_preferences.sql`.
