@@ -75,3 +75,19 @@ test("the shipped code and the migration still match these copies", () => {
   assert.equal(mig.split("position(lower(btrim(").length - 1, 2, "the sender filter is in both candidate steps");
   assert.ok(!mig.includes("\r"), "migrations are LF");
 });
+
+// The keyword candidates come through the GIN index and only the newest 2,000
+// are ranked (migration 20261124120000): a sequential scan decompressed every
+// email's word index and took 22 s for a common word.
+test("the keyword step finds matches through the index and caps what it ranks", () => {
+  const mig = readFileSync(new URL("../../migrations/20261124120000_emails_search_lexical_index_scan.sql", import.meta.url), "utf8");
+  const fn = mig.slice(mig.indexOf("create or replace function public.pms_emails_search_lexical("));
+  assert.ok(fn.includes("set enable_seqscan = off"), "the planner cannot fall back to the sequential scan");
+  assert.ok(/hits as materialized \([\s\S]*?search_tsv @@ tq\.tsq[\s\S]*?limit 2000\s*\)/.test(fn), "matches are capped before ranking");
+  const hits = fn.slice(fn.indexOf("hits as materialized"), fn.indexOf("limit 2000"));
+  assert.ok(!hits.includes("ts_rank"), "nothing is ranked until the cap has been applied");
+  assert.ok(hits.includes("p_sender") && hits.includes("p_direction") && hits.includes("proj is null or"), "project, sender and direction narrow the matches before the cap");
+  assert.ok(fn.includes("p_sender    text    default null,") && fn.includes("p_direction text    default null"), "the signature search_project_emails calls is unchanged");
+  assert.ok(!/drop function/i.test(mig), "replaced in place, so its grants stay");
+  assert.ok(!mig.includes("\r"), "migrations are LF");
+});
