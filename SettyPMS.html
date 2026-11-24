@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-24-pms-v212-ca-status-rules";
+    window.__appVersion = "2026-11-24-pms-v213-ca-list-sort-filter";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -764,6 +764,15 @@ const TEAMS_SCOPES = [
 ];
 const ONENOTE_SCOPES = GRAPH_SCOPES;
 
+// Name and sign-in email of the signed-in person (both lower-case, "" when
+// signed out). Used to match them to a project's team list.
+function getCurrentUserIdentity() {
+  try {
+    const account = _msalApp && (_msalApp.getActiveAccount() || _msalApp.getAllAccounts()[0]);
+    if (account) return { name: String(account.name || "").trim().toLowerCase(), email: String(account.username || "").trim().toLowerCase() };
+  } catch (e) {}
+  return { name: "", email: "" };
+}
 function getCurrentUser() {
   try {
     if (!_msalApp) return "Unknown";
@@ -2951,11 +2960,15 @@ function SectionTitle({ children, action }) {
   );
 }
 
-function KpiBox({ label, val, color, sub, onClick }) {
+function KpiBox({ label, val, color, sub, onClick, active, title }) {
+  // `active`: this box is the filter in force (RFI / submittal lists).
+  const rest = active ? (color || P.accent) : P.border;
   return (
-    <div onClick={onClick} style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: "14px 16px", cursor: onClick ? "pointer" : "default", transition: "border-color .15s" }}
+    <div onClick={onClick} title={title} role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined} aria-pressed={onClick ? !!active : undefined}
+      onKeyDown={onClick ? (e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(e); } }) : undefined}
+      style={{ background: P.bg, border: `1px solid ${rest}`, boxShadow: active ? `inset 0 0 0 1px ${rest}` : "none", borderRadius: 8, padding: "14px 16px", cursor: onClick ? "pointer" : "default", transition: "border-color .15s" }}
       onMouseEnter={e => { if (onClick) e.currentTarget.style.borderColor = color || P.accent; }}
-      onMouseLeave={e => { if (onClick) e.currentTarget.style.borderColor = P.border; }}>
+      onMouseLeave={e => { if (onClick) e.currentTarget.style.borderColor = rest; }}>
       <div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 20, fontWeight: 700, color: color || P.text, fontFamily: "JetBrains Mono" }}>{val}</div>
       {sub && <div style={{ fontSize: 11, color: P.textDim, marginTop: 3 }}>{sub}</div>}
@@ -13775,11 +13788,125 @@ function CloseoutItemModal({ item, project, onSave, onClose }) {
 
 // ─── RFIs VIEW ────────────────────────────────────────────────────────────────
 
+// ─── RFI / SUBMITTAL LIST CONTROLS ────────────────────────────────────────────
+// Shared by RFIsView and SubmittalsView: a quick filter (set by clicking a KPI
+// box or the Mine button), column sorting, and the status / discipline
+// filters, remembered per project for the browser session so leaving the tab
+// and coming back does not reset them. The search box is not remembered.
+function useCaListState(type, projectId) {
+  const key = "pms.caList." + type + "." + (projectId || "");
+  const blank = { quick: "all", status: "All", disc: "All", mine: false, sortKey: "", sortDir: "asc" };
+  const [st, setSt] = useState(() => {
+    try { return { ...blank, ...(JSON.parse(sessionStorage.getItem(key) || "null") || {}) }; } catch (e) { return blank; }
+  });
+  function patch(p) {
+    setSt(prev => {
+      const next = { ...prev, ...p };
+      try { sessionStorage.setItem(key, JSON.stringify(next)); } catch (e) { /* private mode: just not remembered */ }
+      return next;
+    });
+  }
+  return [st, patch, () => patch(blank)];
+}
+// Team-member ids of the signed-in person on this project (by name or email),
+// for the Mine filter. Empty when they are not on the team list.
+function caMyMemberIds(project) {
+  const me = getCurrentUserIdentity();
+  const name = me.name, mail = me.email;
+  if (!name && !mail) return [];
+  return (project.teamMembers || []).filter(m => m && m.id && (
+    (name && String(m.name || "").trim().toLowerCase() === name) || (mail && String(m.email || "").trim().toLowerCase() === mail)
+  )).map(m => m.id);
+}
+function caAssigneeNames(item, staffList) {
+  return (item.assignedTo || []).map(id => { const m = staffList.find(x => x.id === id); return m ? (m.name || m.role) : null; }).filter(Boolean);
+}
+// `ctx`: { isRFI, staffList, myIds, dupMap }.
+function caListFilter(items, st, search, ctx) {
+  const openSet = ctx.isRFI ? RFI_OPEN_STATUSES : SUB_OPEN_STATUSES;
+  const q = String(search || "").trim().toLowerCase();
+  return items.filter(r => {
+    if (st.status !== "All" && r.status !== st.status) return false;
+    if (st.disc !== "All" && r.discipline !== st.disc) return false;
+    if (st.mine && !(r.assignedTo || []).some(id => ctx.myIds.includes(id))) return false;
+    switch (st.quick) {
+      case "open":       if (!openSet.includes(r.status)) return false; break;
+      case "overdue":    if (!isOverdue(r)) return false; break;
+      case "pendingSub": if (r.status !== (ctx.isRFI ? "Pending Sub Response" : "Pending Sub Review")) return false; break;
+      case "closed":     if (r.status !== "Closed") return false; break;
+      case "returned":   if (r.status !== "Returned") return false; break;
+      case "resub":      if (r.status !== "Resubmittal Required") return false; break;
+      case "unreviewed": if (!isUnreviewedIntake(r)) return false; break;
+      case "dups":       if (!(ctx.dupMap && ctx.dupMap[r.id])) return false; break;
+      default: break;
+    }
+    if (q) {
+      const hay = [r.number, r.title, r.description, r.specSection, r.from, r.discipline, r.status, r.stamp,
+        r.response, r.comments, r.notes, caAssigneeNames(r, ctx.staffList).join(" ")].join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+function caListSort(rows, st, ctx) {
+  if (!st.sortKey) return rows; // log order, as entered
+  const val = r => {
+    switch (st.sortKey) {
+      case "assigned": return caAssigneeNames(r, ctx.staffList).join(", ");
+      case "stamp":    return r.stamp && r.stamp !== "—" ? r.stamp : "";
+      case "title":    return ctx.isRFI ? r.title : r.description;
+      default:         return r[st.sortKey];
+    }
+  };
+  const dir = st.sortDir === "desc" ? -1 : 1;
+  return rows.map((r, i) => ({ r, i, v: String(val(r) == null ? "" : val(r)).trim() })).sort((a, b) => {
+    if (!a.v !== !b.v) return a.v ? -1 : 1; // blanks last, whichever way the column is sorted
+    return dir * a.v.localeCompare(b.v, undefined, { numeric: true, sensitivity: "base" }) || a.i - b.i;
+  }).map(x => x.r);
+}
+// A sortable column heading: click sorts A→Z, again Z→A, a third time back to log order.
+function CaSortTh({ label, k, st, patch, style }) {
+  const on = st.sortKey === k;
+  function click() {
+    if (!on) patch({ sortKey: k, sortDir: "asc" });
+    else if (st.sortDir === "asc") patch({ sortDir: "desc" });
+    else patch({ sortKey: "", sortDir: "asc" });
+  }
+  return (
+    <th scope="col" style={style} aria-sort={on ? (st.sortDir === "desc" ? "descending" : "ascending") : "none"}>
+      <button type="button" onClick={click} title={"Sort by " + label}
+        style={{ background: "none", border: "none", padding: 0, margin: 0, font: "inherit", color: on ? P.accentLight : "inherit", textTransform: "inherit", letterSpacing: "inherit", cursor: "pointer", whiteSpace: "nowrap" }}>
+        {label}<span aria-hidden="true" style={{ marginLeft: 4, opacity: on ? 1 : 0.35 }}>{on ? (st.sortDir === "desc" ? "▼" : "▲") : "↕"}</span>
+      </button>
+    </th>
+  );
+}
+// Mine button + "Showing N of M · Clear filters".
+function CaListFilterBar({ st, patch, reset, search, setSearch, shown, total, myIds, noun }) {
+  const filtered = st.quick !== "all" || st.status !== "All" || st.disc !== "All" || st.mine || !!search;
+  return (
+    <React.Fragment>
+      <button type="button" aria-pressed={st.mine} disabled={!myIds.length} onClick={() => patch({ mine: !st.mine })}
+        title={myIds.length ? "Only " + noun + " assigned to you" : "You are not on this project's team list, so nothing here can be assigned to you"}
+        style={{ fontSize: 12, fontWeight: 600, padding: "5px 10px", borderRadius: 6, cursor: myIds.length ? "pointer" : "not-allowed", opacity: myIds.length ? 1 : 0.5,
+          border: "1px solid " + (st.mine ? P.accent : P.border), background: st.mine ? P.accentDim : "transparent", color: st.mine ? P.accentLight : P.textMuted }}>
+        Mine
+      </button>
+      <span role="status" style={{ fontSize: 12, color: P.textDim }}>
+        {filtered ? "Showing " + shown + " of " + total : total + " " + noun}
+        {filtered && <button type="button" onClick={() => { reset(); setSearch(""); }}
+          style={{ marginLeft: 8, background: "none", border: "none", padding: 0, font: "inherit", color: P.accentLight, cursor: "pointer", textDecoration: "underline" }}>Clear filters</button>}
+      </span>
+    </React.Fragment>
+  );
+}
+// Row click opens the item, except on the row's own buttons and links.
+function caRowClick(e, open) { if (!(e.target.closest && e.target.closest("button, a, input, select, label"))) open(); }
+
 function RFIsView({ project, onChange, staff, clients }) {
   const rfis = project.rfis || [];
   const [editing, setEditing] = useState(null);
-  const [filterStatus, setFilterStatus] = useState("All");
-  const [filterDisc, setFilterDisc] = useState("All");
+  const [ls, patchLs, resetLs] = useCaListState("rfi", project.id);
   const [search, setSearch] = useState("");
   // Waiting-for-Claude watcher: while any item here was sent for review and
   // nothing has come back, poll once a minute and say so when a review lands.
@@ -13838,13 +13965,6 @@ function RFIsView({ project, onChange, staff, clients }) {
     onChange({ ...project, rfis: rfis.filter(r => r.id !== id) });
   }
 
-  const filtered = rfis.filter(r => {
-    if (filterStatus !== "All" && r.status !== filterStatus) return false;
-    if (filterDisc !== "All" && r.discipline !== filterDisc) return false;
-    if (search && !((r.number + " " + r.title + " " + r.description + " " + r.from).toLowerCase().includes(search.toLowerCase()))) return false;
-    return true;
-  });
-
   const openCount     = rfis.filter(r => RFI_OPEN_STATUSES.includes(r.status)).length;
   const overdueCount  = rfis.filter(r => isOverdue(r)).length;
   const pendingSubCnt = rfis.filter(r => r.status === "Pending Sub Response").length;
@@ -13852,18 +13972,22 @@ function RFIsView({ project, onChange, staff, clients }) {
   const dupCnt        = Object.keys(dupMap).length;
   const subLateCnt    = caSubLateCount(project, rfis);
   const staffList     = project.teamMembers || [];
+  const listCtx       = { isRFI: true, staffList, myIds: caMyMemberIds(project), dupMap };
+  const filtered      = caListSort(caListFilter(rfis, ls, search, listCtx), ls, listCtx);
+  // KPI boxes are filters: click one to show only those rows, click it again (or Total) for everything.
+  const quick = q => patchLs({ quick: ls.quick === q ? "all" : q });
 
   return (
     <div>
       {/* Dashboard KPIs */}
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        <KpiBox label="Total RFIs" val={String(rfis.length)} color={P.accentLight} />
-        <KpiBox label="Open" val={String(openCount)} color={P.accentLight} />
-        <KpiBox label="Overdue" val={String(overdueCount)} color={overdueCount > 0 ? P.red : P.green} />
-        <KpiBox label="Pending Sub" val={String(pendingSubCnt)} color={pendingSubCnt > 0 ? P.yellow : P.textDim} />
-        <KpiBox label="Closed" val={String(rfis.filter(r => r.status === "Closed").length)} color={P.green} />
-        {rfis.some(isUnreviewedIntake) && <KpiBox label="Unreviewed" val={String(rfis.filter(isUnreviewedIntake).length)} color={P.yellow} />}
-        {dupCnt > 0 && <KpiBox label="Possible duplicates" val={String(dupCnt)} color={P.red} />}
+        <KpiBox label="Total RFIs" val={String(rfis.length)} color={P.accentLight} onClick={() => patchLs({ quick: "all" })} title="Show all" />
+        <KpiBox label="Open" val={String(openCount)} color={P.accentLight} active={ls.quick === "open"} onClick={() => quick("open")} title="Show only these" />
+        <KpiBox label="Overdue" val={String(overdueCount)} color={overdueCount > 0 ? P.red : P.green} active={ls.quick === "overdue"} onClick={() => quick("overdue")} title="Show only these" />
+        <KpiBox label="Pending Sub" val={String(pendingSubCnt)} color={pendingSubCnt > 0 ? P.yellow : P.textDim} active={ls.quick === "pendingSub"} onClick={() => quick("pendingSub")} title="Show only these" />
+        <KpiBox label="Closed" val={String(rfis.filter(r => r.status === "Closed").length)} color={P.green} active={ls.quick === "closed"} onClick={() => quick("closed")} title="Show only these" />
+        {rfis.some(isUnreviewedIntake) && <KpiBox label="Unreviewed" val={String(rfis.filter(isUnreviewedIntake).length)} color={P.yellow} active={ls.quick === "unreviewed"} onClick={() => quick("unreviewed")} title="Show only these" />}
+        {dupCnt > 0 && <KpiBox label="Possible duplicates" val={String(dupCnt)} color={P.red} active={ls.quick === "dups"} onClick={() => quick("dups")} title="Show only these" />}
         {subLateCnt > 0 && <KpiBox label="Sub late" val={String(subLateCnt)} color={P.red} />}
       </div>
 
@@ -13872,14 +13996,15 @@ function RFIsView({ project, onChange, staff, clients }) {
       {/* Controls */}
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search RFIs…" aria-label="Search RFIs" style={{ width: 200, fontSize: 13 }} />
-        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} aria-label="Filter by status" style={{ fontSize: 13 }}>
+        <select value={ls.status} onChange={e => patchLs({ status: e.target.value })} aria-label="Filter by status" style={{ fontSize: 13 }}>
           <option value="All">All Statuses</option>
           {RFI_STATUSES.map(s => <option key={s}>{s}</option>)}
         </select>
-        <select value={filterDisc} onChange={e => setFilterDisc(e.target.value)} aria-label="Filter by discipline" style={{ fontSize: 13 }}>
+        <select value={ls.disc} onChange={e => patchLs({ disc: e.target.value })} aria-label="Filter by discipline" style={{ fontSize: 13 }}>
           <option value="All">All Disciplines</option>
           {RFI_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
         </select>
+        <CaListFilterBar st={ls} patch={patchLs} reset={resetLs} search={search} setSearch={setSearch} shown={filtered.length} total={rfis.length} myIds={listCtx.myIds} noun="RFIs" />
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
           <a href={caBackloadSeatUrl(project, "rfi")} target="_blank" rel="noreferrer"
             title="For items still in Newforma: opens your Claude seat to find the filed RFI PDF/notification email, log it here (backfill), then review it against the current set and specs."
@@ -13902,14 +14027,14 @@ function RFIsView({ project, onChange, staff, clients }) {
         <table>
           <thead>
             <tr>
-              <th scope="col" style={{ width: 80 }}>#</th>
-              <th scope="col">Title</th>
-              <th scope="col">Discipline</th>
-              <th scope="col">From</th>
-              <th scope="col">Assigned</th>
-              <th scope="col">Received</th>
-              <th scope="col">Due</th>
-              <th scope="col">Status</th>
+              <CaSortTh label="#" k="number" st={ls} patch={patchLs} style={{ width: 80 }} />
+              <CaSortTh label="Title" k="title" st={ls} patch={patchLs} />
+              <CaSortTh label="Discipline" k="discipline" st={ls} patch={patchLs} />
+              <CaSortTh label="From" k="from" st={ls} patch={patchLs} />
+              <CaSortTh label="Assigned" k="assigned" st={ls} patch={patchLs} />
+              <CaSortTh label="Received" k="dateReceived" st={ls} patch={patchLs} />
+              <CaSortTh label="Due" k="dueDate" st={ls} patch={patchLs} />
+              <CaSortTh label="Status" k="status" st={ls} patch={patchLs} />
               <th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
             </tr>
           </thead>
@@ -13917,12 +14042,9 @@ function RFIsView({ project, onChange, staff, clients }) {
             {filtered.map(r => {
               const overdue = isOverdue(r);
               const sc = RFI_STATUS_COLORS[r.status] || {};
-              const assigneeNames = (r.assignedTo || []).map(id => {
-                const s = staffList.find(x => x.id === id);
-                return s ? (s.name || s.role) : null;
-              }).filter(Boolean);
+              const assigneeNames = caAssigneeNames(r, staffList);
               return (
-                <tr key={r.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
+                <tr key={r.id} onClick={e => caRowClick(e, () => openItem(r))} title="Click to open" style={{ cursor: "pointer", background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
                   <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}<DuplicateBadge twins={dupMap[r.id]} /><IntakeBadge item={r} /><IntakeStatusBadge item={r} /><AiReviewMark item={withFresh(r)} /><AnswerReadyBadge item={r} isRFI={true} /></td>
                   <td>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{r.title || <span style={{ color: P.textDim }}>No title</span>}</div>
@@ -13973,8 +14095,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
   const subs = project.submittals || [];
   const register = project.submittalRegister || [];
   const [editing, setEditing] = useState(null);
-  const [filterStatus, setFilterStatus] = useState("All");
-  const [filterDisc, setFilterDisc] = useState("All");
+  const [ls, patchLs, resetLs] = useCaListState("submittal", project.id);
   const [search, setSearch] = useState("");
   // Waiting-for-Claude watcher: while any item here was sent for review and
   // nothing has come back, poll once a minute and say so when a review lands.
@@ -14048,30 +14169,26 @@ function SubmittalsView({ project, onChange, staff, clients }) {
     setEditing(s);
   }
 
-  const filtered = subs.filter(s => {
-    if (filterStatus !== "All" && s.status !== filterStatus) return false;
-    if (filterDisc !== "All" && s.discipline !== filterDisc) return false;
-    if (search && !((s.number + " " + s.description + " " + s.specSection + " " + s.from).toLowerCase().includes(search.toLowerCase()))) return false;
-    return true;
-  });
-
   const openCount    = subs.filter(s => SUB_OPEN_STATUSES.includes(s.status)).length;
   const overdueCount = subs.filter(s => isOverdue(s)).length;
   const pendingSubCnt= subs.filter(s => s.status === "Pending Sub Review").length;
   const subLateCnt   = caSubLateCount(project, subs);
   const staffList    = project.teamMembers || [];
+  const listCtx      = { isRFI: false, staffList, myIds: caMyMemberIds(project) };
+  const filtered     = caListSort(caListFilter(subs, ls, search, listCtx), ls, listCtx);
+  const quick = q => patchLs({ quick: ls.quick === q ? "all" : q });
 
   return (
     <div>
       {/* Dashboard KPIs */}
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        <KpiBox label="Total Submittals" val={String(subs.length)} color={P.accentLight} />
-        <KpiBox label="Open" val={String(openCount)} color={P.accentLight} />
-        <KpiBox label="Overdue" val={String(overdueCount)} color={overdueCount > 0 ? P.red : P.green} />
-        <KpiBox label="Pending Sub" val={String(pendingSubCnt)} color={pendingSubCnt > 0 ? P.yellow : P.textDim} />
-        <KpiBox label="Returned" val={String(subs.filter(s => s.status === "Returned").length)} color={P.green} />
-        <KpiBox label="Resubmittal Req." val={String(subs.filter(s => s.status === "Resubmittal Required").length)} color={P.red} />
-        {subs.some(isUnreviewedIntake) && <KpiBox label="Unreviewed" val={String(subs.filter(isUnreviewedIntake).length)} color={P.yellow} />}
+        <KpiBox label="Total Submittals" val={String(subs.length)} color={P.accentLight} onClick={() => patchLs({ quick: "all" })} title="Show all" />
+        <KpiBox label="Open" val={String(openCount)} color={P.accentLight} active={ls.quick === "open"} onClick={() => quick("open")} title="Show only these" />
+        <KpiBox label="Overdue" val={String(overdueCount)} color={overdueCount > 0 ? P.red : P.green} active={ls.quick === "overdue"} onClick={() => quick("overdue")} title="Show only these" />
+        <KpiBox label="Pending Sub" val={String(pendingSubCnt)} color={pendingSubCnt > 0 ? P.yellow : P.textDim} active={ls.quick === "pendingSub"} onClick={() => quick("pendingSub")} title="Show only these" />
+        <KpiBox label="Returned" val={String(subs.filter(s => s.status === "Returned").length)} color={P.green} active={ls.quick === "returned"} onClick={() => quick("returned")} title="Show only these" />
+        <KpiBox label="Resubmittal Req." val={String(subs.filter(s => s.status === "Resubmittal Required").length)} color={P.red} active={ls.quick === "resub"} onClick={() => quick("resub")} title="Show only these" />
+        {subs.some(isUnreviewedIntake) && <KpiBox label="Unreviewed" val={String(subs.filter(isUnreviewedIntake).length)} color={P.yellow} active={ls.quick === "unreviewed"} onClick={() => quick("unreviewed")} title="Show only these" />}
         {subLateCnt > 0 && <KpiBox label="Sub late" val={String(subLateCnt)} color={P.red} />}
       </div>
 
@@ -14080,14 +14197,15 @@ function SubmittalsView({ project, onChange, staff, clients }) {
       {/* Controls */}
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search submittals…" aria-label="Search submittals" style={{ width: 200, fontSize: 13 }} />
-        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} aria-label="Filter by status" style={{ fontSize: 13 }}>
+        <select value={ls.status} onChange={e => patchLs({ status: e.target.value })} aria-label="Filter by status" style={{ fontSize: 13 }}>
           <option value="All">All Statuses</option>
           {SUBMITTAL_STATUSES.map(s => <option key={s}>{s}</option>)}
         </select>
-        <select value={filterDisc} onChange={e => setFilterDisc(e.target.value)} aria-label="Filter by discipline" style={{ fontSize: 13 }}>
+        <select value={ls.disc} onChange={e => patchLs({ disc: e.target.value })} aria-label="Filter by discipline" style={{ fontSize: 13 }}>
           <option value="All">All Disciplines</option>
           {SUBMITTAL_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
         </select>
+        <CaListFilterBar st={ls} patch={patchLs} reset={resetLs} search={search} setSearch={setSearch} shown={filtered.length} total={subs.length} myIds={listCtx.myIds} noun="submittals" />
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
           <a href={caBackloadSeatUrl(project, "submittal")} target="_blank" rel="noreferrer"
             title="For items still in Newforma: opens your Claude seat to find the filed submittal PDF/notification email, log it here (backfill), then review it against the current set and specs."
@@ -14156,15 +14274,15 @@ function SubmittalsView({ project, onChange, staff, clients }) {
         <table>
           <thead>
             <tr>
-              <th scope="col" style={{ width: 80 }}>#</th>
-              <th scope="col">Description</th>
-              <th scope="col">Spec</th>
-              <th scope="col">Disc.</th>
-              <th scope="col">Assigned</th>
-              <th scope="col">Received</th>
-              <th scope="col">Due</th>
-              <th scope="col">Stamp</th>
-              <th scope="col">Status</th>
+              <CaSortTh label="#" k="number" st={ls} patch={patchLs} style={{ width: 80 }} />
+              <CaSortTh label="Description" k="title" st={ls} patch={patchLs} />
+              <CaSortTh label="Spec" k="specSection" st={ls} patch={patchLs} />
+              <CaSortTh label="Disc." k="discipline" st={ls} patch={patchLs} />
+              <CaSortTh label="Assigned" k="assigned" st={ls} patch={patchLs} />
+              <CaSortTh label="Received" k="dateReceived" st={ls} patch={patchLs} />
+              <CaSortTh label="Due" k="dueDate" st={ls} patch={patchLs} />
+              <CaSortTh label="Stamp" k="stamp" st={ls} patch={patchLs} />
+              <CaSortTh label="Status" k="status" st={ls} patch={patchLs} />
               <th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
             </tr>
           </thead>
@@ -14173,12 +14291,9 @@ function SubmittalsView({ project, onChange, staff, clients }) {
               const overdue = isOverdue(s);
               const sc = SUBMITTAL_STATUS_COLORS[s.status] || {};
               const stc = STAMP_COLORS[s.stamp || "—"] || {};
-              const assigneeNames = (s.assignedTo || []).map(id => {
-                const st = staffList.find(x => x.id === id);
-                return st ? (st.name || st.role) : null;
-              }).filter(Boolean);
+              const assigneeNames = caAssigneeNames(s, staffList);
               return (
-                <tr key={s.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
+                <tr key={s.id} onClick={e => caRowClick(e, () => openItem(s))} title="Click to open" style={{ cursor: "pointer", background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
                   <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{s.number}<IntakeBadge item={s} /><IntakeStatusBadge item={s} /><AiReviewMark item={withFresh(s)} /><AnswerReadyBadge item={s} isRFI={false} /></td>
                   <td>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{s.description || <span style={{ color: P.textDim }}>No description</span>}</div>
@@ -14187,7 +14302,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
                   <td style={{ fontFamily: "JetBrains Mono", fontSize: 12 }}>{s.specSection || "—"}</td>
                   <td style={{ fontSize: 12 }}>{s.discipline}</td>
                   <td style={{ fontSize: 12 }}>
-                    {assigneeNames.length > 0 ? assigneeNames.join(", ") : <span style={{ color: P.textDim }}>—</span>}
+                    {assigneeNames.length > 0 ? assigneeNames.join(", ") : <span style={{ color: P.textDim }}>Unassigned</span>}
                   </td>
                   <td style={{ fontSize: 12, color: P.textMuted, whiteSpace: "nowrap" }}>{s.dateReceived || "—"}</td>
                   <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>
