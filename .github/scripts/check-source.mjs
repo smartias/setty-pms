@@ -8,11 +8,17 @@
 //   3. Every <script> loaded from a public CDN names an exact version and
 //      carries an integrity hash, so the browser refuses a library file that
 //      is not byte-for-byte the one that was tested.
+//   4. No two files in supabase/migrations/ share a 14-digit version, and (on
+//      a pull request) every migration the PR adds sorts after the newest one
+//      on main. Supabase applies one file per version and skips the rest
+//      without an error. Rules and messages: migration-versions.mjs.
 //
 // Needs @babel/parser (the workflow installs it; there is no package.json):
 //   npm install --no-save @babel/parser@7 && node .github/scripts/check-source.mjs
 import { readFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { parse } from "@babel/parser";
+import { MIGRATIONS_DIR, malformedNameProblems, duplicateVersionProblems, staleVersionProblems } from "./migration-versions.mjs";
 
 const JSX_PAGES = ["SettyPMS.html", "ContractExtractor.html"];
 const CRLF_FILES = ["SettyPMS.html", "SettyFieldPhotos.html", "SiteReport.html", "transmittal.html"];
@@ -73,6 +79,32 @@ for (const file of readdirSync(".").filter((f) => f.endsWith(".html"))) {
   }
 }
 console.log(`ok  ${cdnTags} CDN <script> tags checked for version + integrity`);
+
+// ── 4. Migration versions are unique and newer than main's ───────────────────
+const migrations = readdirSync(MIGRATIONS_DIR);
+const versionProblems = [...malformedNameProblems(migrations), ...duplicateVersionProblems(migrations)];
+problems.push(...versionProblems);
+if (!versionProblems.length) console.log(`ok  ${migrations.length} migrations: every version is unique`);
+
+// The workflow sets MIGRATIONS_BASE_REF=origin/main on pull requests (after
+// fetching it). Locally: MIGRATIONS_BASE_REF=origin/main node .github/scripts/check-source.mjs
+const baseRef = process.env.MIGRATIONS_BASE_REF;
+if (!baseRef) {
+  console.log("--  migrations not compared with main (MIGRATIONS_BASE_REF is not set)");
+} else {
+  let baseFiles = null;
+  try {
+    baseFiles = execFileSync("git", ["ls-tree", "--name-only", baseRef, MIGRATIONS_DIR + "/"], { encoding: "utf8" })
+      .split("\n").filter(Boolean).map((p) => p.slice(p.lastIndexOf("/") + 1));
+  } catch (e) {
+    problems.push(`${MIGRATIONS_DIR}: could not list the migrations on ${baseRef} (${String(e.message).trim().split("\n").pop()}). Was it fetched?`);
+  }
+  if (baseFiles) {
+    const stale = staleVersionProblems(migrations, baseFiles);
+    problems.push(...stale);
+    if (!stale.length) console.log(`ok  every migration added here sorts after the newest on ${baseRef}`);
+  }
+}
 
 if (problems.length) {
   console.error("\n" + problems.map((p) => "FAIL  " + p).join("\n"));
