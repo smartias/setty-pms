@@ -103,6 +103,9 @@ import {
   addDays, nextFollowupAfter, toneForReminder, daysOutstanding, isDue,
 } from "./followups.ts";
 import { findCaItemLoose, caMissMessage } from "./caLookup.ts";
+import {
+  SEARCH_STOPWORDS, searchTerms, projectSearchExtras, searchProjectPool, matchDriveCandidates,
+} from "./projectSearch.ts";
 // file_meeting_minutes: validation, owner resolution and the note text. Pure; see its tests.
 import {
   MEETING_ITEM_TYPES, MEETING_KINDS, MEETING_NOTE_CATEGORY, isIsoDate, cleanMinutesItems,
@@ -350,6 +353,11 @@ async function getProjects(): Promise<any[]> {
   return all.filter((p) => projectVisible(caps, p?.projectNumber));
 }
 
+// Search text only (projectSearch.ts): non-enumerable, so a tool that returns
+// or spreads one of these records can never carry directory names out with it.
+function withSearchExtras<T extends object>(p: T, row: any): T {
+  return Object.defineProperty(p, "searchExtras", { value: projectSearchExtras(row), enumerable: false });
+}
 let _projCache: { at: number; data: any[] } | null = null;
 async function getProjectsUnfiltered(): Promise<any[]> {
   const now = Date.now();
@@ -371,6 +379,12 @@ async function getProjectsUnfiltered(): Promise<any[]> {
     "projectCity:project->>projectCity,projectState:project->>projectState," +
     "buildingCategory:project->>buildingCategory,contractNumber:project->>contractNumber," +
     "primeProjectNumber:project->>primeProjectNumber," +
+    // Secondary search fields (projectSearch.ts): folded into `searchExtras`
+    // text below and not kept. The directory is ~1 MB across the portfolio,
+    // against ~9 MB for the rest of this projection.
+    "projectAddress:project->>projectAddress,projectManager:project->>projectManager," +
+    "deputyProjectManager:project->>deputyProjectManager,drivePath:project->createdFrom->>drivePath," +
+    "directory:project->directory,teamMembers:project->teamMembers," +
     // Term-contract linkage. Without this every task order looks unparented and
     // list_term_contracts reports 0 work under every master agreement.
     "isTaskOrder:project->isTaskOrder,taskOrderTermContractId:project->>taskOrderTermContractId," +
@@ -387,7 +401,7 @@ async function getProjectsUnfiltered(): Promise<any[]> {
     "milestones:project->milestones,rfis:project->rfis,submittals:project->submittals,notes:project->notes," +
     "changeOrders:project->changeOrders";
   const rows = await sbGetAll("pms_projects?select=" + SLIM + "&order=id.asc");
-  const data = rows.map((r: any) => ({
+  const data = rows.map((r: any) => withSearchExtras({
     id: r.pid, name: r.name, projectNumber: r.projectNumber, status: r.status,
     owner: r.owner, archived: r.archived === true,
     prime: r.prime, clientName: r.clientName, projectType: r.projectType,
@@ -399,7 +413,7 @@ async function getProjectsUnfiltered(): Promise<any[]> {
     team: r.team ?? null,
     milestones: r.milestones ?? [], rfis: r.rfis ?? [], submittals: r.submittals ?? [], notes: r.notes ?? [],
     changeOrders: r.changeOrders ?? [],
-  })).filter((p: any) => p.id || p.projectNumber || p.name);
+  }, r)).filter((p: any) => p.id || p.projectNumber || p.name);
   _projCache = { at: now, data };
   return data;
 }
@@ -1464,7 +1478,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-24-ca-number-lookup-email-filters-telemetry";
+const BUILD = "2026-11-24-project-search-wider-fields-close-matches";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.27.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1779,52 +1793,17 @@ const _rawTool = mcp.tool.bind(mcp);
 // match every meaningful term to be returned, so precision holds, but the terms
 // may land in DIFFERENT fields, which is what makes a description work.
 
-// Words that carry no signal in a project description. Without this, "with" and
-// "for" are terms that nothing matches, and a require-all-terms rule then
-// returns nothing for every naturally phrased query.
-const SEARCH_STOPWORDS = new Set([
-  "a", "an", "the", "with", "for", "of", "on", "at", "in", "and", "to", "by",
-  "project", "job", "study", "our",
-]);
+// The matching rules live in projectSearch.ts (tested by projectSearch.test.mjs).
 
-// Agencies are written in full on the record but spoken as acronyms. Mapping is
-// one-way on purpose: typing "SCA" should find "School Construction Authority",
-// and the full name still matches itself by ordinary term overlap.
-const AGENCY_ALIASES: Record<string, string> = {
-  sca: "school construction authority",
-  ddc: "department of design and construction",
-  dasny: "dormitory authority",
-  cuny: "city university",
-  suny: "state university",
-  sucf: "state university construction fund",
-  ogs: "office of general services",
-  edc: "economic development corporation",
-  dep: "department of environmental protection",
-  dot: "department of transportation",
-  nycha: "housing authority",
-  hpd: "housing preservation development",
-};
-
-function projectHaystack(p: any): string {
-  return [
-    p.name, p.projectNumber, p.status, p.owner, p.prime, p.clientName,
-    p.projectType, p.projectCity, p.projectState, p.buildingCategory,
-    p.contractNumber, p.primeProjectNumber,
-  ].filter(Boolean).join(" ").toLowerCase();
-}
-
-function scoreProjectMatch(p: any, terms: string[]): number {
-  if (!terms.length) return 1;
-  const hay = projectHaystack(p);
-  let hits = 0;
-  for (const t of terms) {
-    const alias = AGENCY_ALIASES[t];
-    if (hay.includes(t) || (alias && hay.includes(alias))) hits++;
-  }
-  // Every meaningful term must land somewhere. Partial matching would make
-  // "SCA Morphosis" return every SCA job, which is worse than nothing when the
-  // caller is about to act on the answer.
-  return hits === terms.length ? hits : 0;
+// Drive folders with no PMS record yet (pms_project_candidates, status 'new'),
+// for telling "not set up in the PMS" apart from "does not exist".
+let _driveCandCache: { at: number; data: any[] } | null = null;
+async function getDriveCandidates(): Promise<any[]> {
+  const now = Date.now();
+  if (_driveCandCache && (now - _driveCandCache.at) < 300000) return _driveCandCache.data;
+  const data = await sbGetAll("pms_project_candidates?select=project_number,name_from_folder,folder_name,team,year&status=eq.new&order=project_number.asc");
+  _driveCandCache = { at: now, data };
+  return data;
 }
 
 mcp.tool("search_projects", {
@@ -1833,7 +1812,11 @@ mcp.tool("search_projects", {
     "agency (DASNY, SCA, CUNY, NYC DDC, SUNY...), the PRIME or client firm, project type, or " +
     "city. Terms may span several of those, so a plain description works: 'feasibility study " +
     "with SCA for Morphosis' finds the right job even though none of those words is its name. " +
-    "Agency acronyms are understood. Returns compact summaries including ownerAgency and prime. " +
+    "Agency acronyms are understood. Also matches the site address, project manager, team, and the " +
+    "companies and people in the project's directory; `matchedOn` says when a term matched there. " +
+    "When no project carries every term, `closeMatches` lists the nearest ones (confirm with the user " +
+    "before using one) and `notSetUpInPms` lists office-drive folders that have no PMS record yet. " +
+    "Returns compact summaries including ownerAgency and prime. " +
     "Leave query empty to list everything. Excludes archived (closed-out) projects by default; " +
     "pass includeArchived: true to search the archive too.",
   inputSchema: z.object({
@@ -1844,16 +1827,17 @@ mcp.tool("search_projects", {
     const projects = await getProjects();
     const pool = includeArchived ? projects : projects.filter((p) => !p.archived);
     const raw = (query ?? "").toLowerCase().trim();
-    const terms = raw
-      ? raw.split(/[^a-z0-9.#&-]+/).filter((t) => t && t.length > 1 && !SEARCH_STOPWORDS.has(t))
-      : [];
-
-    const matched = terms.length
-      ? pool.map((p) => ({ p, s: scoreProjectMatch(p, terms) }))
-          .filter((r) => r.s > 0)
-          .sort((a, b) => b.s - a.s || String(a.p.name).localeCompare(String(b.p.name)))
-          .map((r) => r.p)
-      : pool;
+    const terms = searchTerms(raw);
+    const found = searchProjectPool(pool, terms);
+    const matched = found.full.map((r) => r.project);
+    // Where a term matched outside the name/number/agency fields, keyed by
+    // project, so the answer can say "Gilbane is in this project's directory".
+    const matchedOnOf = new Map<any, Record<string, string>>(
+      found.full.filter((r) => Object.keys(r.match.matchedOn).length).map((r) => [r.project, r.match.matchedOn]));
+    const summarize = (p: any) => {
+      const on = matchedOnOf.get(p);
+      return on ? { ...summarizeProject(p), matchedOn: on } : summarizeProject(p);
+    };
 
     if (raw && !matched.length) {
       // Every project-number miss in the last week was a job that had not
@@ -1886,9 +1870,35 @@ mcp.tool("search_projects", {
         });
       }
       const looksLikeNumber = !!numTok;
+      // Projects that carry at least half the terms, and office-drive folders
+      // with no PMS record. Neither is an answer: `count` stays 0 and both
+      // ride beside the empty list with what to do about them.
+      const closeMatches = found.close.map((r) => ({
+        ...summarizeProject(r.project), matchedTerms: r.match.matched, missingTerms: r.match.missing,
+        ...(Object.keys(r.match.matchedOn).length ? { matchedOn: r.match.matchedOn } : {}),
+      }));
+      let notSetUp: any[] = [];
+      try {
+        // Folder names are shown only to callers who may see projects at all.
+        if (capFor(await resolveCaps(), "projects.view")) notSetUp = matchDriveCandidates(await getDriveCandidates(), terms, numTok);
+      } catch (e) {
+        console.warn("[search_projects] drive candidates lookup failed:", String((e as any)?.message ?? e));
+      }
+      const extras = {
+        ...(closeMatches.length ? {
+          closeMatches,
+          ...(found.closeTotal > closeMatches.length ? { closeMatchesNotListed: found.closeTotal - closeMatches.length } : {}),
+          closeMatchesNote: "These match SOME of the terms, not all (see missingTerms). They are not the answer: show them and ask the user which, if any, they mean.",
+        } : {}),
+        ...(notSetUp.length ? {
+          notSetUpInPms: notSetUp,
+          notSetUpNote: "These project folders exist on the office drive but have NO PMS record yet, so no connector tool can read them. Tell the user that; a PMS admin creates the record from the Admin console (Drive discovery).",
+        } : {}),
+      };
       return asText({
         count: 0, includeArchived: !!includeArchived, projects: [],
         interpreted: { terms },
+        ...extras,
         reason: looksLikeNumber
           ? `No project in the PMS carries the number in "${query}".`
           : `No project matches every term in "${query}".`,
@@ -1909,7 +1919,7 @@ mcp.tool("search_projects", {
       count: matched.length,
       includeArchived: !!includeArchived,
       ...(terms.length ? { interpreted: { terms } } : {}),
-      projects: matched.map(summarizeProject),
+      projects: matched.map(summarize),
     });
   },
 });
