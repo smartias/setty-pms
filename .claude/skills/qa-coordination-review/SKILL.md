@@ -742,6 +742,41 @@ is in the report header, and spend the budget accordingly:
      finding was closed as fixed in this revision, check the other places
      that value appears; the fix is often made on one sheet only.
 
+Three more items were added on 2026-11-24 from the preventable RFIs that
+still matched nothing. They apply from CD on. Run them after the five above.
+
+- **qa-635 Auxiliary components are powered and located.**
+  1. *List what the selected equipment brings with it.* From the
+     basis-of-design product data and the spec's accessory lists: control
+     and network panels, interface modules, condensate pumps, remote
+     annunciators, monitoring cables.
+  2. *Find each one on the drawings.* A circuit on a panel schedule, a
+     location on a plan, and a raceway where its wiring leaves the room.
+  3. *Fire alarm and service.* Every remote panel and power supply on the FA
+     sheets has a 120V circuit on the E sheets; the service and fire pump
+     disconnects are on the one-line with a size.
+  A finding names the component, the product data that calls for it, and
+  the sheet where its power or location should be.
+
+- **qa-636 What the specification requires is drawn.**
+  1. *Collect the promises.* Search the spec for "where indicated", "as
+     shown", "where required", "as scheduled".
+  2. *Look for each on the drawings:* thermometers and gauges (with range),
+     supports, guides and vibration isolation, fire alarm remote devices,
+     hanging and mounting accessories.
+  A finding quotes the spec article and says which sheet is silent.
+
+- **qa-637 The documents state a decision.**
+  1. *Search specs and notes* for "as allowed by", "as permitted by", "as
+     approved by owner", "as directed", "if applicable", "if required".
+  2. *For each hit:* is the answer stated elsewhere in the set? Check the
+     agency preferences and the knowledge layer for the owner's standing
+     answer before raising it.
+  3. *Code edition:* where two editions ask for different work, the
+     documents name the one that governs.
+  A finding quotes the phrase and writes the question a bidder would ask.
+  "If applicable" on a controls item is qa-633, not this item.
+
 **One row per defect.** A connection to an existing system can read as
 qa-630 or qa-631. Use qa-630 when the question is whether the existing
 thing is there and adequate (is there a drain, is the panel pole free), and
