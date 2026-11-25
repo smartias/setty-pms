@@ -16865,10 +16865,17 @@ app.post("/pms-mcp/admin/documents-sync", async (c) => {
 // few rows, stores every few, and stops at a short deadline; the backfill is
 // a couple of hours of one-minute calls and steady state is one cheap call
 // a minute that finds nothing to do. {"max": N} (max 200) sizes one call.
+// The deadline was 1.5 s until 2026-11-25: during a burst of email re-embeds
+// (13:45-15:35 UTC, 4-7 rows a minute) about 1 call in 7 died with 546
+// WORKER_RESOURCE_LIMIT ("CPU Time exceeded"), since 1.5 s of inference plus
+// loading the model on a fresh worker came too close to the 2 s CPU allowance,
+// and calls sharing that worker died with it. 0.8 s leaves room; a burst takes
+// about twice as long to clear. The CA job runs every 5 minutes, the email job
+// every minute (migration 20261125190000).
 const CA_EMBED_DEFAULT_ROWS = 20;
 const CA_EMBED_FETCH = 10;
 const CA_EMBED_STORE_EVERY = 5;
-const CA_EMBED_BUDGET_MS = 1500;
+const CA_EMBED_BUDGET_MS = 800;
 app.options("/pms-mcp/admin/ca-items-embed", (c) => c.body(null, 204, DOCS_SYNC_CORS));
 app.post("/pms-mcp/admin/ca-items-embed", async (c) => {
   const cronGiven = c.req.header("x-pms-cron") || "";

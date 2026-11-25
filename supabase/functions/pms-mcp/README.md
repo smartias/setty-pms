@@ -1574,11 +1574,17 @@ a save: the trigger warns and returns, and `pms_ca_items_reconcile()` repairs.
   `POST /pms-mcp/admin/ca-items-embed`, a route of its own with the same auth
   as `documents-sync`: `pms_ca_items_to_embed` lists rows with no embedding
   or a changed text hash, the call embeds up to 20 of them (`{"max": N}`, max
-  200) inside a 1.5 s deadline and `pms_ca_items_store_embeddings` writes
+  200) inside a 0.8 s deadline (1.5 s until 2026-11-25, which ran calls into
+  546 CPU kills during bursts) and `pms_ca_items_store_embeddings` writes
   every 5. It is sized for the runtime's CPU cap (2 s of active compute per
   request): the first version embedded 200 rows inside the 15-minute sync and
-  was killed before it stored any. Schedule it once a minute; a call that
-  finds nothing to do costs one cheap RPC. The secret never goes in a
+  was killed before it stored any. Scheduled every 5 minutes (`3-59/5`, since
+  `20261125190000`). A call that finds nothing to do costs one cheap RPC: the
+  text hash is the stored generated column `embed_src_hash`, so the queue
+  check no longer re-runs `pms_ca_items_embed_text` over every row (it took
+  ~1.1 s per call). **After replacing `pms_ca_items_embed_text`, run
+  `update pms_ca_items set subject = subject`** so the stored hashes follow
+  the new text and changed rows re-embed. The secret never goes in a
   migration; copy it from the job that already carries it:
 
   ```sql
@@ -1721,7 +1727,7 @@ Step 2 of `PROPOSAL-emails-embeddings.md`; the database half (migration
 #372 and must be applied before this is scheduled.
 
 - **The embed job**: `POST /pms-mcp/admin/emails-embed`, same auth and sizing
-  as `ca-items-embed` (`{"max": N}`, default 20, max 200; store every 5; 1.5 s
+  as `ca-items-embed` (`{"max": N}`, default 20, max 200; store every 5; 0.8 s
   deadline), `runEmbedPass` with `pms_emails_to_embed` /
   `pms_emails_store_embeddings` injected (`emailEmbedStoreRow`). Schedule it
   once a minute next to the CA job, copying the secret the same way:
