@@ -272,6 +272,39 @@ const W = (s) => s.length * 5;
   assert.ok(!JSON.stringify(pump).includes("GENERAL NOTE"));
 }
 
+// A panel prints one phase heading over two loads: the left-hand circuit's
+// and the right-hand circuit's. Its "Total Load" lines run across both, and
+// used to bridge the clear paper between them, so the two loads came back
+// in one cell ("63.39 55.08"; Tabler DP2A, DP2B, DP1B). Each load now has its
+// own column, and the heading names both. A stray run after one description
+// (Tabler EL4A's "1") does not open a column of its own.
+{
+  const x0 = 0, y0 = 760;
+  const raw = [run("Distribution Panel: DP9", x0 - 114, y0, 183)];
+  const head = [["CKT", -150], ["Circuit Description", -60, 85], ["Trip", 97], ["Poles", 129], ["A[KVA]", 179], ["B[KVA]", 251], ["Poles", 381], ["Trip", 421], ["Circuit Description", 514, 85]];
+  head.forEach(([s, x, w]) => raw.push(run(s, x, y0 - 40, w ?? W(s) + 4)));
+  const ckts = [["RP1A", "63.39", "55.08", "RP3A"], ["RP2A", "59.13", "58.47", "RP4A"], ["SPARE", "0.00", "14.41", "EV CHARGER"], ["SPD", "--", "0.10", "SPARE"], ["ELEV 1", "11.05", "0.08", "LTG ELEV. 2 2-198"]];
+  ckts.forEach(([l, a, b, r], i) => {
+    const y = y0 - 54 - i * 14, phase = i % 2 === 0 ? 166 : 238;
+    raw.push(run(String(2 * i + 1), -149, y, 5), run(l, -126, y, W(l)), run("400 A", 93, y, 25), run("3", 139, y, 5));
+    raw.push(run(a, phase, y, 24), run(b, phase + 36, y, 24));
+    raw.push(run("3", 391, y, 5), run("400 A", 418, y, 25), run(r, 450, y, W(r)), run(String(2 * i + 2), 620, y, 5));
+  });
+  raw.push(run("1", 450 + W("LTG ELEV. 2 2-198") + 6, y0 - 54 - 4 * 14, 5)); // stray run after one description
+  const yt = y0 - 54 - ckts.length * 14;
+  raw.push(run("Total Load:", 80, yt, 55), run("250.59 kVA", 171, yt, 49), run("264.15 kVA", 243, yt, 49));
+  raw.push(run("Total Amps:", 80, yt - 13, 55), run("2139 A", 180, yt - 13, 31), run("2252 A", 252, yt - 13, 31));
+  const [p] = extractSheetTables(orientSheetItems(raw));
+  assert.equal(p.title, "Distribution Panel: DP9");
+  assert.deepEqual(p.rows[0], ["CKT", "Circuit Description", "Trip", "Poles", "A[KVA]", "A[KVA]", "B[KVA]", "B[KVA]", "Poles", "Trip", "Circuit Description", ""]);
+  assert.deepEqual(p.rows[1], ["1", "RP1A", "400 A", "3", "63.39", "55.08", "", "", "3", "400 A", "RP3A", "2"]);
+  assert.deepEqual(p.rows[2], ["3", "RP2A", "400 A", "3", "", "", "59.13", "58.47", "3", "400 A", "RP4A", "4"]);
+  // The stray "1" stays with its description; the CKT column stays last.
+  assert.deepEqual(p.rows[5].slice(-2), ["LTG ELEV. 2 2-198 1", "10"]);
+  // No cell anywhere holds two loads.
+  for (const r of p.rows) for (const c of r) assert.ok(!/^\d+\.\d+ \d+\.\d+$/.test(c), c);
+}
+
 // ── drift anchors ───────────────────────────────────────────────────────────
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, "index.ts"), "utf8");
@@ -281,7 +314,7 @@ for (const anchor of [
   'from "./scheduleExtract.ts"',
   "items = orientSheetItems(tc.items as any[]);",
   // A changed extractor must not be served from an older saved parse.
-  'const SCHED_PARSER = "sched-v3";',
+  'const SCHED_PARSER = "sched-v4";',
   // Shared resolver serves both drawing tools.
   "async function resolveIndexedSheet",
 ] ) {

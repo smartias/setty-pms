@@ -115,6 +115,10 @@ function findScheduleTitles(lines: Array<{ y: number; cells: SheetTextItem[] }>)
 
 const TAG_HEADING_RE = /^(unit\s+)?(tag|mark|symbol|designation|unit\s*(no\.?|id|#)?|equip(ment)?\.?\s*(tag|no\.?|id)?|item)$/i;
 const PANEL_HEADER_CELL_RE = /^(ckt|cir(cuit)?\.?\s*(no\.?|#)?)\.?$/i;
+const PANEL_TOTAL_RE = /^\s*total\b/i;   // a panel's "Total Load:" / "Total Amps:" lines
+const PANEL_HEAD_OVERLAP = 3;
+// A panel's phase heading: "A", "B [KVA]", "C[KVA]", "PHASE A VA", "A VA".
+const PANEL_PHASE_HEAD_RE = /^(phase\s+)?[abc](\s*\[?\s*k?va\s*\]?)?$/i;            // pt a panel heading must reach over a column to name it
 const PANEL_FOOTER_RE = /^\s*(load\s+classification|panel\s+totals)\b/i;
 
 /**
@@ -187,7 +191,7 @@ function columnsByStart(blockLines: SheetTextItem[][]): { bounds: number[]; plac
  * ("ELECTRICAL DATA") crosses rivers on its one line, which the "almost no
  * row" allowance absorbs; it is then placed in the column under its middle.
  */
-function columnsByRivers(blockLines: SheetTextItem[][], xMin: number, xMax: number): { bounds: number[]; place: (c: SheetTextItem) => number } | null {
+function columnsByRivers(blockLines: SheetTextItem[][], xMin: number, xMax: number): { bounds: number[]; ranges: Array<[number, number]>; place: (c: SheetTextItem) => number } | null {
   const lo = Math.floor(xMin), n = Math.max(1, Math.ceil(xMax) - lo + 1);
   const cov = new Uint16Array(n);
   for (const cells of blockLines) {
@@ -212,6 +216,7 @@ function columnsByRivers(blockLines: SheetTextItem[][], xMin: number, xMax: numb
   const mids = cols.map(([a, b]) => (a + b) / 2);
   return {
     bounds: cols.map(([a]) => a),
+    ranges: cols,
     place: (c) => {
       const m = c.x + widthOf(c) / 2;
       const inside = cols.findIndex(([a, b]) => m >= a - 1 && m <= b + 1);
@@ -221,6 +226,31 @@ function columnsByRivers(blockLines: SheetTextItem[][], xMin: number, xMax: numb
       return best;
     },
   };
+}
+
+/**
+ * A panel column that holds text from at most one circuit row is a stray
+ * run (a pole count printed after one description), not a column: it joins
+ * the column on its left, so every other row keeps the panel's own layout.
+ * Its heading does not save it: a wide heading's middle can fall over it.
+ */
+function mergeOneOffColumns(
+  cols: { bounds: number[]; ranges: Array<[number, number]>; place: (c: SheetTextItem) => number },
+  circuits: SheetTextItem[][],
+): { bounds: number[]; ranges: Array<[number, number]>; place: (c: SheetTextItem) => number } {
+  const n = cols.ranges.length;
+  if (circuits.length < 4) return cols;
+  const used = new Array<number>(n).fill(0);
+  for (const cells of circuits) for (const k of new Set(cells.map(cols.place))) used[k]++;
+  const keep: number[] = [];
+  const to = new Array<number>(n);
+  for (let k = 0; k < n; k++) {
+    if (keep.length && used[k] <= 1) { to[k] = keep.length - 1; continue; }
+    keep.push(k); to[k] = keep.length - 1;
+  }
+  if (keep.length === n) return cols;
+  const ranges: Array<[number, number]> = keep.map((k, j) => [cols.ranges[k][0], j + 1 < keep.length ? cols.ranges[keep[j + 1] - 1][1] : cols.ranges[n - 1][1]]);
+  return { bounds: ranges.map(([a]) => a), ranges, place: (c) => to[cols.place(c)] };
 }
 
 export function extractSheetTables(items: SheetTextItem[], matchFilter?: string): SheetTable[] {
@@ -356,7 +386,21 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
       }
     }
 
-    const cols = (haveWidths ? columnsByRivers(blockLines, xMin, xMax) : null) ?? columnsByStart(blockLines);
+    // A panel prints one phase heading ("A[KVA]", "PHASE A VA") over two
+    // loads, the left-hand circuit's and the right-hand circuit's, and its
+    // "Total Load" lines run across both. Counted, those lines bridge the
+    // clear paper between the two loads and they land in one cell
+    // ("56.65 57.67"). A panel's columns are found from its circuit rows;
+    // the heading line is left out too, since a wide centred "Circuit
+    // Description" over short names would open a column of its own.
+    let riverLines = blockLines;
+    if (t.panel) {
+      const circuits = blockLines.filter((c, i) => i > 0 && !PANEL_TOTAL_RE.test(c[0].str));
+      if (circuits.length >= 2) riverLines = circuits;
+    }
+    let byRivers = haveWidths ? columnsByRivers(riverLines, xMin, xMax) : null;
+    if (t.panel && byRivers) byRivers = mergeOneOffColumns(byRivers, riverLines);
+    const cols = byRivers ?? columnsByStart(blockLines);
     if (!cols) continue;
     const rows = blockLines.map((cells) => {
       const row = new Array<string>(cols.bounds.length).fill("");
@@ -366,6 +410,43 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
       }
       return row;
     });
+    // The heading line was not used to find the columns, so a wide centred
+    // heading can reach past a column of short names: each heading goes to
+    // the column it sits over, else the one whose EDGE is nearest (the
+    // nearest middle can be the narrow CKT column beyond it). A heading
+    // printed over the clear paper between two columns (its middle in
+    // neither) is given to both it reaches over: "A[KVA]" over two loads.
+    if (t.panel && byRivers) {
+      const rs = byRivers.ranges;
+      const head = new Array<string>(rs.length).fill("");
+      const straddle: Array<[number, number, string]> = [];
+      const phases: Array<[number, number, string]> = [];
+      for (const c of blockLines[0]) {
+        const a = c.x, b = c.x + widthOf(c), m = (a + b) / 2;
+        let k = rs.findIndex(([lo, hi]) => m >= lo - 1 && m <= hi + 1);
+        if (k < 0) {
+          const dist = ([lo, hi]: [number, number]) => (m < lo ? lo - m : m - hi);
+          k = 0;
+          for (let j = 1; j < rs.length; j++) if (dist(rs[j]) < dist(rs[k])) k = j;
+          straddle.push([a, b, c.str]);
+        }
+        head[k] = head[k] ? head[k] + " " + c.str : c.str;
+        if (PANEL_PHASE_HEAD_RE.test(c.str.trim())) phases.push([k, m, c.str]);
+      }
+      for (const [a, b, str] of straddle) {
+        rs.forEach(([lo, hi], k) => {
+          if (!head[k] && Math.min(b, hi) - Math.max(a, lo) >= PANEL_HEAD_OVERLAP) head[k] = str;
+        });
+      }
+      // A short phase heading ("A", "B [KVA]") centred over its two loads
+      // falls over one of them: it names the empty one it leans toward too.
+      for (const [k, m, str] of phases) {
+        const [lo, hi] = rs[k];
+        const j = m < (lo + hi) / 2 ? k - 1 : k + 1;
+        if (j >= 0 && j < rs.length && !head[j]) head[j] = str;
+      }
+      rows[0] = head;
+    }
 
     // What sits between the title and the header: a panel's ratings (supply,
     // mains, bus, AIC, voltage), or a schedule's subtitle. Returned as printed,
