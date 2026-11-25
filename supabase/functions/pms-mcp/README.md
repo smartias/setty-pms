@@ -1360,9 +1360,12 @@ unchanged: they see page 1 of a small file.
   `view_drawing` (both modes) and `read_drawing_schedule`. A result that came
   this way carries `readInPieces`.
 - `read_document` on a PDF over 64MB goes through `readPdfPagewise`: each page
-  cut out, its text extracted, OCR as usual. It is bounded by time (15 s per
-  call), not page count, and says which pages it reached. With `find`,
-  `pages:"40-"` continues a search from page 40.
+  cut out, its text extracted, OCR as usual. It is bounded by CPU, not page
+  count: the platform kills a request past 2 s of CPU, and on the live
+  connector a `find` over 25 pages of Tabler's 70MB volume died that way
+  while 4 pages answered. Estimated CPU (elapsed time less time waiting on
+  range reads) stops it at the indexer's 600 ms, so a call covers a few pages
+  and says which it reached. With `find`, `pages:"40-"` continues from page 40.
 - Cost, measured on four real drawing sets of 27 to 102MB (2026-11-25): a
   sheet needs 2 to 15MB of reads in 5 to 30 range requests, and comes out as a
   0.3 to 1.5MB file (12MB for a cover sheet with a large image). 25 sheets

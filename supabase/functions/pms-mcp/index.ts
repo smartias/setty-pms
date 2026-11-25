@@ -1549,7 +1549,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-25-pdf-pagewise-2";
+const BUILD = "2026-11-25-pdf-pagewise-cpu";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.33.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -5923,8 +5923,10 @@ mcp.tool("read_document", {
     "are listed by search_notes as oneNoteSections). For LARGE PDFs (spec books / project manuals) extraction is " +
     "page-bounded from page 1 — pass find:'keyword' (e.g. a spec section '15230') to jump to " +
     "the page(s) containing it, or pages:'120-140' for a range (the result reports totalPages). " +
-    "A PDF over 64MB (an architect's combined drawing set) is read a page at a time and a call covers what fits " +
-    "in about 15 seconds: the result says which pages it reached, and with find, pages:'40-' continues the search from page 40. " +
+    "A PDF over 64MB (an architect's combined drawing set) is read a page at a time, and one call covers only a few " +
+    "pages (each page costs processing time the request is limited on): the result says which pages it reached, and " +
+    "pages:'40-' with the same find continues the search from page 40. Narrow a search with pages when you know " +
+    "roughly where the sheet is (a drawing index on the first pages gives the order). " +
     "MEETING MINUTES and DRAWING REVIEW COMMENTS/RESPONSES are HIGH-VALUE. Any file whose NAME contains " +
     "'COMMENTS' is agency or contractor design-review feedback: they are named by phase or party such as " +
     "'Owner Comments', 'DD Comments', 'CD Comments', and they arrive in the project's EMAIL folder. " +
@@ -10071,11 +10073,23 @@ const PAGEWISE_NEXT_STEP = "download_document returns a link to the file itself;
 // of a drawing set costs a second of reads and one call must answer before the
 // proxy gives up on it. Text is memoized per page like the whole-file path.
 const READ_PAGEWISE_BUDGET_MS = 15_000;
+// CPU, not wall time, is what ends a request: the platform allows 2s of CPU
+// and kills the worker past it, which the caller sees as a dropped
+// connection. Measured on the live connector 2026-11-25: pages:'66-67' and
+// find over pages 13-16 of Tabler's 70MB volume answered; find over pages
+// 1-25 and over the whole file died with "CPU Time exceeded". The estimate is
+// elapsed time minus time spent waiting on range reads, and it runs low (see
+// DRAWING_INDEX_CPU_BUDGET_MS), so the budget is the indexer's 600ms.
+const READ_PAGEWISE_CPU_BUDGET_MS = DRAWING_INDEX_CPU_BUDGET_MS;
 const READ_PAGEWISE_MAX_PAGES = 50;
 const READ_PAGEWISE_FETCH_BYTES = 320 * 1024 * 1024;
 async function readPdfPagewise(itemId: string, cacheKey: string, o: { find?: string; pages?: string }): Promise<Record<string, unknown>> {
   const t0 = Date.now();
   const src = await rangedPdfSource(itemId);
+  // The CPU clock starts here: the lookups above are network waits that the
+  // range-read timer does not see, and counting them would stop every call
+  // after one page.
+  const tCpu0 = Date.now();
   const pdfPages = await openPdfPages(src.size, src.fetchRange, { maxOutBytes: VIEW_DRAWING_MAX_PDF_BYTES, maxFetchBytes: READ_PAGEWISE_FETCH_BYTES });
   const total = pdfPages.pageCount;
   const { getDocumentProxy } = await import("unpdf");
@@ -10113,7 +10127,9 @@ async function readPdfPagewise(itemId: string, cacheKey: string, o: { find?: str
     pdfPageTextPut(textEntry, i, t);
     return t;
   };
-  const outOfTime = () => Date.now() - t0 > READ_PAGEWISE_BUDGET_MS;
+  // Estimated CPU so far: time not spent waiting on the file.
+  const cpuMs = () => Math.max(0, Date.now() - tCpu0 - pdfPages.fetchBusyMs());
+  const outOfTime = () => Date.now() - t0 > READ_PAGEWISE_BUDGET_MS || cpuMs() > READ_PAGEWISE_CPU_BUDGET_MS;
   const tail = (n: string) => {
     const ocr = ocrNote(ocrDone, ocrSkipped, ocrFailed);
     return `${n} The file is ${Math.round(src.size / 1048576)}MB and was read a page at a time.` + (ocr ? ` ${ocr}` : "") + (unread.length ? ` Not read: ${unread.join("; ")}.` : "");

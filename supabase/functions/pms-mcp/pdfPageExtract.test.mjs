@@ -112,6 +112,24 @@ test("one open file serves several pages and reads the table once", async () => 
   assert.ok(afterOpen >= 1 && pdf.requests() === r.log.length);
 });
 
+test("time spent waiting on range reads is counted, so a caller can budget CPU without it", async () => {
+  const { bytes } = classicPdf(baseObjects());
+  const slow = async (b, e) => { await new Promise((r) => setTimeout(r, 30)); return bytes.slice(b, e); };
+  const t0 = Date.now();
+  const pdf = await openPdfPages(bytes.length, slow, { chunkBytes: 64 * 1024 });
+  await pdf.page(2);
+  const elapsed = Date.now() - t0, waited = pdf.fetchBusyMs();
+  assert.ok(pdf.requests() >= 2);
+  assert.ok(waited >= 30 * 2 * 0.8, `waited ${waited}ms over ${pdf.requests()} reads`);
+  assert.ok(waited <= elapsed + 5, "never more than the elapsed time");
+  // A failed read settles the timer too: nothing is left counting.
+  const failing = async () => { await new Promise((r) => setTimeout(r, 20)); throw new Error("ECONNRESET"); };
+  const t1 = Date.now();
+  await assert.rejects(openPdfPages(bytes.length, failing), /ECONNRESET/);
+  await new Promise((r) => setTimeout(r, 40));
+  assert.ok(Date.now() - t1 >= 60);
+});
+
 test("pages out of range, encrypted files and files with no table are refused in words", async () => {
   const { bytes } = classicPdf(baseObjects());
   await assert.rejects(extractPdfPage(bytes.length, reader(bytes).fetchRange, 4), /page 4 is out of range — the file has 3 page\(s\)/);
@@ -277,6 +295,7 @@ test("view_drawing, read_drawing_schedule and read_document go through the extra
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
   assert.ok(src.includes('from "./pdfPageExtract.ts"'));
   assert.ok(src.includes("openPdfPages(") && src.includes("drawingPagePdf("));
+  assert.ok(src.includes("cpuMs() > READ_PAGEWISE_CPU_BUDGET_MS"), "read_document stops a large file on CPU, not only on time");
   assert.ok(!/over the \$\{VIEW_DRAWING_MAX_PDF_BYTES \/ 1048576\}MB render limit/.test(src), "the 40MB refusal is gone");
   const readme = readFileSync(new URL("./README.md", import.meta.url), "utf8");
   assert.ok(readme.includes("pdfPageExtract.ts"));

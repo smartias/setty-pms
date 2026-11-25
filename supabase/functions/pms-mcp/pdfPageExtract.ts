@@ -66,6 +66,12 @@ class Chunks {
   bytesFetched = 0;
   requests = 0;
   private kept = 0;
+  // Wall time with at least one range in flight. A caller that budgets CPU
+  // subtracts it from elapsed time: waiting on the network is not compute.
+  private inFlight = 0;
+  private busySince = 0;
+  private busyMs = 0;
+  fetchBusyMs(): number { return this.busyMs + (this.inFlight > 0 ? Date.now() - this.busySince : 0); }
   readonly size: number;
   private fetchRange: RangeRead;
   private chunk: number;
@@ -85,7 +91,11 @@ class Chunks {
     }
     this.bytesFetched += end - begin;
     this.requests++;
-    const p = this.fetchRange(begin, end).then((b) => {
+    if (this.inFlight++ === 0) this.busySince = Date.now();
+    const settle = () => { if (--this.inFlight === 0) this.busyMs += Date.now() - this.busySince; };
+    const raw = this.fetchRange(begin, end);
+    raw.then(settle, settle); // exactly once, success or failure
+    const p = raw.then((b) => {
       if (b.byteLength !== end - begin) throw new PdfExtractError(`bytes ${begin}-${end} came back as ${b.byteLength} bytes`);
       this.got.set(i, b);
       this.kept += b.byteLength;
@@ -585,6 +595,7 @@ export type PdfPages = {
   page: (pageNumber: number) => Promise<{ bytes: Uint8Array; objects: number }>;
   bytesFetched: () => number;
   requests: () => number;
+  fetchBusyMs: () => number;
 };
 
 type PageOpts = { maxOutBytes?: number; maxFetchBytes?: number; chunkBytes?: number };
@@ -611,6 +622,7 @@ export async function openPdfPages(size: number, fetchRange: RangeRead, opts: Pa
     page: (n) => buildPage(file, chunks, catObj, pagesRef, top, pageCount, n, maxOut),
     bytesFetched: () => chunks.bytesFetched,
     requests: () => chunks.requests,
+    fetchBusyMs: () => chunks.fetchBusyMs(),
   };
 }
 
