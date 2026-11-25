@@ -64,6 +64,7 @@ import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OL
 import { assignSheetsFromList, DRAWING_LIST_LAYOUT } from "./sheetFromDrawingList.ts";
 import { rankByQuery, closeByQuery, CLOSE_QUERY_NOTE, pickByMeaning, BY_MEANING_NOTE } from "./knowledgeQuery.ts";
 import { lazyModule } from "./lazyModule.ts";
+import { buildQaReviewPacket } from "./qaReviewPacket.ts";
 // set_project_fee: what may be written into the Fee Calculator and what is
 // refused. Pure; see feeCalculator.test.mjs.
 import { extractSheetTables, orientSheetItems, type SheetTextItem, type SheetTable } from "./scheduleExtract.ts";
@@ -79,7 +80,7 @@ import { isBackgroundPath, BACKGROUND_NOTE } from "./drawingTier.ts";
 import { retryingRange, httpRange, openRangedPdf, type RangedPdf } from "./pdfRanged.ts";
 import { readOneNoteSection, oneNoteReadResult, oneNoteNotebookFolder, type OneNoteSection } from "./oneNoteSection.ts";
 // Why an RFI was asked and which QA check would have caught it. Pure; see its tests.
-import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses, lessonCandidates, rfiKey } from "./rfiRootCause.ts";
+import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses, lessonCandidates, rfiKey, designWatchlist } from "./rfiRootCause.ts";
 import { isIssuedSetRow, notASetReason } from "./issuedSet.ts";
 import { needsOcr, ocrPage, ocrNote, OCR_SYSTEM_PROMPT, OCR_MAX_PAGES_PER_CALL } from "./ocrPages.ts";
 import { planFeeWrite, BUILDING_CATEGORIES, PROJECT_TYPES, type FeeWritePlan } from "./feeCalculator.ts";
@@ -1545,7 +1546,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-25-qa-auto-checks";
+const BUILD = "2026-11-25-qa-review-packet";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.32.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1686,7 +1687,7 @@ const RESULT_ARRAY_KEYS = [
 // `empty` in a month (2026-11). For these only `error` and `count` are read.
 // One record per call: an empty `files` or `sheets` list inside it is a coverage
 // gap the packet reports, not an empty result.
-const RECORD_TOOLS = new Set(["get_project", "get_ca_review_packet"]);
+const RECORD_TOOLS = new Set(["get_project", "get_ca_review_packet", "get_qa_review_packet"]);
 function classifyResult(payload: any, recordTool = false): { outcome: TelemetryOutcome; resultCount: number | null; detail: string | null } {
   if (!payload || typeof payload !== "object") return { outcome: "hit", resultCount: null, detail: null };
   if (payload.error) {
@@ -3329,6 +3330,29 @@ mcp.tool("project_briefing", {
     const constructionChanges = changeSummary(p, new Date().toISOString().slice(0, 10));
     const closeout = closeoutSummary(p, new Date().toISOString().slice(0, 10));
 
+    // Design watchlist: on a job that has not reached construction, what the
+    // firm's RFI log says to get right on work like this (rfiRootCause.ts).
+    // Extra, never load-bearing: any failure drops it and the briefing stands.
+    let watchlist: any = null;
+    if (!construction && p.projectNumber) {
+      try {
+        const [tags, all] = await Promise.all([
+          sbGetAll("pms_rfi_root_causes?select=project,item_number,cause,preventable,qa_item,note&item_type=eq.rfi&preventable=eq.true&qa_item=not.is.null"),
+          getProjects(),
+        ]);
+        const w = designWatchlist(tags, all.map((x: any) => ({ projectNumber: x.projectNumber, owner: x.owner, projectType: x.projectType })),
+          { projectNumber: p.projectNumber, owner: p.owner, projectType: p.projectType });
+        if (w.items.length) {
+          const ids = w.items.map((i: any) => i.qaItem);
+          const rows = await sbGet("pms_qa_checklist?select=item_id,text&item_id=in.(" + ids.map(encodeURIComponent).join(",") + ")").catch(() => [] as any[]);
+          const text = new Map((Array.isArray(rows) ? rows : []).map((r: any) => [r.item_id, r.text]));
+          watchlist = { ...w, items: w.items.map((i: any) => ({ ...i, check: text.get(i.qaItem) ?? null })) };
+        }
+      } catch (e) {
+        console.warn("[project_briefing] design watchlist skipped:", String((e as any)?.message ?? e));
+      }
+    }
+
     const readNext = docs.items.filter((d: any) => d.readable).slice(0, 3)
       .map((d: any) => ({ itemId: d.itemId, name: d.name, why: "Meeting record — read_document this before answering." }));
 
@@ -3376,6 +3400,15 @@ mcp.tool("project_briefing", {
         "`meetingItems` is the structured record of what the minutes said was outstanding — lean on it " +
         "for \"what's still open\" instead of re-deriving that from raw minutes text.");
     }
+    if (watchlist) {
+      guidance.push(
+        "`designWatchlist` is what the firm's RFI log says to get right on this job WHILE IT CAN STILL BE DRAWN: " +
+        "the checks behind the most preventable RFIs on other projects, weighted toward the same owner and the " +
+        "same kind of work (`basis` says which of those applied; when neither did, the list is firm-wide and you " +
+        "should say so). Bring up the top three or four when the user asks what to watch for, at kickoff, or " +
+        "before a DD or CD submission, each with its example. It is a forecast from other jobs, not a finding " +
+        "on this one. search_knowledge has the lessons behind each check.");
+    }
     guidance.push(SCOPE_POSTURE_GUIDANCE);
 
     const related = await relatedProjectsOf(p);
@@ -3389,6 +3422,7 @@ mcp.tool("project_briefing", {
       clientContact: p.clientContact ?? null,
       ...(related ? { relatedProjects: related } : {}),
       construction,
+      ...(watchlist ? { designWatchlist: watchlist } : {}),
       ...(constructionChanges ? { constructionChanges } : {}),
       ...(closeout ? { closeout } : {}),
       meetingRecords: { count: docs.items.length, truncated: docs.truncated, note: docs.note, documents: docs.items },
@@ -10736,6 +10770,75 @@ mcp.tool("find_related", {
 // `automation` class telling the coordination review what it can do with it.
 const QA_ASSISTED_HINT =
   "Gather evidence (search_drawings text, view_drawing region renders of the affected sheets), flag exceptions with sheet references; a human confirms.";
+
+// ─── QA REVIEW PACKET: get_qa_review_packet ─────────────────────────────────
+// What a QA drawing review needs before its first check, in one call
+// (qaReviewPacket.ts). Reads the database only: no SharePoint, no rendering,
+// so it answers in a second or two on any size of project. Read-only.
+mcp.tool("get_qa_review_packet", {
+  description:
+    "START A QA DRAWING REVIEW HERE. One call returns what the review otherwise spends its first twenty calls " +
+    "collecting: the set under review with its phase and sheets by discipline; how much of it is indexed and " +
+    "which files have no text layer; every sheet whose notes hand work to someone else (by architect, by others, " +
+    "see structural, N.I.C.) or leave a decision open (as allowed by, if applicable, exact location to be " +
+    "coordinated), with the snippet; which other disciplines' drawings are on file and how recent, and which " +
+    "are missing; the open QA findings and reviewer comments to back-check, with the earlier reviews; which " +
+    "schedules are already cached; what the firm's RFI log says to look for on a job like this; and how much " +
+    "knowledge is on file for the project and its owner. Then run the review: get_qa_checklist for the items, " +
+    "search_drawings, view_drawing and read_drawing_schedule for the checks. The packet FINDS things, it does " +
+    "not read the drawings: a hand-off note it lists is a place to look, not a finding. When the set is a " +
+    "pre-issue QA copy or any set other than the current issued one, pass its folder as `set`. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR name."),
+    set: z.string().optional().describe("The set folder under review, exactly as list_project_documents prints it (e.g. '09 QAQC/2026-11-20 CD Set'). Omit for the current issued set."),
+  }),
+  handler: async ({ projectNumber, set }) => {
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    if (!p) return asText({ error: `No project matching "${projectNumber}".` });
+    const project = String(p.projectNumber || "");
+    if (!project) return asText({ error: "This project has no project number yet, so it has no drawing index to review.", nextStep: "A pursuit gets its number when the job is won." });
+    const numPrefix = project.toLowerCase().trim();
+    const folder = set ? String(set).replace(/^\/+|\/+$/g, "") : null;
+    const enc = encodeURIComponent;
+    const packet = await buildQaReviewPacket({
+      currentSet: async () => composeCurrentSet(await transmittalRows(pid)),
+      indexFiles: () => sbGetAll("pms_drawing_index_files?select=file_name,folder_path,status,pages,text_pages&project_prefix=eq." + enc(numPrefix)),
+      search: async (pattern, limit) => (await sbRpc("pms_drawing_search", { p_prefix: numPrefix, p_patterns: [pattern], p_folder: folder, p_limit: limit })) || [],
+      schedules: () => sbGetAll("pms_drawing_schedules?select=sheet_no,page,folder_path,cached_at&project_prefix=eq." + enc(numPrefix) + "&has_text=is.true&parser=eq." + SCHED_PARSER),
+      // Received from others: the Incoming and Emails areas of the file index.
+      backgroundFiles: async () => (await sbGet("pms_documents?select=item_id,name,folder_path,discipline,modified_at,set_date,ext&project_prefix=eq." + enc(numPrefix) +
+        "&ext=eq.pdf&area=in.(Incoming,Emails)&order=modified_at.desc.nullslast&limit=1000")) || [],
+      openFindings: async () => (await sbGet("pms_qa_findings?select=id,source,severity,title,sheets,discipline,key_item,created_at&project=eq." + enc(project) +
+        "&status=in.(open,ready_to_backcheck)&order=created_at.desc&limit=300")) || [],
+      reviews: async () => (await sbGet("pms_qa_reviews?select=id,set_name,phase,kind,run_at&project=eq." + enc(project) + "&order=run_at.desc&limit=8")) || [],
+      rfiHistory: async () => {
+        const [tags, all] = await Promise.all([
+          sbGetAll("pms_rfi_root_causes?select=project,item_number,cause,preventable,qa_item,note&item_type=eq.rfi&preventable=eq.true&qa_item=not.is.null"),
+          getProjects(),
+        ]);
+        const w = designWatchlist(tags, all.map((x: any) => ({ projectNumber: x.projectNumber, owner: x.owner, projectType: x.projectType })),
+          { projectNumber: project, owner: p.owner, projectType: p.projectType });
+        return w.items.length
+          ? { ...w, note: "The checks behind the most preventable RFIs on other projects, weighted toward the same owner and the same kind of work (`basis` says which applied). Run these first and widest. rfi_root_cause_summary has the full picture." }
+          : null;
+      },
+      knowledge: async () => {
+        const [mine, prefs] = await Promise.all([
+          sbGet("pms_lessons?select=lesson_id&status=eq.approved&project_id=eq." + enc(project) + "&limit=1000"),
+          p.owner ? sbGet("pms_agency_preferences?select=pref_id&status=eq.active&agency=ilike." + enc("*" + String(p.owner).trim() + "*") + "&limit=1000") : Promise.resolve([]),
+        ]);
+        return {
+          lessonsOnThisProject: Array.isArray(mine) ? mine.length : 0,
+          ...(p.owner ? { preferencesForOwner: Array.isArray(prefs) ? prefs.length : 0 } : {}),
+          note: "Counts only. Pass 2 reads them: search_knowledge {projectNumber}, then by discipline, then search_agency_preferences and search_engineering_standards.",
+        };
+      },
+    }, { projectNumber: project, projectName: p.name, owner: p.owner, prime: p.prime, status: p.status, set: folder });
+    return asText(packet);
+  },
+});
 
 mcp.tool("get_qa_checklist", {
   description:

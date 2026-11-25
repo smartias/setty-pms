@@ -188,3 +188,79 @@ export function lessonCandidates(tags: RootCauseRow[], lessons: LessonRow[], opt
     groups: all.slice(0, lim), groupsTotal: all.length,
   };
 }
+
+// ── What to get right in design: the RFI log, read forward ───────────────────
+// A QA review reads the root-cause tags at the end of design. The cheaper time
+// to use them is the start: a project briefing on a job still in design carries
+// the checks that cost the firm the most RFIs on jobs like it. "Like it" means
+// the same owner and the same kind of work (renovation or new construction);
+// both are weighted above the firm-wide count, and the answer says which
+// applied, because a list that looks tailored and is not would mislead.
+
+export type WorkKind = "renovation" | "new";
+// projectType reads like "Type IV Renovation" or "Type II New Construction".
+export function workKindOf(projectType: unknown): WorkKind | null {
+  const t = String(projectType ?? "").toLowerCase();
+  if (/renovat|alterat|fit[- ]?out|upgrade|retrofit/.test(t)) return "renovation";
+  if (/new\s+construction|new\s+build|addition/.test(t)) return "new";
+  return null;
+}
+
+export type ProjectMeta = { projectNumber: string; owner?: string | null; projectType?: string | null };
+const ownerKey = (v: unknown) => String(v ?? "").trim().toLowerCase();
+
+export const WATCHLIST_MAX = 8;
+
+export function designWatchlist(
+  tags: RootCauseRow[], projects: ProjectMeta[], self: ProjectMeta, opts: { max?: number } = {},
+) {
+  const meta = new Map(projects.map((p) => [String(p.projectNumber), p]));
+  const kind = workKindOf(self.projectType);
+  const owner = ownerKey(self.owner);
+  type Row = { qaItem: string; rfis: number; projects: Set<string>; sameKind: number; sameOwner: number; example: string | null; exampleScore: number };
+  const by = new Map<string, Row>();
+  let considered = 0;
+  for (const t of tags ?? []) {
+    if (!t.preventable || !t.qa_item) continue;
+    if (String(t.project) === String(self.projectNumber)) continue;   // its own log is not a forecast
+    considered++;
+    const m = meta.get(String(t.project));
+    const isKind = !!kind && workKindOf(m?.projectType) === kind;
+    const isOwner = !!owner && ownerKey(m?.owner) === owner;
+    const r = by.get(t.qa_item) ?? { qaItem: t.qa_item, rfis: 0, projects: new Set<string>(), sameKind: 0, sameOwner: 0, example: null, exampleScore: -1 };
+    r.rfis++; r.projects.add(String(t.project));
+    if (isKind) r.sameKind++;
+    if (isOwner) r.sameOwner++;
+    // The example a designer reads should come from the most similar job that
+    // has a real description, not a subject line.
+    const note = String(t.note ?? "").trim();
+    if (note && !/subject only/i.test(note)) {
+      const sc = (isOwner ? 2 : 0) + (isKind ? 1 : 0);
+      if (sc > r.exampleScore) { r.example = note.slice(0, 220); r.exampleScore = sc; }
+    }
+    by.set(t.qa_item, r);
+  }
+  const rows = [...by.values()];
+  const anyOwner = rows.some((r) => r.sameOwner > 0);
+  const anyKind = rows.some((r) => r.sameKind > 0);
+  const score = (r: Row) => r.sameOwner * 3 + r.sameKind * 2 + r.rfis;
+  const items = rows
+    .sort((a, b) => score(b) - score(a) || b.projects.size - a.projects.size || a.qaItem.localeCompare(b.qaItem))
+    .slice(0, Math.max(1, opts.max ?? WATCHLIST_MAX))
+    .map((r) => ({
+      qaItem: r.qaItem, preventableRfis: r.rfis, projects: r.projects.size,
+      ...(anyKind ? { onSameKindOfWork: r.sameKind } : {}),
+      ...(anyOwner ? { forSameOwner: r.sameOwner } : {}),
+      ...(r.example ? { example: r.example } : {}),
+    }));
+  return {
+    basis: {
+      kindOfWork: kind,                          // null: projectType does not say
+      ...(kind ? { rfisOnSameKindOfWork: rows.reduce((n, r) => n + r.sameKind, 0) } : {}),
+      owner: self.owner || null,
+      ...(owner ? { rfisForSameOwner: rows.reduce((n, r) => n + r.sameOwner, 0) } : {}),
+      preventableRfisConsidered: considered,
+    },
+    items,
+  };
+}

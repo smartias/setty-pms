@@ -2012,3 +2012,25 @@ Anyone with the Admin Console can start it: QA Checklist tab, "Run with Claude".
   `20261124230000_qa_routine_lessons.sql`,
   `20261124240000_qa_routine_best_practices.sql`,
   `20261125110000_qa_routine_agency_preferences.sql`.
+
+## The QA review packet (`get_qa_review_packet`)
+
+What a QA drawing review needs before its first check, in one call. Before it,
+a review spent about twenty calls on setup and, on a large building, ran out of
+budget before the cross-discipline pass finished.
+
+- Returns: the set, its phase and sheets by discipline; index coverage and
+  text-less files; sheets whose notes hand work to others (`handOffNotes`) or
+  leave a decision open (`deferredDecisions`), each one regex over the drawing
+  text; other disciplines' drawings on file by name and date (`backgrounds`);
+  open findings and earlier reviews (`carryOver`); cached schedules; the RFI
+  log read forward for a job like this (`rfiHistory`, same function as the
+  project briefing's `designWatchlist`); knowledge counts.
+- Database only: no SharePoint call and no rendering. A read that fails becomes
+  a line in `coverage.gaps` and the rest still returns.
+- It finds things; it does not read drawings. Rules and tests:
+  `qaReviewPacket.ts`, `qaReviewPacket.test.mjs`.
+
+`project_briefing` carries `designWatchlist` on a project that has not reached
+construction: the checks behind the most preventable RFIs on other jobs,
+weighted toward the same owner and kind of work (`rfiRootCause.ts`).
