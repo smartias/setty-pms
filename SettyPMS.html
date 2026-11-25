@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-25-pms-v221-greeting-first-name";
+    window.__appVersion = "2026-11-25-pms-v222-shared-greeting-name";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -63,6 +63,10 @@
        exactly as before, the banner feature just silently no-ops. -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.1/dist/umd/supabase.js" integrity="sha384-2DeuFKyqIlpZfFmj+jl/+IbM3DwDM4vGKsvK0fI32E0ZDt24W33hB6pka4RAdbz2" crossorigin="anonymous"></script>
   <script src="setty-auth.js"></script>
+  <!-- greetingFirstName(name): "Rama, Monica" -> "Monica" for every "Hi …,".
+       Shared with transmittal.html and Newsletter.html; a plain script so it
+       is defined before the JSX blocks run. -->
+  <script src="greetingName.js"></script>
 <!-- Browser .docx pipeline: zip + Word section drops + {{TOKEN}} fill.
      Loaded as a module and hung on window because the app's own code is
      compiled by Babel from text/x-pms-jsx blocks, which cannot use import. -->
@@ -281,19 +285,7 @@ const LOSS_REASONS = [
 function isPipeline(p) { return PIPELINE_STATUSES.includes(p.status); }
 function isAwarded(p)  { return !isPipeline(p); }
 
-// First name for "Hi …,". About a third of PMS contacts are stored last name
-// first ("Rama, Monica"), and taking the first word greeted them by surname
-// with a doubled comma ("Hi Rama,,"). Comma parts that are credentials or
-// suffixes ("John Smith, PE", "Kurt Bedore, Jr.") are not names and are dropped;
-// two parts left means "Last, First". Same logic as transmittal.html.
-const NAME_SUFFIX_RE = /^(jr|sr|ii|iii|iv|pe|p\.?e|ra|r\.?a|aia|leed( ap)?|pmp|esq|ph\.?d|mba|ncarb|cem|cxa|bcxa|cpd|ccm|fpe|se|s\.?e)\.?$/i;
-function greetingFirstName(name) {
-  const parts = String(name || "").split(",").map(x => x.trim()).filter(x => x && !NAME_SUFFIX_RE.test(x));
-  if (!parts.length) return "";
-  const given = parts.length >= 2 ? parts[1] : parts[0];
-  const words = given.replace(/^(mr|mrs|ms|miss|mx|dr)\.?\s+/i, "").split(/\s+/);
-  return (words[0] || "").replace(/[.,;:]+$/, "");
-}
+// greetingFirstName(name) comes from greetingName.js (loaded in <head>).
 
 // Region filter (v151). A project's region is pms_projects.team (NY, DC, BT…),
 // tagged on the Admin console's Teams card or by drive discovery. The same
@@ -33942,8 +33934,8 @@ function PortalSharingModal({ project, clients, driveId, onClose, onUpdateClient
       }).join("");
 
       // perm.name is the guest's Entra display name ("Last, First" is common)
-      // and falls back to the email address, which is no name to greet.
-      const firstName = /@/.test(perm.name || "") ? "" : greetingFirstName(perm.name);
+      // and falls back to the email address; greetingFirstName returns "" for that.
+      const firstName = greetingFirstName(perm.name);
       const folderWord = allTheirPerms.length > 1 ? "folders" : "folder";
       const bodyHtml =
         `<p>Hi${firstName ? " " + firstName : ""},</p>` +
