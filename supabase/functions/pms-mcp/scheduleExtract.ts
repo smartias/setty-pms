@@ -44,6 +44,7 @@ const SCHED_INNER_GAP = 140;   // pt: the widest gap that can still be inside on
 const SCHED_RIVER_MIN = 2.5;   // pt of clear paper down the rows that separates two columns
 const SCHED_GAP_PT = 40;       // pt of clear paper below a table's last row that ends it (at least)
 const SCHED_GAP_PITCHES = 3;   // ...or this many of its own row pitches, if more
+const PANEL_EDGE_MARGIN = 10;  // pt: clear paper kept left of a panel's first column
 const PANEL_ROW_BAND = 80;     // pt: panel titles this close in height are in one row across the sheet
 const PANEL_SAME_COLUMN = 100; // pt: a title this close in x is the same column, not a neighbour
 
@@ -128,6 +129,18 @@ const PANEL_FOOTER_RE = /^\s*(load\s+classification|panel\s+totals)\b/i;
  * of the lines under the title along x, merge what is closer than a gutter,
  * and take the stretch under the title.
  */
+/**
+ * How far left of a panel's title its circuit table starts: the left-most
+ * CKT heading below the title (within half a pitch to its left), or 0.
+ */
+function panelInset(lines: Array<{ y: number; cells: SheetTextItem[] }>, t: TitleHit, pitch: number): number {
+  for (let i = t.line + 1; i < lines.length && i - t.line <= SCHED_PANEL_HEADER_SEARCH; i++) {
+    const heads = lines[i].cells.filter((c) => PANEL_HEADER_CELL_RE.test(c.str.trim()) && c.x >= t.x - pitch / 2 && c.x <= t.x + pitch / 2);
+    if (heads.length) return Math.max(0, t.x - Math.min(...heads.map((c) => c.x)));
+  }
+  return 0;
+}
+
 function tableSpan(lines: Array<{ y: number; cells: SheetTextItem[] }>, t: TitleHit, titles: TitleHit[], gutter = SCHED_GUTTER): [number, number] | null {
   const iv: Array<[number, number]> = [];
   for (let i = t.line + 1; i < lines.length && i - t.line <= SCHED_SPAN_LINES; i++) {
@@ -267,15 +280,23 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
     let xMin: number, xMax: number;
     if (haveWidths && t.panel) {
       // Panel schedules are laid out in a row across the sheet at a fixed
-      // pitch, each with its title a little inside its left edge. Their
-      // ratings block and wide description columns leave gaps bigger than
-      // any gutter, so the neighbours' titles mark the edges instead.
+      // pitch, each with its title inside its left edge. Their ratings block
+      // and wide description columns leave gaps bigger than any gutter (on
+      // E612 the gap between two panels is narrower than one inside a
+      // panel), so the neighbours' titles mark the edges instead.
       const row = titles.filter((o) => o.panel && Math.abs(o.y - t.y) <= PANEL_ROW_BAND && (o === t || Math.abs(o.x - t.x) > PANEL_SAME_COLUMN)).sort((a, b) => a.x - b.x);
       const at = row.indexOf(t);
       let pitch = Infinity;
       for (let k = 1; k < row.length; k++) pitch = Math.min(pitch, row[k].x - row[k - 1].x);
-      xMin = t.x - 80;
-      if (at >= 0 && at + 1 < row.length) xMax = row[at + 1].x - 80;
+      // How far left of its title a panel starts: usually a little (Tabler
+      // E603: 42 pt), but a title can be centred over its panel (E612: 206
+      // pt). The row's first panel shows it: its left-most CKT heading.
+      // Every panel in the row is printed the same way. Only ever widens the
+      // default 80 pt.
+      const inset = Number.isFinite(pitch) ? panelInset(lines, row[0], pitch) : 0;
+      const left = (o: TitleHit) => o.x - Math.max(80, inset + PANEL_EDGE_MARGIN);
+      xMin = left(t);
+      if (at >= 0 && at + 1 < row.length) xMax = left(row[at + 1]);
       else if (Number.isFinite(pitch)) xMax = xMin + pitch;
       else { const span = tableSpan(lines, t, titles, 90); if (!span) continue; xMax = span[1] + 2; }
     } else if (haveWidths) {
@@ -394,8 +415,15 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
     // the heading line is left out too, since a wide centred "Circuit
     // Description" over short names would open a column of its own.
     let riverLines = blockLines;
+    // A panel's heading can take two lines ("CKT." over "NO."): every line
+    // before the first one that carries a circuit number is heading.
+    let headLines = 1;
     if (t.panel) {
-      const circuits = blockLines.filter((c, i) => i > 0 && !PANEL_TOTAL_RE.test(c[0].str));
+      const first = blockLines.findIndex((c) => c.some((x) => /^\d+$/.test(x.str.trim())));
+      if (first > 1 && first <= 3) headLines = first;
+    }
+    if (t.panel) {
+      const circuits = blockLines.filter((c, i) => i >= headLines && !PANEL_TOTAL_RE.test(c[0].str));
       if (circuits.length >= 2) riverLines = circuits;
     }
     let byRivers = haveWidths ? columnsByRivers(riverLines, xMin, xMax) : null;
@@ -418,34 +446,36 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
     // neither) is given to both it reaches over: "A[KVA]" over two loads.
     if (t.panel && byRivers) {
       const rs = byRivers.ranges;
-      const head = new Array<string>(rs.length).fill("");
-      const straddle: Array<[number, number, string]> = [];
-      const phases: Array<[number, number, string]> = [];
-      for (const c of blockLines[0]) {
-        const a = c.x, b = c.x + widthOf(c), m = (a + b) / 2;
-        let k = rs.findIndex(([lo, hi]) => m >= lo - 1 && m <= hi + 1);
-        if (k < 0) {
-          const dist = ([lo, hi]: [number, number]) => (m < lo ? lo - m : m - hi);
-          k = 0;
-          for (let j = 1; j < rs.length; j++) if (dist(rs[j]) < dist(rs[k])) k = j;
-          straddle.push([a, b, c.str]);
+      for (let h = 0; h < headLines; h++) {
+        const head = new Array<string>(rs.length).fill("");
+        const straddle: Array<[number, number, string]> = [];
+        const phases: Array<[number, number, string]> = [];
+        for (const c of blockLines[h]) {
+          const a = c.x, b = c.x + widthOf(c), m = (a + b) / 2;
+          let k = rs.findIndex(([lo, hi]) => m >= lo - 1 && m <= hi + 1);
+          if (k < 0) {
+            const dist = ([lo, hi]: [number, number]) => (m < lo ? lo - m : m - hi);
+            k = 0;
+            for (let j = 1; j < rs.length; j++) if (dist(rs[j]) < dist(rs[k])) k = j;
+            straddle.push([a, b, c.str]);
+          }
+          head[k] = head[k] ? head[k] + " " + c.str : c.str;
+          if (PANEL_PHASE_HEAD_RE.test(c.str.trim())) phases.push([k, m, c.str]);
         }
-        head[k] = head[k] ? head[k] + " " + c.str : c.str;
-        if (PANEL_PHASE_HEAD_RE.test(c.str.trim())) phases.push([k, m, c.str]);
+        for (const [a, b, str] of straddle) {
+          rs.forEach(([lo, hi], k) => {
+            if (!head[k] && Math.min(b, hi) - Math.max(a, lo) >= PANEL_HEAD_OVERLAP) head[k] = str;
+          });
+        }
+        // A short phase heading ("A", "B [KVA]") centred over its two loads
+        // falls over one of them: it names the empty one it leans toward too.
+        for (const [k, m, str] of phases) {
+          const [lo, hi] = rs[k];
+          const j = m < (lo + hi) / 2 ? k - 1 : k + 1;
+          if (j >= 0 && j < rs.length && !head[j]) head[j] = str;
+        }
+        rows[h] = head;
       }
-      for (const [a, b, str] of straddle) {
-        rs.forEach(([lo, hi], k) => {
-          if (!head[k] && Math.min(b, hi) - Math.max(a, lo) >= PANEL_HEAD_OVERLAP) head[k] = str;
-        });
-      }
-      // A short phase heading ("A", "B [KVA]") centred over its two loads
-      // falls over one of them: it names the empty one it leans toward too.
-      for (const [k, m, str] of phases) {
-        const [lo, hi] = rs[k];
-        const j = m < (lo + hi) / 2 ? k - 1 : k + 1;
-        if (j >= 0 && j < rs.length && !head[j]) head[j] = str;
-      }
-      rows[0] = head;
     }
 
     // What sits between the title and the header: a panel's ratings (supply,

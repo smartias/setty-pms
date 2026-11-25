@@ -305,6 +305,48 @@ const W = (s) => s.length * 5;
   for (const r of p.rows) for (const c of r) assert.ok(!/^\d+\.\d+ \d+\.\d+$/.test(c), c);
 }
 
+// Panels whose title is centred over the panel (Tabler E612: 206 pt in from
+// its left edge, not the usual ~40), three in a row with only 36 pt between
+// them, less than the gaps inside one. Each window used to start at its
+// title and take the next panel's left-hand columns, and the last one took
+// the title block. The row's first panel shows how far its panels start left
+// of their titles. Their heading takes two lines ("CKT." over "NO.").
+{
+  const y0 = 786, pitch = 739;
+  const cols = [["NO.", 0, 17], ["LOAD DESCRIPTION", 61, 94], ["BKR", 198, 21], ["POLES", 232, 32], ["PHASE A VA", 279, 58], ["PHASE B VA", 358, 59], ["POLES", 435, 33], ["BKR", 484, 21], ["LOAD DESCRIPTION", 549, 94], ["NO.", 687, 17]];
+  const panel = (name, x0, loads) => {
+    const r = [run("PANELBOARD: " + name, x0 + 206, y0, 207)];
+    r.push(run("LOCATION: UNIT " + name, x0 + 40, y0 - 20, 120), run("BUS AMPS: 100 A", x0 + 400, y0 - 20, 80));
+    r.push(run("CKT.", x0, y0 - 84, 21), run("CKT.", x0 + 686, y0 - 84, 21));
+    cols.forEach(([s, dx, w]) => r.push(run(s, x0 + dx, y0 - 97, w)));
+    loads.forEach(([l, a, b, rt], i) => {
+      const y = y0 - 110 - i * 13, ph = i % 2 === 0 ? 279 : 358;
+      r.push(run(String(2 * i + 1), x0 + 6, y, 5), run(l, x0 + 28, y, W(l)), run("20 A", x0 + 199, y, 20), run("1", x0 + 245, y, 5));
+      r.push(run(a, x0 + ph, y, W(a)), run(b, x0 + ph + 37, y, W(b)));
+      r.push(run("1", x0 + 449, y, 5), run("20 A", x0 + 485, y, 20), run(rt, x0 + 516, y, W(rt)), run(String(2 * i + 2), x0 + 692, y, 5));
+    });
+    return r;
+  };
+  const loads = (tag) => [["LIGHTING", "172", "1080", "REC- BEDROOM " + tag], ["REC- HALL", "1440", "1080", "REC- BEDROOM"], ["GFI REC- RR", "270", "1080", "DISPOSAL"], ["SPARE", "0", "0", "SPARE"]];
+  const raw = [...panel("P1", -1160, loads("A")), ...panel("P2", -1160 + pitch, loads("B")), ...panel("P3", -1160 + 2 * pitch, loads("C"))];
+  // The title block beside the last panel.
+  raw.push(run("IT IS A VIOLATION OF STATE EDUCATION LAW", -1160 + 2 * pitch + 740, y0 - 110, 190));
+  const tables = extractSheetTables(orientSheetItems(raw));
+  assert.deepEqual(tables.map((t) => t.title), ["PANELBOARD: P1", "PANELBOARD: P2", "PANELBOARD: P3"]);
+  for (const [k, t] of tables.entries()) {
+    const tag = "ABC"[k];
+    assert.equal(t.columns, 12, t.title);
+    assert.deepEqual(t.rows[0], ["CKT.", "", "", "", "", "", "", "", "", "", "", "CKT."]);
+    assert.deepEqual(t.rows[1], ["NO.", "LOAD DESCRIPTION", "BKR", "POLES", "PHASE A VA", "PHASE A VA", "PHASE B VA", "PHASE B VA", "POLES", "BKR", "LOAD DESCRIPTION", "NO."]);
+    assert.deepEqual(t.rows[2], ["1", "LIGHTING", "20 A", "1", "172", "1080", "", "", "1", "20 A", "REC- BEDROOM " + tag, "2"]);
+    assert.deepEqual(t.rows[3], ["3", "REC- HALL", "20 A", "1", "", "", "1440", "1080", "1", "20 A", "REC- BEDROOM", "4"]);
+    assert.ok(t.details[0].includes("UNIT P" + (k + 1)));
+    // Nothing from a neighbour or the title block.
+    assert.ok(!JSON.stringify(t).includes("VIOLATION"));
+    for (const o of "ABC".replace(tag, "")) assert.ok(!JSON.stringify(t.rows).includes("REC- BEDROOM " + o));
+  }
+}
+
 // ── drift anchors ───────────────────────────────────────────────────────────
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, "index.ts"), "utf8");
@@ -314,7 +356,7 @@ for (const anchor of [
   'from "./scheduleExtract.ts"',
   "items = orientSheetItems(tc.items as any[]);",
   // A changed extractor must not be served from an older saved parse.
-  'const SCHED_PARSER = "sched-v4";',
+  'const SCHED_PARSER = "sched-v5";',
   // Shared resolver serves both drawing tools.
   "async function resolveIndexedSheet",
 ] ) {
