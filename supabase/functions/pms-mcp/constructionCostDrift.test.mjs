@@ -86,3 +86,19 @@ test("the estimate line tools are registered, fenced and tied to the project", (
   assert.ok(html.includes("function CostEstimateLinesTable(") && html.includes("pms_cost_estimate_lines?select="));
   assert.ok(html.includes("save_cost_estimate_lines"), "the PMS request asks for the lines to be stored");
 });
+
+// get_cost_estimates reads the same data for a design narrative or a briefing,
+// behind the same fence, and writes nothing: no "started" stamp, no record
+// update. The design-narrative skill names it.
+test("get_cost_estimates is read-only and fenced like fee data", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  const a = src.indexOf('mcp.tool("get_cost_estimates"'), b = src.indexOf('mcp.tool("get_cost_estimate_packet"');
+  assert.ok(a > 0 && b > a, "registered just before the packet");
+  const tool = src.slice(a, b);
+  assert.ok(tool.includes("costReviewGate(projectNumber, false)"), "signed-in, fees permission, no edit right needed");
+  for (const w of ["markCostReviewStarted(", "updateProjectRecord(", "planCostEstimateReview(", "sbPatch(", "sbPost("]) assert.ok(!tool.includes(w), "writes nothing: " + w);
+  assert.ok(tool.includes("estimateReviewView(r)") && tool.includes("costLogOf(p)"));
+  const skill = readFileSync(new URL("../../../.claude/skills/design-narrative/SKILL.md", import.meta.url), "utf8");
+  assert.ok(skill.includes("`get_cost_estimates`"), "the design-narrative skill reads the cost estimate");
+  assert.ok(!skill.includes("`get_cost_estimate_packet`"), "and never starts a review from a narrative");
+});
