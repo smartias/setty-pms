@@ -41,7 +41,21 @@ export const PORTAL_INTAKE_BY = "portal-ca-intake";
 export const PORTAL_VENDOR = "Client portal";
 
 export type PortalFile = { id: string; name: string; webUrl: string; lastModified: string; size?: number; driveId?: string };
-export type PortalProject = { pid: string; rfisUrl: string; submittalsUrl: string };
+// A portal folder as the project records it. The web address breaks when
+// someone moves or renames the folder in SharePoint (SAIP26119.09 was dragged
+// into another project's folder on 2026-11-24); the Graph item id does not, so
+// it is tried first when known (the PMS records it since 2026-11-25).
+export type PortalFolderRef = { url: string; itemId?: string; driveId?: string };
+export type PortalProject = {
+  pid: string; rfisUrl: string; submittalsUrl: string;
+  rfisFolderId?: string; submittalsFolderId?: string; driveId?: string;
+};
+// What listForms found. folderId/driveId are the folder's own; resolvedBy says
+// whether the id or the web address found it.
+export type PortalFolderListing = {
+  folderWebUrl: string; files: PortalFile[];
+  folderId?: string; driveId?: string; resolvedBy?: "id" | "url";
+};
 export type PortalIntakeDeps = {
   at: string;                       // ISO timestamp stamped on new records
   dryRun: boolean;
@@ -50,7 +64,7 @@ export type PortalIntakeDeps = {
   recentDays: number;               // only forms modified within this many days
   now: () => number;
   projects: () => Promise<PortalProject[]>;
-  listForms: (folderUrl: string) => Promise<{ folderWebUrl: string; files: PortalFile[] }>;
+  listForms: (folder: PortalFolderRef) => Promise<PortalFolderListing>;
   readForm: (file: PortalFile) => Promise<unknown>;   // unzipped parts: Map or {path: bytes}
   // Version-guarded read-modify-write; mutate returns the SAME object for "no change".
   writeProject: (pid: string, mutate: (proj: any) => any) => Promise<unknown>;
@@ -59,6 +73,8 @@ export type PortalIntakeDeps = {
 
 export type PortalIntakeItem = { project: string; kind: Kind; number: string; title: string; file: string };
 export type PortalIntakeSummary = {
+  // projects whose folder ids (or, after a move, folder URLs) were recorded
+  foldersRecorded?: number;
   at: string; dryRun: boolean; projects: number; projectsChecked: number; archived: number;
   created: { rfi: number; submittal: number }; items: PortalIntakeItem[];
   skipped: { seen: number; old: number; notForm: number; incomplete: number; template: number };
@@ -151,10 +167,14 @@ export async function runPortalIntakePass(d: PortalIntakeDeps): Promise<PortalIn
       // 2. candidates per folder.
       type Cand = { kind: Kind; file: PortalFile; folderWebUrl: string };
       const cands: Cand[] = [];
+      const learned: Partial<Record<Kind, PortalFolderListing>> = {};
       for (const kind of ["rfi", "submittal"] as Kind[]) {
         const url = kind === "rfi" ? p.rfisUrl : p.submittalsUrl;
-        if (!url) continue;
-        const { folderWebUrl, files } = await d.listForms(url);
+        const itemId = kind === "rfi" ? p.rfisFolderId : p.submittalsFolderId;
+        if (!url && !itemId) continue;
+        const listing = await d.listForms({ url, itemId, driveId: p.driveId });
+        const { folderWebUrl, files } = listing;
+        if (listing.folderId) learned[kind] = listing;
         for (const f of files) {
           if (!isXlsx(f.name)) continue;
           if (f.name.toLowerCase() === KINDS[kind].formFile.toLowerCase()) { s.skipped.template++; continue; }
@@ -163,6 +183,20 @@ export async function runPortalIntakePass(d: PortalIntakeDeps): Promise<PortalIn
           const prev = skippedBefore[String(f.id)];
           if (prev && (prev.lastModified || "") === (f.lastModified || "")) { s.skipped.incomplete++; continue; }
           cands.push({ kind, file: f, folderWebUrl });
+        }
+      }
+      // 2b. remember where the folders are: their ids when not recorded yet, and
+      // their current address when the id found them somewhere else (a move).
+      // Never in a dry run, which leaves the project untouched.
+      if (!d.dryRun) {
+        const patch = folderPatch(snapshot?.portalIntake || {}, learned);
+        if (patch) {
+          await d.writeProject(p.pid, (proj: any) => {
+            const fresh = folderPatch(proj.portalIntake || {}, learned);
+            return fresh ? { ...proj, portalIntake: { ...(proj.portalIntake || {}), ...fresh } } : proj;
+          });
+          s.foldersRecorded = (s.foldersRecorded || 0) + 1;
+          d.log?.(`${label}: recorded portal folder ${Object.keys(patch).join(", ")}`);
         }
       }
       if (!cands.length) continue;
@@ -232,6 +266,33 @@ export async function runPortalIntakePass(d: PortalIntakeDeps): Promise<PortalIn
   if (!s.stoppedEarly && projects.length > d.maxProjects) s.stoppedEarly = true;
   s.ms = Math.round(d.now() - t0);
   return s;
+}
+
+// Compare web addresses whatever their %-encoding (Graph returns spaces as-is,
+// the PMS stores them encoded).
+function sameUrl(a: string, b: string): boolean {
+  const norm = (u: string) => { try { return decodeURI(String(u || "")).replace(/\/+$/, "").toLowerCase(); } catch { return String(u || "").toLowerCase(); } };
+  return norm(a) === norm(b);
+}
+
+// The portalIntake fields to change so the record matches what listForms found,
+// or null when it already does. Ids are added when missing or different; a URL
+// is replaced only when the id found the folder (the address alone proves
+// nothing about where the folder went).
+export function folderPatch(
+  intake: Record<string, any>, learned: Partial<Record<Kind, PortalFolderListing>>,
+): Record<string, string> | null {
+  const patch: Record<string, string> = {};
+  for (const kind of ["rfi", "submittal"] as Kind[]) {
+    const l = learned[kind];
+    if (!l || !l.folderId) continue;
+    const idKey = kind === "rfi" ? "rfisFolderId" : "submittalsFolderId";
+    const urlKey = kind === "rfi" ? "rfisUrl" : "submittalsUrl";
+    if (intake[idKey] !== l.folderId) patch[idKey] = l.folderId;
+    if (l.driveId && intake.driveId !== l.driveId) patch.driveId = l.driveId;
+    if (l.resolvedBy === "id" && l.folderWebUrl && !sameUrl(intake[urlKey] || "", l.folderWebUrl)) patch[urlKey] = l.folderWebUrl;
+  }
+  return Object.keys(patch).length ? patch : null;
 }
 
 export const REQUIRED_FIELDS: Record<Kind, string[]> = {
