@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-25-pms-v222-shared-greeting-name";
+    window.__appVersion = "2026-11-25-pms-v223-staff-photos";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1171,6 +1171,130 @@ async function pmsSaveUserPrefs(patch) {
   const rows = await res.json();
   window.__pmsPrefs = { loaded: true, row: rows[0] || body };
   return window.__pmsPrefs.row;
+}
+
+// ── Staff photos ─────────────────────────────────────────────────────────────
+// A staff record carries only `photoPath`. The picture itself is a 256px square
+// JPEG in the public `staff-photos` Storage bucket (migration
+// 20261125170000_staff_photos_bucket.sql). Never put the image in the record as
+// a data: URL: pms_meta.data.staff is ONE JSON document holding every person,
+// loaded at startup, rewritten on each staff edit and copied into the
+// localStorage snapshot.
+const STAFF_PHOTO_BUCKET = "staff-photos";
+const STAFF_PHOTO_SIZE = 256;
+function staffPhotoUrl(path) {
+  if (!path) return "";
+  return SUPABASE_URL + "/storage/v1/object/public/" + STAFF_PHOTO_BUCKET + "/" + String(path).split("/").map(encodeURIComponent).join("/");
+}
+// Project team rows and assignee lists are copies of a directory entry made
+// when the person was added, so they have no photoPath of their own. They are
+// matched back to the directory by email, then by name. A name match is
+// refused when both sides have an email and the emails differ (two people who
+// share a name).
+function buildStaffPhotoIndex(staff) {
+  const byEmail = new Map(), byName = new Map();
+  for (const s of staff || []) {
+    if (!s || !s.photoPath) continue;
+    const mail = String(s.email || "").trim().toLowerCase();
+    const name = String(s.name || "").trim().toLowerCase();
+    if (mail && !byEmail.has(mail)) byEmail.set(mail, s.photoPath);
+    if (name && !byName.has(name)) byName.set(name, { path: s.photoPath, mail });
+  }
+  return { byEmail, byName };
+}
+function staffPhotoPathFor(person, index) {
+  if (!person) return "";
+  if (person.photoPath) return person.photoPath;
+  if (!index) return "";
+  const mail = String(person.email || "").trim().toLowerCase();
+  if (mail && index.byEmail.has(mail)) return index.byEmail.get(mail);
+  const hit = index.byName.get(String(person.name || "").trim().toLowerCase());
+  if (!hit || (mail && hit.mail && hit.mail !== mail)) return "";
+  return hit.path;
+}
+function staffInitials(name) {
+  return String(name || "").trim().split(/\s+/).filter(Boolean).map(n => n[0]).slice(0, 2).join("");
+}
+// The directory the avatars look people up in. The app root refreshes it
+// whenever the staff list changes (setStaffPhotoDirectory), before its children
+// render.
+let _staffPhotoIndex = buildStaffPhotoIndex([]);
+function setStaffPhotoDirectory(staff) { _staffPhotoIndex = buildStaffPhotoIndex(staff); }
+
+// Crop the picked image to a square and shrink it, in the browser, so a 6 MB
+// phone photo becomes ~15 KB before it is uploaded. The crop keeps the full
+// width of a portrait shot and leans toward the top, where the face usually is.
+async function staffPhotoBlobFromFile(file) {
+  if (!file || !/^image\//.test(file.type || "")) throw new Error("That file is not an image.");
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("This browser could not open that image. Save it as a JPEG or PNG and try again."));
+      el.src = url;
+    });
+    const side = Math.min(img.naturalWidth, img.naturalHeight);
+    if (!side) throw new Error("That image is empty.");
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = STAFF_PHOTO_SIZE;
+    canvas.getContext("2d").drawImage(img,
+      (img.naturalWidth - side) / 2, (img.naturalHeight - side) * 0.25, side, side,
+      0, 0, STAFF_PHOTO_SIZE, STAFF_PHOTO_SIZE);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.86));
+    if (!blob) throw new Error("Could not prepare the photo.");
+    return blob;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+// Each upload gets a new file name, so a replaced photo shows at once instead
+// of waiting out the browser and CDN caches of the old address.
+async function uploadStaffPhoto(staffId, blob) {
+  await settyAuthReady;
+  const path = String(staffId).replace(/[^A-Za-z0-9_-]/g, "") + "/" + Date.now().toString(36) + ".jpg";
+  const res = await fetch(SUPABASE_URL + "/storage/v1/object/" + STAFF_PHOTO_BUCKET + "/" + path, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_ANON_KEY, Authorization: "Bearer " + settyAuth.token(),
+      "Content-Type": "image/jpeg", "cache-control": "max-age=31536000",
+    },
+    body: blob,
+  });
+  if (!res.ok) {
+    const txt = (await res.text()).slice(0, 200);
+    throw new Error(res.status === 403 || /row-level security/i.test(txt)
+      ? "Your role cannot upload staff photos."
+      : "Photo upload failed (" + res.status + "): " + txt);
+  }
+  return path;
+}
+async function deleteStaffPhoto(path) {
+  await settyAuthReady;
+  const res = await fetch(SUPABASE_URL + "/storage/v1/object/" + STAFF_PHOTO_BUCKET + "/" + String(path).split("/").map(encodeURIComponent).join("/"), {
+    method: "DELETE",
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: "Bearer " + settyAuth.token() },
+  });
+  if (!res.ok && res.status !== 404) throw new Error("Photo delete failed (" + res.status + "): " + (await res.text()).slice(0, 200));
+}
+// A person's photo in a circle, or their initials when there is none (or the
+// file will not load). `person` is anything with a name and, ideally, an email:
+// a directory entry or a project team row. `src` overrides the lookup (the
+// preview of a photo not uploaded yet). Decorative: the name is always beside it.
+function StaffAvatar({ person, size = 36, src, style }) {
+  const url = src || staffPhotoUrl(staffPhotoPathFor(person, _staffPhotoIndex));
+  const [failedUrl, setFailedUrl] = React.useState("");
+  const box = { width: size, height: size, borderRadius: "50%", flexShrink: 0, border: "1px solid " + P.accent, boxSizing: "border-box" };
+  if (url && failedUrl !== url) {
+    return <img src={url} alt="" loading="lazy" onError={() => setFailedUrl(url)}
+      style={{ ...box, objectFit: "cover", display: "block", background: P.accentDim, ...(style || {}) }} />;
+  }
+  return (
+    <div aria-hidden="true" style={{ ...box, background: P.accentDim, display: "flex", alignItems: "center", justifyContent: "center",
+      fontWeight: 700, fontSize: Math.max(9, Math.round(size * 0.39)), color: P.accentLight, ...(style || {}) }}>
+      {staffInitials(person && person.name)}
+    </div>
+  );
 }
 
 async function sbFetch(method, path, body) {
@@ -14486,6 +14610,7 @@ function CaInlineAssign({ item, staffList, onPatch, suggest }) {
           {staffList.map(m => (
             <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 4px", cursor: "pointer", whiteSpace: "nowrap" }}>
               <input type="checkbox" checked={ids.includes(m.id)} onChange={() => toggle(m.id)} />
+              <StaffAvatar person={m} size={20} />
               {m.name || m.role}
             </label>
           ))}
@@ -18425,7 +18550,8 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
             const memberDiscs = m.disciplines || (m.discipline ? [m.discipline] : []);
             return (
               <tr key={m.id}>
-                <td style={{ position: "relative" }}>
+                <td style={{ position: "relative", whiteSpace: "nowrap" }}>
+                  <StaffAvatar person={m} size={26} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 8 }} />
                   <input
                     value={m.name}
                     onChange={e => {
@@ -35901,6 +36027,12 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
   const [staffSubModal, setStaffSubModal] = React.useState(null);
   const [timesheetStaff, setTimesheetStaff] = React.useState(null); // staff member to generate timesheet for
   const [showInactive, setShowInactive] = React.useState(false);
+  // A photo picked in the edit form waits here (already cropped and shrunk) and
+  // is uploaded only on Save, so Cancel leaves nothing behind in Storage.
+  const [photoDraft, setPhotoDraft] = React.useState(null); // { blob, url } | null
+  const [photoBusy, setPhotoBusy] = React.useState(false);
+  const [photoError, setPhotoError] = React.useState("");
+  const photoInputRef = React.useRef(null);
 
   // staffName → open items across active projects (excludes On Hold / Lost)
   const now = new Date();
@@ -35916,24 +36048,75 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
     setEditingId(s.id);
   }
 
+  function clearPhotoDraft() {
+    if (photoDraft) URL.revokeObjectURL(photoDraft.url);
+    setPhotoDraft(null);
+  }
+
   function cancelEdit() {
+    clearPhotoDraft();
+    setPhotoError("");
     setEditingId(null);
     setForm(null);
   }
 
-  function saveForm() {
-    if (!form.name.trim()) return;
-    if (editingId === "__new__") {
-      onUpdateStaff([...staff, form]);
-    } else {
-      onUpdateStaff(staff.map(s => s.id === editingId ? form : s));
+  async function pickPhoto(file) {
+    if (!file) return;
+    setPhotoError("");
+    try {
+      const blob = await staffPhotoBlobFromFile(file);
+      clearPhotoDraft();
+      setPhotoDraft({ blob, url: URL.createObjectURL(blob) });
+    } catch (e) {
+      setPhotoError(e.message || String(e));
     }
+  }
+
+  function removePhoto() {
+    clearPhotoDraft();
+    setPhotoError("");
+    const next = { ...form };
+    delete next.photoPath;
+    setForm(next);
+  }
+
+  // The old file is deleted only after the record has been pointed at the new
+  // one (or at nothing). A failed delete leaves a stray 15 KB file, not a
+  // broken record, so it is logged rather than shown.
+  function dropStoredPhoto(path) {
+    deleteStaffPhoto(path).catch(e => console.warn("[staff-photo] could not delete " + path + ":", e));
+  }
+
+  async function saveForm() {
+    if (!form.name.trim() || photoBusy) return;
+    const before = editingId === "__new__" ? null : staff.find(s => s.id === editingId);
+    let next = form;
+    if (photoDraft) {
+      setPhotoBusy(true);
+      setPhotoError("");
+      try {
+        next = { ...form, photoPath: await uploadStaffPhoto(form.id, photoDraft.blob) };
+      } catch (e) {
+        setPhotoError((e.message || String(e)) + " Nothing was saved. Try again, or remove the photo and save without it.");
+        setPhotoBusy(false);
+        return;
+      }
+      setPhotoBusy(false);
+    }
+    if (editingId === "__new__") {
+      onUpdateStaff([...staff, next]);
+    } else {
+      onUpdateStaff(staff.map(s => s.id === editingId ? next : s));
+    }
+    if (before && before.photoPath && before.photoPath !== next.photoPath) dropStoredPhoto(before.photoPath);
     cancelEdit();
   }
 
   function deleteStaff(id) {
     if (!window.confirm("Delete this staff member from the directory?\n\nThis removes the record and its id permanently. If they have simply left or moved on, use \"Mark inactive\" instead — that hides them everywhere while keeping historical hours and project assignments resolvable.\n\nThey will remain on any projects they are already assigned to either way.")) return;
+    const gone = staff.find(s => s.id === id);
     onUpdateStaff(staff.filter(s => s.id !== id));
+    if (gone && gone.photoPath) dropStoredPhoto(gone.photoPath);
   }
 
   function toggleDisc(disc) {
@@ -35963,6 +36146,26 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
         </div>
         <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 12, padding: 28, maxWidth: 540 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <Field label="Photo" style={{ gridColumn: "1 / -1" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                <StaffAvatar person={form} size={72} src={photoDraft ? photoDraft.url : ""} />
+                <div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <Btn small variant="ghost" disabled={photoBusy} onClick={() => photoInputRef.current && photoInputRef.current.click()}>
+                      {photoDraft || form.photoPath ? "Change photo" : "Upload photo"}
+                    </Btn>
+                    {(photoDraft || form.photoPath) && <Btn small variant="ghost" disabled={photoBusy} onClick={removePhoto}>Remove</Btn>}
+                  </div>
+                  <input ref={photoInputRef} type="file" accept="image/jpeg,image/png,image/webp" style={{ display: "none" }}
+                    aria-label="Choose a photo"
+                    onChange={e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; pickPhoto(f); }} />
+                  <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>
+                    JPEG or PNG. It is cropped to a square and shrunk before upload{photoDraft ? "; saved when you press Save." : "."}
+                  </div>
+                  {photoError && <div role="alert" style={{ fontSize: 12, color: P.red, marginTop: 6 }}>{photoError}</div>}
+                </div>
+              </div>
+            </Field>
             <Field label="Full Name" style={{ gridColumn: "1 / -1" }}>
               <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
                 placeholder="e.g. Jane Smith" style={{ width: "100%" }} autoFocus />
@@ -36034,7 +36237,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
             </Field>
           </div>
           <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
-            <Btn onClick={saveForm} disabled={!form.name.trim()}>{editingId === "__new__" ? "Add to Directory" : "Save Changes"}</Btn>
+            <Btn onClick={saveForm} disabled={!form.name.trim() || photoBusy}>{photoBusy ? "Uploading photo…" : editingId === "__new__" ? "Add to Directory" : "Save Changes"}</Btn>
             <Btn variant="ghost" onClick={cancelEdit}>Cancel</Btn>
           </div>
         </div>
@@ -36094,9 +36297,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                   <span style={{ color: P.textDim, fontSize: 12, minWidth: 12 }}>{isExpanded ? "▾" : "▸"}</span>
 
                   {/* Avatar */}
-                  <div style={{ width: 36, height: 36, borderRadius: "50%", background: P.accentDim, border: "1px solid " + P.accent, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 14, color: P.accentLight, flexShrink: 0 }}>
-                    {s.name.split(" ").map(n => n[0]).slice(0, 2).join("")}
-                  </div>
+                  <StaffAvatar person={s} size={36} style={s.inactive ? { opacity: 0.55 } : null} />
 
                   {/* Name + role */}
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -37205,6 +37406,8 @@ function App() {
   const [projects, setProjects] = useState([]);
   const [termContracts, setTermContracts] = useState([]);
   const [staff, setStaff] = useState([]);
+  // Avatars anywhere in the app resolve a person's photo through this.
+  React.useMemo(() => setStaffPhotoDirectory(staff), [staff]);
   const [clients, setClients] = useState([]);
   const [view, setView] = useState(() => {
     // Deep link: read hash on load e.g. #project:SAPX246008.00 — or, from an

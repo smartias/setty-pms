@@ -75,6 +75,16 @@ browser (PMS pages) or from the connector (app permissions).
 - Encode Graph paths per segment with `encodeSpPath`, not one
   `encodeURIComponent` over the whole path.
 
+## Staff photos
+
+- A staff record holds only `photoPath`; the picture is a 256px JPEG in the
+  public `staff-photos` Storage bucket (uploads need `projects.edit`). Never
+  store an image in the record: `pms_meta.data.staff` is one JSON document with
+  every person in it.
+- Show a person with `<StaffAvatar person={...} />`. Team rows have no
+  `photoPath`; the avatar finds the directory entry by email, then name
+  (`staffPhotos.test.mjs`).
+
 ## Debugging "it still doesn't work"
 
 - Check production actually deployed (`main` → Vercel) and then check the
