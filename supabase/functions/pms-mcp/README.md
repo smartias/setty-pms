@@ -1932,13 +1932,14 @@ responsible trade, review comments and a dated history.
 **A merge to `main` deploys this function.** It is declared in
 `supabase/config.toml`, and Supabase's GitHub integration deploys it on every
 merge (and builds it on every PR preview). That path has no health check, so
-after a merge, check `/health` for the new `BUILD`. If it hasn't changed after
-a couple of minutes, run the workflow below, which redeploys and verifies.
+after a merge, check that `/health` reports a new `build` (`deploy-<n>`, with
+`n` one higher than before the merge). If it hasn't changed after a couple of
+minutes, run the workflow below, which redeploys and verifies.
 Everything that follows still works and is the way to deploy by hand.
 
-One-command version: `deploy.ps1` in this folder pulls main, reads the BUILD
-constant, deploys, and polls `/health` until that build answers (see the header
-of the script). A pending deploy, when there is one, is described in
+One-command version: `deploy.ps1` in this folder pulls main, notes the build
+that is live, deploys, and polls `/health` until a new build answers (see the
+header of the script). A pending deploy, when there is one, is described in
 `DEPLOY-NEXT.md` beside it. The manual steps follow.
 
 **From GitHub:** the `Deploy pms-mcp` workflow (Actions tab, Run workflow, main only) does the
@@ -1977,7 +1978,7 @@ Notes, each learned the hard way (14 Sep 2026):
 
 ## After every deploy
 
-1. **Health check.** `curl .../pms-mcp/health` returns `{"ok":true,"build":"<BUILD>"}`. A 200 proves it compiled and booted, which catches most mistakes immediately — and `build` proves *your* copy is the one running, so bump the `BUILD` constant with every deploy and check it here rather than assuming.
+1. **Health check.** `curl .../pms-mcp/health` returns `{"ok":true,"build":"<BUILD>"}`. A 200 proves it compiled and booted, which catches most mistakes immediately — and `build` (`deploy-<n>`, named by the runtime from its deployment id, `buildLabel.ts`) proves a NEW copy is the one running: note it before you deploy and check it changed here rather than assuming.
 2. **Confirm the auth gate.** An unauthenticated `POST` to `/mcp` should return `401`.
 3. **Verify the deploy is byte-exact** against this directory, using `get_edge_function` and comparing hashes. This is what keeps the promise above true.
 4. **Reconnect any Claude client** if tools or their descriptions changed. Clients cache the tool list at connect time, so existing sessions will not see changes until they disconnect and reconnect.

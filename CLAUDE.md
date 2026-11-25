@@ -153,7 +153,8 @@ browser (PMS pages) or from the connector (app permissions).
 - **That path has no health check.** After merging a change to `pms-mcp`,
   confirm
   `https://khxmgjilwhdguuepbhne.supabase.co/functions/v1/pms-mcp/health`
-  reports the new `BUILD` (allow a couple of minutes). If it doesn't, run the
+  reports a new `build` (allow a couple of minutes): it reads `deploy-<n>`,
+  and `n` goes up by one with every deploy, so note it before merging. If it doesn't, run the
   "Deploy pms-mcp" workflow (Actions tab, `main` selected), which redeploys
   and verifies. The other "Deploy ..." workflows do the same for
   `proposal-draft` and `pms-user-emails`.
@@ -193,8 +194,12 @@ browser (PMS pages) or from the connector (app permissions).
   responses as `text/plain` in a CSP sandbox, so the browser shows raw source.
   Put the page in the repo (`Unsubscribe.html`) and have it call the function
   for JSON (`unsubscribe`; `?health=1` reports its `BUILD`).
-- Still bump `BUILD` in `pms-mcp/index.ts` with every change to it: it is the
-  only way to tell which copy is live.
+- Do NOT edit `BUILD` in `pms-mcp/index.ts`. Since 2026-11-25 it names itself
+  from the deployment (`deploy-<n>`, `buildLabel.ts`), because a hand-bumped
+  string made every two changes in flight conflict on that one line. To tell
+  whether a change is live: the number on `/health` went up after the merge,
+  and for certainty compare the deployed source with `get_edge_function`.
+  `proposal-draft` and `unsubscribe` still carry hand-written `BUILD` strings.
 
 ## Accolades.html (the Accolade-O-Meter)
 
