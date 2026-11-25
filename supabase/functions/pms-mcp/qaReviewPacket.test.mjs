@@ -167,11 +167,23 @@ test("a large received PDF with no telling name is a possible background; ours a
   assert.equal(possibleBackground({ name: "Set.pdf", size_bytes: null }), false, "no size, no claim");
 });
 
+test("a re-sent set with the same name shows the newest copy, even when it is smaller", async () => {
+  const rows = [
+    { item_id: "old", name: "Library Set.PDF", folder_path: "Emails/2026_06_01 Set", discipline: null, set_date: "2026-06-01", modified_at: "2026-06-01T10:00:00Z", size_bytes: 80_000_000 },
+    { item_id: "new", name: "library set.pdf", folder_path: "Emails/2026_10_01 Rev", discipline: null, set_date: "2026-10-01", modified_at: "2026-10-01T10:00:00Z", size_bytes: 60_000_000 },
+    { item_id: "dupe", name: "Library Set.pdf", folder_path: "Emails/2026_10_02 FW", discipline: null, set_date: "2026-10-01", modified_at: "2026-10-02T10:00:00Z", size_bytes: 59_000_000 },
+    { item_id: "other", name: "Hall.pdf", folder_path: "Emails/2026_09_01", discipline: null, modified_at: "2026-09-01T10:00:00Z", size_bytes: 70_000_000 },
+  ];
+  const p = await buildQaReviewPacket(deps({ backgroundFiles: async () => rows }), ARGS);
+  // "new" and "dupe" share the newest date (set_date wins over modified_at); the larger one stays.
+  assert.deepEqual(p.backgrounds.possible.map((f) => [f.itemId, f.date]), [["other", "2026-09-01"], ["new", "2026-10-01"]]);
+});
+
 test("backgrounds named by building are offered as possible, and 'not found' says by name only", async () => {
   const p = await buildQaReviewPacket(deps({ backgroundFiles: async () => RECEIVED }), ARGS);
   assert.deepEqual(p.backgrounds.found, []);
-  assert.deepEqual(p.backgrounds.possible.map((f) => [f.itemId, f.megabytes]), [["b2", 90], ["b1", 48]], "largest first, one line per file name");
-  assert.equal(p.backgrounds.possible[1].date, "2026-11-17");
+  assert.deepEqual(p.backgrounds.possible.map((f) => [f.itemId, f.megabytes]), [["b2", 90], ["b1x", 48]], "largest first, one line per file name, the newest copy");
+  assert.equal(p.backgrounds.possible[1].date, "2026-11-18");
   assert.deepEqual(p.backgrounds.notFound, ["Architectural", "Structural"]);
   assert.ok(p.backgrounds.notFoundNote.startsWith("Not found BY NAME. That is not the same as missing"));
   assert.ok(p.backgrounds.possibleNote.includes("open the first page of each"));

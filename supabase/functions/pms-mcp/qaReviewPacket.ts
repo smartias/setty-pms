@@ -201,11 +201,19 @@ export async function buildQaReviewPacket(deps: QaPacketDeps, a: QaPacketArgs): 
     };
   }).sort((x, y) => String(x.discipline).localeCompare(String(y.discipline)));
   const notFound = ["A", "S"].filter((d) => !byDisc.has(d)).map((d) => BACKGROUND_NAMES[d]);
-  // The same file is often filed under several emails: one line per name.
-  const seen = new Set<string>();
-  const possible = bgRows.filter(possibleBackground)
-    .sort((x: any, y: any) => (Number(y.size_bytes) || 0) - (Number(x.size_bytes) || 0))
-    .filter((f: any) => { const k = String(f.name ?? "").toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+  // The same file name is often filed under several emails, and a re-sent set
+  // can keep its name: one line per name, and that line is the NEWEST copy
+  // (larger on a tie), so the reviewer opens the current set, not the first one
+  // received. Only then are the names ordered largest first.
+  const newestByName = new Map<string, any>();
+  for (const f of bgRows.filter(possibleBackground)) {
+    const k = String(f.name ?? "").toLowerCase();
+    const cur = newestByName.get(k);
+    const order = cur ? String(dated(f) ?? "").localeCompare(String(dated(cur) ?? "")) : 1;
+    if (order > 0 || (order === 0 && (Number(f.size_bytes) || 0) > (Number(cur.size_bytes) || 0))) newestByName.set(k, f);
+  }
+  const possible = [...newestByName.values()]
+    .sort((x: any, y: any) => (Number(y.size_bytes) || 0) - (Number(x.size_bytes) || 0));
   const backgrounds = {
     found,
     ...(possible.length ? {
