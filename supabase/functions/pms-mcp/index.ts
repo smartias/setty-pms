@@ -10983,7 +10983,7 @@ mcp.tool("get_qa_review_packet", {
       search: async (pattern, limit) => (await sbRpc("pms_drawing_search", { p_prefix: numPrefix, p_patterns: [pattern], p_folder: folder, p_limit: limit })) || [],
       schedules: () => sbGetAll("pms_drawing_schedules?select=sheet_no,page,folder_path,cached_at&project_prefix=eq." + enc(numPrefix) + "&has_text=is.true&parser=eq." + SCHED_PARSER),
       // Received from others: the Incoming and Emails areas of the file index.
-      backgroundFiles: async () => (await sbGet("pms_documents?select=item_id,name,folder_path,discipline,modified_at,set_date,ext&project_prefix=eq." + enc(numPrefix) +
+      backgroundFiles: async () => (await sbGet("pms_documents?select=item_id,name,folder_path,discipline,modified_at,set_date,ext,size_bytes&project_prefix=eq." + enc(numPrefix) +
         "&ext=eq.pdf&area=in.(Incoming,Emails)&order=modified_at.desc.nullslast&limit=1000")) || [],
       openFindings: async () => (await sbGet("pms_qa_findings?select=id,source,severity,title,sheets,discipline,key_item,created_at&project=eq." + enc(project) +
         "&status=in.(open,ready_to_backcheck)&order=created_at.desc&limit=300")) || [],
