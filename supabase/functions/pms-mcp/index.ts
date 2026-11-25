@@ -77,6 +77,9 @@ import { cleanChecklistResults, checklistCountsLine, QA_CHECKLIST_RESULTS_MAX, Q
 import { isBackgroundPath, BACKGROUND_NOTE } from "./drawingTier.ts";
 // Reading a large PDF in byte ranges instead of downloading it whole. See its tests.
 import { retryingRange, httpRange, openRangedPdf, type RangedPdf } from "./pdfRanged.ts";
+// One page of a PDF too large to hold whole, as a one-page PDF (view_drawing,
+// read_drawing_schedule, read_document). Pure; see its tests.
+import { openPdfPages, PdfExtractError } from "./pdfPageExtract.ts";
 import { readOneNoteSection, oneNoteReadResult, oneNoteNotebookFolder, type OneNoteSection } from "./oneNoteSection.ts";
 // Why an RFI was asked and which QA check would have caught it. Pure; see its tests.
 import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses, lessonCandidates, rfiKey } from "./rfiRootCause.ts";
@@ -1545,9 +1548,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-25-qa-auto-checks";
+const BUILD = "2026-11-25-pdf-pagewise";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.32.0",
+  name: "setty-pms", version: "1.33.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -5886,6 +5889,8 @@ mcp.tool("read_document", {
     "are listed by search_notes as oneNoteSections). For LARGE PDFs (spec books / project manuals) extraction is " +
     "page-bounded from page 1 — pass find:'keyword' (e.g. a spec section '15230') to jump to " +
     "the page(s) containing it, or pages:'120-140' for a range (the result reports totalPages). " +
+    "A PDF over 64MB (an architect's combined drawing set) is read a page at a time and a call covers what fits " +
+    "in about 15 seconds: the result says which pages it reached, and with find, pages:'40-' continues the search from page 40. " +
     "MEETING MINUTES and DRAWING REVIEW COMMENTS/RESPONSES are HIGH-VALUE. Any file whose NAME contains " +
     "'COMMENTS' is agency or contractor design-review feedback: they are named by phase or party such as " +
     "'Owner Comments', 'DD Comments', 'CD Comments', and they arrive in the project's EMAIL folder. " +
@@ -5911,6 +5916,7 @@ mcp.tool("read_document", {
       // both sources honour the cache: a hit skips the download entirely.
       let pdfCacheKey = "";
       let pdfBytes: Uint8Array | null = null;
+      let pagewise = false; // a PDF over the whole-file cap: read a page at a time
       if (isAzId(itemId)) {
         // Slice B: an `az:` id names a file on a region's drive share. Size
         // first (HEAD), then the bytes; the extractors below are shared.
@@ -5926,10 +5932,12 @@ mcp.tool("read_document", {
         try {
           const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
           base.size = props.size; base.modified = props.modified;
-          if (props.size > readDocMaxBytes(name)) return asText({ ...base, note: `File too large to extract inline (over ${readDocMaxBytes(name) / 1048576}MB) — open it from the mapped drive at sharePath, or download_document for the bytes.` });
           pdfCacheKey = itemId;
-          pdfBytes = extOf(name) === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
-          if (!pdfBytes) res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);
+          // A PDF over the whole-file cap is read a page at a time (below).
+          pagewise = extOf(name) === "pdf" && props.size > readDocMaxBytes(name) && props.size <= PDF_PAGEWISE_MAX_BYTES;
+          if (props.size > readDocMaxBytes(name) && !pagewise) return asText({ ...base, note: `File too large to extract inline (over ${readDocMaxBytes(name) / 1048576}MB) — open it from the mapped drive at sharePath, or download_document for the bytes.` });
+          pdfBytes = extOf(name) === "pdf" && !pagewise ? pdfCacheGet(pdfCacheKey) : null;
+          if (!pdfBytes && !pagewise) res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);
         } catch (e) { return asText({ ...base, error: String((e as any)?.message ?? e) }); }
       } else {
         const bar = itemId.indexOf("|");
@@ -5954,10 +5962,11 @@ mcp.tool("read_document", {
           }
         }
         if (extOf(name) === "onetoc2") return asText({ ...base, note: "This is a OneNote notebook's table of contents, which holds no pages. The pages are in the .one files beside it, one per section: read those (search_notes with the projectNumber lists them)." });
-        if (size > readDocMaxBytes(name)) return asText({ ...base, note: `File too large to extract inline (over ${readDocMaxBytes(name) / 1048576}MB) — open via webUrl, or download_document for the bytes.` });
+        pagewise = extOf(name) === "pdf" && size > readDocMaxBytes(name) && size <= PDF_PAGEWISE_MAX_BYTES;
+        if (size > readDocMaxBytes(name) && !pagewise) return asText({ ...base, note: `File too large to extract inline (over ${readDocMaxBytes(name) / 1048576}MB) — open via webUrl, or download_document for the bytes.` });
         pdfCacheKey = drive + "|" + realId;
-        pdfBytes = extOf(name) === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
-        if (!pdfBytes) {
+        pdfBytes = extOf(name) === "pdf" && !pagewise ? pdfCacheGet(pdfCacheKey) : null;
+        if (!pdfBytes && !pagewise) {
           res = await fetch(
             `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
             { headers: { Authorization: "Bearer " + (await graphToken()) } },
@@ -5967,7 +5976,13 @@ mcp.tool("read_document", {
       }
       const ext = (name.split(".").pop() || "").toLowerCase();
       let text = "";
-      if (ext === "pdf") {
+      if (ext === "pdf" && pagewise) {
+        try {
+          return asText({ ...base, ext, ...(await readPdfPagewise(itemId, pdfCacheKey, { find, pages })) });
+        } catch (e) {
+          return asText({ ...base, error: "PDF text extraction failed: " + String((e as any)?.message ?? e), ...(e instanceof PdfExtractError ? { nextStep: PAGEWISE_NEXT_STEP } : {}) });
+        }
+      } else if (ext === "pdf") {
         try {
           const { getDocumentProxy } = await import("unpdf");
           if (!pdfBytes) { pdfBytes = new Uint8Array(await res!.arrayBuffer()); pdfCachePut(pdfCacheKey, pdfBytes); }
@@ -9993,11 +10008,168 @@ async function loadPdfBytes(itemId: string, maxBytes: number, opts: { cache?: bo
   if (useCache) pdfCachePut(itemId, bytes);
   return bytes;
 }
-async function fetchDrawingPdf(drive: string, realId: string): Promise<Uint8Array> {
-  return loadPdfBytes(drive + "|" + realId, VIEW_DRAWING_MAX_PDF_BYTES);
+// ── One page of a PDF of any size (1.33.0) ──────────────────────────────────
+// PDFium and pdf.js are handed a whole file, so view_drawing refused anything
+// over 40MB and read_document anything over 64MB. An architect's combined set
+// is 50 to 150MB, and those are the sheets the cross-discipline QA checks
+// need. Above the whole-file cap, the one page asked for is cut out of the
+// file by byte ranges (pdfPageExtract.ts) and handed on as a one-page PDF, so
+// the renderer and the text reader are unchanged: they just see page 1 of a
+// small file. A sheet typically costs 3 to 15MB of reads and about a second.
+// The cut page is cached like a whole file, so region zooms on the same sheet
+// do not read it again.
+const PDF_PAGEWISE_MAX_BYTES = 400 * 1024 * 1024;    // the drawing index's ranged cap (DRAWING_INDEX_RANGED_MAX_BYTES)
+const pdfPageCounts = new Map<string, number>();     // file id -> pages, learned when a page was cut
+type DrawingPagePdf = {
+  bytes: Uint8Array;            // a PDF: the whole file, or one page of it
+  page: number;                 // the page to use inside `bytes` (1 when it is a cut page)
+  pageCount: number | null;     // pages in the source file, when known without opening it
+  fileBytes: number;            // size of the source file
+  pagewise: null | { fileMB: number; readMB: number };
+};
+const pagewiseNote = (p: DrawingPagePdf["pagewise"]) =>
+  p ? { readInPieces: `The file is ${p.fileMB}MB, so only this page was read from it${p.readMB ? ` (${p.readMB}MB)` : ""}.` } : {};
+// What to tell the person when a page of a large file cannot be cut out.
+const PAGEWISE_NEXT_STEP = "download_document returns a link to the file itself; open it locally, or save the sheets needed as a smaller PDF in the project folder.";
+
+// read_document on a PDF over the whole-file cap: each page is cut out and its
+// text extracted on its own. Bounded by time, not page count, because a page
+// of a drawing set costs a second of reads and one call must answer before the
+// proxy gives up on it. Text is memoized per page like the whole-file path.
+const READ_PAGEWISE_BUDGET_MS = 15_000;
+const READ_PAGEWISE_MAX_PAGES = 50;
+const READ_PAGEWISE_FETCH_BYTES = 320 * 1024 * 1024;
+async function readPdfPagewise(itemId: string, cacheKey: string, o: { find?: string; pages?: string }): Promise<Record<string, unknown>> {
+  const t0 = Date.now();
+  const src = await rangedPdfSource(itemId);
+  const pdfPages = await openPdfPages(src.size, src.fetchRange, { maxOutBytes: VIEW_DRAWING_MAX_PDF_BYTES, maxFetchBytes: READ_PAGEWISE_FETCH_BYTES });
+  const total = pdfPages.pageCount;
+  const { getDocumentProxy } = await import("unpdf");
+  const textEntry = pdfPageTexts(cacheKey);
+  const ocrDone: number[] = []; let ocrSkipped = 0; let ocrFailed: string | null = null;
+  const unread: string[] = [];
+  const pageText = async (i: number): Promise<string> => {
+    const memo = textEntry.pages.get(i);
+    if (memo !== undefined) { if (memo.startsWith("[OCR] ") && !ocrDone.includes(i)) ocrDone.push(i); return memo; }
+    let one: Uint8Array;
+    try {
+      one = (await pdfPages.page(i)).bytes;
+    } catch (e) {
+      // One sheet too heavy to cut out does not end the read of the others.
+      if (!(e instanceof PdfExtractError) || /needs more than/.test(e.message)) throw e;
+      unread.push(`p.${i}: ${e.message}`);
+      return "";
+    }
+    const pdf: any = await getDocumentProxy(one.slice());
+    let t = "";
+    try {
+      const pg = await pdf.getPage(1);
+      const tc = await pg.getTextContent();
+      t = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/\u0000/g, " ").replace(/ +/g, " ").trim();
+    } finally {
+      try { await pdf.destroy?.(); } catch { /* best-effort */ }
+    }
+    if (needsOcr(t)) {
+      if (ocrFailed || ocrDone.length >= OCR_MAX_PAGES_PER_CALL) { ocrSkipped++; return t; }
+      try {
+        const ocr = await ocrPdfPage(one, 1);
+        if (ocr) { t = "[OCR] " + ocr; ocrDone.push(i); }
+      } catch (e) { ocrFailed = String((e as any)?.message ?? e).slice(0, 160); ocrSkipped++; return t; }
+    }
+    pdfPageTextPut(textEntry, i, t);
+    return t;
+  };
+  const outOfTime = () => Date.now() - t0 > READ_PAGEWISE_BUDGET_MS;
+  const tail = (n: string) => {
+    const ocr = ocrNote(ocrDone, ocrSkipped, ocrFailed);
+    return `${n} The file is ${Math.round(src.size / 1048576)}MB and was read a page at a time.` + (ocr ? ` ${ocr}` : "") + (unread.length ? ` Not read: ${unread.join("; ")}.` : "");
+  };
+  const capPdf = (t: string) => t.length > MAX_DOC_CHARS ? t.slice(0, MAX_DOC_CHARS) + "\n…[truncated]" : t;
+
+  let startP = 1, endP = total, ranged = false;
+  if (o.pages && String(o.pages).trim()) {
+    const m = String(o.pages).match(/(\d+)\s*(?:([-–])\s*(\d+)?)?/);
+    if (m) {
+      ranged = true;
+      startP = Math.max(1, parseInt(m[1], 10));
+      endP = m[3] ? Math.min(total, parseInt(m[3], 10)) : m[2] ? total : startP; // "40-" means from 40 on
+    }
+  }
+  if (startP > total) return { totalPages: total, note: tail(`Page ${startP} is out of range: the file has ${total} page(s).`) };
+  if (endP < startP) endP = startP;
+
+  if (o.find && String(o.find).trim()) {
+    const term = String(o.find).trim().toLowerCase();
+    const hits: number[] = [];
+    let reached = startP - 1;
+    for (let i = startP; i <= endP && hits.length < READ_PAGEWISE_MAX_PAGES; i++) {
+      if (i > startP && outOfTime()) break;
+      if ((await pageText(i)).toLowerCase().includes(term)) hits.push(i);
+      reached = i;
+    }
+    const more = reached < endP ? ` Searched pages ${startP}-${reached} of ${total}; pass pages:"${reached + 1}-" with the same find to continue.` : ` Searched pages ${startP}-${reached} of ${total}.`;
+    if (!hits.length) return { totalPages: total, searchedPages: `${startP}-${reached}`, note: tail(`"${o.find}" not found.${more}`) };
+    const body = (await Promise.all(hits.map(async (i) => `[p.${i}]\n` + (await pageText(i))))).join("\n\n");
+    return { totalPages: total, matchedPages: hits, searchedPages: `${startP}-${reached}`,
+      note: tail(`Found "${o.find}" on page(s) ${hits.join(", ")}.${more}`),
+      chars: body.length, truncated: body.length > MAX_DOC_CHARS, text: capPdf(body) };
+  }
+
+  if (!ranged) endP = Math.min(total, startP + READ_PAGEWISE_MAX_PAGES - 1);
+  if (endP - startP + 1 > READ_PAGEWISE_MAX_PAGES) endP = startP + READ_PAGEWISE_MAX_PAGES - 1;
+  const parts: string[] = [];
+  let reached = startP - 1;
+  for (let i = startP; i <= endP; i++) {
+    if (i > startP && outOfTime()) break;
+    parts.push(`[p.${i}]\n` + (await pageText(i)));
+    reached = i;
+  }
+  const body = parts.join("\n\n");
+  return { totalPages: total, pagesShown: `${startP}-${reached}`,
+    note: tail(reached < total ? `Showing pages ${startP}-${reached} of ${total}. Use pages:"${reached + 1}-${Math.min(total, reached + 10)}" for the next ones, or find:"keyword".` : `${total} page(s).`),
+    chars: body.length, truncated: body.length > MAX_DOC_CHARS, text: capPdf(body) };
 }
-async function fetchDrawingPdfById(itemId: string): Promise<Uint8Array> {
-  return loadPdfBytes(itemId, VIEW_DRAWING_MAX_PDF_BYTES);
+
+async function drawingPagePdf(itemId: string, pageInFile: number, sizeHint?: number): Promise<DrawingPagePdf> {
+  // Same order as loadPdfBytes: a drive id is a typed path, so the visibility
+  // gate runs before any cache is consulted.
+  if (isAzId(itemId)) {
+    const dec = decodeAzId(itemId);
+    if (!azFileIdOk(dec)) throw new Error("malformed drive file id");
+    const gate = await azurePathProject(dec.team, dec.relPath);
+    if (!gate.ok) throw new Error(`No project matching "${dec.relPath.split("/")[0]}".`);
+  }
+  const whole = pdfCacheGet(itemId);
+  if (whole) return { bytes: whole, page: pageInFile, pageCount: null, fileBytes: whole.byteLength, pagewise: null };
+  const pageKey = `${itemId}#page${pageInFile}`;
+  const cut = pdfCacheGet(pageKey);
+  if (cut) {
+    const fileBytes = Number(sizeHint) || 0;
+    return { bytes: cut, page: 1, pageCount: pdfPageCounts.get(itemId) ?? null, fileBytes, pagewise: { fileMB: Math.round(fileBytes / 1048576), readMB: 0 } };
+  }
+  if (sizeHint && sizeHint <= VIEW_DRAWING_MAX_PDF_BYTES) {
+    const bytes = await loadPdfBytes(itemId, VIEW_DRAWING_MAX_PDF_BYTES);
+    return { bytes, page: pageInFile, pageCount: null, fileBytes: bytes.byteLength, pagewise: null };
+  }
+  // Size unknown (sheet mode) or over the cap: one metadata call settles it,
+  // which is cheaper than downloading a 70MB file to find out it is too big.
+  const src = await rangedPdfSource(itemId);
+  if (src.size > 0 && src.size <= VIEW_DRAWING_MAX_PDF_BYTES) {
+    const bytes = await loadPdfBytes(itemId, VIEW_DRAWING_MAX_PDF_BYTES);
+    return { bytes, page: pageInFile, pageCount: null, fileBytes: bytes.byteLength, pagewise: null };
+  }
+  if (src.size > PDF_PAGEWISE_MAX_BYTES) {
+    throw new PdfExtractError(`the file is ${(src.size / 1048576).toFixed(0)}MB — over the ${PDF_PAGEWISE_MAX_BYTES / 1048576}MB limit for reading a page at a time`);
+  }
+  const pdf = await openPdfPages(src.size, src.fetchRange, { maxOutBytes: VIEW_DRAWING_MAX_PDF_BYTES });
+  const one = await pdf.page(pageInFile);
+  pdfCachePut(pageKey, one.bytes);
+  if (pdfPageCounts.size > 500) pdfPageCounts.clear();
+  pdfPageCounts.set(itemId, pdf.pageCount);
+  return {
+    bytes: one.bytes, page: 1, pageCount: pdf.pageCount, fileBytes: src.size,
+    pagewise: { fileMB: Math.round(src.size / 1048576), readMB: Math.round(pdf.bytesFetched() / 104857.6) / 10 },
+  };
 }
 // name / size / a link for one file id, from whichever storage holds it. On a
 // share the "link" is the UNC path people already know from the mapped drive.
@@ -10079,23 +10251,25 @@ mcp.tool("view_drawing", {
       if (!/\.pdf$/i.test(meta?.name || "")) {
         return asText({ error: `"${meta?.name}" is not a PDF.`, nextStep: "view_drawing renders drawing PDFs; view_photos shows image files.", webUrl: meta?.webUrl ?? null });
       }
-      if (Number(meta?.size || 0) > VIEW_DRAWING_MAX_PDF_BYTES) {
-        return asText({ error: `"${meta.name}" is ${(Number(meta.size) / 1048576).toFixed(0)}MB — over the ${VIEW_DRAWING_MAX_PDF_BYTES / 1048576}MB render limit.`, nextStep: "Open the webUrl in the browser instead.", webUrl: meta.webUrl ?? null });
-      }
       const pageInFile = Math.max(1, Math.round(page ?? 1));
       try {
-        const bytes = await fetchDrawingPdfById(itemId.trim());
-        const out = await renderDrawingPage(bytes, pageInFile, reg);
+        // A file over the whole-file cap is read one page at a time.
+        const got = await drawingPagePdf(itemId.trim(), pageInFile, Number(meta?.size || 0));
+        const out = await renderDrawingPage(got.bytes, got.page, reg);
+        const pagesInFile = got.pagewise ? got.pageCount : out.pageCount;
         const summary = {
-          file: meta.name, pageInFile, ...(out.pageCount != null ? { pagesInFile: out.pageCount } : {}),
-          region: reg, renderedPixels: `${out.width}x${out.height}`, webUrl: meta.webUrl ?? null,
+          file: meta.name, pageInFile, ...(pagesInFile != null ? { pagesInFile } : {}),
+          region: reg, renderedPixels: `${out.width}x${out.height}`, ...pagewiseNote(got.pagewise), webUrl: meta.webUrl ?? null,
           note: reg === "full"
             ? "Small text may not be legible at full-sheet resolution — call again with a region (top-left/top-right/bottom-left/bottom-right/center) to zoom in."
             : `Rendered the ${reg} region; the webUrl serves the full-resolution original.`,
         };
         return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }, { type: "image" as const, data: out.b64, mimeType: out.mimeType }] };
       } catch (e) {
-        return asText({ error: `Could not render "${meta.name}" page ${pageInFile}: ${String((e as any)?.message ?? e).slice(0, 200)}`, webUrl: meta.webUrl ?? null });
+        return asText({
+          error: `Could not render "${meta.name}" page ${pageInFile}: ${String((e as any)?.message ?? e).slice(0, 200)}`,
+          ...(e instanceof PdfExtractError ? { nextStep: PAGEWISE_NEXT_STEP } : {}), webUrl: meta.webUrl ?? null,
+        });
       }
     }
 
@@ -10105,14 +10279,14 @@ mcp.tool("view_drawing", {
     const { project, chosen, otherRevisions } = picked;
 
     try {
-      const bytes = await fetchDrawingPdfById(String(chosen.item_id));
-      const out = await renderDrawingPage(bytes, Number(chosen.page), reg);
+      const got = await drawingPagePdf(String(chosen.item_id), Number(chosen.page));
+      const out = await renderDrawingPage(got.bytes, got.page, reg);
       const summary = {
         project, sheet: chosen.sheet_no, sheetTitle: chosen.sheet_title ?? null,
         revision: chosen.revision ?? null, revisionDate: chosen.revision_date ?? null,
         revisionDescription: chosen.revision_description ?? null,
         set: drawingSetOf(chosen.folder_path), file: chosen.file_name, pageInFile: chosen.page,
-        region: reg, renderedPixels: `${out.width}x${out.height}`,
+        region: reg, renderedPixels: `${out.width}x${out.height}`, ...pagewiseNote(got.pagewise),
         ...(otherRevisions.length ? { otherIndexedRevisions: otherRevisions } : {}),
         ...(picked.preIssue ? { preIssueCopy: PRE_ISSUE_COPY_NOTE } : {}),
         ...(picked.background ? { backgroundCopy: "This sheet was read from a received-files folder, not from a set Setty issued: it is another discipline's drawing, or a copy of ours as someone else compiled it. " + BACKGROUND_NOTE } : {}),
@@ -10128,7 +10302,7 @@ mcp.tool("view_drawing", {
         project, sheet: chosen.sheet_no, file: chosen.file_name, pageInFile: chosen.page,
         error: `Could not render: ${String((e as any)?.message ?? e).slice(0, 200)}`,
         webUrl: chosen.web_url ?? null,
-        nextStep: "The webUrl opens the sheet in the browser.",
+        nextStep: e instanceof PdfExtractError ? PAGEWISE_NEXT_STEP : "The webUrl opens the sheet in the browser.",
       });
     }
   },
@@ -10359,16 +10533,17 @@ mcp.tool("read_drawing_schedule", {
       let items: SheetTextItem[];
       let sizeBytes = 0;
       try {
-        const bytes = await fetchDrawingPdfById(fileId);
-        sizeBytes = bytes.byteLength;
+        // A file over the whole-file cap arrives as the one page asked for.
+        const got = await drawingPagePdf(fileId, pageInFile);
+        sizeBytes = got.fileBytes || got.bytes.byteLength;
         const { getDocumentProxy } = await import("unpdf");
         // pdf.js may take ownership of the buffer it is handed — feed it a copy
         // so the cached bytes stay intact for the next call.
-        const pdf: any = await getDocumentProxy(bytes.slice());
-        if (pageInFile < 1 || pageInFile > pdf.numPages) {
+        const pdf: any = await getDocumentProxy(got.bytes.slice());
+        if (!got.pagewise && (pageInFile < 1 || pageInFile > pdf.numPages)) {
           return asText({ ...source, error: `Page ${pageInFile} is out of range — the file has ${pdf.numPages} page(s).` });
         }
-        const pg = await pdf.getPage(pageInFile);
+        const pg = await pdf.getPage(got.page);
         const tc = await pg.getTextContent();
         // Upright coordinates whatever the page's rotation: a landscape sheet
         // is often a portrait page with /Rotate 90, and reading its raw x/y
