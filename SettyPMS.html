@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-25-pms-v223-staff-photos";
+    window.__appVersion = "2026-11-25-pms-v224-staff-photo-import";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1269,6 +1269,35 @@ async function uploadStaffPhoto(staffId, blob) {
   }
   return path;
 }
+// ── Import staff photos from Microsoft 365 ──────────────────────────────────
+// Reads each person's Outlook/Teams profile picture through Graph. Reading
+// OTHER people's photos needs User.ReadBasic.All, asked for only when someone
+// presses the import button (a consent prompt the first time). It is kept out
+// of GRAPH_SCOPES so ordinary sign-in never asks for it.
+const STAFF_PHOTO_GRAPH_SCOPES = ["User.ReadBasic.All"];
+// The picture as a Blob, or null when the person has no photo (Graph answers
+// 404). Asks for the 360px copy first and falls back to the original, since
+// not every account has every size.
+async function fetchMicrosoftPhoto(email, token) {
+  const base = GRAPH_BASE + "/users/" + encodeURIComponent(email);
+  for (const tail of ["/photos/360x360/$value", "/photo/$value"]) {
+    const res = await fetchWithRetry(base + tail, { headers: { Authorization: "Bearer " + token } }, { label: "graph staff photo", maxAttempts: 2 });
+    if (res.status === 404) continue;
+    if (!res.ok) {
+      const err = new Error("Microsoft 365 answered " + res.status + " for " + email);
+      err.status = res.status;
+      throw err;
+    }
+    return await res.blob();
+  }
+  return null;
+}
+// Who the import would try: active, with an email, and no photo yet. Photos
+// uploaded by hand are never replaced.
+function staffNeedingPhotoImport(staff) {
+  return (staff || []).filter(s => s && !s.inactive && !s.photoPath && /@/.test(String(s.email || "")));
+}
+
 async function deleteStaffPhoto(path) {
   await settyAuthReady;
   const res = await fetch(SUPABASE_URL + "/storage/v1/object/" + STAFF_PHOTO_BUCKET + "/" + String(path).split("/").map(encodeURIComponent).join("/"), {
@@ -36033,6 +36062,10 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
   const [photoBusy, setPhotoBusy] = React.useState(false);
   const [photoError, setPhotoError] = React.useState("");
   const photoInputRef = React.useRef(null);
+  // Microsoft 365 import: null | { done, total, added, none, failed, running, message }
+  const [msImport, setMsImport] = React.useState(null);
+  const staffNowRef = React.useRef(staff); // the list as it is now, for the import's final step
+  staffNowRef.current = staff;
 
   // staffName → open items across active projects (excludes On Hold / Lost)
   const now = new Date();
@@ -36110,6 +36143,64 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
     }
     if (before && before.photoPath && before.photoPath !== next.photoPath) dropStoredPhoto(before.photoPath);
     cancelEdit();
+  }
+
+  async function importMicrosoftPhotos() {
+    const todo = staffNeedingPhotoImport(staff);
+    if (!todo.length) {
+      setMsImport({ running: false, message: "Everyone active with an email already has a photo. Nothing to import." });
+      return;
+    }
+    if (!window.confirm("Look up Microsoft 365 profile photos for " + todo.length + " active staff member" + (todo.length === 1 ? "" : "s") +
+      " who have no photo yet?\n\nPhotos already in the PMS are left alone. Microsoft may ask you to allow \"read all users' basic profiles\" the first time.")) return;
+    let token;
+    try {
+      token = await getTokenForScopes(STAFF_PHOTO_GRAPH_SCOPES);
+    } catch (e) {
+      const msg = String(e && (e.errorCode || e.message) || e);
+      setMsImport({ running: false, message: /consent|AADSTS65001|AADSTS90094|admin/i.test(msg)
+        ? "Microsoft 365 did not allow reading other people's photos. Your Microsoft 365 administrator needs to approve the \"User.ReadBasic.All\" permission for the PMS app. (" + msg.slice(0, 160) + ")"
+        : "Could not get permission from Microsoft 365: " + msg.slice(0, 200) });
+      return;
+    }
+    const stats = { done: 0, total: todo.length, added: 0, none: 0, failed: 0, running: true };
+    setMsImport({ ...stats });
+    const found = {}; // staff id -> new photoPath
+    const failures = [];
+    let next = 0;
+    async function worker() {
+      while (next < todo.length) {
+        const person = todo[next++];
+        try {
+          const blob = await fetchMicrosoftPhoto(person.email.trim(), token);
+          if (!blob) stats.none++;
+          else {
+            const small = await staffPhotoBlobFromFile(blob.type ? blob : new Blob([blob], { type: "image/jpeg" }));
+            found[person.id] = await uploadStaffPhoto(person.id, small);
+            stats.added++;
+          }
+        } catch (e) {
+          stats.failed++;
+          failures.push(person.name + ": " + (e.message || e));
+        }
+        stats.done++;
+        setMsImport({ ...stats });
+      }
+    }
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    // One update for the whole batch, applied to the list as it is NOW, so an
+    // edit made while the import ran is kept. Someone who got a photo by hand
+    // in the meantime keeps theirs and the imported file is dropped.
+    for (const s of staffNowRef.current) if (found[s.id] && s.photoPath) { dropStoredPhoto(found[s.id]); delete found[s.id]; }
+    if (Object.keys(found).length) {
+      onUpdateStaff(prev => prev.map(s => found[s.id] && !s.photoPath ? { ...s, photoPath: found[s.id] } : s));
+    }
+    if (failures.length) console.warn("[staff-photo-import] failed:\n" + failures.join("\n"));
+    setMsImport({ ...stats, running: false, message:
+      "Added " + stats.added + " photo" + (stats.added === 1 ? "" : "s") + ". " +
+      stats.none + " " + (stats.none === 1 ? "person has" : "people have") + " no Microsoft 365 photo" +
+      (stats.failed ? "; " + stats.failed + " could not be read (" + failures.slice(0, 3).join("; ") + (failures.length > 3 ? "; …" : "") + ")" : "") +
+      ". Run it again later to pick up photos added in Microsoft 365." });
   }
 
   function deleteStaff(id) {
@@ -36257,8 +36348,22 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
             {" · names auto-suggest when assigning to project teams"}
           </div>
         </div>
-        <Btn onClick={startNew}>+ Add Staff Member</Btn>
+        <div style={{ display: "flex", gap: 8 }}>
+          {pmsCan("projects.edit") && (
+            <Btn variant="ghost" onClick={importMicrosoftPhotos} disabled={!!(msImport && msImport.running)}
+              title="Fill in missing staff photos from their Outlook / Teams profile pictures. Photos already in the PMS are kept.">
+              {msImport && msImport.running ? "Importing photos… " + msImport.done + " / " + msImport.total : "Import photos from Microsoft 365"}
+            </Btn>
+          )}
+          <Btn onClick={startNew}>+ Add Staff Member</Btn>
+        </div>
       </div>
+      {msImport && !msImport.running && msImport.message && (
+        <div role="status" style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: 12.5, padding: "10px 14px", marginBottom: 16, borderRadius: 8, background: P.card, border: "1px solid " + P.border }}>
+          <span style={{ flex: 1 }}>{msImport.message}</span>
+          <button type="button" aria-label="Dismiss" onClick={() => setMsImport(null)} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 14 }}>×</button>
+        </div>
+      )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16 }}>
         <input placeholder="Search by name, email, or role…" value={search} onChange={e => setSearch(e.target.value)}
