@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-25-transmittal-v34-hybrid-storage";
+    window.__appVersion = "2026-11-25-transmittal-v35-greeting-first-name";
 
     // Theme, applied before the stylesheet paints so there is no flash of the
     // other scheme. Remembered per browser; first visit follows the OS setting.
@@ -4942,9 +4942,23 @@ async function attachFileToMessage(messageId, name, blob) {
 //
 // Signature — leave OFF. Graph-created drafts don't auto-append your Outlook
 // signature; you'll add it in the compose window before sending.
+// First name for "Hi …,". About a third of PMS contacts are stored last name
+// first ("Rama, Monica"), and taking the first word greeted them by surname
+// with a doubled comma ("Hi Rama,,"). Comma parts that are credentials or
+// suffixes ("John Smith, PE", "Kurt Bedore, Jr.") are not names and are dropped;
+// two parts left means "Last, First".
+const NAME_SUFFIX_RE = /^(jr|sr|ii|iii|iv|pe|p\.?e|ra|r\.?a|aia|leed( ap)?|pmp|esq|ph\.?d|mba|ncarb|cem|cxa|bcxa|cpd|ccm|fpe|se|s\.?e)\.?$/i;
+function greetingFirstName(name) {
+  const parts = String(name || "").split(",").map(x => x.trim()).filter(x => x && !NAME_SUFFIX_RE.test(x));
+  if (!parts.length) return "";
+  const given = parts.length >= 2 ? parts[1] : parts[0];
+  const words = given.replace(/^(mr|mrs|ms|miss|mx|dr)\.?\s+/i, "").split(/\s+/);
+  return (words[0] || "").replace(/[.,;:]+$/, "");
+}
+
 function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, milestone, linkUrl, linkLabel, expiryDate, fileList, includedSheets, attachMode }) {
   // First name only — "Chris Hardy" → "Chris". Clients don't need the formal full name.
-  const firstName = (recipientName || "").trim().split(/\s+/)[0];
+  const firstName = greetingFirstName(recipientName);
   const greeting = firstName ? `Hi ${firstName},` : "Hi,";
   // Naming scheme:
   //   subject  = "ProjectName_Milestone_Transmittal"
