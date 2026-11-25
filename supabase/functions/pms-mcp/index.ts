@@ -10497,7 +10497,7 @@ const SCHED_MAX_CHARS = 60_000; // whole response guard
 // extractor version matches and the file is the size it was when parsed, so a
 // PDF replaced in place is re-read. Reads and writes are best-effort: any
 // failure (the table not created yet included) falls back to the live parse.
-const SCHED_PARSER = "sched-v4"; // bump when extractSheetTables changes what it returns (v2: rotated pages, panels, side-by-side tables; v3: panels side by side at uneven heights, load summary; v4: a panel's two loads per phase in two columns)
+const SCHED_PARSER = "sched-v5"; // bump when extractSheetTables changes what it returns (v2: rotated pages, panels, side-by-side tables; v3: panels side by side at uneven heights, load summary; v4: a panel's two loads per phase in two columns; v5: panels whose title is centred over them, two-line panel headings)
 type SchedTable = SheetTable;
 async function schedCacheGet(fileId: string, page: number): Promise<{ tables: SchedTable[]; hasText: boolean; cachedAt: string } | null> {
   try {

@@ -684,6 +684,26 @@ misread: DP2A, DP2B, DP1B, EM1A, EL4A, EM4A and EM4B. The rest are unchanged
 or gained headings. E612's PANELBOARD templates are still read poorly: half
 the circuits are lost, and title block text gets in.
 
+**Panels with centred titles (2026-11-25, `sched-v5`).** On E612 the window
+for each PANELBOARD panel started at its title, which the extractor assumed
+sits about 80 pt inside the panel's left edge (true on E603-E611, about 42 pt).
+E612 centres the title over the panel, about 206 pt inside. Each table
+therefore lost its own left-hand columns (CKT NO., LOAD DESCRIPTION) to the
+panel on its left, and the last panel in the row took the title block and
+north arrow. Gaps cannot separate these panels, because the 36 pt between two
+panels is narrower than some gaps inside one. Instead, the row's first panel
+shows how far its panels start left of their titles: its left-most CKT
+heading. Every panel in a row is printed the same way, so that inset applies
+to all of them. The window only ever widens from the old 80 pt, so the Branch
+Panels are unchanged. Panel headings that take two lines ("CKT." over "NO.")
+now get the heading rules on both lines.
+
+Results: all six E612 tables (four PXXXX templates, PA-113, PB-113) now read
+CKT 1 to 30, with both sides and their full ratings, `A, A, B, B` load columns,
+and no title block. The other 212 tables in Volumes 2 and 3 are unchanged.
+Still open: the four templates share the title "PANELBOARD: PXXXX" as printed,
+so `match` cannot pick one; their `details` (LOCATION) tell them apart.
+
 Equipment tags themselves are still derived from the drawing text at query
 time (`find_equipment`); only links that a review or a person established are
 stored.
