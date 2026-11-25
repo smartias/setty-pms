@@ -389,7 +389,7 @@ const TABS = [
   { key: "guide", label: "📖 System Guide" },
   { key: "mcp",   label: "🤖 Claude / MCP" },
 ];
-const state = { tab: "signins", qaRoutine: null, roster: null, staffCount: null, roles: null, backups: null, filing: null, filingFilter: "all",
+const state = { tab: "signins", qaRoutine: null, qaItemsFilter: { q: "", section: "", source: "", show: "" }, roster: null, staffCount: null, roles: null, backups: null, filing: null, filingFilter: "all",
                 integ: null, integProjects: null, integMaps: null, integFilter: "", tokenShown: false, feedTest: null,
                 sovOpen: null, sovMaps: null, sovMilestones: {},
                 permCatalog: null, permMatrix: null, permOverrides: null,
@@ -1164,6 +1164,76 @@ async function qaDecideProposal(id, approve) {
   } catch (e) { toast((approve ? "Approve" : "Reject") + " failed: " + e.message, "error"); }
   state.qaRoutine = null; render();
 }
+// ── The whole checklist, read-only ──────────────────────────────────────────
+// Every row of pms_qa_checklist, switched off ones included, grouped by
+// section in the checklist's own order. Nothing here edits an item.
+const QA_ITEM_SOURCE = { seed: "Original checklist", lesson: "From a lesson", "rfi-lesson": "From the RFI log" };
+const QA_ITEM_WHO = { manual: "By a person", assisted: "Claude assists", auto: "Automatic" };
+function qaItemsFiltered(items, f) {
+  const q = String(f.q || "").toLowerCase().trim();
+  return (items || []).filter(r => {
+    if (f.section && (r.section || "General") !== f.section) return false;
+    if (f.source && (r.source || "seed") !== f.source) return false;
+    if (f.show === "on" && r.enabled === false) return false;
+    if (f.show === "off" && r.enabled !== false) return false;
+    if (q) {
+      const hay = [r.item_id, r.section, r.text, r.automation_hint, ...(Array.isArray(r.details) ? r.details : [])].join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+function qaItemsListHTML(items, f) {
+  const rows = qaItemsFiltered(items, f);
+  if (!rows.length) return '<div class="empty">' + ((items || []).length ? "No checklist items match these filters." : "The checklist could not be read.") + '</div>';
+  const by = {}, order = [];
+  rows.forEach(r => { const k = r.section || "General"; if (!by[k]) { by[k] = []; order.push(k); } by[k].push(r); });
+  return order.map(k => `
+    <div style="font-weight:700;margin:16px 0 6px">${esc(k)} <span style="color:var(--muted);font-weight:400;font-size:12px">${by[k].length}</span></div>
+    <table><thead><tr><th style="width:80px">Item</th><th>Check</th><th style="width:150px">Who runs it</th><th style="width:150px">Phases</th><th style="width:130px">Came from</th></tr></thead>
+    <tbody>${by[k].map(r => {
+      const details = Array.isArray(r.details) ? r.details.filter(d => typeof d === "string" && d) : [];
+      return `<tr${r.enabled === false ? ' style="opacity:.55"' : ""}>
+        <td style="vertical-align:top;white-space:nowrap"><b>${esc(r.item_id)}</b>${r.enabled === false ? '<div><span class="pill bad">off</span></div>' : ""}</td>
+        <td style="vertical-align:top;font-size:13px;line-height:1.45">${esc(r.text)}
+          ${details.length || r.automation_hint ? `<details style="margin-top:4px;font-size:12px;color:var(--dim)"><summary style="cursor:pointer">How to check</summary>
+            ${details.length ? `<ul style="margin:6px 0 0 18px;padding:0;line-height:1.5">${details.map(d => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}
+            ${r.automation_hint ? `<div style="margin-top:6px;color:var(--muted)">Tools: ${esc(r.automation_hint)}</div>` : ""}</details>` : ""}</td>
+        <td style="vertical-align:top;font-size:12.5px">${esc(QA_ITEM_WHO[r.automation] || r.automation || "By a person")}</td>
+        <td style="vertical-align:top;font-size:12.5px">${esc(Array.isArray(r.phases) && r.phases.length ? r.phases.join(", ") : "All")}</td>
+        <td style="vertical-align:top;font-size:12.5px">${esc(QA_ITEM_SOURCE[r.source || "seed"] || r.source)}${r.added_at ? `<div style="color:var(--muted);font-size:11.5px">added ${esc(String(r.added_at).slice(0, 10))}</div>` : ""}</td>
+      </tr>`; }).join("")}</tbody></table>`).join("");
+}
+function qaItemsRefresh() {
+  const el = $("qaItemsList"); if (!el || !state.qaRoutine) return;
+  const f = state.qaItemsFilter;
+  el.innerHTML = qaItemsListHTML(state.qaRoutine.allItems, f);
+  const c = $("qaItemsCount"); if (c) c.textContent = qaItemsFiltered(state.qaRoutine.allItems, f).length + " shown";
+}
+function qaItemsCardHTML(items) {
+  const f = state.qaItemsFilter;
+  const sections = [...new Set((items || []).map(r => r.section || "General"))];
+  const off = (items || []).filter(r => r.enabled === false).length;
+  const opt = (arr, sel, label) => arr.map(a => `<option value="${esc(a)}" ${a === sel ? "selected" : ""}>${esc(label ? label(a) : a)}</option>`).join("");
+  return `
+    <div class="card">
+      <div style="color:var(--muted);font-size:12px;margin-bottom:6px">THE COMPLETE CHECKLIST</div>
+      <div style="color:var(--dim);font-size:13px;line-height:1.55;margin-bottom:10px">
+        Every item a QA review runs, in the order it runs them: ${(items || []).length - off} in use${off ? `, ${off} switched off (shown greyed)` : ""}.
+        Read-only. New items come from approved proposals above.
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <label style="font-size:12px;color:var(--dim)">Search<br><input id="qaItemsQ" placeholder="item number, wording, steps…" value="${esc(f.q || "")}" oninput="state.qaItemsFilter.q=this.value;qaItemsRefresh()" style="min-width:240px"></label>
+        <label style="font-size:12px;color:var(--dim)">Section<br><select onchange="state.qaItemsFilter.section=this.value;qaItemsRefresh()"><option value="">All</option>${opt(sections, f.section)}</select></label>
+        <label style="font-size:12px;color:var(--dim)">Came from<br><select onchange="state.qaItemsFilter.source=this.value;qaItemsRefresh()"><option value="">All</option>${opt(Object.keys(QA_ITEM_SOURCE), f.source, k => QA_ITEM_SOURCE[k])}</select></label>
+        <label style="font-size:12px;color:var(--dim)">Show<br><select onchange="state.qaItemsFilter.show=this.value;qaItemsRefresh()">
+          <option value="" ${!f.show ? "selected" : ""}>All items</option><option value="on" ${f.show === "on" ? "selected" : ""}>In use</option><option value="off" ${f.show === "off" ? "selected" : ""}>Switched off</option></select></label>
+        <span id="qaItemsCount" style="color:var(--muted);font-size:12px;margin-left:auto">${qaItemsFiltered(items, f).length} shown</span>
+      </div>
+      <div id="qaItemsList">${qaItemsListHTML(items, f)}</div>
+    </div>`;
+}
+
 async function renderQaChecklist() {
   const v = $("view");
   if (!state.qaRoutine) {
@@ -1173,7 +1243,8 @@ async function renderQaChecklist() {
         sb("GET", "/rest/v1/pms_qa_routine_runs?select=*&order=requested_at.desc&limit=10"),
         sb("GET", "/rest/v1/pms_qa_item_proposals?select=*&order=created_at.desc&limit=100"),
         sb("GET", "/rest/v1/pms_rfi_root_causes?select=project&item_type=eq.rfi&preventable=is.true&qa_item=is.null&limit=5000"),
-        sb("GET", "/rest/v1/pms_qa_checklist?select=item_id&enabled=is.true&limit=5000"),
+        // Every item, switched off ones too: the list at the bottom of this tab shows them all.
+        sb("GET", "/rest/v1/pms_qa_checklist?select=item_id,section,sort,text,details,automation,automation_hint,phases,source,enabled,added_at&order=sort,item_id&limit=5000"),
       ]);
       // Lessons and best practices a run would read: approved, not yet linked to an item.
       // Optional: older databases lack the coverage tables, and each count is then hidden.
@@ -1203,7 +1274,8 @@ async function renderQaChecklist() {
         practicesOpen = (bps || []).filter(b => !done.has(b.practice_id)).length;
       } catch (e) { practicesOpen = null; }
       state.qaRoutine = { runs: runs || [], props: props || [], uncovered: (uncovered || []).length,
-                          uncoveredProjects: new Set((uncovered || []).map(r => r.project)).size, items: (items || []).length, lessonsOpen, practicesOpen, prefsOpen };
+                          uncoveredProjects: new Set((uncovered || []).map(r => r.project)).size, items: (items || []).filter(i => i.enabled !== false).length,
+                          allItems: items || [], lessonsOpen, practicesOpen, prefsOpen };
     } catch (e) {
       v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}<br><span style="font-size:12px">If this says the table does not exist, the database change for the routine has not been applied yet.</span></div>`;
       return;
@@ -1288,7 +1360,8 @@ async function renderQaChecklist() {
             <td title="${esc(p.decided_at || "")}">${p.decided_at ? rel(p.decided_at) : ""}</td>
             <td style="font-size:12px;color:var(--dim)">${esc(p.decision_note || "")}</td></tr>`).join("") ||
         '<tr><td colspan="6" class="empty">No proposals have been decided yet.</td></tr>'}</tbody></table>
-    </div>`;
+    </div>
+    ${qaItemsCardHTML(q.allItems)}`;
 }
 
 // ── Filing Log ───────────────────────────────────────────────────────────────
