@@ -1485,14 +1485,18 @@ the bottom of `index.ts`; the schema is migration `20261002120010_pms_documents.
   is its own scope (`lib:<library>/<folder>`). It links to a project
   (`project_prefix`, `link_basis`) only on a project number in the name, an exact
   name, or one unambiguous containing name. Unlinked folders are still indexed.
-- **Rotation:** each call syncs the least recently completed scopes, up to 6 or
-  90 s, whichever comes first. Send `{"projectNumber":"..."}` for one project,
+- **Rotation:** each call syncs the least recently completed scopes, up to 6, and
+  starts no new scope after 40 s. A "big" scope (last walk saw 1,500+ files, or
+  hit its cap) runs only as the first and only scope of a call, so a call ends
+  in well under pg_net's 120 s (`docsSyncPlan.ts`). Before 2026-11-25 the budget
+  was 90 s; a big project starting late ran calls past 150 s, and calls sharing
+  the worker failed with 546. Send `{"projectNumber":"..."}` for one project,
   `{"libraries":false}` to skip the libraries, `{"librariesOnly":true}` to run only the
   Proposals/Contract folders, `{"maxScopes":N}` (max 20).
 - **Auth:** an `x-pms-cron` header equal to the `DOCUMENTS_SYNC_CRON_SECRET`
-  function secret, or a PMS admin Supabase JWT. Schedule it every 15 minutes with
-  pg_cron + pg_net once the secret exists; about 209 projects plus the library
-  folders complete a cycle in roughly a day at that rate.
+  function secret, or a PMS admin Supabase JWT. Scheduled every 5 minutes with
+  pg_cron + pg_net (`pms-documents-sync`, `*/5`, since migration
+  `20261125173000`; it was every 15 minutes with longer calls).
 - **`find_document` reads it.** When a project has a sync that completed within 3
   days and holds files, candidates come from `pms_documents_v` (hard SQL filters
   on `docType`, `discipline`; a token prefilter; stored phase) and the existing
@@ -1537,10 +1541,15 @@ a save: the trigger warns and returns, and `pms_ca_items_reconcile()` repairs.
   back to the old in-memory substring scan for that call, with `source:
   "memory"` and a `note`. Set the function secret `CA_ITEMS_USE_TABLE=0` to force
   the scan without a redeploy.
-- **Drift repair.** Every `documents-sync` run (the 15-minute cron) also calls
-  `pms_ca_items_reconcile()` and reports `caItems` (`projects`, `written`,
-  `repaired`, `failed`); a non-zero `written` or any `failed` entry is logged as
-  a warning. `{"caItems":false}` skips it.
+- **Drift repair.** The pg_cron job `pms-ca-items-reconcile` (hourly at :45,
+  migration `20261125173000`) runs `pms_ca_items_reconcile_all()`, which calls
+  `pms_ca_items_reconcile()` over every project with a 5-minute statement
+  timeout and returns `{projects, written, repaired, failed}`; failures go to
+  the Postgres log as a WARNING. A failed run shows in `cron.job_run_details`,
+  so the cron alert reports it. It used to ride every `documents-sync` call,
+  but through PostgREST it hit service_role's 8 s statement timeout on every
+  run and never finished. `{"caItems":true}` on a `documents-sync` call still
+  tries it there.
 - **Semantic ranking, as an experiment** (`PROPOSAL-ca-items-embeddings.md`,
   migration `20261017150000`). Each item's text (subject + body minus the
   known boilerplate, `pms_ca_items_embed_text`) is embedded with the edge
