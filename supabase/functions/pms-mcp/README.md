@@ -704,6 +704,27 @@ and no title block. The other 212 tables in Volumes 2 and 3 are unchanged.
 Still open: the four templates share the title "PANELBOARD: PXXXX" as printed,
 so `match` cannot pick one; their `details` (LOCATION) tell them apart.
 
+**Switchgear (2026-11-25, `sched-v6`).** Tabler E603's "SWITCHGEAR: SWGR" was
+not read at all. Its primary switch and main sections put the distribution
+table 217 pt below the title. The branch panel beside it, whose rows sit at
+other heights, adds lines in between, so the CKT heading was past the 16-line
+header search. Three changes:
+- A panel's heading is also looked for within `PANEL_HEADER_REACH` (240 pt)
+  of its title. The next row of panels is 480 pt or more below.
+- A panel's heading words on lines of their own ("CIRCUIT" over "NUMBER", or
+  a right-hand "CKT" printed a little off the heading line) join the heading
+  row instead of being dropped.
+- Each panel's left edge comes from its own nearest CKT heading, not the
+  row's first panel's. A switchgear starts 98 pt left of its title, a branch
+  panel beside it 42 pt.
+
+The switchgear now reads `CIRCUIT NUMBER | FRAME | POLES | TRIP |
+DISTRIBUTION SUMMARY | Load`, one row per feeder (DP1B, DP2A, DP2B, CH-1, …).
+The ratings, primary switch, main and transformer are in `details`, and the
+connected and demand totals in `notes`. Of the other 218 tables, 199 are
+unchanged. The other 19 are Branch Panels whose right-hand CKT heading, blank
+before, now reads "CKT"; no data moved.
+
 Equipment tags themselves are still derived from the drawing text at query
 time (`find_equipment`); only links that a review or a person established are
 stored.

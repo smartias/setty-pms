@@ -103,7 +103,7 @@ test("the schedule cache, the saved links and find_related keep their guard rail
   for (const anchor of [
     'mcp.tool("find_related"',
     // A cached parse is used only for the same extractor version and file size.
-    'const SCHED_PARSER = "sched-v5";',
+    'const SCHED_PARSER = "sched-v6";',
     '"&page=eq." + page + "&parser=eq." + SCHED_PARSER',
     "if (!meta.size || Number(row.size_bytes) !== Number(meta.size)) return null;",
     "const cached = refresh ? null : await schedCacheGet(fileId, pageInFile);",

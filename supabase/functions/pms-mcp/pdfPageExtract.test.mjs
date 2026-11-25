@@ -127,7 +127,9 @@ test("time spent waiting on range reads is counted, so a caller can budget CPU w
   const t1 = Date.now();
   await assert.rejects(openPdfPages(bytes.length, failing), /ECONNRESET/);
   await new Promise((r) => setTimeout(r, 40));
-  assert.ok(Date.now() - t1 >= 60);
+  // 20 + 40 ms of timers, less a little: Date.now() counts whole ms and a
+  // timer can fire ~1 ms early, so an exact 60 failed now and then on CI.
+  assert.ok(Date.now() - t1 >= 55);
 });
 
 test("pages out of range, encrypted files and files with no table are refused in words", async () => {
