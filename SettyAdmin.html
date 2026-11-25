@@ -1223,6 +1223,7 @@ const qaStepsOf = r => (Array.isArray(r.details) ? r.details : []).filter(d => t
 // Printable report of the items shown (the filters apply), grouped by section
 // in the checklist's own order. Print / Save as PDF from the report window.
 // Like the Intelligence console's report, it opens in a new window.
+function qaItemRfis(r) { const m = state.qaRoutine && state.qaRoutine.rfiByItem; return m ? (m[String(r.item_id || "").trim().toLowerCase()] || { rfis: 0, projects: 0 }) : null; }
 function qaItemsReport() {
   const q = state.qaRoutine, rows = q ? qaItemsFiltered(q.allItems, state.qaItemsFilter) : [];
   if (!rows.length) { toast("Nothing to report with the current filters.", "error"); return; }
@@ -1234,11 +1235,13 @@ function qaItemsReport() {
     return `<div class="e"><div class="t"><span class="id">${esc(r.item_id)}</span> ${esc(r.text)}${r.enabled === false ? ' <span class="off">switched off</span>' : ""}</div>
       <div class="m"><span><b>Who runs it:</b> ${esc(QA_ITEM_WHO[r.automation] || r.automation || "By a person")}</span>
         <span><b>Phases:</b> ${esc(Array.isArray(r.phases) && r.phases.length ? r.phases.join(", ") : "All")}</span>
-        <span><b>Came from:</b> ${esc(QA_ITEM_SOURCE[r.source || "seed"] || r.source)}</span>${r.added_at ? `<span><b>Added:</b> ${esc(String(r.added_at).slice(0, 10))}</span>` : ""}</div>
+        <span><b>Came from:</b> ${esc(QA_ITEM_SOURCE[r.source || "seed"] || r.source)}</span>${r.added_at ? `<span><b>Added:</b> ${esc(String(r.added_at).slice(0, 10))}</span>` : ""}${(n => n && n.rfis ? `<span class="rfi"><b>Past RFIs:</b> ${n.rfis} on ${n.projects} project${n.projects === 1 ? "" : "s"}</span>` : "")(qaItemRfis(r))}</div>
       ${details.length ? `<ul>${details.map(d => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}
       ${steps && r.automation_hint ? `<div class="m"><b>Tools:</b> ${esc(r.automation_hint)}</div>` : ""}</div>`;
   };
   const count = k => rows.filter(r => r.automation === k).length;
+  const withRfis = rows.filter(r => (qaItemRfis(r) || {}).rfis > 0), rfiTotal = withRfis.reduce((n, r) => n + qaItemRfis(r).rfis, 0);
+  const rfiLine = q.rfiByItem ? `${withRfis.length} of these ${rows.length === 1 ? "item has" : "items have"} preventable RFIs from the PMS log tagged to ${withRfis.length === 1 ? "it" : "them"}: ${rfiTotal} RFI${rfiTotal === 1 ? "" : "s"} in all. A count is how many past RFIs the log tags to that item as ones its check should catch; an item with none tagged may still be worth running.` : "Past RFI counts could not be read, so they are left out.";
   const today = new Date().toISOString().slice(0, 10);
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Setty QA checklist report</title><style>
     body{font:13px/1.45 Calibri,Arial,sans-serif;color:#1a1a1a;margin:28px auto;max-width:900px;padding:0 18px}
@@ -1246,13 +1249,14 @@ function qaItemsReport() {
     h2{font-size:15px;margin:22px 0 6px;padding:4px 8px;background:#eef2f7;border-left:4px solid #2b5c8a;break-after:avoid}
     .e{padding:7px 0;border-bottom:1px solid #ddd;break-inside:avoid}.t{font-weight:600}.id{color:#2b5c8a;margin-right:4px}
     .off{font-weight:400;font-size:11px;color:#a33;border:1px solid #d9a;border-radius:8px;padding:0 6px;margin-left:6px}
-    .m{color:#555;font-size:11.5px;margin-top:3px}.m span{margin-right:14px;display:inline-block}
+    .m{color:#555;font-size:11.5px;margin-top:3px}.m span{margin-right:14px;display:inline-block}.m .rfi{color:#2b5c8a}
     ul{margin:5px 0 2px 18px;padding:0;font-size:12px;color:#333}li{margin:2px 0}
     button{margin-bottom:14px;padding:6px 12px;font-size:13px}@media print{button{display:none}body{margin:0}}
   </style></head><body><button onclick="window.print()">Print / Save as PDF</button>
   <h1>Setty QA checklist</h1>
   <div class="sub">${esc(qaItemsFilterLabel(state.qaItemsFilter))} · ${rows.length} item${rows.length === 1 ? "" : "s"} in ${order.length} section${order.length === 1 ? "" : "s"} · generated ${today}</div>
   <div class="sub">${count("auto")} automatic · ${count("assisted")} Claude assists · ${rows.length - count("auto") - count("assisted")} by a person${steps ? "" : " · steps left out"}</div>
+  <div class="sub">${esc(rfiLine)}</div>
   ${order.map(k => `<h2>${esc(k)} (${by[k].length})</h2>${by[k].map(entry).join("")}`).join("")}
   </body></html>`;
   const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
@@ -1281,8 +1285,10 @@ async function qaItemsExport() {
   const cols = [["Item", r => r.item_id], ["Section", r => r.section || "General"], ["Check", r => r.text], ["Steps", r => qaStepsOf(r).join("\n")],
     ["Tools", r => r.automation_hint], ["Who runs it", r => QA_ITEM_WHO[r.automation] || r.automation || "By a person"],
     ["Phases", r => (Array.isArray(r.phases) && r.phases.length ? r.phases.join(", ") : "All")], ["Came from", r => QA_ITEM_SOURCE[r.source || "seed"] || r.source],
-    ["In use", r => (r.enabled === false ? "No" : "Yes")], ["Added", r => (r.added_at ? String(r.added_at).slice(0, 10) : "")]];
-  const aoa = [cols.map(c => c[0]), ...rows.map(r => cols.map(c => { const v = c[1](r); return v == null ? "" : String(v); }))];
+    ["In use", r => (r.enabled === false ? "No" : "Yes")], ["Added", r => (r.added_at ? String(r.added_at).slice(0, 10) : "")],
+    ["Past RFIs", r => (qaItemRfis(r) || {}).rfis], ["Projects", r => (qaItemRfis(r) || {}).projects]];
+  // The two RFI columns stay numbers so Excel can sort and add them; everything else is text.
+  const aoa = [cols.map(c => c[0]), ...rows.map(r => cols.map(c => { const v = c[1](r); return v == null ? "" : typeof v === "number" ? v : String(v); }))];
   const name = `Setty QA checklist - ${qaItemsFilterLabel(state.qaItemsFilter).replace(/[\\/:*?"<>|]/g, "-")} - ${new Date().toISOString().slice(0, 10)}`;
   try {
     await qaLoadSheetJS();
@@ -1293,7 +1299,7 @@ async function qaItemsExport() {
     toast(`Exported ${rows.length} checklist item${rows.length === 1 ? "" : "s"} to Excel.`, "success");
   } catch (e) {
     // A leading = + - @ (or tab/CR) would run as a formula in Excel: prefix an apostrophe so it stays text.
-    const cell = v => '"' + (/^[=+\-@\t\r]/.test(v) ? "'" + v : v).replace(/"/g, '""') + '"';
+    const cell = v => { v = String(v); return '"' + (/^[=+\-@\t\r]/.test(v) ? "'" + v : v).replace(/"/g, '""') + '"'; };
     _qaDownload(new Blob(["\ufeff" + aoa.map(r => r.map(cell).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }), name + ".csv");
     toast("Excel library unavailable (" + e.message + "). Downloaded a CSV instead; it opens in Excel.", "error");
   }
@@ -1339,6 +1345,22 @@ async function renderQaChecklist() {
         // Every item, switched off ones too: the list at the bottom of this tab shows them all.
         sb("GET", "/rest/v1/pms_qa_checklist?select=item_id,section,sort,text,details,automation,automation_hint,phases,source,enabled,added_at&order=sort,item_id&limit=5000"),
       ]);
+      // Past RFIs per item: the preventable RFIs the log has tagged to it, and on how many projects.
+      // Read a page at a time (the server returns at most 1,000 rows a call). Optional: the report
+      // leaves the counts out if this cannot be read.
+      let rfiByItem = null;
+      try {
+        const by = {};
+        for (let off = 0; off < 20000; off += 1000) {
+          const page = await sb("GET", "/rest/v1/pms_rfi_root_causes?select=qa_item,project&item_type=eq.rfi&preventable=is.true&qa_item=not.is.null&order=project,item_number&limit=1000&offset=" + off);
+          (page || []).forEach(r => {
+            const k = String(r.qa_item || "").trim().toLowerCase(); if (!k) return;
+            const e = by[k] || (by[k] = { rfis: 0, projects: new Set() }); e.rfis++; e.projects.add(r.project);
+          });
+          if (!page || page.length < 1000) break;
+        }
+        rfiByItem = {}; Object.keys(by).forEach(k => { rfiByItem[k] = { rfis: by[k].rfis, projects: by[k].projects.size }; });
+      } catch (e) { rfiByItem = null; }
       // Lessons and best practices a run would read: approved, not yet linked to an item.
       // Optional: older databases lack the coverage tables, and each count is then hidden.
       let lessonsOpen = null, practicesOpen = null, prefsOpen = null;
@@ -1368,7 +1390,7 @@ async function renderQaChecklist() {
       } catch (e) { practicesOpen = null; }
       state.qaRoutine = { runs: runs || [], props: props || [], uncovered: (uncovered || []).length,
                           uncoveredProjects: new Set((uncovered || []).map(r => r.project)).size, items: (items || []).filter(i => i.enabled !== false).length,
-                          allItems: items || [], lessonsOpen, practicesOpen, prefsOpen };
+                          allItems: items || [], rfiByItem, lessonsOpen, practicesOpen, prefsOpen };
     } catch (e) {
       v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}<br><span style="font-size:12px">If this says the table does not exist, the database change for the routine has not been applied yet.</span></div>`;
       return;

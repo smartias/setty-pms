@@ -156,6 +156,8 @@ test("the Admin Console lists the complete checklist, read-only", () => {
   assert.ok(html.includes("THE COMPLETE CHECKLIST") && html.includes("${qaItemsCardHTML(q.allItems)}"));
   // The report and the Excel export work from the same filters as the list, and escape what they print.
   assert.ok(html.includes("function qaItemsReport()") && html.includes('onclick="qaItemsReport()"') && html.includes("function qaItemsExport()") && html.includes('onclick="qaItemsExport()"'), "report and Excel buttons on the checklist card");
+  assert.ok(html.includes("qa_item=not.is.null") && html.includes("&limit=1000&offset=") && html.includes("rfiByItem"), "past RFI counts are read a page at a time, preventable only");
+  assert.ok(/preventable=is\.true&qa_item=not\.is\.null/.test(html), "only RFIs tagged preventable are counted");
   const rep = html.slice(html.indexOf("function qaItemsReport()"), html.indexOf("function _qaDownload"));
   assert.ok(rep.includes("qaItemsFiltered(q.allItems, state.qaItemsFilter)"), "the report prints the items the filters show");
   for (const raw of ["${r.text}", "${r.item_id}", "${r.automation_hint}", "${d}", "${k}"]) assert.ok(!rep.includes(raw), "printed without esc(): " + raw);
