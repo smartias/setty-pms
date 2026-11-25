@@ -1,7 +1,9 @@
 # Manual deploy of the pms-mcp edge function, mirroring
 # supabase/functions/pms-mcp/deploy.ps1: deploy from the repo root with
 # --no-verify-jwt (the function does its own auth), then poll /health until it
-# reports the BUILD constant on disk.
+# reports a new build. The build names the deployed copy ("deploy-412", from the
+# runtime's DENO_DEPLOYMENT_ID, see buildLabel.ts), so a new deploy shows as a
+# label different from the one live before it.
 #
 # One-time setup: add a repo secret SUPABASE_ACCESS_TOKEN (a Supabase personal
 # access token, supabase.com -> Account -> Access Tokens). Run it from the
@@ -30,13 +32,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read BUILD from index.ts
-        id: build
+      - name: Read the build that is live now
+        id: before
         run: |
-          build=$(grep -oP '^const BUILD = "\K[^"]+' supabase/functions/pms-mcp/index.ts)
-          if [ -z "$build" ]; then echo "Could not read the BUILD constant" >&2; exit 1; fi
-          echo "build=$build" >> "$GITHUB_OUTPUT"
-          echo "Deploying BUILD $build"
+          body=$(curl -s --max-time 30 "https://${PROJECT_REF}.supabase.co/functions/v1/pms-mcp/health" || true)
+          before=$(echo "$body" | grep -oP '"build":"\K[^"]+' || true)
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "Live before this deploy: ${before:-nothing answered}"
 
       - uses: supabase/setup-cli@v1
         with:
@@ -52,19 +54,22 @@ jobs:
           # answer, exit 1 having changed nothing (runs 27-28, 2026-11-03).
           supabase functions deploy pms-mcp --project-ref "$PROJECT_REF" --no-verify-jwt --yes
 
-      - name: Wait for /health to report the new build
+      - name: Wait for /health to report a new build
         env:
-          BUILD: ${{ steps.build.outputs.build }}
+          BEFORE: ${{ steps.before.outputs.before }}
         run: |
           url="https://${PROJECT_REF}.supabase.co/functions/v1/pms-mcp/health"
           for i in $(seq 1 12); do
             body=$(curl -s --max-time 30 "$url" || true)
             echo "attempt $i: $body"
-            if echo "$body" | grep -q "\"ok\":true" && echo "$body" | grep -q "\"build\":\"$BUILD\""; then
-              echo "Live: build $BUILD"
+            now=$(echo "$body" | grep -oP '"build":"\K[^"]+' || true)
+            # A deployed copy always says deploy-<n>; "local" here would mean the
+            # runtime gave no deployment id, which the label cannot work without.
+            if echo "$body" | grep -q '"ok":true' && echo "$body" | grep -q '"build":"deploy-' && [ "$now" != "$BEFORE" ]; then
+              echo "Live: build $now (was ${BEFORE:-nothing})"
               exit 0
             fi
             sleep 5
           done
-          echo "Health check never reported build $BUILD" >&2
+          echo "Health check never reported a new build (still ${BEFORE:-nothing})" >&2
           exit 1

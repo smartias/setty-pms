@@ -64,6 +64,7 @@ import { sheetFromFilename, filenameSheetNo, FILENAME_LAYOUT, FILENAME_LAYOUT_OL
 import { assignSheetsFromList, DRAWING_LIST_LAYOUT } from "./sheetFromDrawingList.ts";
 import { rankByQuery, closeByQuery, CLOSE_QUERY_NOTE, pickByMeaning, BY_MEANING_NOTE } from "./knowledgeQuery.ts";
 import { lazyModule } from "./lazyModule.ts";
+import { buildLabel, deploymentIdFromEnv } from "./buildLabel.ts";
 import { buildQaReviewPacket } from "./qaReviewPacket.ts";
 // set_project_fee: what may be written into the Fee Calculator and what is
 // refused. Pure; see feeCalculator.test.mjs.
@@ -1548,9 +1549,12 @@ function summarizeProject(p: any): Record<string, unknown> {
   };
 }
 
-// Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
-// /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-25-docs-sync-short-runs";
+// `version` is what an MCP client shows. BUILD names the running copy: it is
+// echoed by /health and stored on every telemetry row, so "is my change live?"
+// is answered without diffing the source. It comes from the deployment itself
+// (buildLabel.ts): nothing to bump by hand, so two changes in flight no longer
+// conflict on this line.
+const BUILD = buildLabel(deploymentIdFromEnv((n) => Deno.env.get(n)));
 const mcp = new McpServer({
   name: "setty-pms", version: "1.33.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
