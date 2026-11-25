@@ -11,6 +11,30 @@ const sandbox = {};
 vm.runInNewContext(SRC, sandbox);
 const { greetingFirstName } = sandbox;
 
+// Shapes taken from the PMS contact lists (first collected in
+// greetingFirstName.test.mjs, PR #594, when the helper still had copies).
+const CONTACT_CASES = [
+  ["Rama, Monica", "Monica"],
+  ["Bermudez , James", "James"],
+  ["Millard Jensen , Gene", "Gene"],
+  ["Schenne , John A.", "John"],
+  ["Monica Rama", "Monica"],
+  ["John Smith, PE", "John"],
+  ["John Smith, P.E.", "John"],
+  ["Kurt Bedore, Jr.", "Kurt"],
+  ["Jane Doe, PhD", "Jane"],
+  ["Smith, John, PE", "John"],
+  ["Dr. Ann Lee", "Ann"],
+  ["Rama,", "Rama"],
+  ["", ""],
+  [null, ""],
+  [undefined, ""],
+];
+
+test("greets PMS contact shapes by the given name", () => {
+  for (const [name, want] of CONTACT_CASES) assert.equal(greetingFirstName(name), want, JSON.stringify(name));
+});
+
 test("First Last takes the first word", () => {
   assert.equal(greetingFirstName("Chris Hardy"), "Chris");
   assert.equal(greetingFirstName("  Chris   Hardy  "), "Chris");
