@@ -10494,7 +10494,7 @@ const SCHED_MAX_CHARS = 60_000; // whole response guard
 // extractor version matches and the file is the size it was when parsed, so a
 // PDF replaced in place is re-read. Reads and writes are best-effort: any
 // failure (the table not created yet included) falls back to the live parse.
-const SCHED_PARSER = "sched-v2"; // bump when extractSheetTables changes what it returns (v2: rotated pages, panels, side-by-side tables)
+const SCHED_PARSER = "sched-v3"; // bump when extractSheetTables changes what it returns (v2: rotated pages, panels, side-by-side tables; v3: panels side by side at uneven heights, load summary)
 type SchedTable = SheetTable;
 async function schedCacheGet(fileId: string, page: number): Promise<{ tables: SchedTable[]; hasText: boolean; cachedAt: string } | null> {
   try {
@@ -10525,7 +10525,7 @@ mcp.tool("read_drawing_schedule", {
     "READ the SCHEDULES on a drawing sheet as structured rows — equipment schedules, fixture schedules, fan/" +
     "pump/AHU schedules, and PANEL SCHEDULES: any table titled '... SCHEDULE', and any panel titled " +
     "'Branch Panel: RP1A' / 'PANELBOARD: LP-2' (its ratings — supply, mains, AIC, voltage — come back under " +
-    "`details`, its circuits as rows; pass match:'RP1A' for one panel). Notes printed under a schedule come " +
+    "`details`, its circuits as rows, and the Load Classification / panel totals block under the circuits as `loadSummary`, one string per printed line; pass match:'RP1A' for one panel). Notes printed under a schedule come " +
     "back under `notes`. A table with no title of either kind is not recognized. Answers 'what's the " +
     "CFM on AHU-2', 'list the fixture units on the plumbing schedule', 'compare the fan schedule between " +
     "revisions' (call once per revision, pinned with revision or set). Pass projectNumber + sheet (e.g. " +
