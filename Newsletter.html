@@ -331,6 +331,13 @@
         </select>
         <div class="hint">Smaller drafts, sent a few at a time over a day or two, are less likely to be treated as spam.</div>
       </div>
+      <div id="greetWrap" class="hidden" style="margin-bottom:14px">
+        <label style="display:flex;gap:8px;align-items:center;font-size:14px;color:inherit">
+          <input type="checkbox" id="greetOn" onchange="updateCounts()"> Personal greeting: one draft per person, starting “Hi &lt;first name&gt;,”
+        </label>
+        <div class="hint">Campaign mode only, up to 50 people. Each person gets their own draft addressed to them (no BCC).
+          The greeting is added above your content, so don't type one in the body. “Rama, Monica” is greeted as “Monica”; anyone without a usable name gets “Hello,”.</div>
+      </div>
       <button id="draftBtn" onclick="createDraft()" disabled><span aria-hidden="true">✉️</span> Create Outlook draft(s) for <span id="draftCount">0</span> recipients</button>
       <div class="hint" id="batchHint" role="status" style="margin-top:8px"></div>
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
@@ -497,6 +504,31 @@ let SUBS = {};               // email -> subscriber row
 let CAMPAIGNS = [];          // history rows
 let SELECTED = new Set();    // checked emails — the source of truth for who gets the send
 let AUDIENCE_MODE = "newsletter"; // 'newsletter' (everyone by default) | 'campaign' (hand-picked)
+
+// Personal greeting (campaign mode only). A BCC draft can carry one greeting,
+// so "Hi Monica," means one draft per person; the cap keeps that to a number
+// someone will actually open and send by hand.
+const GREET_MAX = 50;
+// First name for "Hi …,". Same logic as greetingFirstName in transmittal.html
+// and SettyPMS.html: about a third of contacts are stored "Last, First", and
+// credential/suffix comma parts ("John Smith, PE", "Jr.") are not names.
+const NAME_SUFFIX_RE = /^(jr|sr|ii|iii|iv|pe|p\.?e|ra|r\.?a|aia|leed( ap)?|pmp|esq|ph\.?d|mba|ncarb|cem|cxa|bcxa|cpd|ccm|fpe|se|s\.?e)\.?$/i;
+function greetingFirstName(name) {
+  const parts = String(name || "").split(",").map(x => x.trim()).filter(x => x && !NAME_SUFFIX_RE.test(x));
+  if (!parts.length) return "";
+  const given = parts.length >= 2 ? parts[1] : parts[0];
+  const words = given.replace(/^(mr|mrs|ms|miss|mx|dr)\.?\s+/i, "").split(/\s+/);
+  return (words[0] || "").replace(/[.,;:]+$/, "");
+}
+function greetOn(){
+  const c = document.getElementById("greetOn");
+  return AUDIENCE_MODE === "campaign" && !!(c && c.checked);
+}
+// Directory names fall back to the email address; that is no name to greet.
+function greetingHtml(name){
+  const first = /@/.test(name || "") ? "" : greetingFirstName(name);
+  return "<p>" + (first ? "Hi " + esc(first) + "," : "Hello,") + "</p>";
+}
 let COLLAPSED_TYPES = new Set(); // type groups: expanded by default
 let EXPANDED_FIRMS = new Set();  // firm groups: collapsed by default
 let VISIBLE = [];            // people passing the current view filters (search/type/staff)
@@ -754,6 +786,8 @@ function setAudienceMode(mode){
     ? "— campaign: no one is selected until you check them, person by person"
     : "— everyone's selected by default; uncheck by type, firm, or person";
   document.getElementById("selAllBtn").disabled = camp;
+  document.getElementById("greetWrap").classList.toggle("hidden", !camp);
+  if (!camp) document.getElementById("greetOn").checked = false;
   // Keep the compose type in step, but only flip the value the mode implies —
   // an "Event invite" choice survives switching audience modes.
   const ct = document.getElementById("campType");
@@ -907,12 +941,17 @@ function updateCounts(){
   document.getElementById("stUnsub").textContent = unsub;
   document.getElementById("stSelected").textContent = sel;
   document.getElementById("draftCount").textContent = sel;
-  document.getElementById("draftBtn").disabled = !(currentUser() && sel);
-  document.getElementById("teamBtn").disabled = !(currentUser() && sel && BATCHES_OK);
+  const greet = greetOn();
+  document.getElementById("draftBtn").disabled = !(currentUser() && sel && !(greet && sel > GREET_MAX));
+  // Team send shares BCC batches, which can't carry a personal greeting.
+  document.getElementById("teamBtn").disabled = !(currentUser() && sel && BATCHES_OK && !greet);
   document.getElementById("recipNote").textContent = sel + " selected";
   const batches = Math.ceil(sel / BATCH_SIZE);
-  document.getElementById("batchHint").textContent =
-    batches > 1 ? ("Will be split into " + batches + " drafts of up to " + BATCH_SIZE + " recipients each. Send them a few at a time, 15–30 minutes apart, rather than all at once.") : "";
+  document.getElementById("batchHint").textContent = greet
+    ? (sel > GREET_MAX
+        ? "Personal greeting is limited to " + GREET_MAX + " people and " + sel + " are selected. Uncheck some people or turn the greeting off."
+        : sel ? "Will create " + sel + " separate draft" + (sel > 1 ? "s" : "") + ", one per person, each starting with their first name." : "")
+    : batches > 1 ? ("Will be split into " + batches + " drafts of up to " + BATCH_SIZE + " recipients each. Send them a few at a time, 15–30 minutes apart, rather than all at once.") : "";
   const pick = document.getElementById("batchSize");
   if (pick && pick.value !== String(BATCH_SIZE)) pick.value = String(BATCH_SIZE);
 }
@@ -1180,7 +1219,9 @@ function extractInlineImages(html){
 const RUN_STORE_KEY  = "newsletter_draft_run_v1";
 const RUN_MAX_AGE_MS = 48 * 60 * 60 * 1000; // stored runs older than this are stale
 // Active run-state. Shape: { v:1, subject, type, bodyInner, batches:[[email,…],…],
-// doneIdx:[batchIndex,…], links:[{i,url},…], campaignSaved, sentBy, startedAt }.
+// doneIdx:[batchIndex,…], links:[{i,url},…], campaignSaved, sentBy, startedAt,
+// greet, names:{email:fullName} }. greet = personal greeting: every batch is one
+// person, addressed To them, with "Hi <first name>," above the body.
 // batches is the ORIGINAL audience snapshot — a resume uses it even if the
 // selection checkboxes changed meanwhile. Non-null RUN = unfinished run.
 let RUN = null;
@@ -1190,7 +1231,8 @@ function saveRunState(){
   try {
     const slim = { v: 1, savedAt: Date.now(), subject: RUN.subject, type: RUN.type,
       batches: RUN.batches, doneIdx: RUN.doneIdx, links: RUN.links,
-      campaignSaved: RUN.campaignSaved, sentBy: RUN.sentBy };
+      campaignSaved: RUN.campaignSaved, sentBy: RUN.sentBy,
+      greet: !!RUN.greet, names: RUN.names || {} };
     // Include the body when it fits (embedded images can blow the ~5 MB quota);
     // without it a post-reload resume asks for the content to be re-pasted first.
     try { localStorage.setItem(RUN_STORE_KEY, JSON.stringify({ ...slim, bodyInner: RUN.bodyInner })); }
@@ -1257,10 +1299,14 @@ async function createDraft(){
   // Snapshot the batch plan (emails only — slim enough for localStorage). Batches
   // stay under the per-message recipient cap and are disjoint, so no one is
   // double-mailed within a run.
+  const greet = greetOn();
+  if (greet && recips.length > GREET_MAX){ log("Personal greeting is limited to " + GREET_MAX + " people — " + recips.length + " are selected.", "err"); return; }
   const batches = [];
-  for (let i = 0; i < recips.length; i += BATCH_SIZE) batches.push(recips.slice(i, i + BATCH_SIZE).map(p => p.email));
+  const names = {};
+  if (greet) recips.forEach(p => { batches.push([p.email]); names[p.email] = p.name || ""; });
+  else for (let i = 0; i < recips.length; i += BATCH_SIZE) batches.push(recips.slice(i, i + BATCH_SIZE).map(p => p.email));
 
-  RUN = { v: 1, subject, type, bodyInner: innerHtml, batches,
+  RUN = { v: 1, subject, type, bodyInner: innerHtml, batches, greet, names,
           doneIdx: [], links: [], campaignSaved: false, sentBy: null, startedAt: Date.now() };
   saveRunState();
   await runDraftBatches();
@@ -1308,7 +1354,8 @@ async function runDraftBatches(){
       if (!cur) throw new Error("the email body couldn't be restored (too large to save across the reload). Re-paste the SAME content into the body editor, then click Resume again");
       r.bodyInner = cur;
     }
-    const bodyHtml = buildEmailHtml(r.bodyInner, r.subject);
+    // The history record of a greeted send shows the placeholder, not one person's name.
+    const bodyHtml = buildEmailHtml((r.greet ? "<p>Hi [first name],</p>" : "") + r.bodyInner, r.subject);
     // Convert embedded images (inserted or pasted) into inline attachments so they
     // render in recipients' inboxes. sendHtml references them as cid:; bodyHtml keeps
     // the self-contained data: version for the saved campaign history.
@@ -1320,13 +1367,20 @@ async function runDraftBatches(){
       phase = b;
       status.innerHTML = "Creating draft " + (b+1) + " of " + total + " (" + r.batches[b].length + " recipients)…" +
         (r.links.length ? "<br>Created so far: " + runLinksHtml(r) : "");
+      let html = sendHtml, atts = attachments;
+      if (r.greet){
+        const one = extractInlineImages(buildEmailHtml(greetingHtml((r.names || {})[r.batches[b][0]]) + r.bodyInner, r.subject));
+        html = one.html; atts = one.attachments;
+      }
       const draft = {
         subject: r.subject,
-        body: { contentType: "HTML", content: sendHtml },
-        toRecipients: toAddr ? [{ emailAddress: { address: toAddr } }] : [],
-        bccRecipients: r.batches[b].map(e => ({ emailAddress: { address: e } })),
+        body: { contentType: "HTML", content: html },
+        // Greeted: one person, addressed directly. Otherwise To: shared mailbox, list on BCC.
+        toRecipients: r.greet ? [{ emailAddress: { address: r.batches[b][0] } }]
+                    : toAddr ? [{ emailAddress: { address: toAddr } }] : [],
+        bccRecipients: r.greet ? [] : r.batches[b].map(e => ({ emailAddress: { address: e } })),
       };
-      if (attachments.length) draft.attachments = attachments;
+      if (atts.length) draft.attachments = atts;
       if (SEND_MAILBOX) draft.from = { emailAddress: { address: SEND_MAILBOX } };
       const res = await fetch("https://graph.microsoft.com/v1.0" + mailboxPath + "/messages", {
         method: "POST",
