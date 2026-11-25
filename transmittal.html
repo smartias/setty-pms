@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-25-transmittal-v33-other-documents";
+    window.__appVersion = "2026-11-25-transmittal-v34-hybrid-storage";
 
     // Theme, applied before the stylesheet paints so there is no flash of the
     // other scheme. Remembered per browser; first visit follows the OS setting.
@@ -519,6 +519,13 @@
         <input type="text" id="projectSearch" autocomplete="off" placeholder="Start typing a project name or number…"/>
         <div id="projectSearchResults" role="listbox" style="display:none;position:absolute;z-index:20;left:0;right:0;max-height:240px;overflow-y:auto;background:var(--card,#161b22);border:1px solid var(--border,#30363d);border-radius:8px;margin-top:2px"></div>
       </div>
+    </div>
+
+    <!-- A drive-office project that also has a SharePoint folder recorded in
+         PMS opens in SharePoint; this line offers the drive instead (and back). -->
+    <div id="storageSwitch" style="display:none;margin:-6px 0 12px;font-size:12.5px;color:var(--muted,#8b949e)">
+      <span id="storageSwitchText"></span>
+      <button type="button" class="btn btn-ghost" id="storageSwitchBtn" style="padding:3px 10px;font-size:12px;margin-left:6px"></button>
     </div>
 
     <div id="folderBrowser" style="display:none;margin-bottom:14px">
@@ -1958,14 +1965,49 @@ document.getElementById("folderUpBtn").onclick = async function () {
   await refreshFolderBrowser(true);
 };
 
-// A project is drive-based when its team's region says so. Mirrors the
-// connector's storage seam (pms_regions.storage_kind = 'azure_files').
-function projectIsDriveBased(proj) {
+// The team's region says whether its office works off a network drive.
+// Mirrors the connector's storage seam (pms_regions.storage_kind = 'azure_files').
+function teamIsDriveBased(proj) {
   const team = String((proj && proj.team) || "").toUpperCase().trim();
   if (!team) return false;
   const r = (pmsRegions || []).find(x => String(x.team || "").toUpperCase().trim() === team);
   return !!(r && r.enabled !== false && r.storage_kind === "azure_files");
 }
+function projectHasSpFolder(proj) {
+  return !!libraryPathFromUrl((proj && proj.projectFolderUrl) || "");
+}
+// A project is drive-based when its team's office is AND no SharePoint folder
+// is recorded for it in PMS. A few drive-office projects keep their files in
+// SharePoint as well (MTA 149th, team BT): deciding by team alone locked those
+// out of the SharePoint folder, the portal and the zip link. They now open in
+// SharePoint, and the switch above the folder browser moves one to the drive
+// for the rest of this page session.
+const storageChoice = {};   // projectNumber -> "drive" | "sharepoint"
+function projectIsDriveBased(proj) {
+  if (!teamIsDriveBased(proj)) return false;
+  if (!projectHasSpFolder(proj)) return true;
+  return storageChoice[String(proj.projectNumber || "")] === "drive";
+}
+let storageSwitchProj = null;
+function syncStorageSwitch(proj) {
+  const box = document.getElementById("storageSwitch");
+  if (!box) return;
+  const hybrid = !!proj && teamIsDriveBased(proj) && projectHasSpFolder(proj);
+  storageSwitchProj = hybrid ? proj : null;
+  box.style.display = hybrid ? "block" : "none";
+  if (!hybrid) return;
+  const onDrive = projectIsDriveBased(proj);
+  document.getElementById("storageSwitchText").textContent = onDrive
+    ? "This project also has a SharePoint folder."
+    : "This project also has files on the office drive (" + driveLettersFor(String(proj.team || "").toUpperCase().trim()) + ").";
+  document.getElementById("storageSwitchBtn").textContent = onDrive ? "Use SharePoint instead" : "Use the office drive instead";
+}
+document.getElementById("storageSwitchBtn").onclick = () => {
+  const p = storageSwitchProj;
+  if (!p) return;
+  storageChoice[String(p.projectNumber || "")] = projectIsDriveBased(p) ? "sharepoint" : "drive";
+  startBrowsingProject(p).catch(e => setStatus("loadStatus", "error", "\u2717 " + e.message));
+};
 // Project numbers encode the year in digits 5-6 (SIPX262012 → 2026); the
 // DC drive files projects under that year. Same rule as the connector.
 function yearOfProjectNumber(num) {
@@ -2017,6 +2059,17 @@ function enterDriveMode(proj) {
 function leaveDriveMode() {
   if (!driveMode) return;
   driveMode = false; driveFolderPath = ""; localBlobs = new Map();
+  // Nothing read off the drive survives the move to SharePoint: its files were
+  // only ever held in this tab (localBlobs, just cleared), so a send would fail
+  // on them, and the drive path and "Drive project" note would mislabel the page.
+  if ((folderFiles || []).some(f => f.local)) {
+    folderFiles = [];
+    sheets = [];
+    renderTable();
+  }
+  resolvedFolderPath = null;
+  document.getElementById("folderUrlDisplay").textContent = "No folder selected yet \u2014 open the dated set folder below.";
+  setStatus("loadStatus", "", "");
   document.getElementById("driveSetPanel").style.display = "none";
   document.getElementById("loadFolderBtn").style.display = "";
   document.getElementById("includeSubfoldersLabel").style.display = "";
@@ -2097,6 +2150,7 @@ async function startBrowsingProject(proj) {
   document.getElementById("projectName").value   = proj.name || "";
   document.getElementById("projectNumber").value = proj.projectNumber || "";
   if (typeof updateRecipientFromProject === "function") { try { updateRecipientFromProject(); } catch (e) {} }
+  syncStorageSwitch(proj);
   if (projectIsDriveBased(proj)) { enterDriveMode(proj); return; }
   leaveDriveMode();
   const root = libraryPathFromUrl(proj.projectFolderUrl || "");
