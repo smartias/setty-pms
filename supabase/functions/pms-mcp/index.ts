@@ -93,9 +93,19 @@ import {
   setReviewLines,
 } from "./constructionCost.js";
 // The QA checklist review routine (start_checklist_routine / propose_checklist_items). Pure; see its tests.
-import { planProposals, PROPOSAL_PHASES, PROPOSAL_AUTOMATION, MIN_PROJECTS, MIN_RFIS, MIN_LESSONS, MIN_LESSON_PROJECTS, MIN_FIRM_WIDE, PROPOSALS_MAX } from "./qaRoutine.js";
+import { planProposals, PROPOSAL_PHASES, PROPOSAL_AUTOMATION, MIN_PROJECTS, MIN_RFIS, MIN_LESSONS, MIN_LESSON_PROJECTS, MIN_FIRM_WIDE, MIN_PREFERENCES, MIN_AGENCIES, PROPOSALS_MAX } from "./qaRoutine.js";
 // check_schedule_arithmetic (QA item qa-638): whether a schedule row's numbers agree. Pure; see its tests.
 import { checkSchedule, ROW_KINDS, DEFAULT_TOLERANCE_PCT } from "./scheduleArithmetic.js";
+// check_document_agreement (QA item qa-632): whether plan, schedule, detail and spec say the same thing. Pure; see its tests.
+import { checkAgreement } from "./documentAgreement.js";
+// check_tag_schedule_coverage (QA item qa-622): every tag on a plan is scheduled, and the reverse. Pure; see its tests.
+import { tagCoverage } from "./tagCoverage.js";
+// check_deferred_decisions (QA item qa-637): where the documents leave a decision to someone else. Pure; see its tests.
+// check_revision_carried (QA item qa-634): a revision's tag changes against the sheets not re-issued. Pure; see its tests.
+import { revisionCarried } from "./revisionCarried.js";
+// check_controls_coverage (QA item qa-633): scheduled equipment the controls sheets never mention. Pure; see its tests.
+import { controlsCoverage, BMS_CONDITIONAL_PG } from "./controlsCoverage.js";
+import { pgPattern as deferredPgPattern, scanText as deferredScanText, groupHits as deferredGroupHits } from "./deferredDecisions.js";
 // check_space_fit (QA items qa-614 and qa-070): whether what is drawn fits the plenum, room or working space. Pure; see its tests.
 import { checkSpace, SPACE_KINDS, DEFAULT_TIGHT_IN } from "./spaceCheck.js";
 // The line-by-line detail of a reviewed estimate (pms_cost_estimate_lines). Pure; see its tests.
@@ -1535,7 +1545,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-11-25-check-space-fit";
+const BUILD = "2026-11-25-qa-auto-checks";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.32.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -13838,6 +13848,387 @@ mcp.tool("check_schedule_arithmetic", {
   },
 });
 
+// ─── DOCUMENT AGREEMENT: check_document_agreement (QA item qa-632) ───────────
+// Whether plan, schedule, detail and specification say the same thing about
+// the same item. The reviewer collects what each document says and passes the
+// statements; the comparing is done here (documentAgreement.js) so none is
+// left to the model. Read-only, no project data touched.
+mcp.tool("check_document_agreement", {
+  description:
+    "COMPARE what the documents say about the same item (QA checklist item qa-632: plan, schedule, detail and " +
+    "specification agree on the small items). You collect the statements; this tool does the comparing and returns " +
+    "only the disagreements, each naming both documents. Never judge agreement yourself. Two inputs, either or both. " +
+    "`statements`: one entry for each place a document states an attribute of a subject: subject ('Outdoor supply " +
+    "duct'), attribute ('jacket material', 'thickness', 'mounting height', 'candela', 'gauge'), source ('Detail " +
+    "5/M-701', 'Spec 233113 2.4 E', 'H-003 schedule note 5'), and value AS PRINTED ('aluminum jacket', '18 ga', " +
+    "'+42\"AFF', '177cd'). Entries with the same subject and attribute are compared: materials by name, grade and " +
+    "construction (double wall, lined, flexible or hard connection), quantities after converting to one unit (4'-0\" " +
+    "equals 48 in.), anything else as text. Set limit:'max' or 'min' on a statement that is a limit the others must " +
+    "meet (a note that strobes are 110 cd maximum). Set silent:true for a document that should state it and does " +
+    "not (spec part 3 says nothing about a coating part 2 lists; a schedule with no drain size): that is reported " +
+    "as a conflict too. Use the SAME subject and attribute wording for statements meant to be compared. " +
+    "`circuits`: for one panel, `plan` is each homerun as drawn (circuit numbers, the load or room it serves, the " +
+    "sheet, and count when you counted devices) and `schedule` is the panel schedule's rows from " +
+    "read_drawing_schedule (circuit, load description, breaker, count when the description gives one). It returns " +
+    "circuits drawn but not scheduled, drawn on a circuit scheduled as spare or space, given to a different room " +
+    "or load, and with a different device count. Set plansComplete:true only when you read every plan the panel " +
+    "serves: then scheduled circuits that no plan shows are returned as well. Give circuit numbers only, never the " +
+    "panel name inside `circuit`. Homerun numbers must be read from the rendered plan (view_drawing), paired with " +
+    "the device or room beside them; the text layer alone cannot tell a circuit number from a keynote. A conflict " +
+    "does not say which document is right. Before recording one as a QA finding under qa-632, look at both places " +
+    "again to confirm they describe the same thing and were read correctly, then write it as a question naming " +
+    "both. A subject only one document states comes back not compared: say so in the coverage.",
+  inputSchema: z.object({
+    statements: z.array(z.object({
+      subject: z.string().describe("What is being described, worded the same for every statement about it."),
+      attribute: z.string().optional().describe("Which property: 'material', 'jacket material', 'thickness', 'gauge', 'mounting height', 'candela', 'rating'."),
+      source: z.string().describe("Where it is stated: sheet and detail or note number, schedule and column, or spec section and paragraph."),
+      value: z.string().optional().describe("The value as printed. Leave out with silent:true."),
+      limit: z.enum(["max", "min"]).optional().describe("This statement is a maximum or minimum the others must meet."),
+      silent: z.boolean().optional().describe("This document should state it and does not."),
+    })).max(600).optional(),
+    circuits: z.array(z.object({
+      panel: z.string().describe("The panel name as on its schedule."),
+      plansComplete: z.boolean().optional().describe("True only when every plan this panel serves was read."),
+      plan: z.array(z.object({
+        circuit: z.union([z.string(), z.number()]).describe("Circuit number(s) at the homerun: '12', '15,17'."),
+        load: z.string().optional().describe("The room, equipment tag or device group the homerun serves, as the plan shows."),
+        sheet: z.string().optional(),
+        count: z.number().optional().describe("Devices counted on this circuit, when counted."),
+      })).max(400).optional(),
+      schedule: z.array(z.object({
+        circuit: z.union([z.string(), z.number()]),
+        load: z.string().optional().describe("The load description on the schedule row, as printed. SPARE and SPACE as printed."),
+        breaker: z.string().optional(),
+        count: z.number().optional().describe("The device count the description gives, when it gives one."),
+      })).max(400).optional(),
+    })).max(60).optional(),
+  }),
+  handler: async ({ statements, circuits }) => {
+    if (!statements?.length && !circuits?.length) return asText({ error: "Pass statements, circuits, or both." });
+    const r = checkAgreement({ statements, circuits });
+    const single = r.statementsNotCompared.length, noSched = r.circuitsNotCompared.length;
+    return asText({
+      ...r,
+      note: (r.flagged
+        ? `${r.flagged} disagreement(s). Look at both places again to confirm each describes the same thing and was read correctly, then record it under qa-632 as a question naming both documents.`
+        : "Nothing that could be compared disagrees.") +
+        (single ? ` ${single} subject(s) had fewer than two comparable statements and were not compared: say so in the coverage.` : "") +
+        (noSched ? ` ${noSched} panel(s) had no schedule rows and were not compared.` : "") +
+        " This compares only what you passed: a document you did not read is not covered. It does not say which document is right.",
+    });
+  },
+});
+
+// ─── TAG AGAINST SCHEDULE: check_tag_schedule_coverage (QA item qa-622) ──────
+// Every equipment tag drawn on a plan has a schedule row, and every scheduled
+// tag is drawn. Answered for a whole set in one call from the drawing text
+// index (pms_tag_sheet_kinds, migration 20261125130000); what counts as a
+// finding is decided in tagCoverage.js. Read-only.
+mcp.tool("check_tag_schedule_coverage", {
+  description:
+    "RECONCILE EQUIPMENT TAGS AGAINST SCHEDULES for a whole drawing set in one call (QA checklist item qa-622: a " +
+    "bidder can count and price everything shown). Reads the indexed text of the newest revision of every sheet and " +
+    "returns: `notScheduled`, tags drawn on a plan that are on no schedule sheet; `notOnPlans`, tags on a schedule " +
+    "sheet that no plan shows; `familiesNotScheduled`, tag prefixes on two or more plans with no member on any " +
+    "schedule sheet (a schedule may be missing, or the prefix is not equipment: you decide); and `writtenTwoWays`, " +
+    "a tag spelled FCU-01 in one place and FCU-1 in another. Run it once at the start of qa-622 instead of " +
+    "reconciling tags by hand. HOW IT DECIDES: a sheet is a schedule sheet when its title contains SCHEDULE, a plan " +
+    "when its title contains PLAN or LAYOUT; `scheduleSheets` in the answer lists the schedule sheets it used. If a " +
+    "schedule sits on a sheet titled something else (a panel schedule on a plan, 'DETAILS'), pass that sheet in " +
+    "scheduleSheets and run it again, or its tags come back as not scheduled. A tag is judged only in a family the " +
+    "set shows to be equipment (a prefix with a member both scheduled and on a plan), which is what keeps code " +
+    "sections, sheet references and model numbers out. LIMITS, say them in the coverage: it sees HYPHENATED tags " +
+    "only (FCU-11; not FCU11, a lighting type letter, or an untagged device); it reads text, so a tag on a scanned " +
+    "sheet is missed unless OCR indexed it; a scheduled tag that is drawn only on a typical plan under another name " +
+    "is reported as not on plans; and it only knows INDEXED sheets (check `coverage`; fill with search_drawings " +
+    "indexOnly:true). By default it reads the issued drawings; pass subfolder for a pre-issuance QA set. Every " +
+    "result is a question: before recording one under qa-622, open the plan (view_drawing) or the schedule " +
+    "(read_drawing_schedule) and confirm it. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    subfolder: z.string().optional().describe("Limit to ONE set folder, spelled as list_project_documents reports it. Required for a pre-issuance QA set; omit for the issued drawings."),
+    scheduleSheets: z.array(z.string()).max(60).optional().describe("Sheets that carry schedules although their title does not say SCHEDULE, e.g. ['E-201', 'M-701']."),
+    families: z.array(z.string()).max(40).optional().describe("Only these tag prefixes, e.g. ['UH', 'EF']. Omit for every family."),
+  }),
+  handler: async ({ projectNumber, subfolder, scheduleSheets, families }) => {
+    const folder = subfolder?.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "") : null;
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const numPrefix = String(project).toLowerCase().trim();
+    let indexedFiles = 0, filesPending = 0;
+    try {
+      const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+      indexedFiles = known.filter((k) => k.status === "done").length;
+      filesPending = known.filter((k) => k.status === "pending").length;
+    } catch { /* coverage is advisory */ }
+    const coverage = { indexedFiles, filesPending, ...(filesPending ? { note: "Index incomplete: a tag on a sheet not read yet looks missing. search_drawings indexOnly:true fills it; then run this again." } : {}) };
+    if (!indexedFiles) return asText({ project, coverage, error: "Nothing is indexed for this project yet.", nextStep: "Run search_drawings with indexOnly:true first." });
+    let rows: any[];
+    try {
+      rows = (await sbRpc("pms_tag_sheet_kinds", {
+        p_prefix: numPrefix, p_folder: folder, p_exclude: folder ? null : PRE_ISSUE_FOLDER_SQL_RE,
+        p_schedule_sheets: scheduleSheets?.length ? scheduleSheets : null,
+      })) || [];
+    } catch (e) {
+      const m = String((e as any)?.message ?? e);
+      return asText({ project, coverage, error: /404|PGRST202|does not exist/.test(m) ? "The tag reconciliation is not available yet: the database has not run migration 20261125130000." : `Tag reconciliation failed: ${m.slice(0, 240)}`,
+        nextStep: "find_equipment and read_drawing_schedule still reconcile tags by hand." });
+    }
+    const r = tagCoverage(rows, { families });
+    if (!r.scheduleSheets.length) {
+      return asText({ project, coverage, ...r, flagged: 0, notScheduled: [], notOnPlans: [],
+        error: "No sheet in scope has SCHEDULE in its title, so there was nothing to reconcile the plans against.",
+        nextStep: "Find the sheets that carry the schedules (extract_sheet_index, or search_drawings for SCHEDULE) and pass them as scheduleSheets." });
+    }
+    return asText({
+      project, ...(folder ? { scope: `Sheets from "${folder}" only.` } : { scope: PRE_ISSUE_NOTE }), coverage, ...r,
+      note: (r.flagged ? `${r.flagged} tag(s) to confirm. ` : "Every tag in a scheduled family is both scheduled and on a plan. ") +
+        "Check scheduleSheets first: a schedule on a sheet not listed there makes its tags look unscheduled (pass it in scheduleSheets and run again). " +
+        "Confirm each result on the sheet before recording it under qa-622. Hyphenated tags only: untagged devices, lighting type letters and tags written without a hyphen are not covered, and say so in the coverage.",
+    });
+  },
+});
+
+// ─── DEFERRED DECISIONS: check_deferred_decisions (QA item qa-637) ───────────
+// Every place a sheet, or a specification PDF the reviewer names, leaves a
+// decision to the owner, the authority or an unnamed code edition. Drawings
+// come from the text index in one query (pms_sheet_phrase_hits, migration
+// 20261125140000); specification books are not in that index, so they are
+// read here page by page. Phrases and grouping: deferredDecisions.js. Read-only.
+const DEFERRED_SPEC_FILES_MAX = 3;
+mcp.tool("check_deferred_decisions", {
+  description:
+    "FIND WHERE THE DOCUMENTS DEFER A DECISION (QA checklist item qa-637), for a whole drawing set in one call, " +
+    "and in specification PDFs you name. It searches for: 'as allowed / permitted / approved / directed by' the " +
+    "owner, architect, engineer or authority; owner's option, discretion or approval; 'verify / confirm / " +
+    "coordinate ... with owner' (or university, campus, client, agency); 'if applicable', 'where applicable', 'if " +
+    "required', 'if necessary'; 'TBD' and 'to be determined / confirmed / selected'; and 'latest edition' or " +
+    "'code in effect' with no edition named. Run it once at the start of qa-637 instead of searching phrase by " +
+    "phrase. DRAWINGS: the newest indexed revision of every sheet (issued drawings by default; pass subfolder for a " +
+    "pre-issuance QA set). SPECIFICATIONS are not in the drawing index: find the spec book or section PDFs with " +
+    "list_project_documents and pass up to " + DEFERRED_SPEC_FILES_MAX + " itemIds per call in specItemIds; each is read page by page (text " +
+    "layer only, first 400 pages). The answer groups places by kind, with the phrase in its sentence and where it " +
+    "is; the same note printed on many sheets is listed once with the sheets. EVERY PLACE IS SOMEWHERE TO LOOK, " +
+    "NOT A FINDING: 'where applicable' on a mounting-height detail is usually harmless. For each, check whether " +
+    "the answer is stated elsewhere in the set, in search_agency_preferences and in search_knowledge; record it " +
+    "under qa-637 only when it is stated nowhere, quoting the phrase and writing the question a bidder would ask. " +
+    "'If applicable' on a controls item belongs to qa-633. It does not search for bare 'as required' (too common " +
+    "to be useful) and it reads text only: a scanned sheet is covered only where OCR indexed it. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    subfolder: z.string().optional().describe("Limit the drawings to ONE set folder, spelled as list_project_documents reports it. Required for a pre-issuance QA set."),
+    specItemIds: z.array(z.string()).max(DEFERRED_SPEC_FILES_MAX).optional().describe("Specification PDFs to read as well: 'driveId|itemId' from list_project_documents."),
+    drawings: z.boolean().optional().describe("false to skip the drawings and read only specItemIds. Default true."),
+  }),
+  handler: async ({ projectNumber, subfolder, specItemIds, drawings }) => {
+    const folder = subfolder?.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "") : null;
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const numPrefix = String(project).toLowerCase().trim();
+    const hits: any[] = [];
+    const coverage: any = {};
+    if (drawings !== false) {
+      let indexedFiles = 0, filesPending = 0;
+      try {
+        const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+        indexedFiles = known.filter((k) => k.status === "done").length;
+        filesPending = known.filter((k) => k.status === "pending").length;
+      } catch { /* coverage is advisory */ }
+      coverage.drawings = { indexedFiles, filesPending, scope: folder ? `Sheets from "${folder}" only.` : PRE_ISSUE_NOTE };
+      if (!indexedFiles) coverage.drawings.note = "Nothing is indexed for this project yet, so no sheet was searched. Run search_drawings with indexOnly:true, then call again.";
+      else {
+        if (filesPending) coverage.drawings.note = "Index incomplete: sheets not read yet were not searched. search_drawings indexOnly:true fills it.";
+        try {
+          const rows: any[] = (await sbRpc("pms_sheet_phrase_hits", { p_prefix: numPrefix, p_pattern: deferredPgPattern(), p_folder: folder, p_exclude: folder ? null : PRE_ISSUE_FOLDER_SQL_RE })) || [];
+          coverage.drawings.sheetsSearched = Number(rows[0]?.total_sheets ?? 0) || undefined;
+          if (rows.length >= 1500) coverage.drawings.truncated = "More than 1,500 matches: only the first 1,500 are shown. Narrow with subfolder.";
+          for (const r of rows) hits.push({ where: r.sheet_no, phrase: r.phrase, text: `${r.before ? "…" : ""}${r.before || ""}${r.phrase || ""}${r.after || ""}${r.after ? "…" : ""}` });
+        } catch (e) {
+          const m = String((e as any)?.message ?? e);
+          coverage.drawings.error = /404|PGRST202|does not exist/.test(m) ? "The drawing search is not available yet: the database has not run migration 20261125140000." : `Drawing search failed: ${m.slice(0, 200)}`;
+        }
+      }
+    }
+    if (specItemIds?.length) {
+      coverage.specifications = [];
+      for (const id of specItemIds.slice(0, DEFERRED_SPEC_FILES_MAX)) {
+        let r: any;
+        try { r = await projectPdfPageTexts(String(project), p, id); }
+        catch (e) { r = { ok: false, why: String((e as any)?.message ?? e).slice(0, 160) }; }
+        if (!r.ok) { coverage.specifications.push({ itemId: id, read: false, why: r.why }); continue; }
+        const nums = Object.keys(r.pages).map(Number).sort((a, b) => a - b);
+        let name = id, blank = 0;
+        try { const d: any[] = await sbGet("pms_documents?select=name&item_id=eq." + encodeURIComponent(id) + "&limit=1"); if (d?.[0]?.name) name = String(d[0].name); } catch { /* the id serves as the name */ }
+        for (const n of nums) {
+          if (!r.pages[n]) { blank++; continue; }
+          for (const h of deferredScanText(r.pages[n])) hits.push({ where: `${name} p.${n}`, phrase: h.phrase, text: h.text });
+        }
+        coverage.specifications.push({ itemId: id, name, read: true, pagesRead: nums.length, totalPages: r.totalPages,
+          ...(r.totalPages > nums.length ? { note: `Only the first ${nums.length} of ${r.totalPages} pages were read.` } : {}),
+          ...(blank ? { pagesWithNoText: blank } : {}) });
+      }
+    }
+    const g = deferredGroupHits(hits);
+    return asText({
+      project, coverage, ...g,
+      note: (g.places ? `${g.places} place(s) to look at (${g.hits} match(es); a note repeated across sheets is listed once). ` : "No deferring phrase was found in what was searched. ") +
+        "A place is not a finding: check whether the answer is stated elsewhere in the set, in the agency preferences and in the knowledge layer, and record under qa-637 only what is stated nowhere. " +
+        (specItemIds?.length ? "" : "Specifications were NOT searched: pass their PDFs in specItemIds, or say so in the coverage. ") +
+        "Bare 'as required' is not searched.",
+    });
+  },
+});
+
+// ─── CONTROLS COVERAGE: check_controls_coverage (QA item qa-633) ─────────────
+// Which scheduled mechanical equipment the controls sheets never mention, for
+// a whole set in one call from the drawing text index (pms_tag_controls_kinds,
+// migration 20261125150000), plus every "BMS if applicable"
+// (pms_sheet_phrase_hits). What counts is decided in controlsCoverage.js.
+// Read-only.
+mcp.tool("check_controls_coverage", {
+  description:
+    "FIND SCHEDULED EQUIPMENT THE CONTROLS SHEETS NEVER MENTION, for a whole drawing set in one call (QA checklist " +
+    "item qa-633: every controlled item names what controls it). It takes each equipment family (tag prefix) that " +
+    "is on a mechanical or plumbing schedule and drawn on a plan, and looks for it on the controls sheets. It " +
+    "returns: `notMentioned`, families no controls sheet mentions by tag or by name (each is either stand-alone, " +
+    "and then its thermostat or switch must be on a plan, or nobody assigned it: this is what the RFIs were); " +
+    "`byTypeOnly`, families with no tag on a controls sheet but the prefix printed there (shown as a type); " +
+    "`partlyShown`, families with some tags on controls sheets and others not (usually 'typical of', sometimes the " +
+    "odd unit out is the finding); and `bmsConditional`, every place a sheet says BMS, BAS or DDC 'if applicable', " +
+    "'where available' or the like. Run it once at the start of qa-633. HOW IT DECIDES: a controls sheet is one " +
+    "whose title says CONTROL(S), BMS, BAS, DDC, ATC, AUTOMATION, SEQUENCE or POINTS LIST (not LIGHTING); " +
+    "`controlsSheets` in the answer lists the ones it used. If the controls diagrams or points list sit on a " +
+    "sheet titled something else, pass it in controlsSheets and run again. If it finds NO controls sheet, that is " +
+    "itself worth a finding when the set has controlled equipment: the documents do not say BMS or stand-alone. " +
+    "Tagged items nothing controls (grilles, drains, tanks, plumbing fixtures) are left out by prefix; pass " +
+    "`ignore` for more, or `families` to look at named prefixes only. LIMITS, say them in the coverage: it reads " +
+    "text, so it cannot see whether a thermostat is drawn or whether a sequence can do what it says; hyphenated " +
+    "tags only; untagged controlled items (dampers, detectors, trap primers, what the fire alarm matrix operates) " +
+    "are not in its list and are still yours; the controls specification is not read. For each family returned, " +
+    "look for its thermostat or switch (search_drawings for THERMOSTAT, T-STAT, STAND-ALONE, and the tag) before " +
+    "recording it under qa-633. Issued drawings by default; pass subfolder for a pre-issuance QA set. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    subfolder: z.string().optional().describe("Limit to ONE set folder, spelled as list_project_documents reports it. Required for a pre-issuance QA set."),
+    controlsSheets: z.array(z.string()).max(60).optional().describe("Sheets that carry controls diagrams, sequences or the points list although their title does not say so, e.g. ['M-701']."),
+    families: z.array(z.string()).max(40).optional().describe("Only these tag prefixes, e.g. ['EUH', 'FCU']."),
+    ignore: z.array(z.string()).max(40).optional().describe("Tag prefixes nothing controls on this project, to leave out."),
+  }),
+  handler: async ({ projectNumber, subfolder, controlsSheets, families, ignore }) => {
+    const folder = subfolder?.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "") : null;
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const numPrefix = String(project).toLowerCase().trim();
+    let indexedFiles = 0, filesPending = 0;
+    try {
+      const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+      indexedFiles = known.filter((k) => k.status === "done").length;
+      filesPending = known.filter((k) => k.status === "pending").length;
+    } catch { /* coverage is advisory */ }
+    const coverage = { indexedFiles, filesPending, ...(filesPending ? { note: "Index incomplete: a controls sheet not read yet makes equipment look unassigned. search_drawings indexOnly:true fills it; then run this again." } : {}) };
+    if (!indexedFiles) return asText({ project, coverage, error: "Nothing is indexed for this project yet.", nextStep: "Run search_drawings with indexOnly:true first." });
+    const exclude = folder ? null : PRE_ISSUE_FOLDER_SQL_RE;
+    let rows: any[];
+    try {
+      rows = (await sbRpc("pms_tag_controls_kinds", { p_prefix: numPrefix, p_folder: folder, p_exclude: exclude, p_controls_sheets: controlsSheets?.length ? controlsSheets : null })) || [];
+    } catch (e) {
+      const m = String((e as any)?.message ?? e);
+      return asText({ project, coverage, error: /404|PGRST202|does not exist/.test(m) ? "The controls check is not available yet: the database has not run migration 20261125150000." : `Controls check failed: ${m.slice(0, 240)}`,
+        nextStep: "find_equipment and search_drawings on the controls sheets still do it by hand." });
+    }
+    const r = controlsCoverage(rows, { families, ignore });
+    let bmsConditional: any[] = [];
+    let phraseNote: string | undefined;
+    try {
+      const hits: any[] = (await sbRpc("pms_sheet_phrase_hits", { p_prefix: numPrefix, p_pattern: BMS_CONDITIONAL_PG, p_folder: folder, p_exclude: exclude })) || [];
+      bmsConditional = hits.slice(0, 60).map((h: any) => ({ sheet: h.sheet_no, phrase: h.phrase, text: `…${h.before || ""}${h.phrase || ""}${h.after || ""}…`.replace(/\s+/g, " ") }));
+    } catch (e) { phraseNote = `"BMS if applicable" was not searched: ${String((e as any)?.message ?? e).slice(0, 120)}`; }
+    return asText({
+      project, ...(folder ? { scope: `Sheets from "${folder}" only.` } : { scope: PRE_ISSUE_NOTE }), coverage, ...r, bmsConditional,
+      ...(phraseNote ? { phraseNote } : {}),
+      note: (!r.controlsSheets.length
+        ? "NO controls sheet was found by title. If the controls diagrams or points list are on a sheet titled something else, pass it in controlsSheets and run again; if the set has none, the documents do not say what controls the equipment, which is a finding where the set has controlled equipment. "
+        : r.flagged ? `${r.flagged} equipment famil${r.flagged === 1 ? "y is" : "ies are"} on no controls sheet. For each, find its thermostat or switch on a plan, or record it under qa-633. ` : "Every scheduled family checked is mentioned on a controls sheet. ") +
+        (bmsConditional.length ? `${bmsConditional.length} place(s) hedge on the BMS: each is a finding unless the set says elsewhere whether there is one. ` : "") +
+        "This reads text: it cannot see whether a thermostat is drawn, and it does not cover untagged dampers, detectors or the controls specification. Say so in the coverage.",
+    });
+  },
+});
+
+// ─── REVISION CARRIED: check_revision_carried (QA item qa-634) ───────────────
+// For one addendum or bulletin folder: each sheet against its previous
+// revision, and where the tags it lost or gained are still (or not yet) shown
+// (pms_set_tag_changes, migration 20261125160000). What counts is decided in
+// revisionCarried.js. Read-only.
+mcp.tool("check_revision_carried", {
+  description:
+    "CHECK THAT A REVISION'S CHANGES WERE CARRIED TO THE SHEETS NOT RE-ISSUED (QA checklist item qa-634), for one " +
+    "addendum, bulletin or conformed-set folder in one call. It compares the indexed text of every sheet in that " +
+    "folder with the same sheet's previous issued revision and returns: `removedStillShown`, equipment tags that " +
+    "were REMOVED from the sheets of this set while a sheet NOT in the set still shows them at its current " +
+    "revision (the bulletin that took dampers off the fire alarm sheet and left their power on the electrical " +
+    "sheet); and `addedOnOneSheet`, tags ADDED on one sheet of the set that no other sheet in the project shows " +
+    "(new equipment with no schedule row, power or riser entry). Run it once at the start of qa-634 on the " +
+    "revision's folder. Pass subfolder exactly as list_project_documents prints it, e.g. 'Outgoing/2025-01-21_" +
+    "Addendum #1' or the QAQC folder of a bulletin not yet issued. HOW IT ORDERS REVISIONS: by the date in each " +
+    "set's folder name (2025-01-21_...), so a folder with no date in its name cannot be compared. LIMITS, say " +
+    "them in the coverage: it sees HYPHENATED TAGS only; a change to a note, a size, a quantity, a grid or room " +
+    "name, a detail or a specification section is NOT found here and is still checked by hand; a tag moved from " +
+    "one sheet of the set to another is not reported; it reads text, so scanned sheets count only where OCR " +
+    "indexed them; and both the set and the earlier sets must be INDEXED (search_drawings indexOnly:true). A " +
+    "result with no tag changes does not mean the revision is clean: most bulletins change things that are not " +
+    "tags. Every result is two sheets to open (view_drawing) before recording it under qa-634. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    subfolder: z.string().describe("The revision's folder, spelled as list_project_documents reports it, e.g. 'Outgoing/2026-04-17_Bulletin #13'."),
+  }),
+  handler: async ({ projectNumber, subfolder }) => {
+    const folder = String(subfolder || "").trim().replace(/^\/+|\/+$/g, "");
+    if (!folder) return asText({ error: "Pass the revision's folder as subfolder.", nextStep: "list_project_documents shows the set folders under Outgoing." });
+    if (!/\d{4}[-_]\d{2}[-_]\d{2}/.test(folder)) {
+      return asText({ error: `"${folder}" has no date in its name (YYYY-MM-DD), so it cannot be placed before or after the other sets.`,
+        nextStep: "Do this revision by hand: search_drawings on its subfolder, then each changed tag across the current sets (history.absentAt, stillPresentAtLatest)." });
+    }
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const numPrefix = String(project).toLowerCase().trim();
+    let filesPending = 0;
+    try {
+      const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+      filesPending = known.filter((k) => k.status === "pending").length;
+    } catch { /* coverage is advisory */ }
+    let rows: any[];
+    try { rows = (await sbRpc("pms_set_tag_changes", { p_prefix: numPrefix, p_folder: folder })) || []; }
+    catch (e) {
+      const m = String((e as any)?.message ?? e);
+      return asText({ project, error: /404|PGRST202|does not exist/.test(m) ? "The revision check is not available yet: the database has not run migration 20261125160000." : `Revision check failed: ${m.slice(0, 240)}`,
+        nextStep: "search_drawings on the revision's subfolder, then each changed tag across the current sets, still does it by hand." });
+    }
+    const r = revisionCarried(rows);
+    if (!r.sheetsInSet) {
+      return asText({ project, set: folder, ...r, error: "No indexed sheet was found in that folder.",
+        nextStep: "Check the folder spelling with list_project_documents, and index it with search_drawings (subfolder, indexOnly:true)." });
+    }
+    return asText({
+      project, set: folder, ...(filesPending ? { coverage: { filesPending, note: "Index incomplete: a sheet not read yet cannot be compared or searched. search_drawings indexOnly:true fills it." } } : {}), ...r,
+      note: (r.flagged ? `${r.flagged} tag(s) were removed in this set and are still on sheets that were not re-issued. Open both sheets for each before recording it under qa-634. ` : "No removed tag is still shown on a sheet outside the set. ") +
+        (r.addedOnOneSheet.length ? `${r.addedOnOneSheet.length} tag(s) were added on one sheet only: confirm nothing else needs them. ` : "") +
+        (r.newSheets ? `${r.newSheets} sheet(s) in the set have no earlier revision to compare with. ` : "") +
+        (!r.sheetsWithTagChanges ? "No tag was added or removed on any sheet, which does NOT mean nothing changed: " : "This covers tags only: ") +
+        "changed notes, sizes, quantities, grid and room names, details and specification sections are not seen here and are still checked by hand. Say so in the coverage.",
+    });
+  },
+});
+
 // ─── SPACE FIT: check_space_fit (QA items qa-614 and qa-070) ─────────────────
 // The sums behind "does it fit": a plenum against what is stacked in it, one
 // dimension of a room, shaft or pit against what sits along it, and the clear
@@ -13940,7 +14331,7 @@ async function qaRoutineWrite(method: "POST" | "PATCH", path: string, body: unkn
 }
 const qaRoutineTableError = (e: unknown): string => {
   const m = String((e as any)?.message ?? e);
-  return /404|not exist|PGRST205|42P01/.test(m) ? "The routine's tables are not available yet: the database has not run migrations 20261124220000, 20261124230000 and 20261124240000." : m.slice(0, 240);
+  return /404|not exist|PGRST205|42P01/.test(m) ? "The routine's tables are not available yet: the database has not run migrations 20261124220000 through 20261125110000." : m.slice(0, 240);
 };
 const uncoveredRfiRows = (): Promise<any[]> =>
   sbGetAll("pms_rfi_root_causes?select=project,item_number,subject,phase,cause,note&item_type=eq.rfi&preventable=is.true&qa_item=is.null&order=project,item_number");
@@ -13948,20 +14339,25 @@ const uncoveredRfiRows = (): Promise<any[]> =>
 // Approved knowledge a checklist item could be made from: lessons (project or
 // firm-wide, not superseded) and best practices (20261124240000), not yet
 // linked to an item and not behind a proposal still waiting for a decision.
-// Best practices come back in the lesson shape with kind "practice", first.
+// Active agency preferences (20261125110000) come too. Best practices and
+// preferences come back in the lesson shape, kind "practice" / "preference".
 async function candidateLessonRows(): Promise<any[]> {
-  const [lessons, practices, covered, coveredP, open] = await Promise.all([
+  const [lessons, practices, prefs, covered, coveredP, coveredA, open] = await Promise.all([
     sbGetAll("pms_lessons?select=lesson_id,project_id,agency,discipline,system,issue_type,lesson_summary&status=eq.approved&superseded_by=is.null&order=discipline,project_id"),
     sbGetAll("pms_best_practices?select=practice_id,title,discipline,system,issue_type,practice_text&status=eq.approved&order=discipline,title"),
+    sbGetAll("pms_agency_preferences?select=pref_id,agency,preference_type,discipline,requirement_or_preference&status=eq.active&order=discipline,agency"),
     sbGetAll("pms_qa_lesson_coverage?select=lesson_id"),
     sbGetAll("pms_qa_practice_coverage?select=practice_id"),
+    sbGetAll("pms_qa_preference_coverage?select=pref_id"),
     sbGet("pms_qa_item_proposals?select=lessons&status=eq.proposed&limit=500"),
   ]);
-  const skip = new Set<string>([...(covered || []).map((c: any) => c.lesson_id), ...(coveredP || []).map((c: any) => c.practice_id)].map((x) => String(x).toLowerCase()));
+  const skip = new Set<string>([...(covered || []).map((c: any) => c.lesson_id), ...(coveredP || []).map((c: any) => c.practice_id), ...(coveredA || []).map((c: any) => c.pref_id)].map((x) => String(x).toLowerCase()));
   for (const p of open || []) for (const l of Array.isArray(p.lessons) ? p.lessons : []) skip.add(String(l?.id || "").toLowerCase());
   const rows = [
     ...(practices || []).map((b: any) => ({ lesson_id: b.practice_id, kind: "practice", project_id: null, discipline: b.discipline, system: b.system, issue_type: b.issue_type,
       lesson_summary: [b.title, b.practice_text].filter(Boolean).join(": ") })),
+    ...(prefs || []).map((a: any) => ({ lesson_id: a.pref_id, kind: "preference", project_id: null, agency: a.agency, discipline: a.discipline, issue_type: a.preference_type,
+      lesson_summary: a.requirement_or_preference })),
     ...(lessons || []).map((l: any) => ({ ...l, kind: "lesson" })),
   ];
   return rows.filter((l: any) => !skip.has(String(l.lesson_id).toLowerCase()));
@@ -13971,7 +14367,7 @@ mcp.tool("start_checklist_routine", {
   description:
     "START the QA checklist review routine (the Admin Console's 'Run with Claude' on its QA Checklist tab, or when " +
     "someone asks whether the checklist needs new items). One call: it marks the run as started in the console and " +
-    "returns every preventable RFI that NO checklist item covers, every approved lesson and best practice in the knowledge layer that " +
+    "returns every preventable RFI that NO checklist item covers, every approved lesson, best practice and active agency preference in the knowledge layer that " +
     "no checklist item describes yet, the current checklist, earlier proposals with what an admin decided, and the " +
     "method. Your job is to find the kinds of RFI, and the lessons, that recur across projects and are " +
     "not already covered, and draft one checklist item for each, then finish with propose_checklist_items. You do " +
@@ -14008,11 +14404,11 @@ mcp.tool("start_checklist_routine", {
       rfis: uncovered.slice(0, 400).map((r) => ({ project: r.project, number: r.item_number, phase: r.phase, cause: r.cause, subject: r.subject || undefined, note: r.note || undefined })),
       ...(uncovered.length > 400 ? { rfisNote: `Showing the first 400 of ${uncovered.length}. rfi_root_cause_summary with listRfis and a cause filter reads the rest.` } : {}),
       approvedLessonsWithNoItem: lessons.length,
-      lessons: lessons.slice(0, 450).map((l: any) => ({ id: l.lesson_id, kind: l.kind === "practice" ? "best practice" : l.project_id ? undefined : "firm-wide lesson", project: l.project_id || undefined, discipline: l.discipline || undefined, system: l.system || undefined, type: l.issue_type || undefined, agency: l.agency || undefined, summary: String(l.lesson_summary || "").replace(/\s+/g, " ").trim().slice(0, 420) })),
-      ...(lessons.length > 450 ? { lessonsNote: `Showing the first 450 of ${lessons.length}. The rest are read on a later run, once these are linked or proposed.` } : {}),
+      lessons: lessons.slice(0, 600).map((l: any) => ({ id: l.lesson_id, kind: l.kind === "practice" ? "best practice" : l.kind === "preference" ? "agency preference" : l.project_id ? undefined : "firm-wide lesson", project: l.project_id || undefined, discipline: l.discipline || undefined, system: l.system || undefined, type: l.issue_type || undefined, agency: l.agency || undefined, summary: String(l.lesson_summary || "").replace(/\s+/g, " ").trim().slice(0, 420) })),
+      ...(lessons.length > 600 ? { lessonsNote: `Showing the first 600 of ${lessons.length}. The rest are read on a later run, once these are linked or proposed.` } : {}),
       checklist: checklist.map((i: any) => ({ id: i.item_id, section: i.section, text: i.text })),
       earlierProposals: (earlier || []).map((p: any) => ({ text: p.text, status: p.status, becameItem: p.item_id || undefined, adminNote: p.decision_note || undefined, rfis: p.rfi_count, projects: p.project_count })),
-      rules: { minimumRfis: MIN_RFIS, minimumProjects: MIN_PROJECTS, minimumLessons: MIN_LESSONS, minimumLessonProjects: MIN_LESSON_PROJECTS, minimumBestPracticesOrFirmWideLessons: MIN_FIRM_WIDE, maximumProposalsPerRun: PROPOSALS_MAX },
+      rules: { minimumRfis: MIN_RFIS, minimumProjects: MIN_PROJECTS, minimumLessons: MIN_LESSONS, minimumLessonProjects: MIN_LESSON_PROJECTS, minimumBestPracticesOrFirmWideLessons: MIN_FIRM_WIDE, minimumAgencyPreferences: MIN_PREFERENCES, minimumAgencies: MIN_AGENCIES, maximumProposalsPerRun: PROPOSALS_MAX },
       method: [
         "1. Read every RFI's note. Many say '(subject only)': those were tagged from the title alone. Use read_rfi_submittal on any you plan to rely on, so a proposal rests on what was actually asked.",
         "2. Group the RFIs by what a reviewer could have checked before the set went out, not by trade or by project.",
@@ -14021,7 +14417,7 @@ mcp.tool("start_checklist_routine", {
         "5. Do not re-propose something an admin rejected (earlierProposals), unless new RFIs have changed the case, and then say so in the rationale.",
         "6. Write each item the way the checklist's items read: 'Verify ...', one sentence a reviewer can act on; details that say what to look at and what counts as a finding; `how` naming the connector tools that do it (search_drawings, read_drawing_schedule, view_drawing, read_document); the phases it applies to; a rationale with the counts; and the RFIs it rests on.",
         "7. A check nobody has time to do by hand is not a good item. Prefer one the review can do from the drawings; where it needs product or manufacturer knowledge, propose a lesson with save_knowledge instead.",
-        `8. LESSONS. Then read the lessons: each is an approved lesson from one project that no checklist item describes yet. Group the ones that say the same thing a reviewer could check on the drawings. A group earns an item with at least ${MIN_LESSONS} lessons from at least ${MIN_LESSON_PROJECTS} projects; pass their ids in the proposal's lessons. Entries marked 'best practice' or 'firm-wide lesson' are already firm-level statements a person approved, so ONE can carry a proposal, but only when it is a check a reviewer can do on the drawings and no existing item asks for it. Expect most best practices to be covered by an existing item already (step 9) or to be advice, not a check (step 10). A group of RFIs and a group of lessons about the same thing are ONE proposal carrying both.`,
+        `8. LESSONS. Then read the lessons: each is an approved lesson from one project that no checklist item describes yet. Group the ones that say the same thing a reviewer could check on the drawings. A group earns an item with at least ${MIN_LESSONS} lessons from at least ${MIN_LESSON_PROJECTS} projects; pass their ids in the proposal's lessons. Entries marked 'best practice' or 'firm-wide lesson' are already firm-level statements a person approved, so ONE can carry a proposal, but only when it is a check a reviewer can do on the drawings and no existing item asks for it. Expect most best practices to be covered by an existing item already (step 9) or to be advice, not a check (step 10). Entries marked 'agency preference' belong to ONE agency, and the checklist runs on every project with no agency scope: a preference earns an item only when at least ${MIN_PREFERENCES} preferences from at least ${MIN_AGENCIES} DIFFERENT agencies ask for the same thing, and then the item is written for every project, without naming an agency. Leave a preference only one agency has alone: a review on that agency's projects already reads it. A group of RFIs and a group of lessons about the same thing are ONE proposal carrying both.`,
         "9. Where an existing checklist item already describes a lesson, do not propose: list it in lessonsAlreadyCovered with that item's id, so later runs do not read it again. Only do this when the item really asks for the same check.",
         "10. Most lessons will NOT become items, and that is right: a lesson about process, schedule, fees, one agency's habit or one manufacturer's product stays a lesson, and every QA review already reads it. Leave those alone and do not list them anywhere. Summaries here are shortened; search_knowledge reads a lesson in full before you rely on it.",
         "11. Finish with propose_checklist_items, even when there is nothing to propose: pass no proposals and say why in summary. Then tell the user what you proposed, what you re-tagged or linked to existing items, and what you left out.",
@@ -14035,7 +14431,7 @@ mcp.tool("propose_checklist_items", {
     "FINISH the QA checklist review routine (after start_checklist_routine): store the proposed checklist items for " +
     "an admin to approve or reject in the Admin Console, and close the run with a summary. Nothing is added to the " +
     "checklist here. Each proposal is checked: its RFIs are matched against the preventable RFIs that still have no " +
-    `checklist item, and its lessons against the approved lessons and best practices no item describes. One that rests on fewer than ${MIN_RFIS} such RFIs on ${MIN_PROJECTS} projects, fewer than ${MIN_LESSONS} such lessons from ${MIN_LESSON_PROJECTS} projects, AND no best practice or firm-wide lesson is refused, as is ` +
+    `checklist item, and its lessons against the approved lessons and best practices no item describes. One that rests on fewer than ${MIN_RFIS} such RFIs on ${MIN_PROJECTS} projects, fewer than ${MIN_LESSONS} such lessons from ${MIN_LESSON_PROJECTS} projects, no best practice or firm-wide lesson, AND fewer than ${MIN_PREFERENCES} agency preferences from ${MIN_AGENCIES} agencies is refused, as is ` +
     "one whose text repeats an existing item or proposal, or that mostly reuses another proposal's RFIs. The " +
     "counts stored are computed from the tags, not taken from you. Refused proposals come back with the reason: " +
     "tell the user. With nothing to propose, call it with no proposals and a summary saying why, so the run is " +
@@ -14051,10 +14447,10 @@ mcp.tool("propose_checklist_items", {
       phases: z.array(z.enum(PROPOSAL_PHASES as [string, ...string[]])).optional().describe("Deliverable phases it applies to. Default CD, Permit, Bid, Addendum."),
       rationale: z.string().optional().describe("Why this earns a place: the counts, and why no existing item covers it."),
       rfis: z.array(z.object({ project: z.string(), number: z.string() })).max(80).optional().describe("The uncovered preventable RFIs it rests on, by project number and RFI number as start_checklist_routine listed them."),
-      lessons: z.array(z.string()).max(40).optional().describe("The approved lessons and best practices it rests on: their ids as start_checklist_routine listed them."),
+      lessons: z.array(z.string()).max(40).optional().describe("The approved lessons, best practices and agency preferences it rests on: their ids as start_checklist_routine listed them."),
     })).max(PROPOSALS_MAX).optional(),
     lessonsAlreadyCovered: z.array(z.object({
-      lessonId: z.string().describe("A lesson or best practice id from start_checklist_routine."),
+      lessonId: z.string().describe("A lesson, best practice or agency preference id from start_checklist_routine."),
       itemId: z.string().describe("The existing checklist item that already asks for the same check, e.g. qa-631."),
     })).max(200).optional().describe("Lessons and best practices an EXISTING checklist item already describes. Recorded so later runs skip them; the lesson or practice itself is not changed."),
   }),
@@ -14075,7 +14471,8 @@ mcp.tool("propose_checklist_items", {
       const inProposal = new Set<string>(plan.accepted.flatMap((a: any) => a.lessons.map((l: any) => l.id)));
       const candidateIds = new Set<string>(candidates.map((l: any) => String(l.lesson_id).toLowerCase()));
       const itemIds = new Map<string, string>(items.map((i: any) => [String(i.item_id).toLowerCase(), i.item_id]));
-      const practiceIds = new Set<string>(candidates.filter((l: any) => l.kind === "practice").map((l: any) => String(l.lesson_id).toLowerCase()));
+      const idsOf = (kind: string) => new Set<string>(candidates.filter((l: any) => l.kind === kind).map((l: any) => String(l.lesson_id).toLowerCase()));
+      const practiceIds = idsOf("practice"), prefIds = idsOf("preference");
       const links = new Map<string, string>();
       const linksRefused: any[] = [];
       for (const x of lessonsAlreadyCovered || []) {
@@ -14085,10 +14482,11 @@ mcp.tool("propose_checklist_items", {
         else if (inProposal.has(lid)) linksRefused.push({ lessonId: x.lessonId, why: "A proposal in this call rests on it." });
         else links.set(lid, item);
       }
-      const lessonLinks = [...links].filter(([id]) => !practiceIds.has(id)), practiceLinks = [...links].filter(([id]) => practiceIds.has(id));
+      const lessonLinks = [...links].filter(([id]) => !practiceIds.has(id) && !prefIds.has(id)), practiceLinks = [...links].filter(([id]) => practiceIds.has(id)), prefLinks = [...links].filter(([id]) => prefIds.has(id));
       const linked: any[] = [
         ...(lessonLinks.length ? await qaRoutineWrite("POST", "pms_qa_lesson_coverage?on_conflict=lesson_id", lessonLinks.map(([lesson_id, qa_item]) => ({ lesson_id, qa_item, set_by: c.email }))) : []),
         ...(practiceLinks.length ? await qaRoutineWrite("POST", "pms_qa_practice_coverage?on_conflict=practice_id", practiceLinks.map(([practice_id, qa_item]) => ({ practice_id, qa_item, set_by: c.email }))) : []),
+        ...(prefLinks.length ? await qaRoutineWrite("POST", "pms_qa_preference_coverage?on_conflict=pref_id", prefLinks.map(([pref_id, qa_item]) => ({ pref_id, qa_item, set_by: c.email }))) : []),
       ];
       const stored: any[] = plan.accepted.length
         ? await qaRoutineWrite("POST", "pms_qa_item_proposals", plan.accepted.map((a: any) => ({ ...a, run_id: runId, created_by: c.email })))

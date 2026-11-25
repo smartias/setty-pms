@@ -916,6 +916,106 @@ so no arithmetic is left to the model. Read-only: it touches no project data.
   number is wrong, that the selection is wrong, or that the product exists.
   Product-availability lessons belong in the knowledge layer.
 
+## Document agreement (`check_document_agreement`, QA item qa-632)
+
+Whether plan, schedule, detail and specification say the same thing about the
+same item. The reviewer collects what each document says and passes it; the
+comparing is done in `documentAgreement.js` (pure;
+`documentAgreement.test.mjs`, whose cases replay the RFIs behind qa-632).
+Read-only: it touches no project data.
+
+- `statements` (subject, attribute, source, value): entries with the same
+  subject and attribute are compared. Materials by name, grade and
+  construction (double wall, lined, flexible or hard connection); quantities
+  after conversion to one unit; anything else as text. `limit: max | min`
+  marks a statement the others must meet. `silent: true` marks a document
+  that should state it and does not.
+- `circuits` (per panel: `plan` homeruns, `schedule` rows): drawn but not
+  scheduled, drawn on a spare or space, given to a different room or load, a
+  different device count, and with `plansComplete` scheduled but on no plan.
+- Homerun numbers are read from the rendered plan. On the text layer they are
+  bare numbers that cannot be told from keynotes, so this is not a text match.
+- A conflict does not say which document is right. A subject only one
+  document states is `not-compared`.
+- Migration `20261125120000` marks qa-632 `auto` and rewrites its hint.
+
+## Tags against schedules (`check_tag_schedule_coverage`, QA item qa-622)
+
+Every equipment tag on a plan has a schedule row, and every scheduled tag is
+drawn. One call for a whole set, from the drawing text index. Read-only.
+
+- `pms_tag_sheet_kinds` (migration `20261125130000`) returns each hyphenated
+  tag on the newest indexed revision of every sheet in scope, with the sheets
+  it is on split into schedule sheets (title contains SCHEDULE, or passed in
+  `scheduleSheets`), plans (PLAN or LAYOUT) and others.
+- `tagCoverage.js` (pure; `tagCoverage.test.mjs`) decides what is a finding. A
+  tag is judged only inside a family the set shows to be equipment: a prefix
+  with a member both scheduled and on a plan. That keeps out sheet references,
+  code sections, model numbers and RFI numbers.
+- Returns `notScheduled`, `notOnPlans`, `familiesNotScheduled` (a prefix on
+  two or more plans, never scheduled) and `writtenTwoWays` (FCU-01 and FCU-1).
+- Limits: hyphenated tags only; text only; a schedule on a sheet not titled
+  SCHEDULE must be passed in `scheduleSheets`.
+- qa-622 stays `assisted`: untagged devices, the architect's sheets and
+  Division 01 still need a reviewer.
+
+## Deferred decisions (`check_deferred_decisions`, QA item qa-637)
+
+Every place a sheet, or a specification PDF the reviewer names, leaves a
+decision to the owner, the authority or an unnamed code edition. Read-only.
+
+- Phrases, in `deferredDecisions.js` (pure; `deferredDecisions.test.mjs`): as
+  allowed / permitted / approved / directed by; owner's option or approval;
+  verify / confirm / coordinate with owner; if or where applicable, if
+  required; TBD and to be determined; latest edition and code in effect. Bare
+  "as required" is left out: it is on a fifth of the sheets and says nothing.
+- The patterns are written once and used in both engines: Postgres over the
+  drawing text index (`pgPattern`, `\b` becomes `\y`) through
+  `pms_sheet_phrase_hits` (migration `20261125140000`), and JS over spec pages.
+  The SQL function finds each occurrence by position (`regexp_instr`), so two
+  phrases close together on a sheet are both returned.
+- Specification books are not in the drawing index, so up to three PDFs per
+  call are read page by page (`projectPdfPageTexts`, text layer, 400 pages).
+- The same note on many sheets is one entry listing the sheets.
+- A place is somewhere to look, not a finding. Deciding whether the answer is
+  stated elsewhere is the reviewer's step.
+
+## Controls coverage (`check_controls_coverage`, QA item qa-633)
+
+Which scheduled mechanical equipment the controls sheets never mention. One
+call for a whole set, from the drawing text index. Read-only.
+
+- `pms_tag_controls_kinds` (migration `20261125150000`) returns each tag's
+  schedule sheets, controls sheets and plans, plus every short word printed on
+  the controls sheets. A controls sheet is one titled CONTROL(S), BMS, BAS,
+  DDC, ATC, AUTOMATION, SEQUENCE or POINTS LIST (not LIGHTING), or one passed
+  in `controlsSheets`.
+- `controlsCoverage.js` (pure; `controlsCoverage.test.mjs`) works by FAMILY,
+  because a controls diagram draws one unit and calls it typical:
+  `notMentioned` (no tag and no bare prefix on any controls sheet),
+  `byTypeOnly`, `partlyShown`. Passive prefixes (grilles, drains, tanks,
+  fixtures) are left out (`PASSIVE`, plus `ignore`).
+- `bmsConditional`: "BMS if applicable" and the like, through
+  `pms_sheet_phrase_hits`.
+- qa-633 stays `assisted`: whether a thermostat is drawn, untagged dampers and
+  detectors, and the controls specification still need a reviewer.
+## Revision carried (`check_revision_carried`, QA item qa-634)
+
+Whether an addendum's or bulletin's tag changes were carried to the sheets
+that were not re-issued. One call for one set folder. Read-only.
+
+- `pms_set_tag_changes` (migration `20261125160000`) compares each sheet in
+  the folder with the same sheet's previous issued revision (sets are ordered
+  by the date in their folder name) and returns each tag added or removed,
+  with the other sheets of the set and the sheets outside it that show the tag
+  at their current revision.
+- `revisionCarried.js` (pure; `revisionCarried.test.mjs`): `removedStillShown`
+  (removed from the set's sheets, still on a sheet not re-issued) and
+  `addedOnOneSheet` (added on one sheet, on no other sheet in the project). A
+  tag moved between two sheets of the set is not reported.
+- Tags only. Changed notes, sizes, quantities, backgrounds and specification
+  sections are not seen, so qa-634 stays `assisted`.
+
 ## Space fit (`check_space_fit`, QA items qa-614 and qa-070; 1.32.0)
 
 Whether what is drawn fits the space it is drawn in. The reviewer reads the
@@ -1903,6 +2003,12 @@ Anyone with the Admin Console can start it: QA Checklist tab, "Run with Claude".
   lessons with no project. Each is already a firm-level statement a person
   approved, so ONE can carry a proposal. Links go to
   `pms_qa_practice_coverage` (best practices) or `pms_qa_lesson_coverage`.
+- Agency preferences (`20261125110000_qa_routine_agency_preferences.sql`): the
+  routine also reads active agency preferences. The checklist has no agency
+  scope, so a preference earns an item only when at least 2 preferences from
+  at least 2 different agencies ask for the same thing; the item is then
+  written for every project. Links go to `pms_qa_preference_coverage`.
 - Migrations: `20261124220000_qa_checklist_routine.sql`,
   `20261124230000_qa_routine_lessons.sql`,
-  `20261124240000_qa_routine_best_practices.sql`.
+  `20261124240000_qa_routine_best_practices.sql`,
+  `20261125110000_qa_routine_agency_preferences.sql`.

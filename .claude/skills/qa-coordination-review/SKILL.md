@@ -595,7 +595,14 @@ Run the five checklist items, each with a disposition:
   tag with no schedule row, "typical" with no extent, items on the
   architect's sheets that ours omit or lay out differently, alternates and
   allowances in Division 01 that cannot be found on the drawings, and work
-  the documents require with no shown way to do it.
+  the documents require with no shown way to do it. Start with
+  `check_tag_schedule_coverage`: one call reconciles every hyphenated tag in
+  the set against the schedule sheets (drawn but not scheduled, scheduled
+  but on no plan, families never scheduled). Look at `scheduleSheets` in its
+  answer first; if a schedule sits on a sheet not listed, pass that sheet and
+  run it again. Confirm each result on the sheet before recording it. It
+  does not see untagged devices, lighting type letters or tags without a
+  hyphen: those, and the rest of this item, are still yours.
 - **qa-623 The spec book as one set.** Table of contents against the book:
   a section twice in two versions, a missing section, a section for a system
   the project does not have. For each major basis-of-design model, check
@@ -702,7 +709,14 @@ is in the report header, and spend the budget accordingly:
 - **qa-632 Plan, schedule and spec agree on the small items.** qa-602 is
   major equipment (its capacity, model and electrical data against the
   spec); this is everything smaller, and also the tags and room names that
-  panel schedule descriptions give for any equipment.
+  panel schedule descriptions give for any equipment. The comparing is
+  automatic: collect what each document says in the steps below and pass it
+  to `check_document_agreement` (`statements` for materials, ratings and
+  heights, with the same subject and attribute wording for the statements
+  meant to be compared; `circuits` for each panel, plan homeruns against
+  schedule rows). Do not judge agreement yourself. It returns only the
+  disagreements; confirm each at both places before recording it, and
+  report what came back not compared in the coverage.
   1. *Circuiting, at two depths.* For every panel, set level: each circuit
      on the schedule has a homerun on a plan, and each homerun has a
      schedule row. This is cheap; do all panels. For at least three panels,
@@ -726,7 +740,14 @@ is in the report header, and spend the budget accordingly:
   5. Quote both sources word for word. Where the sources can be read as two
      layers of one requirement (an insulation jacket, then a protective
      enclosure), say so and raise it as a flag, not a conflict.
-- **qa-633 Every controlled item names its controller.**
+- **qa-633 Every controlled item names its controller.** Start with
+  `check_controls_coverage`: one call lists the scheduled equipment families
+  that no controls sheet mentions, the ones shown only as a type, the ones
+  partly shown, and every "BMS if applicable". Look at `controlsSheets` in
+  its answer first; if the diagrams or points list are on a sheet not listed,
+  pass that sheet and run it again. It reads text only: it cannot see a
+  thermostat symbol, and it does not list untagged items, so the steps below
+  still apply to what it returns and to what it cannot see.
   1. *Build the list from more than the equipment schedules.* Schedules
      give the fans, pumps, heaters and units. Add what has no schedule row:
      fire smoke dampers and motorized dampers from the plans and risers,
@@ -752,7 +773,12 @@ is in the report header, and spend the budget accordingly:
      room unit) is a finding.
   6. *When the spec has no sequence section,* the drawings are the only
      sequence. Record the dangling spec reference once and carry on.
-- **qa-634 A revision is carried to every sheet it touches.**
+- **qa-634 A revision is carried to every sheet it touches.** Start with
+  `check_revision_carried` on the revision's folder: one call compares
+  every sheet in it with its previous revision and lists the tags removed
+  that sheets not re-issued still show, and tags added on one sheet only. It
+  sees hyphenated tags and nothing else, so the steps below still apply to
+  every change that is a note, a size, a quantity or a background.
   1. *Start from the narrative.* List every changed item the bulletin or
      addendum narrative names. Narratives are often Word files, which
      `read_document` cannot read: get them with `download_document`.
@@ -801,9 +827,14 @@ still matched nothing. They apply from CD on. Run them after the five above.
      hanging and mounting accessories.
   A finding quotes the spec article and says which sheet is silent.
 
-- **qa-637 The documents state a decision.**
-  1. *Search specs and notes* for "as allowed by", "as permitted by", "as
-     approved by owner", "as directed", "if applicable", "if required".
+- **qa-637 The documents state a decision.** The search is automatic: do
+  not search phrase by phrase.
+  1. *Run `check_deferred_decisions`* once. It searches every sheet in the
+     set for "as allowed by", "as permitted by", "as approved by owner", "as
+     directed", "if applicable", "if required", "TBD", "coordinate with
+     owner" and "latest edition". Specifications are not in the drawing
+     index: find the spec PDFs with `list_project_documents` and pass them in
+     `specItemIds`, three per call. Say in the coverage which were read.
   2. *For each hit:* is the answer stated elsewhere in the set? Check the
      agency preferences and the knowledge layer for the owner's standing
      answer before raising it.
