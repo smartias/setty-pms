@@ -1342,6 +1342,12 @@ unchanged: they see page 1 of a small file.
   are copied, never re-encoded. Only the page dictionary is rewritten: new
   parent, inherited `MediaBox` / `Resources` / `Rotate` / `CropBox` made
   explicit.
+- Two things come from outside the page. A hybrid file lists its packed
+  objects as free in the table and gives their real places in `/XRefStm`, so
+  the stream is read before the table's free entries are applied. And layer
+  visibility lives in the catalog: `/OCProperties` is carried over as written,
+  with only the layers the page uses, so a layer the drawing has switched off
+  stays off. (Both found by review on the PR.)
 - It does not repair a damaged cross-reference table, does not decrypt, and
   does not follow references to other pages (link targets, the structure
   tree): those are left dangling, which readers treat as null. Each of the

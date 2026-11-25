@@ -19,6 +19,7 @@
 //   - decrypt. An encrypted file is refused.
 //   - follow references to other pages (link annotations, article threads,
 //     the structure tree). They are left dangling, which readers treat as null.
+// The one thing taken from the catalog is /OCProperties: which layers are on.
 //
 // Pure of any storage: the caller supplies `fetchRange`. See its tests.
 import { inflateSync, constants as zlibConstants } from "node:zlib";
@@ -369,10 +370,9 @@ class PdfFile {
       if (!this.root && isRef(trailer.m.get("Root"))) this.root = trailer.m.get("Root") as PdfRef;
       const size2 = Number(trailer.m.get("Size") ?? 0);
       if (size2 - 1 > this.maxNum) this.maxNum = size2 - 1;
-      // A hybrid file: the table's own stream comes before anything older.
-      const stm = trailer.m.get("XRefStm"), prev = trailer.m.get("Prev");
+      // A hybrid file's /XRefStm is read with its table (readXrefSection).
+      const prev = trailer.m.get("Prev");
       if (typeof prev === "number") todo.unshift(prev);
-      if (typeof stm === "number") todo.unshift(stm);
     }
     if (!this.root) throw new PdfExtractError("the file names no document catalog");
     for (const n of this.xref.keys()) if (n > this.maxNum) this.maxNum = n;
@@ -406,7 +406,14 @@ class PdfFile {
         if (!isDict(trailer)) throw new PdfExtractError("the cross-reference table has no trailer");
         return { entries, trailer };
       }, 64 * 1024);
-      for (const [n, e] of out.entries) this.put(n, e);
+      // A hybrid file lists its packed objects as FREE in the table, so that an
+      // old reader ignores them, and gives their real places in /XRefStm. So
+      // the table's in-use entries go in first, then the stream, and the
+      // table's free entries last: a free entry must not hide the stream's.
+      for (const [n, e] of out.entries) if (e.kind !== "free") this.put(n, e);
+      const stm = out.trailer.m.get("XRefStm");
+      if (typeof stm === "number") await this.readXrefSection(stm);
+      for (const [n, e] of out.entries) if (e.kind === "free") this.put(n, e);
       return out.trailer;
     }
     // A cross-reference stream.
@@ -591,8 +598,9 @@ export async function openPdfPages(size: number, fetchRange: RangeRead, opts: Pa
   const file = new PdfFile(chunks);
   await file.open();
 
-  const catalog = (await file.get(file.root!.n))?.value;
-  if (!isDict(catalog)) throw new PdfExtractError("the file's document catalog is unreadable");
+  const catObj = await file.get(file.root!.n);
+  const catalog = catObj?.value;
+  if (!catObj || !isDict(catalog)) throw new PdfExtractError("the file's document catalog is unreadable");
   const pagesRef = catalog.m.get("Pages");
   if (!isRef(pagesRef)) throw new PdfExtractError("the file has no page tree");
   const top = await file.get(pagesRef.n);
@@ -600,7 +608,7 @@ export async function openPdfPages(size: number, fetchRange: RangeRead, opts: Pa
   const pageCount = Number(await file.resolve(top.value.m.get("Count")) ?? 0);
   return {
     pageCount,
-    page: (n) => buildPage(file, chunks, pagesRef, top, pageCount, n, maxOut),
+    page: (n) => buildPage(file, chunks, catObj, pagesRef, top, pageCount, n, maxOut),
     bytesFetched: () => chunks.bytesFetched,
     requests: () => chunks.requests,
   };
@@ -613,7 +621,7 @@ export async function extractPdfPage(size: number, fetchRange: RangeRead, pageNu
 }
 
 async function buildPage(
-  file: PdfFile, chunks: Chunks, pagesRef: PdfRef, top: Loaded, pageCount: number, pageNumber: number, maxOut: number,
+  file: PdfFile, chunks: Chunks, catObj: Loaded, pagesRef: PdfRef, top: Loaded, pageCount: number, pageNumber: number, maxOut: number,
 ): Promise<{ bytes: Uint8Array; objects: number }> {
   if (!Number.isInteger(pageNumber) || pageNumber < 1 || (pageCount > 0 && pageNumber > pageCount)) {
     throw new PdfExtractError(`page ${pageNumber} is out of range — the file has ${pageCount} page(s)`);
@@ -686,40 +694,61 @@ async function buildPage(
   emit(bytesOf("\nendobj\n"));
 
   const done = new Set<number>([page.num]);
-  let frontier = [...new Set(roots)].filter((n) => !done.has(n));
-  while (frontier.length) {
-    for (const n of frontier) done.add(n);
-    await chunks.prefetch(frontier.map((n) => file.offsetOf(n)));
-    const next: number[] = [];
-    for (const n of frontier) {
-      const o = await file.get(n);
-      if (!o) continue; // a reference to nothing reads as null
-      if (isDict(o.value)) {
-        const type = o.value.m.get("Type");
-        if (isName(type) && SKIP_TYPES.has(type.v)) continue;
-      }
-      begin(o.num, o.gen);
-      emit(o.raw);
-      if (o.stream) {
-        emit(bytesOf("\nstream\n"));
-        // Copied a piece at a time so a large image is never held twice.
-        for (let p = o.stream.dataStart, end = o.stream.dataStart + o.stream.length; p < end; p += 4 * 1024 * 1024) {
-          emit(await chunks.slice(p, Math.min(end, p + 4 * 1024 * 1024)));
+  // Copy a set of objects and everything they refer to, breadth first.
+  // `layersOnly`: used for the catalog's layer settings, which name every
+  // layer in the document; a layer this page does not use is left dangling.
+  const copy = async (start: number[], layersOnly: boolean): Promise<void> => {
+    let frontier = [...new Set(start)].filter((n) => !done.has(n));
+    while (frontier.length) {
+      for (const n of frontier) done.add(n);
+      await chunks.prefetch(frontier.map((n) => file.offsetOf(n)));
+      const next: number[] = [];
+      for (const n of frontier) {
+        const o = await file.get(n);
+        if (!o) continue; // a reference to nothing reads as null
+        if (isDict(o.value)) {
+          const type = o.value.m.get("Type");
+          if (isName(type) && (SKIP_TYPES.has(type.v) || (layersOnly && type.v === "OCG"))) continue;
         }
-        emit(bytesOf("\nendstream"));
+        begin(o.num, o.gen);
+        emit(o.raw);
+        if (o.stream) {
+          emit(bytesOf("\nstream\n"));
+          // Copied a piece at a time so a large image is never held twice.
+          for (let p = o.stream.dataStart, end = o.stream.dataStart + o.stream.length; p < end; p += 4 * 1024 * 1024) {
+            emit(await chunks.slice(p, Math.min(end, p + 4 * 1024 * 1024)));
+          }
+          emit(bytesOf("\nendstream"));
+        }
+        emit(bytesOf("\nendobj\n"));
+        const found: number[] = [];
+        refsIn(o.value, found);
+        for (const r of found) if (!done.has(r)) { done.add(r); next.push(r); }
       }
-      emit(bytesOf("\nendobj\n"));
-      const found: number[] = [];
-      refsIn(o.value, found);
-      for (const r of found) if (!done.has(r)) { done.add(r); next.push(r); }
+      frontier = next;
     }
-    frontier = next;
+  };
+  await copy(roots, false);
+
+  // Layer visibility lives in the catalog, not on the page: without it a layer
+  // the drawing has switched off would render. The settings are carried over
+  // as written.
+  const cat = catObj.value as PdfDict;
+  let layers: Uint8Array | null = null;
+  const ocSpan = cat.spans.get("OCProperties");
+  if (ocSpan) {
+    layers = spanOf(catObj, ocSpan);
+    const ocRefs: number[] = [];
+    refsIn(cat.m.get("OCProperties")!, ocRefs);
+    await copy(ocRefs, true);
   }
 
   begin(pagesNum, 0);
   emit(bytesOf(`<< /Type /Pages /Kids [${page.num} ${page.gen} R] /Count 1 >>\nendobj\n`));
   begin(catalogNum, 0);
-  emit(bytesOf(`<< /Type /Catalog /Pages ${pagesNum} 0 R >>\nendobj\n`));
+  emit(bytesOf(`<< /Type /Catalog /Pages ${pagesNum} 0 R`));
+  if (layers) { emit(bytesOf(" /OCProperties ")); emit(layers); }
+  emit(bytesOf(" >>\nendobj\n"));
 
   // A cross-reference table with one subsection per run of object numbers.
   const nums = [...offsets.keys()].sort((a, b) => a - b);
