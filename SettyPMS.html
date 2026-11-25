@@ -281,6 +281,20 @@ const LOSS_REASONS = [
 function isPipeline(p) { return PIPELINE_STATUSES.includes(p.status); }
 function isAwarded(p)  { return !isPipeline(p); }
 
+// First name for "Hi …,". About a third of PMS contacts are stored last name
+// first ("Rama, Monica"), and taking the first word greeted them by surname
+// with a doubled comma ("Hi Rama,,"). Comma parts that are credentials or
+// suffixes ("John Smith, PE", "Kurt Bedore, Jr.") are not names and are dropped;
+// two parts left means "Last, First". Same logic as transmittal.html.
+const NAME_SUFFIX_RE = /^(jr|sr|ii|iii|iv|pe|p\.?e|ra|r\.?a|aia|leed( ap)?|pmp|esq|ph\.?d|mba|ncarb|cem|cxa|bcxa|cpd|ccm|fpe|se|s\.?e)\.?$/i;
+function greetingFirstName(name) {
+  const parts = String(name || "").split(",").map(x => x.trim()).filter(x => x && !NAME_SUFFIX_RE.test(x));
+  if (!parts.length) return "";
+  const given = parts.length >= 2 ? parts[1] : parts[0];
+  const words = given.replace(/^(mr|mrs|ms|miss|mx|dr)\.?\s+/i, "").split(/\s+/);
+  return (words[0] || "").replace(/[.,;:]+$/, "");
+}
+
 // Region filter (v151). A project's region is pms_projects.team (NY, DC, BT…),
 // tagged on the Admin console's Teams card or by drive discovery. The same
 // selector sits on the project list, the Pipeline and the Dashboard, and the
@@ -3612,21 +3626,6 @@ async function createProposalFolder(project) {
   // Genuinely rare: create succeeded but Graph withheld the URL.
   if (!result.webUrl) throw new Error("Folder created but no URL returned.");
   return result.webUrl;
-}
-
-// First name for "Hi …,". About a third of PMS contacts are stored last name
-// first ("Rama, Monica"), and taking the first word greeted them by surname
-// ("Hi Rama,,"). Comma parts that are credentials or suffixes ("John Smith, PE",
-// "Kurt Bedore, Jr.") are not names and are dropped; two parts left means
-// "Last, First". A leading title (Dr., Ms.) is skipped. Same rule as
-// transmittal.html; greetingFirstName.test.mjs runs both copies.
-const NAME_SUFFIX_RE = /^(jr|sr|ii|iii|iv|pe|p\.?e|ra|r\.?a|aia|leed( ap)?|pmp|esq|ph\.?d|mba|ncarb|cem|cxa|bcxa|cpd|ccm|fpe|se|s\.?e)\.?$/i;
-function greetingFirstName(name) {
-  const parts = String(name || "").split(",").map(x => x.trim()).filter(x => x && !NAME_SUFFIX_RE.test(x));
-  if (!parts.length) return "";
-  const given = parts.length >= 2 ? parts[1] : parts[0];
-  const words = given.replace(/^(mr|mrs|ms|miss|mx|dr)\.?\s+/i, "").split(/\s+/);
-  return (words[0] || "").replace(/[.,;:]+$/, "");
 }
 
 // decodeURIComponent that tolerates already-decoded URLs. SharePoint folder
@@ -33942,7 +33941,9 @@ function PortalSharingModal({ project, clients, driveId, onClose, onUpdateClient
         return `<li><strong>${p.folder}</strong> (${roleLabel}): <a href="${p.url}">${p.url}</a></li>`;
       }).join("");
 
-      const firstName = greetingFirstName(perm.name);
+      // perm.name is the guest's Entra display name ("Last, First" is common)
+      // and falls back to the email address, which is no name to greet.
+      const firstName = /@/.test(perm.name || "") ? "" : greetingFirstName(perm.name);
       const folderWord = allTheirPerms.length > 1 ? "folders" : "folder";
       const bodyHtml =
         `<p>Hi${firstName ? " " + firstName : ""},</p>` +

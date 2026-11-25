@@ -7,18 +7,22 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 
-async function load(file, endMarker) {
-  const html = readFileSync(new URL("./" + file, import.meta.url), "utf8");
+// Slice from the suffix list to the end of greetingFirstName(): its closing
+// brace is the first one at the start of a line after the declaration.
+async function load(file) {
+  const html = readFileSync(new URL("./" + file, import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const a = html.indexOf("const NAME_SUFFIX_RE =");
-  const b = html.indexOf(endMarker, a);
-  assert.ok(a > 0 && b > a, "could not slice greetingFirstName out of " + file);
-  const src = html.slice(a, b) + "\nexport { greetingFirstName };";
+  const f = html.indexOf("function greetingFirstName(", a);
+  const b = html.indexOf("\n}", f);
+  assert.ok(a > 0 && f > a && b > f, "could not slice greetingFirstName out of " + file);
+  assert.equal(html.indexOf("function greetingFirstName(", f + 1), -1, file + " defines greetingFirstName twice");
+  const src = html.slice(a, b + 2) + "\nexport { greetingFirstName };";
   return (await import("data:text/javascript;base64," + Buffer.from(src, "utf8").toString("base64"))).greetingFirstName;
 }
 
 const copies = {
-  "SettyPMS.html": await load("SettyPMS.html", "// decodeURIComponent that tolerates"),
-  "transmittal.html": await load("transmittal.html", "function buildEmailBody("),
+  "SettyPMS.html": await load("SettyPMS.html"),
+  "transmittal.html": await load("transmittal.html"),
 };
 
 // Shapes taken from the PMS contact lists.
