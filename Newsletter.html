@@ -8,7 +8,7 @@
   // Version marker + self-update banner (same pattern as SettyIntelligence.html):
   // an open tab re-fetches this file and offers a reload when the marker changes.
   // Bump it in every PR that changes this file, or open tabs are never told.
-  window.__appVersion = "2026-11-19-news-v008-cdn-integrity";
+  window.__appVersion = "2026-11-25-news-v009-greeting-name";
   async function _checkForUpdate() {
     try {
       const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -438,6 +438,8 @@
 <div id="log" role="log" aria-live="polite"><button type="button" class="ghost sm" id="logClose" onclick="hideLog()">Hide log <span aria-hidden="true">✕</span></button></div>
 
 <script src="setty-auth.js"></script>
+<!-- greetingFirstName(name), shared with SettyPMS.html and transmittal.html. -->
+<script src="greetingName.js"></script>
 <script>
 /* ═══════════════════════════════════════════════════════════════════════════
    CONFIG — shared with the PMS so this tool reads the same directory & login
@@ -509,24 +511,14 @@ let AUDIENCE_MODE = "newsletter"; // 'newsletter' (everyone by default) | 'campa
 // so "Hi Monica," means one draft per person; the cap keeps that to a number
 // someone will actually open and send by hand.
 const GREET_MAX = 50;
-// First name for "Hi …,". Same logic as greetingFirstName in transmittal.html
-// and SettyPMS.html: about a third of contacts are stored "Last, First", and
-// credential/suffix comma parts ("John Smith, PE", "Jr.") are not names.
-const NAME_SUFFIX_RE = /^(jr|sr|ii|iii|iv|pe|p\.?e|ra|r\.?a|aia|leed( ap)?|pmp|esq|ph\.?d|mba|ncarb|cem|cxa|bcxa|cpd|ccm|fpe|se|s\.?e)\.?$/i;
-function greetingFirstName(name) {
-  const parts = String(name || "").split(",").map(x => x.trim()).filter(x => x && !NAME_SUFFIX_RE.test(x));
-  if (!parts.length) return "";
-  const given = parts.length >= 2 ? parts[1] : parts[0];
-  const words = given.replace(/^(mr|mrs|ms|miss|mx|dr)\.?\s+/i, "").split(/\s+/);
-  return (words[0] || "").replace(/[.,;:]+$/, "");
-}
+// greetingFirstName(name) comes from greetingName.js ("Rama, Monica" -> "Monica";
+// "" for no usable name or an email address).
 function greetOn(){
   const c = document.getElementById("greetOn");
   return AUDIENCE_MODE === "campaign" && !!(c && c.checked);
 }
-// Directory names fall back to the email address; that is no name to greet.
 function greetingHtml(name){
-  const first = /@/.test(name || "") ? "" : greetingFirstName(name);
+  const first = greetingFirstName(name);
   return "<p>" + (first ? "Hi " + esc(first) + "," : "Hello,") + "</p>";
 }
 let COLLAPSED_TYPES = new Set(); // type groups: expanded by default

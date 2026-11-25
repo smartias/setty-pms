@@ -144,7 +144,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 #flag .pole { stroke: var(--muted); stroke-width: 2; } #flag .cloth { stroke: var(--muted); stroke-width: .5; }
 #steam circle { fill: var(--cold); opacity: 0; transform-box: fill-box; transform-origin: center; }
 .board { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.board li { display: grid; grid-template-columns: 2.6em 14px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.board li { display: grid; grid-template-columns: 2.6em 14px 30px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); }
 .board li:last-child { border-bottom: 0; }
 .board .rank { font: 400 0.9rem var(--display); color: var(--muted); }
 .board .dot { width: 12px; height: 12px; border-radius: 3px; background: var(--c, var(--line)); }
@@ -288,6 +288,15 @@ body.review #pitStop, body.tv #pitStop { display: none !important; }
 .tray { display: flex; align-items: flex-end; justify-content: center; gap: 1px; font-size: .95rem; line-height: 1; overflow: hidden; }
 .tray span { display: inline-block; margin-bottom: -3px; }
 .lever:focus-visible { outline: 3px solid var(--teal); outline-offset: 2px; border-radius: 8px; }
+/* Staff photos from the PMS Staff tab; initials when there is none. */
+.face { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 30px; height: 30px; border-radius: 50%; overflow: hidden; background: var(--brass-wash); color: var(--brass-ink); font: 700 .72rem/1 var(--mono); letter-spacing: 0; text-transform: uppercase; vertical-align: middle; }
+.face img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.face.big { width: 56px; height: 56px; font-size: 1.05rem; margin: 0 auto 6px; display: flex; }
+.step.p1 .face.big { width: 68px; height: 68px; }
+.faces { display: inline-flex; margin-right: 8px; vertical-align: middle; }
+.faces .face { box-shadow: 0 0 0 2px var(--panel); }
+.faces .face + .face { margin-left: -8px; }
+.answer { display: flex; align-items: center; gap: 10px; }
 .carnum { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1.5px solid var(--ink); border-radius: 999px; font: 400 .72rem/1.5 var(--display); vertical-align: middle; }
 .paytable { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0 0; font-size: .85rem; color: var(--muted); }
 .paytable span { white-space: nowrap; }
@@ -848,6 +857,35 @@ function s(tag, attrs) {
 }
 function on(node, fn) { node.addEventListener("click", fn); return node; }
 
+// ── Staff photos ────────────────────────────────────────────────────────────
+// Uploaded on the PMS Staff tab. The staff list (loadStaff) carries a
+// photoPath; the picture is public in the staff-photos Storage bucket
+// (migration 20261125170000). A person is looked up by email, then by name,
+// and a name match is refused when both sides have an email and they differ.
+// Same rules as staffPhotoPathFor in SettyPMS.html (staffPhotos.test.mjs).
+const photoByEmail = new Map(), photoByName = new Map();
+function photoPathFor(email, name) {
+  const mail = String(email || "").trim().toLowerCase();
+  if (mail && photoByEmail.has(mail)) return photoByEmail.get(mail);
+  const hit = photoByName.get(String(name || "").trim().toLowerCase());
+  if (!hit || (mail && hit.mail && hit.mail !== mail)) return "";
+  return hit.path;
+}
+function initialsOf(name) {
+  return String(name || "").trim().split(/\s+/).filter(Boolean).map((n) => n[0]).slice(0, 2).join("");
+}
+// `key` is a standings key: an email when one is known, else the name.
+function face(key, name, cls) {
+  const k = String(key || "");
+  const path = photoPathFor(k.includes("@") ? k : "", name);
+  const el = h("span", { class: "face" + (cls ? " " + cls : ""), "aria-hidden": "true" });
+  if (!path) { el.textContent = initialsOf(name); return el; }
+  const img = h("img", { alt: "", loading: "lazy", src: URL_ + "/storage/v1/object/public/staff-photos/" + String(path).split("/").map(encodeURIComponent).join("/") });
+  img.addEventListener("error", () => { img.remove(); el.textContent = initialsOf(name); });
+  el.appendChild(img);
+  return el;
+}
+
 // ── Supabase (same pattern as SettyMarketing.html: settyAuth JWT) ───────────
 const settyAuthReady = settyAuth.init().catch(() => null);
 const URL_ = settyAuth.supabaseUrl();
@@ -1158,7 +1196,7 @@ function puzzleCard(pz, picked, onPick) {
   box.appendChild(h("div", { class: "meta", text: "Said by " + kind + (picked && a.from_name ? ", " + a.from_name : "") + (picked && a.project_name ? " · " + a.project_name : "") }));
   const grid = h("div", { class: "answers" });
   for (const c of pz.choices) {
-    const b = h("button", { class: "answer", type: "button", text: c });
+    const b = h("button", { class: "answer", type: "button" }, face(null, c), c);
     if (picked) {
       b.disabled = true;
       if (c === pz.answer) b.classList.add("right");
@@ -1412,12 +1450,12 @@ function renderBoard(grid, st, pace) {
   if (board === "race" && more && showAll) {
     const onTrack = new Map(grid.map((c, i) => [c.key, colorVar(c.key, i)]));
     const q = findText.trim().toLowerCase();
-    items = st.map((e, i) => ({ rank: i + 1, color: onTrack.get(e.key), num: prefFor(e.key).number, name: e.name, right: e.points + " pts", mine: e.key === me }))
+    items = st.map((e, i) => ({ rank: i + 1, color: onTrack.get(e.key), num: prefFor(e.key).number, name: e.name, person: { key: e.key, name: e.name }, right: e.points + " pts", mine: e.key === me }))
       .filter((it) => !q || it.name.toLowerCase().includes(q));
     empty.textContent = "Nobody by that name has points this season.";
   } else if (board === "race") {
-    items = grid.map((c, i) => ({ rank: c.rank, color: colorVar(c.key, i), num: prefFor(c.key).number, name: (A.parseRide(rideOf(c.key)).novelty ? rideOf(c.key) + " " : "") + c.name, sub: "Lap " + (c.lap + 1), right: c.points + " pts", mine: c.me }));
-    for (const c of pace || []) items.push({ pace: true, color: colorVar(c.key, grid.length), num: prefFor(c.key).number, name: c.name, sub: "Pace car \u00B7 takes part, not ranked", right: c.points + " pts", mine: c.me });
+    items = grid.map((c, i) => ({ rank: c.rank, color: colorVar(c.key, i), num: prefFor(c.key).number, name: (A.parseRide(rideOf(c.key)).novelty ? rideOf(c.key) + " " : "") + c.name, person: { key: c.key, name: c.name }, sub: "Lap " + (c.lap + 1), right: c.points + " pts", mine: c.me }));
+    for (const c of pace || []) items.push({ pace: true, color: colorVar(c.key, grid.length), num: prefFor(c.key).number, name: c.name, person: { key: c.key, name: c.name }, sub: "Pace car \u00B7 takes part, not ranked", right: c.points + " pts", mine: c.me });
     empty.textContent = "No points yet this season. Log an accolade, cheer one or play today's round to put a car on the track.";
   } else if (board === "teams") {
     $("periodChips").hidden = true;
@@ -1426,7 +1464,10 @@ function renderBoard(grid, st, pace) {
   } else {
     const src = A.inPeriod(rows, period, new Date());
     const list = board === "recognized" ? A.topRecipients(src, 10) : board === "spotters" ? A.topSpotters(src, 10) : A.topProjects(src, 10);
-    items = list.map((e, i) => ({ rank: i + 1, name: board === "spotters" ? (nameOf[e.key] || e.name) : e.name, right: "×" + e.n, mine: e.key === me }));
+    items = list.map((e, i) => {
+      const name = board === "spotters" ? (nameOf[e.key] || e.name) : e.name;
+      return { rank: i + 1, name, person: board === "projects" ? null : { key: e.key, name }, right: "×" + e.n, mine: e.key === me };
+    });
     empty.textContent = "Nothing in this period yet.";
   }
   empty.hidden = items.length > 0;
@@ -1440,7 +1481,8 @@ function renderBoard(grid, st, pace) {
     if (it.sub) who.appendChild(h("small", { text: it.sub }));
     const dot = h("span", { class: "dot" });
     if (it.color) dot.style.setProperty("--c", it.color);
-    ol.appendChild(h("li", { class: (it.mine ? "mine" : "") + (it.pace ? " pacerow" : "") }, h("span", { class: "rank", text: it.pace ? "PACE" : String(it.rank) }), dot, who, h("span", { class: "pts", text: it.right })));
+    const pic = it.person ? face(it.person.key, it.person.name) : h("span");
+    ol.appendChild(h("li", { class: (it.mine ? "mine" : "") + (it.pace ? " pacerow" : "") }, h("span", { class: "rank", text: it.pace ? "PACE" : String(it.rank) }), dot, pic, who, h("span", { class: "pts", text: it.right })));
   }
 }
 
@@ -1477,10 +1519,18 @@ function accoladeCard(r, opts) {
   const proj = [r.project_number, r.project_name].filter(Boolean).join(" · ");
   return h("article", { class: "card" + (A.isRecipient(r, me) ? " you" : "") },
     h("div", { class: "card-top" }, pills, h("span", { class: "date", text: niceDate(r.received_on) })),
-    h("div", { class: "to", text: (r.recipients || []).join(", ") }),
+    h("div", { class: "to" }, recipientFaces(r), (r.recipients || []).join(", ")),
     h("blockquote", { text: r.quote || "" }),
     h("div", { class: "meta", text: "from " + from + (proj ? " · " + proj : "") }),
     foot);
+}
+// Up to five faces in front of the names on a card; the names say who they are.
+function recipientFaces(r) {
+  const names = r.recipients || [], emails = r.recipient_emails || [];
+  if (!names.length) return null;
+  const box = h("span", { class: "faces", "aria-hidden": "true" });
+  names.slice(0, 5).forEach((n, i) => box.appendChild(face(emails[i] || "", n)));
+  return box;
 }
 function renderWall() {
   const list = rows.filter((r) => filter === "all" || (filter === "mine" ? A.isRecipient(r, me) : (r.kind || "client") === filter));
@@ -1623,7 +1673,7 @@ function renderChamps() {
   const pod = $("podium"); pod.textContent = "";
   const [first, second, third] = ch[0].podium;
   for (const [e, cls, medal] of [[second, "p2", "\u{1F948}"], [first, "p1", "\u{1F947}"], [third, "p3", "\u{1F949}"]]) {
-    if (e) pod.appendChild(h("div", { class: "step " + cls }, medal + " " + e.name, h("small", { text: e.points + " pts" })));
+    if (e) pod.appendChild(h("div", { class: "step " + cls }, face(e.key, e.name, "big"), medal + " " + e.name, h("small", { text: e.points + " pts" })));
   }
   $("champOlder").textContent = ch.slice(1, 6).map((q) => q.label + ": " + q.podium.map((e) => e.name).join(", ")).join("  \u00B7  ");
 }
@@ -2136,6 +2186,13 @@ async function loadStaff() {
     // offered in the picker, guessed from emails, used in the game, shown in
     // the standings, or shown on the wall (see applyGone).
     for (const p of all) if (p.email) nameOf[p.email] = p.name;
+    photoByEmail.clear(); photoByName.clear();
+    for (const p of list) {
+      if (!p || !p.photoPath) continue;
+      const mail = String(p.email || "").trim().toLowerCase(), name = String(p.name || p.displayName || "").trim().toLowerCase();
+      if (mail && !photoByEmail.has(mail)) photoByEmail.set(mail, p.photoPath);
+      if (name && !photoByName.has(name)) photoByName.set(name, { path: p.photoPath, mail });
+    }
     gone.clear();
     for (const p of all) if (p.inactive) { gone.add(p.name.toLowerCase()); if (p.email) gone.add(p.email); }
     staff = all.filter((p) => !p.inactive);
