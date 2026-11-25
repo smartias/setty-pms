@@ -17,6 +17,7 @@ export const QA_PACKET_LIMITS = {
   snippetChars: 220,
   findingsListed: 60,
   backgroundFiles: 6,      // example files per other discipline
+  possibleBackgrounds: 10, // received drawings no rule could classify
   schedulesListed: 80,
 };
 
@@ -58,6 +59,25 @@ export function backgroundDiscipline(f: { discipline?: string | null; name?: str
   if (/\bCIVIL\b|\bC-?\d{3}/.test(n)) return "C";
   if (/LIFE\s*SAFETY|CODE\s+ANALYSIS/.test(n)) return "G";
   return null;
+}
+
+// Architects name their sets by building or by their own job number
+// ("202237-01_Rosenthal Library.pdf"), so most backgrounds carry no discipline
+// in the name. On SAPX256011.00 (2026-11-25) 84 PDFs had been received and the
+// name rule classified none. A received PDF that is ours, or plainly not a
+// drawing, is left out; what remains is offered as a POSSIBLE background, the
+// largest first, for the reviewer to open. Size is the signal: the architect's
+// sets on that project were 4 to 7 MB each, a letter or a cut sheet is far
+// smaller.
+const NOT_A_DRAWING = /\b(MINUTES?|AGENDA|REPORT|MANUAL|O&?M|SPEC(IFICATION)?S?|RFI|SUBMITTAL|INVOICE|LETTER|MEMO|PROPOSAL|SCHEDULE OF VALUES|TRANSMITTAL|COMMENTS?|RESPONSES?|PHOTOS?|TAB|PRECON|CUT ?SHEETS?|CALC(ULATION)?S?|ESTIMATE|LOG)\b/i;
+export const POSSIBLE_BACKGROUND_MIN_BYTES = 2_000_000;
+export function possibleBackground(f: { discipline?: string | null; name?: string | null; size_bytes?: number | string | null }): boolean {
+  const d = String(f.discipline ?? "").toUpperCase().trim();
+  if (d) return false;                               // classified already: ours, or a named background
+  if (backgroundDiscipline(f)) return false;
+  const name = String(f.name ?? "").replace(/[_\-.]+/g, " ");
+  if (NOT_A_DRAWING.test(name)) return false;
+  return Number(f.size_bytes) >= POSSIBLE_BACKGROUND_MIN_BYTES;
 }
 
 export interface QaPacketDeps {
@@ -181,9 +201,23 @@ export async function buildQaReviewPacket(deps: QaPacketDeps, a: QaPacketArgs): 
     };
   }).sort((x, y) => String(x.discipline).localeCompare(String(y.discipline)));
   const notFound = ["A", "S"].filter((d) => !byDisc.has(d)).map((d) => BACKGROUND_NAMES[d]);
+  // The same file is often filed under several emails: one line per name.
+  const seen = new Set<string>();
+  const possible = bgRows.filter(possibleBackground)
+    .sort((x: any, y: any) => (Number(y.size_bytes) || 0) - (Number(x.size_bytes) || 0))
+    .filter((f: any) => { const k = String(f.name ?? "").toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
   const backgrounds = {
     found,
-    ...(notFound.length ? { notFound, notFoundNote: "Nothing on file by name or folder. Look once with list_project_documents (Email and Incoming) before reporting it missing, then ask the PM for the current set: a cross-discipline check is never marked clean without the other discipline's sheet." } : {}),
+    ...(possible.length ? {
+      possible: possible.slice(0, L.possibleBackgrounds).map((f: any) => ({
+        itemId: f.item_id, name: f.name, folder: f.folder_path, date: dated(f), megabytes: Math.round((Number(f.size_bytes) || 0) / 1e5) / 10,
+      })),
+      ...(possible.length > L.possibleBackgrounds ? { possibleNotShown: possible.length - L.possibleBackgrounds } : {}),
+      possibleNote: "Large PDFs received from others whose names do not say what they are (architects name sets by building or by their own job number). Any of them may be the architectural or structural set: open the first page of each (view_drawing with the itemId) before deciding a background is missing.",
+    } : {}),
+    ...(notFound.length ? { notFound, notFoundNote: possible.length
+      ? "Not found BY NAME. That is not the same as missing: check `possible` first. Only when none of those is the set, ask the PM for it: a cross-discipline check is never marked clean without the other discipline's sheet."
+      : "Nothing on file by name or folder, and no large unclassified PDF has been received. Look once with list_project_documents (Email and Incoming) before reporting it missing, then ask the PM for the current set: a cross-discipline check is never marked clean without the other discipline's sheet." } : {}),
     note: "Found by file name and folder only, with the file's date. Compare each date with the issue date of the set under review: older means stale. Index the current ones (search_drawings {subfolder, indexOnly: true}) so the cross-discipline pass can search them.",
   };
 

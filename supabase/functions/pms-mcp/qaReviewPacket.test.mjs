@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { buildQaReviewPacket, phaseOfSet, backgroundDiscipline, HANDOFF_PATTERN, DEFERRAL_PATTERN, QA_PACKET_LIMITS } from "./qaReviewPacket.ts";
+import { buildQaReviewPacket, phaseOfSet, backgroundDiscipline, possibleBackground, HANDOFF_PATTERN, DEFERRAL_PATTERN, QA_PACKET_LIMITS } from "./qaReviewPacket.ts";
 
 const SET = {
   sourceSets: [{ name: "2026-08-22_100% CD" }, { name: "2026-10-01_Bid Set" }],
@@ -146,4 +146,37 @@ test("a sheet indexed at several revisions is listed once, at its latest", async
   assert.equal(p.handOffNotes.sheets, 2);
   assert.equal(p.handOffNotes.hits[0].snippet, "NEW: BY ARCHITECT");
   assert.equal("capped" in p.handOffNotes, false);
+});
+
+// SAPX256011.00, 2026-11-25: 84 PDFs received, none classified by name, though
+// the architect's sets were among them, named by building.
+const RECEIVED = [
+  { item_id: "b1", name: "202237-01_Rosenthal Library.pdf", folder_path: "Emails/2026_07_13 Standing Meeting", discipline: null, modified_at: "2026-11-17T10:00:00Z", size_bytes: 48_000_000 },
+  { item_id: "b1x", name: "202237-01_Rosenthal Library.pdf", folder_path: "Emails/2026_07_20 FW", discipline: null, modified_at: "2026-11-18T10:00:00Z", size_bytes: 48_000_000 },
+  { item_id: "b2", name: "QC Kiely Hall-As Built - Rev5.pdf", folder_path: "Emails/2026_05_20 RE", discipline: null, modified_at: "2026-07-16T10:00:00Z", size_bytes: 90_000_000 },
+  { item_id: "n1", name: "(2021-03-05) QC I Building-OM Manual R1.pdf", folder_path: "Emails/2026_05_20 RE", discipline: null, modified_at: "2026-07-16T10:00:00Z", size_bytes: 120_000_000 },
+  { item_id: "n2", name: "5-4-26_PRECON_Queens College_Student Union_Final V1.pdf", folder_path: "Emails/2026_05_11 FW TAB Report", discipline: null, modified_at: "2026-05-11T10:00:00Z", size_bytes: 60_000_000 },
+  { item_id: "n3", name: "PRE Plumbing.pdf", folder_path: "Emails/2026_05_20 RE", discipline: "P", modified_at: "2026-07-16T10:00:00Z", size_bytes: 30_000_000 },
+  { item_id: "n4", name: "image scan.pdf", folder_path: "Emails/x", discipline: null, modified_at: "2026-07-16T10:00:00Z", size_bytes: 200_000 },
+  { item_id: "n5", name: "261103_Mtg_36 Minutes.pdf", folder_path: "Emails/y", discipline: null, modified_at: "2026-11-03T10:00:00Z", size_bytes: 5_000_000 },
+];
+
+test("a large received PDF with no telling name is a possible background; ours and plain documents are not", () => {
+  assert.deepEqual(RECEIVED.filter(possibleBackground).map((f) => f.item_id), ["b1", "b1x", "b2"]);
+  assert.equal(possibleBackground({ name: "A-101 Plan.pdf", size_bytes: 9e7 }), false, "already classified as architectural by name");
+  assert.equal(possibleBackground({ name: "Set.pdf", size_bytes: null }), false, "no size, no claim");
+});
+
+test("backgrounds named by building are offered as possible, and 'not found' says by name only", async () => {
+  const p = await buildQaReviewPacket(deps({ backgroundFiles: async () => RECEIVED }), ARGS);
+  assert.deepEqual(p.backgrounds.found, []);
+  assert.deepEqual(p.backgrounds.possible.map((f) => [f.itemId, f.megabytes]), [["b2", 90], ["b1", 48]], "largest first, one line per file name");
+  assert.equal(p.backgrounds.possible[1].date, "2026-11-17");
+  assert.deepEqual(p.backgrounds.notFound, ["Architectural", "Structural"]);
+  assert.ok(p.backgrounds.notFoundNote.startsWith("Not found BY NAME. That is not the same as missing"));
+  assert.ok(p.backgrounds.possibleNote.includes("open the first page of each"));
+  // With nothing large received, the old wording stands.
+  const none = await buildQaReviewPacket(deps({ backgroundFiles: async () => RECEIVED.slice(3) }), ARGS);
+  assert.equal("possible" in none.backgrounds, false);
+  assert.ok(none.backgrounds.notFoundNote.startsWith("Nothing on file by name or folder, and no large unclassified PDF"));
 });
