@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses, lessonCandidates, coveredRfiKeys, rfiKey } from "./rfiRootCause.ts";
+import { RFI_ROOT_CAUSES, normalizeRootCause, normalizeQaItem, defaultPreventable, rfiPhase, summarizeRootCauses, lessonCandidates, coveredRfiKeys, rfiKey, designWatchlist, workKindOf } from "./rfiRootCause.ts";
 
 test("root causes fold to the vocabulary", () => {
   assert.equal(normalizeRootCause("DOC-CONFLICT"), "doc-conflict");
@@ -136,4 +136,61 @@ test("the lessons loop is wired: candidates are listed, drafts queue for review 
   assert.ok(src.includes('const status = pn && !isAutomated && !sensitiveTerm ? "approved" : "suggested";'), "an automated save is never live without a reviewer");
   assert.ok(src.includes("...(untagged ? { coverage: untagged } : {})"), "the summary says how much of the log is untagged");
   assert.match(readFileSync(new URL("../../../SettyAdmin.html", import.meta.url), "utf8"), /list_lesson_candidates/);
+});
+
+test("the kind of work is read from the project type, and not guessed", () => {
+  assert.equal(workKindOf("Type IV Renovation"), "renovation");
+  assert.equal(workKindOf("Type II New Construction"), "new");
+  assert.equal(workKindOf("Interior fit-out"), "renovation");
+  assert.equal(workKindOf("Type III"), null);
+  assert.equal(workKindOf(null), null);
+});
+
+const PROJECTS = [
+  { projectNumber: "R1", owner: "SUNY", projectType: "Type IV Renovation" },
+  { projectNumber: "R2", owner: "DASNY", projectType: "Type III Renovation" },
+  { projectNumber: "N1", owner: "SUNY", projectType: "Type II New Construction" },
+  { projectNumber: "ME", owner: "SUNY", projectType: "Type V Renovation" },
+];
+const WTAGS = [
+  // qa-630 (existing conditions): renovations only
+  { project: "R1", item_number: "1", cause: "field-condition", preventable: true, qa_item: "qa-630", note: "HWR line shown does not exist" },
+  { project: "R2", item_number: "2", cause: "field-condition", preventable: true, qa_item: "qa-630", note: "subject only" },
+  // qa-614 (ceilings): the most RFIs firm-wide, all on the new building
+  { project: "N1", item_number: "3", cause: "coordination", preventable: true, qa_item: "qa-614", note: "duct against cable tray" },
+  { project: "N1", item_number: "4", cause: "coordination", preventable: true, qa_item: "qa-614" },
+  { project: "N1", item_number: "5", cause: "coordination", preventable: true, qa_item: "qa-614" },
+  // noise: not preventable, no item, and the project's own log
+  { project: "R1", item_number: "6", cause: "contractor", preventable: false, qa_item: "qa-630" },
+  { project: "R1", item_number: "7", cause: "doc-missing", preventable: true, qa_item: null },
+  { project: "ME", item_number: "8", cause: "coordination", preventable: true, qa_item: "qa-613" },
+];
+
+test("the design watchlist weights the same owner and the same kind of work, and says which applied", () => {
+  const w = designWatchlist(WTAGS, PROJECTS, PROJECTS[3]);
+  assert.deepEqual(w.basis, { kindOfWork: "renovation", rfisOnSameKindOfWork: 2, owner: "SUNY", rfisForSameOwner: 4, preventableRfisConsidered: 5 });
+  assert.deepEqual(w.items.map((i) => i.qaItem), ["qa-614", "qa-630"], "three same-owner RFIs outrank two same-kind ones");
+  assert.deepEqual(w.items[1], { qaItem: "qa-630", preventableRfis: 2, projects: 2, onSameKindOfWork: 2, forSameOwner: 1, example: "HWR line shown does not exist" });
+  assert.ok(!w.items.some((i) => i.qaItem === "qa-613"), "the project's own RFIs are not a forecast for it");
+  // A different owner: the renovation pattern now leads.
+  const other = designWatchlist(WTAGS, PROJECTS, { projectNumber: "X", owner: "DASNY", projectType: "Renovation" });
+  assert.equal(other.items[0].qaItem, "qa-630");
+});
+
+test("with no owner or type to go on, the watchlist is firm-wide and says so", () => {
+  const w = designWatchlist(WTAGS, PROJECTS, { projectNumber: "X", owner: null, projectType: "" });
+  assert.deepEqual(w.basis, { kindOfWork: null, owner: null, preventableRfisConsidered: 6 });
+  assert.equal(w.items[0].qaItem, "qa-614");
+  assert.equal("onSameKindOfWork" in w.items[0], false);
+  assert.equal("forSameOwner" in w.items[0], false);
+  assert.equal(designWatchlist([], PROJECTS, PROJECTS[0]).items.length, 0);
+  assert.equal(designWatchlist(WTAGS, PROJECTS, PROJECTS[3], { max: 1 }).items.length, 1);
+});
+
+test("the briefing carries the watchlist only before construction, and survives its failure", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  assert.ok(src.includes("if (!construction && p.projectNumber) {"), "a job in construction gets no design forecast");
+  assert.ok(src.includes("...(watchlist ? { designWatchlist: watchlist } : {}),"));
+  assert.ok(src.includes('console.warn("[project_briefing] design watchlist skipped:"'), "a failure drops the extra, not the briefing");
+  assert.ok(src.includes("It is a forecast from other jobs, not a finding"));
 });

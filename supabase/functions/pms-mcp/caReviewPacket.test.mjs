@@ -247,7 +247,7 @@ test("the standards folders are recognised by name, wherever the discipline sits
 test("the tool is registered, counted as one record, documented and led by the skill", () => {
   const src = readFileSync(new URL("index.ts", here), "utf8");
   assert.equal(src.split('mcp.tool("get_ca_review_packet"').length - 1, 1, "registered once");
-  assert.match(src, /const RECORD_TOOLS = new Set\(\["get_project", "get_ca_review_packet"\]\);/);
+  assert.match(src, /const RECORD_TOOLS = new Set\(\["get_project", "get_ca_review_packet", "get_qa_review_packet"\]\);/);
   assert.match(src, /import \{ buildCaReviewPacket,[^}]*\} from "\.\/caReviewPacket\.ts";/);
   // Opening a file by id goes through the same gates read_document uses.
   const body = src.slice(src.indexOf("async function packetFileBytes"), src.indexOf("async function packetBytesToText"));

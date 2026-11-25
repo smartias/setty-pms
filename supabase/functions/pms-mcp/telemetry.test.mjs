@@ -107,7 +107,7 @@ for (const fn of ["classifyResult", "projectArgName"]) {
 }
 const has = (needle, label) => check(shipped.includes(needle), `${label} has DRIFTED from this test's anchor`);
 has('"findings", "entries", "matches", "milestones", "contacts", "companies", "photos",', "result array key list");
-has('const RECORD_TOOLS = new Set(["get_project", "get_ca_review_packet"]);', "get_project and the review packet are classified as one-record tools");
+has('const RECORD_TOOLS = new Set(["get_project", "get_ca_review_packet", "get_qa_review_packet"]);', "get_project and the two review packets are classified as one-record tools");
 has('classifyResult(JSON.parse(res?.content?.[0]?.text ?? "null"), RECORD_TOOLS.has(name))', "the wrapper tells classifyResult which tools return one record");
 has('type TelemetryOutcome = "hit" | "empty" | "error" | "hidden";', "hidden is its own outcome");
 has('cls = { outcome: "hidden", resultCount: null, detail: `caps: projects.view denied for "${ref}"`.slice(0, 300) };',

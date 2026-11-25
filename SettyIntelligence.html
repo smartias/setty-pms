@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-11-20-intel-v40-sensitive-lesson-flag";
+    window.__appVersion = "2026-11-24-intel-v42-qa-review-steps";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -291,6 +291,9 @@ const MODULES = [
   { key: "practices", label: "Best Practices",        table: "pms_best_practices",        idcol: "practice_id", live: false },
   { key: "agencies",  label: "Agency Preferences",    table: "pms_agency_preferences",    idcol: "pref_id",     live: true  },
   { key: "standards", label: "Engineering Standards", table: "pms_engineering_standards", idcol: "standard_id", live: true  },
+  // A read-only copy of the QA review checklist (2026-11-24), so the checks sit
+  // beside the lessons and RFIs they came from. Edited in the Admin Console.
+  { key: "checklist", label: "QA Checklist",          table: "pms_qa_checklist",          idcol: "item_id",     live: true  },
   { key: "graph",     label: "Expertise Graph",       table: "pms_person_work",           idcol: null,          live: true  },
   { key: "meetings",  label: "Meeting Items",         table: "pms_meeting_items",         idcol: "id",          live: true  },
   { key: "agents",    label: "Agents",                table: "pms_ii_agent_runs",         idcol: "run_id",      live: false },
@@ -322,6 +325,7 @@ const state = {
   heat: { rows: [], asof: {}, blocked: {}, loaded: false, loading: false, f: { agency: "", quiet: false } },
   prefs: { rows: [], loaded: false, loading: false, f: { q: "", agency: "", discipline: "", type: "", status: "" } },
   stds: { rows: [], loaded: false, loading: false, f: { q: "", discipline: "", basis: "", status: "" } },
+  qaList: { rows: [], rfis: null, ripple: [], loaded: false, loading: false, f: { q: "", section: "", source: "", phase: "" }, open: new Set(), panels: new Set(["steps"]) },
   meetingItems: { rows: [], loaded: false, loading: false, f: { project: "", type: "", status: "pending", q: "" } },
 };
 
@@ -380,7 +384,7 @@ async function loadAll() {
 // prove the database wiring end to end.
 async function loadCounts() {
   // "agencies" is live but table-backed — keep its badge on the same count query.
-  await Promise.all(MODULES.filter(m => !m.live || m.key === "agencies" || m.key === "meetings" || m.key === "standards").map(async m => {
+  await Promise.all(MODULES.filter(m => !m.live || m.key === "agencies" || m.key === "meetings" || m.key === "standards" || m.key === "checklist").map(async m => {
     try {
       const res = await fetch(SUPABASE_URL + "/rest/v1/" + m.table + "?select=" + (m.idcol || "*") + "&limit=1",
         { headers: { ...SB_HEADERS, "Prefer": "count=exact", "Range-Unit": "items", "Range": "0-0" } });
@@ -418,6 +422,7 @@ function _renderInner() {
   if (state.tab === "practices") return renderPractices();
   if (state.tab === "agencies") return renderAgencyPrefs();
   if (state.tab === "standards") return renderStandards();
+  if (state.tab === "checklist") return renderQaChecklist();
   if (state.tab === "graph") return renderGraph();
   if (state.tab === "meetings") return renderMeetingItems();
   renderPlaceholder(MODULES.find(m => m.key === state.tab));
@@ -1788,6 +1793,192 @@ async function loadStandards() {
   state.counts.standards = state.stds.rows.length;
   render();
 }
+// ── QA Checklist tab: a read-only copy of pms_qa_checklist ───────────────────
+// The checklist is what a QA review runs, item by item. It is shown here so a
+// reviewer reading a lesson can see the check it belongs to, and how many
+// preventable RFIs the firm has had under each check (pms_rfi_root_causes,
+// which signed-in users may read). Nothing is edited here: items are added by
+// migration and switched on or off in the Admin Console.
+const QA_SOURCE_LABEL = { seed: "Original checklist", lesson: "From a lesson", "rfi-lesson": "From the RFI log" };
+const QA_AUTOMATION_LABEL = { manual: "By a person", assisted: "Claude assists", auto: "Automatic" };
+// Everything a QA review does, in the order it does it. The checklist is one
+// step of several: most of the cross-discipline, knowledge and engineering work
+// has no checklist row of its own. This mirrors the "Run order" table in
+// .claude/skills/qa-coordination-review/SKILL.md (qaChecklistTab.test.mjs fails
+// when a step here is no longer in that table). `section` names the checklist
+// section a step runs, so the step can filter the list below.
+const QA_REVIEW_STEPS = [
+  { n: "0", name: "Setup", what: "Establishes where the project is (design, bid, construction), whether Setty is prime or a sub, which set and phase are under review, and how much of the set could be read." },
+  { n: "1", name: "Carry-over", what: "Back-checks every earlier reviewer comment and every open finding from the last review against this set: fixed, still open, or cannot tell." },
+  { n: "2", name: "Backgrounds inventory", what: "Lists which other disciplines' drawings are on file (architectural, structural, life safety, civil) and how current each is. A cross-discipline check is never marked clean without the other discipline's sheet in hand." },
+  { n: "3", name: "Pass 1 — Checklist", what: "Every item on the checklist below gets a result: clean, finding, not applicable, or not attempted with the reason.", section: "" },
+  { n: "3b", name: "Cross-discipline pass", section: "Cross-Discipline Coordination", what: "MEPFP against the architect's, the structural engineer's and the life safety drawings and the non-MEP specifications, area by area. Seven checks:", list: [
+    "What the others ask of us: anything on the architectural plans, the door and hardware schedule or specification divisions 08 to 14 that needs power, a fire alarm connection, water, a drain or exhaust (door operators and hold-opens, shades, appliances, hand dryers, elevators and their pits).",
+    "What we ask of the others: every 'by architect', 'by others', 'see structural' note on our sheets (rated enclosures, shafts, access panels, louvers, pads, curbs, dunnage, sleeves, roof openings) found in their documents and compared.",
+    "Fire and smoke dampers and shaft, stair and elevator vents against the rated walls and shafts on the life safety plan.",
+    "MEPFP against structure: underslab piping against footings, mains against beams, feeders against shear walls, roof equipment against framing.",
+    "Equipment above ceilings can be reached and fits: access panels, working clearance, ceiling height against what is above it.",
+    "Devices and fixtures against what the architect put in the same place: curtain wall, casework, the reflected ceiling plan, mounting heights.",
+    "Room names and numbers on our schedules, panel schedules and sequences against the architectural plans; and piping over electrical gear.",
+  ] },
+  { n: "3c", name: "Bidder's eye pass", section: "Bidder's Eye", what: "On CD, permit, bid and addendum sets: reads the set as someone who has to price it. Who furnishes, installs and wires each item; whether everything can be counted; whether the specification book reads as one set; where the building meets the site and the utilities." },
+  { n: "3d", name: "RFI history checks", section: "RFI History", what: "The checks that came out of the firm's own RFI log: existing conditions verified, both ends of every new service, small items agreeing between plan, schedule and specification, every controlled item naming its controller, revisions carried to every sheet, and the later additions." },
+  { n: "4", name: "Pass 2 — Knowledge layer", what: "Applies what the firm already knows to this set: this project's lessons, firm lessons and best practices for each discipline, the client agency's preferences, and the engineering standards. Read only: a review never writes a lesson." },
+  { n: "5", name: "Pass 3 — Engineering review", what: "Asks whether the design makes engineering sense, the way a senior engineer flipping through the set would. It is a sanity review from the drawings: it runs no load, hydraulic, short-circuit or energy calculations, and every result is a flag for the engineer to verify. What it looks at:", list: [
+    "Design basis: design conditions, code editions, ventilation basis, energy path, fault current and hydraulic criteria are stated, and the same wherever they appear.",
+    "Mechanical: scheduled airflow against the sum of the terminals served; outside air against exhaust; capacity far outside the rest of the schedule; coil and pump flow against capacity and temperature difference; blank or placeholder pump heads and fan statics; equipment with no sequence.",
+    "Electrical: equipment MCA and MOCP against the breaker and feeder; panel load against bus and main; feeder and transformer sizes against the one-line; load voltage against the panel; interrupting ratings against the available fault current; emergency loads against the generator and transfer switch.",
+    "Plumbing: fixture-unit totals against main and riser sizes; water heater capacity against the fixtures served; gas load against meter and pipe size; storm and sanitary sizes that shrink downstream.",
+    "Fire protection and fire alarm: hazard classification and design density against the occupancies shown; flow test data present and dated; standpipe and pump criteria; device types against the sequence and matrix.",
+    "Across systems: every scheduled item has power, controls and, where it applies, drainage, venting and structural support.",
+  ] },
+  { n: "5b", name: "Design narrative as read", what: "A short account of the design written only from what the review read on the drawings, so the engineer can see what the reviewer understood the design to be." },
+  { n: "6", name: "Punch list and summary", what: "The deliverable: findings grouped by discipline, the few key items marked, and a plain statement of what was and was not covered." },
+  { n: "7", name: "Record in the PMS", what: "Findings, checklist results and the narrative are saved to the project's QA Reviews tab for a person to sign off. The review never marks an item complete or closes a comment itself." },
+];
+const QA_REVIEW_EXTRAS = [
+  { name: "Clash screening", what: "With current backgrounds in hand, the review overlays our sheet on the other discipline's for the congested areas (mechanical rooms, corridors, main duct runs, hard ceilings) and flags gross conflicts. It is 2D screening from drawings, not clash detection: there is no 3D model and most elevations are unstated, so a clean screen does not mean clash-free." },
+  { name: "Change record and ripple analysis", what: "On a resubmission, an addendum or a back-check, the review compares each revised sheet with its previous revision and, for every equipment value that changed, checks that the sheets it affects in other disciplines changed too. The rules it follows are listed below." },
+];
+async function loadQaChecklist() {
+  state.qaList.loading = true;
+  try {
+    state.qaList.rows = (await sb("GET", "/rest/v1/pms_qa_checklist?select=item_id,section,sort,text,details,automation,phases,source,enabled&order=sort,item_id")) || [];
+  } catch (e) { toast("Load failed: " + e.message, "error"); state.qaList.rows = []; }
+  // The RFI counts are an extra: the checklist stands without them.
+  try {
+    const tags = (await sb("GET", "/rest/v1/pms_rfi_root_causes?select=qa_item,project&item_type=eq.rfi&preventable=is.true&qa_item=not.is.null&limit=5000")) || [];
+    const by = {};
+    tags.forEach(t => { if (!t.qa_item) return; const e = (by[t.qa_item] = by[t.qa_item] || { rfis: 0, projects: new Set() }); e.rfis++; e.projects.add(t.project); });
+    state.qaList.rfis = by;
+  } catch (_) { state.qaList.rfis = null; }
+  // Ripple rules: what else must change when an equipment value changes.
+  try { state.qaList.ripple = ((await sb("GET", "/rest/v1/pms_qa_ripple_rules?select=parameter,ripples_to,sort,enabled&order=sort")) || []).filter(r => r.enabled !== false); }
+  catch (_) { state.qaList.ripple = []; }
+  state.qaList.loaded = true; state.qaList.loading = false;
+  state.counts.checklist = state.qaList.rows.filter(r => r.enabled !== false).length;
+  render();
+}
+function qaChecklistFiltered() {
+  const f = state.qaList.f;
+  const q = (f.q || "").toLowerCase().trim();
+  return state.qaList.rows.filter(r => {
+    if (f.section && (r.section || "") !== f.section) return false;
+    if (f.source && (r.source || "seed") !== f.source) return false;
+    if (f.phase && !(Array.isArray(r.phases) && r.phases.includes(f.phase))) return false;
+    if (q) {
+      const hay = [r.item_id, r.section, r.text, ...(Array.isArray(r.details) ? r.details : [])].join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+function renderQaChecklist() {
+  if (!state.qaList.loaded && !state.qaList.loading) loadQaChecklist();
+  if (state.qaList.loading || !state.qaList.loaded) { setBusy(true); $("view").innerHTML = '<div class="empty" role="status">Loading…</div>'; return; }
+  const all = state.qaList.rows;
+  const f = state.qaList.f;
+  const sections = [...new Set(all.map(r => r.section).filter(Boolean))];
+  const phases = [...new Set(all.flatMap(r => Array.isArray(r.phases) ? r.phases : []))];
+  const opt = (arr, sel, label) => arr.map(a => '<option value="' + esc(a) + '" ' + (a === sel ? "selected" : "") + '>' + esc(label ? label(a) : a) + '</option>').join("");
+  const on = all.filter(r => r.enabled !== false).length;
+  $("view").innerHTML =
+    '<div class="status info" style="display:block;margin-bottom:14px">✅ The checklist a QA review runs, item by item: <b>' + on + '</b> items in use' + (all.length - on ? ', ' + (all.length - on) + ' switched off' : '') +
+      '. This is a read-only copy. Items are switched on or off in the Admin Console; new ones come from lessons and from the RFI log.' +
+      (state.qaList.rfis ? ' The RFI count on an item is how many preventable RFIs the firm has logged that this check would have caught.' : '') + '</div>' +
+    '<div id="qcPanels">' + qaReviewPanelsHTML() + '</div>' +
+    '<h2 style="margin:22px 0 8px">The checklist</h2>' +
+    '<div class="toolbar">' +
+      '<div class="grow"><label for="qcQ">Search</label>' +
+        '<input id="qcQ" placeholder="item number, wording, section…" value="' + esc(f.q || "") + '" oninput="state.qaList.f.q=this.value; renderQaChecklistList()"/></div>' +
+      '<div class="field"><label for="qcSection">Section</label>' +
+        '<select id="qcSection" onchange="state.qaList.f.section=this.value; renderQaChecklistList()"><option value="">All</option>' + opt(sections, f.section) + '</select></div>' +
+      '<div class="field"><label for="qcSource">Where it came from</label>' +
+        '<select id="qcSource" onchange="state.qaList.f.source=this.value; renderQaChecklistList()"><option value="">All</option>' + opt(Object.keys(QA_SOURCE_LABEL), f.source, k => QA_SOURCE_LABEL[k]) + '</select></div>' +
+      (phases.length ? '<div class="field"><label for="qcPhase">Phase</label>' +
+        '<select id="qcPhase" onchange="state.qaList.f.phase=this.value; renderQaChecklistList()"><option value="">All</option>' + opt(phases, f.phase) + '</select></div>' : '') +
+      '<button class="btn btn-ghost" style="margin-left:auto" onclick="state.qaList.loaded=false; render()">↻ Refresh</button>' +
+    '</div><div id="qcList"></div>';
+  renderQaChecklistList();
+}
+// The parts of a review that are not checklist rows: the run order, the
+// engineering review, clash screening and the ripple rules.
+function toggleQaPanel(k) {
+  state.qaList.panels.has(k) ? state.qaList.panels.delete(k) : state.qaList.panels.add(k);
+  const el = $("qcPanels"); if (el) el.innerHTML = qaReviewPanelsHTML();
+}
+function showQaSection(section) {
+  state.qaList.f = { q: "", section, source: "", phase: "" };
+  renderQaChecklist();
+  const el = $("qcList"); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function qaReviewPanelsHTML() {
+  const panel = (key, title, sub, body) => {
+    const open = state.qaList.panels.has(key);
+    return '<div class="lesson approved" style="margin-bottom:10px">' +
+      '<div class="lesson-top"><div style="flex:1"><div class="lesson-summary" style="font-weight:600">' + esc(title) + '</div>' +
+        '<div style="font-size:12px;color:var(--dim);margin-top:2px">' + esc(sub) + '</div></div>' +
+        '<div class="lesson-actions"><button class="btn btn-ghost btn-sm" aria-expanded="' + open + '" onclick="toggleQaPanel(\'' + key + '\')">' + (open ? "Hide" : "Show") + '</button></div></div>' +
+      (open ? '<div class="lesson-sub">' + body + '</div>' : "") + '</div>';
+  };
+  const countIn = sec => state.qaList.rows.filter(r => r.enabled !== false && (!sec || r.section === sec)).length;
+  const steps = QA_REVIEW_STEPS.map(st => {
+    const hasItems = st.section !== undefined;
+    const link = hasItems
+      ? ' <button class="btn btn-ghost btn-sm" style="margin-left:6px" data-sec="' + esc(st.section) + '" onclick="showQaSection(this.dataset.sec)">' + countIn(st.section) + ' checklist item' + (countIn(st.section) === 1 ? "" : "s") + ' ↓</button>'
+      : ' <span class="pill pill-gray" title="This step has no checklist rows of its own">no checklist rows</span>';
+    return '<div style="margin:0 0 12px"><div><span class="pill pill-blue">' + esc(st.n) + '</span> <b>' + esc(st.name) + '</b>' + link + '</div>' +
+      '<div style="margin:4px 0 0 2px">' + esc(st.what) + '</div>' +
+      (st.list ? '<ul style="margin:6px 0 0;padding-left:20px">' + st.list.map(x => '<li style="margin:3px 0">' + esc(x) + '</li>').join("") + '</ul>' : "") + '</div>';
+  }).join("");
+  const extras = QA_REVIEW_EXTRAS.map(x => '<div style="margin:0 0 12px"><b>' + esc(x.name) + '</b><div style="margin:4px 0 0 2px">' + esc(x.what) + '</div></div>').join("");
+  const ripple = state.qaList.ripple.length
+    ? '<table style="width:100%;border-collapse:collapse"><thead><tr><th scope="col" style="text-align:left;padding:4px 8px 4px 0">When this changes</th><th scope="col" style="text-align:left;padding:4px 0">these must be checked too</th></tr></thead><tbody>' +
+      state.qaList.ripple.map(r => '<tr><td style="vertical-align:top;padding:4px 8px 4px 0;border-top:1px solid var(--border)">' + esc(r.parameter) + '</td><td style="vertical-align:top;padding:4px 0;border-top:1px solid var(--border)">' + esc(r.ripples_to) + '</td></tr>').join("") + '</tbody></table>'
+    : '<div>The ripple rules could not be read.</div>';
+  return panel("steps", "What a QA review does, step by step", QA_REVIEW_STEPS.length + " steps. The checklist is one of them; the cross-discipline, knowledge and engineering work is described here.", steps) +
+    panel("extras", "Also part of a review", "Clash screening, and what happens when a set changes an earlier one.", extras) +
+    panel("ripple", "Ripple rules", state.qaList.ripple.length + " rules: when an equipment value changes, what else has to change with it.", ripple);
+}
+function renderQaChecklistList() {
+  const el = $("qcList"); if (!el) return;
+  const rows = qaChecklistFiltered();
+  if (!rows.length) { el.innerHTML = '<div class="empty">' + (state.qaList.rows.length ? "No checklist items match these filters." : "The checklist could not be read.") + '</div>'; return; }
+  const bySection = {}; const order = [];
+  rows.forEach(r => { const k = r.section || "General"; if (!bySection[k]) { bySection[k] = []; order.push(k); } bySection[k].push(r); });
+  el.innerHTML = order.map(k =>
+    '<h2 style="margin:18px 0 8px">✅ ' + esc(k) + ' <span style="color:var(--muted);font-size:12px;font-weight:400">' + bySection[k].length + '</span></h2>' +
+    bySection[k].map(renderQaChecklistCard).join("")).join("");
+}
+function toggleQaItem(id) {
+  state.qaList.open.has(id) ? state.qaList.open.delete(id) : state.qaList.open.add(id);
+  renderQaChecklistList();
+}
+function renderQaChecklistCard(r) {
+  const id = esc(r.item_id);
+  const off = r.enabled === false;
+  const details = Array.isArray(r.details) ? r.details.filter(Boolean) : [];
+  const open = state.qaList.open.has(r.item_id);
+  const hit = state.qaList.rfis && state.qaList.rfis[r.item_id];
+  const src = r.source || "seed";
+  const srcPill = { seed: "pill-gray", lesson: "pill-purple", "rfi-lesson": "pill-blue" }[src] || "pill-gray";
+  return '<div class="lesson ' + (off ? "archived" : "approved") + '">' +
+    '<div class="lesson-top"><div style="flex:1">' +
+      '<div style="font-size:12px;font-weight:600;color:var(--dim);margin-bottom:3px">' + id + '</div>' +
+      '<div class="lesson-summary">' + esc(r.text) + '</div>' +
+      '<div class="lesson-meta">' +
+        '<span class="pill ' + srcPill + '" title="Where this item came from">' + esc(QA_SOURCE_LABEL[src] || src) + '</span>' +
+        '<span class="pill pill-gray" title="Who runs this check in a QA review">' + esc(QA_AUTOMATION_LABEL[r.automation] || r.automation || "By a person") + '</span>' +
+        (Array.isArray(r.phases) && r.phases.length ? '<span class="pill pill-gray" title="Phases this item applies to">' + esc(r.phases.join(" · ")) + '</span>' : "") +
+        (hit ? '<span class="pill pill-yellow" title="Preventable RFIs in the firm\'s log that this check would have caught">' + hit.rfis + ' RFI' + (hit.rfis === 1 ? "" : "s") + ' on ' + hit.projects.size + ' project' + (hit.projects.size === 1 ? "" : "s") + '</span>' : "") +
+        (off ? '<span class="pill pill-red">switched off</span>' : "") +
+      '</div></div>' +
+      (details.length ? '<div class="lesson-actions"><button class="btn btn-ghost btn-sm" aria-expanded="' + open + '" data-id="' + id + '" onclick="toggleQaItem(this.dataset.id)">' + (open ? "Hide" : "How to check") + '</button></div>' : "") +
+    '</div>' +
+    (open && details.length ? '<div class="lesson-sub"><ul style="margin:0;padding-left:18px">' + details.map(d => '<li style="margin:2px 0">' + esc(d) + '</li>').join("") + '</ul></div>' : "") +
+  '</div>';
+}
+
 function standardsFiltered() {
   const f = state.stds.f;
   return state.stds.rows.filter(r => {
