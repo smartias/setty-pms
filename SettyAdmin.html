@@ -1164,9 +1164,10 @@ async function qaDecideProposal(id, approve) {
   } catch (e) { toast((approve ? "Approve" : "Reject") + " failed: " + e.message, "error"); }
   state.qaRoutine = null; render();
 }
-// ── The whole checklist, read-only ──────────────────────────────────────────
+// ── The whole checklist ─────────────────────────────────────────────────────
 // Every row of pms_qa_checklist, switched off ones included, grouped by
-// section in the checklist's own order. Nothing here edits an item.
+// section in the checklist's own order. The one edit made here is the on/off
+// switch (qaItemSetEnabled): wording, steps and phases are not edited here.
 const QA_ITEM_SOURCE = { seed: "Original checklist", lesson: "From a lesson", "rfi-lesson": "From the RFI log" };
 const QA_ITEM_WHO = { manual: "By a person", assisted: "Claude assists", auto: "Automatic" };
 function qaItemsFiltered(items, f) {
@@ -1194,7 +1195,9 @@ function qaItemsListHTML(items, f) {
     <tbody>${by[k].map(r => {
       const details = Array.isArray(r.details) ? r.details.filter(d => typeof d === "string" && d) : [];
       return `<tr${r.enabled === false ? ' style="opacity:.55"' : ""}>
-        <td style="vertical-align:top;white-space:nowrap"><b>${esc(r.item_id)}</b>${r.enabled === false ? '<div><span class="pill bad">off</span></div>' : ""}</td>
+        <td style="vertical-align:top;white-space:nowrap"><b>${esc(r.item_id)}</b>${r.enabled === false ? '<div><span class="pill bad">off</span></div>' : ""}
+          <div style="margin-top:4px"><button class="btn" style="font-size:11.5px;padding:2px 8px" onclick="qaItemSetEnabled(${esc(JSON.stringify(r.item_id))}, ${r.enabled === false})"
+            title="${r.enabled === false ? "Put this item back into every QA review" : "Leave this item out of QA reviews from now on. Nothing is deleted; switch it back on any time."}">${r.enabled === false ? "Switch on" : "Switch off"}</button></div></td>
         <td style="vertical-align:top;font-size:13px;line-height:1.45">${esc(r.text)}
           ${details.length || r.automation_hint ? `<details style="margin-top:4px;font-size:12px;color:var(--dim)"><summary style="cursor:pointer">How to check</summary>
             ${details.length ? `<ul style="margin:6px 0 0 18px;padding:0;line-height:1.5">${details.map(d => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}
@@ -1203,6 +1206,27 @@ function qaItemsListHTML(items, f) {
         <td style="vertical-align:top;font-size:12.5px">${esc(Array.isArray(r.phases) && r.phases.length ? r.phases.join(", ") : "All")}</td>
         <td style="vertical-align:top;font-size:12.5px">${esc(QA_ITEM_SOURCE[r.source || "seed"] || r.source)}${r.added_at ? `<div style="color:var(--muted);font-size:11.5px">added ${esc(String(r.added_at).slice(0, 10))}</div>` : ""}</td>
       </tr>`; }).join("")}</tbody></table>`).join("");
+}
+// Switch one checklist item on or off. Every QA review reads only the items
+// that are on (get_qa_checklist, enabled=eq.true), so this takes effect on the
+// next review. Only `enabled` is sent; the row's RLS lets admins alone write it.
+async function qaItemSetEnabled(itemId, on) {
+  const q = state.qaRoutine, item = q && (q.allItems || []).find(r => r.item_id === itemId);
+  if (!item) return;
+  const what = item.item_id + ": " + String(item.text || "").slice(0, 160);
+  if (!confirm(on
+    ? "Switch this item back on?\n\n" + what + "\n\nEvery QA review will run it again from the next review."
+    : "Switch this item off?\n\n" + what + "\n\nQA reviews will skip it from the next review. Nothing is deleted: its wording, steps and the RFIs tagged to it stay, and you can switch it back on here.")) return;
+  try {
+    const rows = await sb("PATCH", "/rest/v1/pms_qa_checklist?item_id=eq." + encodeURIComponent(itemId), { enabled: on });
+    // PostgREST answers 200 with no rows when the filter matched nothing or
+    // the row policy refused the write: that is not a success.
+    if (!Array.isArray(rows) || rows.length !== 1) throw new Error("the item was not changed (it may have been removed, or this account is not an admin)");
+    item.enabled = rows[0].enabled !== false;
+    q.items = q.allItems.filter(i => i.enabled !== false).length;
+    toast(item.item_id + (item.enabled ? " is on: QA reviews run it again." : " is off: QA reviews skip it from now on."), "success");
+  } catch (e) { toast("Could not switch " + itemId + (on ? " on: " : " off: ") + e.message, "error"); }
+  render();
 }
 function qaItemsRefresh() {
   const el = $("qaItemsList"); if (!el || !state.qaRoutine) return;
@@ -1314,7 +1338,7 @@ function qaItemsCardHTML(items) {
       <div style="color:var(--muted);font-size:12px;margin-bottom:6px">THE COMPLETE CHECKLIST</div>
       <div style="color:var(--dim);font-size:13px;line-height:1.55;margin-bottom:10px">
         Every item a QA review runs, in the order it runs them: ${(items || []).length - off} in use${off ? `, ${off} switched off (shown greyed)` : ""}.
-        Read-only. New items come from approved proposals above.
+        Switch an item off to leave it out of QA reviews without deleting it. New items come from approved proposals above.
       </div>
       <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
         <label style="font-size:12px;color:var(--dim)">Search<br><input id="qaItemsQ" placeholder="item number, wording, steps…" value="${esc(f.q || "")}" oninput="state.qaItemsFilter.q=this.value;qaItemsRefresh()" style="min-width:240px"></label>
