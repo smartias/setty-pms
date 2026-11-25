@@ -56,9 +56,17 @@
 // block. Someone with kudos but nothing due still gets the email. If the
 // pms_accolades table is missing the digest goes out without the block.
 //
+// Accolade-O-Meter block (2026-11-25): every digest also carries a short
+// firm-wide "On the Accolade-O-Meter" block at the bottom (wallDigest.ts):
+// last week's count, the most-cheered quote and a nudge to log one. It never
+// causes an email on its own: someone with nothing due and no kudos is still
+// skipped. Any read error just leaves the block out.
+//
 // verify_jwt is OFF (browser CORS preflight can't carry a JWT) — every route
 // enforces its own auth above. No external imports: plain fetch against
 // Supabase REST with the service-role key.
+
+import { type Wall, wallBlock } from "./wallDigest.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -443,7 +451,7 @@ function kudosBlock(kudos: Kudo[]): string {
     </div>`;
 }
 
-function digestHtml(digests: ProjDigest[], today: Date, kudos: Kudo[] = []): string {
+function digestHtml(digests: ProjDigest[], today: Date, kudos: Kudo[] = [], wall = ""): string {
   const dated: FlatItem[] = [];
   const undated: FlatItem[] = [];
   const overdueFlat: FlatItem[] = [];
@@ -527,6 +535,7 @@ function digestHtml(digests: ProjDigest[], today: Date, kudos: Kudo[] = []): str
     ${overdueBlock}
     ${body}
     ${undatedBlock}
+    ${wall}
     <div style="font-size:9pt;color:#999;margin-top:24px">You get this because the weekly digest is on in <a href="${PMS_URL}#myprojects" style="color:#1F3864">My Projects → ⚙ My Settings</a> — turn it off there any time.</div>
   `, today);
 }
@@ -581,11 +590,12 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
   // Last week's accolades, grouped by the people they name. Optional: a
   // missing table (or any read error) just means no Kudos block.
   const kudosByEmail = new Map<string, Kudo[]>();
+  let wall: Wall | null = null;
   try {
     const since = new Date(today.getTime() - KUDOS_DAYS * 86400000).toISOString();
     const rows = await svcAll(
       "/pms_accolades?removed_at=is.null&created_at=gte." + encodeURIComponent(since) +
-      "&select=quote,kind,from_name,from_company,created_by_name,project_number,project_name,recipient_emails&order=created_at.asc",
+      "&select=id,quote,kind,from_name,from_company,created_by_name,project_number,project_name,recipients,recipient_emails,created_at&order=created_at.asc",
     );
     for (const a of rows) {
       for (const e of new Set<string>((a.recipient_emails || []).map((x: string) => String(x || "").toLowerCase().trim()))) {
@@ -594,6 +604,24 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
         kudosByEmail.get(e)!.push(a);
       }
     }
+    // The firm-wide block. Its own try: a failure here keeps the kudos.
+    try {
+      const cheers: Record<string, number> = {};
+      if (rows.length) {
+        const ids = rows.map((a: any) => Number(a.id)).filter(Number.isInteger).join(",");
+        for (const c of await svcAll("/pms_accolade_cheers?accolade_id=in.(" + ids + ")&select=accolade_id")) {
+          const k = String(c.accolade_id); cheers[k] = (cheers[k] || 0) + 1;
+        }
+      }
+      const sinceDay = since.slice(0, 10);
+      const players = new Set((await svcAll("/pms_accolade_plays?play_date=gte." + sinceDay + "&select=email"))
+        .map((p: any) => String(p.email || "").toLowerCase()));
+      const loggers = new Set<string>((await svcAll("/pms_accolades?source=eq.manual&removed_at=is.null&select=created_by"))
+        .map((a: any) => String(a.created_by || "").toLowerCase()));
+      wall = { rows, cheers, players: players.size, loggers };
+    } catch (e: any) {
+      console.warn("digest: accolade-o-meter block left out:", e?.message || e);
+    }
   } catch (e: any) {
     console.warn("digest: accolades not read, sending without kudos:", e?.message || e);
   }
@@ -601,7 +629,7 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
   const sent: string[] = [];
   const skipped: string[] = [];
   const failed: { email: string; error: string }[] = [];
-  const preview: Record<string, { projects: number; items: number; kudos: number }> = {};
+  const preview: Record<string, { projects: number; items: number; kudos: number; wall: boolean }> = {};
 
   // Action items are personal: one with an owner we can resolve to a staff
   // email goes only to that person's digest. Unowned (or unresolvable-owner)
@@ -625,13 +653,14 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
     if (digests.length === 0 && kudos.length === 0) { skipped.push(r.email); continue; }
     preview[r.email] = {
       kudos: kudos.length,
+      wall: !!wall,
       projects: digests.length,
       items: digests.reduce((a, d) => a + d.items.length + d.undatedActions.length + d.overdue.length, 0),
     };
     if (opts.dryRun) continue;
     const subject = `Your week ahead — ${today.toLocaleDateString("en-US", { month: "long", day: "numeric" })}`;
     try {
-      await sendEmail(r.email, subject, digestHtml(digests, today, kudos));
+      await sendEmail(r.email, subject, digestHtml(digests, today, kudos, wall ? wallBlock(wall, r.email, ACCOLADES_URL) : ""));
       sent.push(r.email);
     } catch (e: any) {
       failed.push({ email: r.email, error: e?.message || String(e) });
