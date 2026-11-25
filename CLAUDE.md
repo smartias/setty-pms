@@ -33,6 +33,17 @@ browser (PMS pages) or from the connector (app permissions).
    things on every PR, plus a CRLF/LF check
    (`.github/scripts/check-source.mjs`); a red run means do not merge.
 
+## Email greetings (all pages)
+
+- Build every "Hi …," from `greetingFirstName(name)` in `greetingName.js`
+  (`greetingName.test.mjs`), never from the first word of a name: about a
+  third of contacts are stored "Last, First", some carry ", PE" / ", Jr.",
+  and directories fall back to an email address. It returns "" when there is
+  no usable name; the caller picks the fallback. It is a plain
+  `<script src>` (not an ES module) so it exists before page code runs;
+  `SettyPMS.html`, `transmittal.html` and `Newsletter.html` load it, and the
+  test fails if a page keeps its own copy.
+
 ## CDN libraries (all pages)
 
 - Every `<script src>` from jsdelivr, cdnjs or unpkg names an exact version
