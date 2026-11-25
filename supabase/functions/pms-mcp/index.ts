@@ -13620,6 +13620,63 @@ async function costReviewGate(projectNumber: string, needEdit: boolean): Promise
   return { ok: true, pid, p, pn, project: pn || p.name || projectNumber, who: { name: c.name || c.email, email: c.email } };
 }
 
+// READ-ONLY view of what the PMS holds on construction cost: the figure on
+// record, its history and every saved estimate review (the cost-estimate-review
+// skill's output, shown on the Construction Costs tab). For a design narrative,
+// a briefing or any question about the estimates: unlike get_cost_estimate_packet
+// it marks nothing as started and writes nothing.
+mcp.tool("get_cost_estimates", {
+  description:
+    "READ what the PMS holds on a project's CONSTRUCTION COST, writing nothing: the construction cost on record, " +
+    "its dated history (proposal, each estimate, bid, contract), and every saved cost estimate review, newest " +
+    "first: the estimate's document, deliverable, date and preparer, the total and what it includes, the " +
+    "mechanical / electrical / plumbing / fire protection / technology amounts and the MEP share, what moved since " +
+    "the estimate before it, the reviewer's notes and open questions, and where the estimate and the drawings " +
+    "disagree. Use it to put the cost estimate in a design narrative or briefing, or to answer 'what did the last " +
+    "estimate carry for electrical'. Quote the values as stored, with the estimate's name and date; never price or " +
+    "total anything yourself. To START a new estimate review use get_cost_estimate_packet instead; for the line " +
+    "items, get_cost_estimate_lines. Needs a signed-in caller with the fees permission.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    limit: z.number().int().min(1).max(30).optional().describe("Estimate reviews to return, newest first (default 5)."),
+  }),
+  handler: async ({ projectNumber, limit }) => {
+    const g = await costReviewGate(projectNumber, false);
+    if (!g.ok) return g.response;
+    const p = g.p;
+    const l = latestConstructionCost(p);
+    const reviews = costEstimateReviewsOf(p).slice().reverse();
+    return asText({
+      project: g.project,
+      projectName: p.name || undefined,
+      constructionCostOnRecord: { value: l.value, asOf: l.at, source: l.source ? costSourceLabel(l.source) : null, basis: l.basis === "log" ? "history" : l.basis === "fee-calculator" ? "Fee Calculator" : "nothing on record" },
+      costHistory: costLogOf(p).slice(-20).map((e: any) => ({ date: String(e.at).slice(0, 10), constructionCost: e.value, source: costSourceLabel(e.source), deliverable: e.deliverable || undefined, document: e.document || undefined, note: e.note || undefined })),
+      estimateReviewCount: reviews.length,
+      estimateReviews: reviews.slice(0, limit ?? 5).map((r: any) => {
+        const rec = r.reconciliation || null;
+        const findings = rec && Array.isArray(rec.findings) ? rec.findings : [];
+        return {
+          ...estimateReviewView(r),
+          documentUrl: r.document?.webUrl || undefined,
+          changesSincePrevious: Array.isArray(r.changes) && r.changes.length
+            ? { comparedTo: r.comparedTo?.document || undefined, changes: r.changes.map((x: any) => ({ item: x.label, from: x.from, to: x.to, delta: x.delta, deltaPct: x.deltaPct })) }
+            : undefined,
+          notes: r.notes || undefined,
+          openQuestions: Array.isArray(r.unknowns) && r.unknowns.length ? r.unknowns : undefined,
+          reconciliation: rec ? {
+            against: rec.against || undefined,
+            notRun: rec.notRun || undefined,
+            findingsBySeverity: ["high", "medium", "low"].map((sv) => ({ severity: sv, count: findings.filter((f: any) => f.severity === sv).length })).filter((x) => x.count),
+            findings: findings.slice(0, 15).map((f: any) => ({ severity: f.severity, discipline: f.discipline ? estimateDisciplineLabel(f.discipline) : undefined, issue: f.issue, estimate: f.estimate || undefined, drawings: f.drawings || undefined, sheets: f.sheets?.length ? f.sheets : undefined })),
+          } : undefined,
+          lineItemsStored: r.lines && r.lines.count ? { count: r.lines.count, readFrom: r.lines.source === "workbook" ? "the workbook, cell by cell" : "the PDF, transcribed" } : undefined,
+        };
+      }),
+      ...(reviews.length ? {} : { note: "No cost estimate review is saved for this project. The construction cost history above may still hold totals recorded by hand or by a QA review." }),
+    });
+  },
+});
+
 mcp.tool("get_cost_estimate_packet", {
   description:
     "START of a COST ESTIMATE REVIEW (the cost-estimate-review skill, or a 'Send to Claude for review' request from " +

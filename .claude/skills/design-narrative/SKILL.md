@@ -4,7 +4,8 @@ description: >
   Generate a design narrative / Basis of Design (BOD) for a Setty project
   using the PMS connector (setty-pms): built from the issued drawings, meeting
   notes, filed emails, and any PREVIOUS design narratives on the project,
-  including a drawing index describing what each sheet shows. Use whenever
+  including a drawing index describing what each sheet shows, and the
+  construction cost estimate when one has been entered in the PMS. Use whenever
   someone asks to generate, draft, update, or prepare a design narrative,
   BOD, basis of design, systems narrative, or engineer's report for a
   project or phase — "generate the design narrative for Tabler", "draft the
@@ -57,6 +58,27 @@ Two rules above all:
    AS SCHEDULED — the narrative must not contradict the drawings.
 5. **External data** — fault current, flow test, utility coordination (the
    qa-300+ items): state them with their source and date, or bracket them.
+6. **Construction cost** — `get_cost_estimates` with the project. It reads,
+   and writes nothing, what the PMS Construction Costs tab holds: the
+   construction cost on record and its history, and each saved cost
+   estimate review (newest first) with the estimate's document, deliverable,
+   date and preparer, its total and what the total includes, the
+   mechanical / electrical / plumbing / fire protection / technology amounts
+   and MEP share, the change since the estimate before it, the reviewer's
+   open questions, and where the estimate and the drawings disagree.
+   - Use the newest review whose deliverable is this phase, or the newest
+     review if none names the phase; say which one you used.
+   - Quote every figure exactly as stored, with the estimate's name and
+     date. Never price, round, total or split anything yourself, and never
+     include the A/E fee: construction cost only.
+   - If the tool refuses for lack of the fees permission, say so in the
+     sources list and leave `[ENGINEER TO CONFIRM: construction cost basis]`
+     in the cost section; do not look for the number elsewhere.
+   - Do not start a cost estimate review from here. If an estimate sits in
+     the project folder but has no review in the PMS, name the file in the
+     sources list and tell the user it can be reviewed with the
+     cost-estimate-review skill (or "Send to Claude for review" on the
+     Construction Costs tab), then rerun the narrative.
 
 ## Structure
 
@@ -72,9 +94,26 @@ Follow the prior narrative's outline when one exists. Otherwise:
    plans, risers, schedules — with scheduled capacities), major equipment
    basis of design (manufacturer/model from schedules), and controls intent
    (from the sequence/control sheets).
-4. **Assumptions & qualifications** — open items log entries, unresolved
-   QA/external-data findings, anything bracketed.
-5. **Drawing index** — every sheet in the current set, per discipline:
+4. **Construction cost estimate** — only when `get_cost_estimates` returned
+   something. From the estimate review used: the estimate's name, the
+   phase it prices, its date and who prepared it; the total construction
+   cost and its basis as stated (what it includes and leaves out); the
+   mechanical, electrical, plumbing, fire protection and technology amounts
+   with the MEP share, for the disciplines the review broke out; and the
+   change from the previous estimate, where the review gives one. A
+   one-line cost history (each recorded figure with its date and source)
+   when there are several. A discipline the estimate did not break out is
+   "not broken out in the estimate", never estimated by you. With no
+   estimate review but a figure in the history, give that figure, its date
+   and its source in one sentence. With nothing recorded, leave the section
+   out and say so in the sources list.
+5. **Assumptions & qualifications** — open items log entries, unresolved
+   QA/external-data findings, anything bracketed. Where the estimate review
+   lists open questions or disagreements between the estimate and the
+   drawings, add the high-severity ones here as `[ENGINEER TO CONFIRM: …]`
+   items, worded as questions: they are the reviewer's notes, not decided
+   positions, so they do not go in the narrative's body as fact.
+6. **Drawing index** — every sheet in the current set, per discipline:
    sheet number, title, and ONE sentence on what it shows, written from the
    sheet title and (where a title is generic) the sheet's indexed content.
    Mark sheets added or revised since the prior narrative's phase.
@@ -84,7 +123,8 @@ Follow the prior narrative's outline when one exists. Otherwise:
 Produce a .docx via the docx skill (firm letterhead conventions via
 get_letterhead_template where wanted), or a clean markdown draft if the
 user prefers chat. End with: sources used (documents, minutes, emails by
-date), and the list of [ENGINEER TO CONFIRM] brackets.
+date, and the cost estimate review used, or "no cost estimate recorded in
+the PMS"), and the list of [ENGINEER TO CONFIRM] brackets.
 
 **Filing**: after the user has seen the draft, file it with
 `file_qa_report` into a new dated folder under the project's "Design
