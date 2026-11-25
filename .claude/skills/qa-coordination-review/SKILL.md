@@ -606,7 +606,14 @@ Run the five checklist items, each with a disposition:
   tag with no schedule row, "typical" with no extent, items on the
   architect's sheets that ours omit or lay out differently, alternates and
   allowances in Division 01 that cannot be found on the drawings, and work
-  the documents require with no shown way to do it.
+  the documents require with no shown way to do it. Start with
+  `check_tag_schedule_coverage`: one call reconciles every hyphenated tag in
+  the set against the schedule sheets (drawn but not scheduled, scheduled
+  but on no plan, families never scheduled). Look at `scheduleSheets` in its
+  answer first; if a schedule sits on a sheet not listed, pass that sheet and
+  run it again. Confirm each result on the sheet before recording it. It
+  does not see untagged devices, lighting type letters or tags without a
+  hyphen: those, and the rest of this item, are still yours.
 - **qa-623 The spec book as one set.** Table of contents against the book:
   a section twice in two versions, a missing section, a section for a system
   the project does not have. For each major basis-of-design model, check
@@ -713,7 +720,14 @@ is in the report header, and spend the budget accordingly:
 - **qa-632 Plan, schedule and spec agree on the small items.** qa-602 is
   major equipment (its capacity, model and electrical data against the
   spec); this is everything smaller, and also the tags and room names that
-  panel schedule descriptions give for any equipment.
+  panel schedule descriptions give for any equipment. The comparing is
+  automatic: collect what each document says in the steps below and pass it
+  to `check_document_agreement` (`statements` for materials, ratings and
+  heights, with the same subject and attribute wording for the statements
+  meant to be compared; `circuits` for each panel, plan homeruns against
+  schedule rows). Do not judge agreement yourself. It returns only the
+  disagreements; confirm each at both places before recording it, and
+  report what came back not compared in the coverage.
   1. *Circuiting, at two depths.* For every panel, set level: each circuit
      on the schedule has a homerun on a plan, and each homerun has a
      schedule row. This is cheap; do all panels. For at least three panels,
@@ -737,7 +751,14 @@ is in the report header, and spend the budget accordingly:
   5. Quote both sources word for word. Where the sources can be read as two
      layers of one requirement (an insulation jacket, then a protective
      enclosure), say so and raise it as a flag, not a conflict.
-- **qa-633 Every controlled item names its controller.**
+- **qa-633 Every controlled item names its controller.** Start with
+  `check_controls_coverage`: one call lists the scheduled equipment families
+  that no controls sheet mentions, the ones shown only as a type, the ones
+  partly shown, and every "BMS if applicable". Look at `controlsSheets` in
+  its answer first; if the diagrams or points list are on a sheet not listed,
+  pass that sheet and run it again. It reads text only: it cannot see a
+  thermostat symbol, and it does not list untagged items, so the steps below
+  still apply to what it returns and to what it cannot see.
   1. *Build the list from more than the equipment schedules.* Schedules
      give the fans, pumps, heaters and units. Add what has no schedule row:
      fire smoke dampers and motorized dampers from the plans and risers,
@@ -763,7 +784,12 @@ is in the report header, and spend the budget accordingly:
      room unit) is a finding.
   6. *When the spec has no sequence section,* the drawings are the only
      sequence. Record the dangling spec reference once and carry on.
-- **qa-634 A revision is carried to every sheet it touches.**
+- **qa-634 A revision is carried to every sheet it touches.** Start with
+  `check_revision_carried` on the revision's folder: one call compares
+  every sheet in it with its previous revision and lists the tags removed
+  that sheets not re-issued still show, and tags added on one sheet only. It
+  sees hyphenated tags and nothing else, so the steps below still apply to
+  every change that is a note, a size, a quantity or a background.
   1. *Start from the narrative.* List every changed item the bulletin or
      addendum narrative names. Narratives are often Word files, which
      `read_document` cannot read: get them with `download_document`.
@@ -812,9 +838,14 @@ still matched nothing. They apply from CD on. Run them after the five above.
      hanging and mounting accessories.
   A finding quotes the spec article and says which sheet is silent.
 
-- **qa-637 The documents state a decision.**
-  1. *Search specs and notes* for "as allowed by", "as permitted by", "as
-     approved by owner", "as directed", "if applicable", "if required".
+- **qa-637 The documents state a decision.** The search is automatic: do
+  not search phrase by phrase.
+  1. *Run `check_deferred_decisions`* once. It searches every sheet in the
+     set for "as allowed by", "as permitted by", "as approved by owner", "as
+     directed", "if applicable", "if required", "TBD", "coordinate with
+     owner" and "latest edition". Specifications are not in the drawing
+     index: find the spec PDFs with `list_project_documents` and pass them in
+     `specItemIds`, three per call. Say in the coverage which were read.
   2. *For each hit:* is the answer stated elsewhere in the set? Check the
      agency preferences and the knowledge layer for the owner's standing
      answer before raising it.
@@ -1079,17 +1110,59 @@ Pass 1) in the report's Cross-discipline table, with the sheets compared.
      minus ceiling height (RCP) minus structure depth at that spot
      (framing plan). Plenum needed = the unit's height from the schedule or
      cut sheet, plus the duct or pipe that crosses it, plus the light
-     fixture. Do the sum, with the numbers, at least for: the lowest
+     fixture. Do not do the sum yourself: pass the dimensions exactly as
+     drawn to `check_space_fit`, kind `plenum`, one row per location, with
+     everything that crosses at that spot in `stack` (insulation, and the
+     slope and run of a pipe that drains). Run it at least for: the lowest
      ceiling on each floor, every corridor, every place a duct main crosses
      a beam line, and every room under a stair, a skylight or a feature
-     ceiling. A location where needed exceeds available is a finding; one
-     where a number could not be read is `partial`, naming the number.
+     ceiling. A location that comes back `flag` is a finding once you have
+     opened the sheets again and confirmed each dimension; `tight` is named
+     to the engineer as a place to look at, not as a finding; one that
+     could not be checked is `partial`, naming the missing dimension. Only
+     dimensions printed on a sheet, schedule or cut sheet: never scale one
+     or fill one in. Many ceiling heights on one floor against one
+     structure depth is how nine "lower the ceiling" RFIs happened on one
+     project, so check every distinct ceiling height, not one per floor.
+     **Beams.** An RCP note or wall section gives the underside of the
+     deck or plank, not of the steel. At each location read the framing
+     plan and pass `beamDepth` (the deepest member crossing below the deck
+     there), or `noBeam` when it shows none. A row that fits with neither
+     comes back `toDeckOnly`: report it as "fits to deck only, framing not
+     read", never as checked. On Tabler a bathroom passed to the plank
+     with 11 in. to spare while the contractor found no room under the
+     return duct.
+     **Corridors need the width as well.** Pass the corridor's clear width
+     and everything that runs side by side above its ceiling (cassette or
+     fan coil, cable tray with its side clearances, duct mains, pipe mains
+     with insulation) to `check_space_fit`, kind `fit`. A corridor can pass
+     on depth and fail on width: on Tabler a cassette took nearly the full
+     width and left no room for the tray.
+     **Cable tray.** Check the tray's printed elevation against the
+     structure too: tray elevation, tray depth and the clearance the
+     technology sheets ask for above it, as kind `fit` against the
+     underside of deck.
   6. **Risers and drops.** Take every riser from the riser diagrams and
      find its chase or furred wall on the architectural plan on each floor
      it passes. Then every pipe drop to a fixture: the wall it drops in
      must exist on the architectural plan and be a partition that can hold
      it, not glazing, a movable partition or a wall the architect does not
      draw. A riser or drop with no wall to hide in is a finding.
+     Where a shaft carries more than one riser and its inside dimension
+     is given, pass the shaft dimension and the risers (with insulation
+     and the space between them) to `check_space_fit`, kind `fit`.
+  7. **Rooms and working space.** For every electrical room and closet,
+     and every panel, transformer, disconnect, VFD or controller drawn
+     elsewhere: pass the clear depth, width and headroom in front of it,
+     with the system voltage, to `check_space_fit`, kind `workingSpace`
+     (findings go under `qa-070`), and the room dimension against the
+     equipment depth plus its working space as kind `fit`. Use the depth
+     on the schedule or cut sheet, not the symbol on the plan: a transfer
+     switch drawn 12 in. deep that is 18 in. deep made a room too small.
+     The same `fit` sum works for a pit, a pump pad or a mechanical closet
+     where the schedule gives the unit size and its service clearance.
+  The tool checks the numbers you pass. It does not find a congested
+  corridor: steps 1 to 4 and the overlay of the plans are still yours.
   Report a table: room, item, ceiling type and height, access (panel shown
   or not), plenum available against needed where computed, result. State
   how many of the step 1 items were checked out of the total. If the RCPs
