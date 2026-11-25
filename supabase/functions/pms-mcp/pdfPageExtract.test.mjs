@@ -195,6 +195,64 @@ test("a file with object streams and a cross-reference stream reads the same way
   assert.equal(again.pageCount, 1);
 });
 
+// A hybrid file: a classic table that lists its packed objects as free, and an
+// /XRefStm that says where they really are.
+function hybridPdf(objs) {
+  const packed = [9];                                      // the font lives in an object stream
+  const STM = 30, XREF = 31;
+  const stmText = `9 0 ${objs[9]}\n`;
+  const stmData = deflateSync(Buffer.from(stmText, "latin1"));
+  const first = "9 0 ".length;
+  let body = "%PDF-1.5\n%\xE2\xE3\xCF\xD3\n";
+  const off = {};
+  for (const n of Object.keys(objs).map(Number)) { if (packed.includes(n)) continue; off[n] = body.length; body += `${n} 0 obj\n${objs[n]}\nendobj\n`; }
+  const parts = [enc(body)];
+  let pos = parts[0].length;
+  off[STM] = pos;
+  const stmObj = cat(enc(`${STM} 0 obj\n<< /Type /ObjStm /N 1 /First ${first} /Filter /FlateDecode /Length ${stmData.length} >>\nstream\n`), stmData, enc("\nendstream\nendobj\n"));
+  parts.push(stmObj); pos += stmObj.length;
+  const xstmAt = pos;
+  // The stream covers object 9 only: type 2, in stream 30, index 0.
+  const xdata = Buffer.from([2, 0, 0, STM, 0]);
+  const xobj = cat(enc(`${XREF} 0 obj\n<< /Type /XRef /Size ${XREF + 1} /W [1 3 1] /Index [9 1] /Length ${xdata.length} >>\nstream\n`), xdata, enc("\nendstream\nendobj\n"));
+  parts.push(xobj); pos += xobj.length;
+  const xrefAt = pos;
+  let table = `xref\n0 ${XREF + 1}\n0000000000 65535 f \n`;
+  for (let n = 1; n <= XREF; n++) {
+    const o = n === XREF ? xstmAt : off[n];
+    table += o != null ? `${String(o).padStart(10, "0")} 00000 n \n` : "0000000000 65535 f \n"; // object 9 reads as free here
+  }
+  table += `trailer\n<< /Size ${XREF + 1} /Root 1 0 R /XRefStm ${xstmAt} >>\nstartxref\n${xrefAt}\n%%EOF\n`;
+  parts.push(enc(table));
+  return cat(...parts);
+}
+
+test("a hybrid file's stream entries are not hidden by the table's free entries", async () => {
+  const bytes = hybridPdf(baseObjects());
+  const text = dec((await extractPdfPage(bytes.length, reader(bytes).fetchRange, 2)).bytes);
+  assert.ok(text.includes("(PAGE-TWO)"));
+  assert.ok(text.includes("/Helvetica"), "the font packed in the object stream came along");
+});
+
+test("layer settings in the catalog are carried over, with only the layers the page uses", async () => {
+  const objs = baseObjects();
+  objs[1] = "<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [40 0 R 41 0 R] /D 42 0 R >> >>";
+  objs[40] = "<< /Type /OCG /Name (Hidden layer) >>";
+  objs[41] = "<< /Type /OCG /Name (Layer of another page) >>";
+  objs[42] = "<< /OFF [40 0 R] /Order [40 0 R 41 0 R] /Name (Default) >>";
+  objs[5] = "<< /Type /Page /Parent 20 0 R /Contents 6 0 R /Resources << /Font << /F1 9 0 R >> /Properties << /MC0 40 0 R >> >> >>";
+  const { bytes } = classicPdf(objs);
+  const out = await extractPdfPage(bytes.length, reader(bytes).fetchRange, 2);
+  const text = dec(out.bytes);
+  assert.match(text, /\/Type \/Catalog \/Pages \d+ 0 R \/OCProperties << \/OCGs \[40 0 R 41 0 R\] \/D 42 0 R >> >>/);
+  assert.ok(text.includes("/OFF [40 0 R]"), "the default configuration, with what is switched off");
+  assert.ok(text.includes("(Hidden layer)"), "the layer the page uses");
+  assert.ok(!text.includes("Layer of another page"), "a layer the page does not use is left dangling");
+  // A file with no layers gets a plain catalog.
+  const plain = dec((await extractPdfPage(...(() => { const b = classicPdf(baseObjects()).bytes; return [b.length, reader(b).fetchRange, 2]; })())).bytes);
+  assert.ok(!plain.includes("/OCProperties"));
+});
+
 test("names, strings and comments that look like syntax do not derail the parse", async () => {
   const objs = baseObjects();
   objs[5] = "<< /Type /Page /Parent 20 0 R % a comment with >> and 7 0 R\n /Contents 6 0 R /My#20Key (a \\) paren ( nested ) 8 0 R) /Hex <48656C6C6F> /Arr [1 0.5 -3 true null /N 9 0 R] >>";
