@@ -107,8 +107,8 @@ has("const gate = await azurePathProject(dec.team, dec.relPath);\n    if (!gate.
 has("buf = await loadPdfBytes(f.itemId, DRAWING_INDEX_MAX_BYTES, { cache: false });", "the index builder reads through the shared loader");
 has("buf = await loadPdfBytes(f.itemId, SHEET_MAX_BYTES, { cache: false });", "extract_sheet_index reads through the shared loader");
 has("return azureDrawingScope(String(team).toUpperCase().trim(), numPrefix, subfolder);", "drive projects get their drawing scope from the shares");
-has("const bytes = await fetchDrawingPdfById(String(chosen.item_id));", "view_drawing opens indexed sheets by id (az or Graph)");
-has("const bytes = await fetchDrawingPdfById(fileId);", "read_drawing_schedule opens by id (az or Graph)");
+has("const got = await drawingPagePdf(String(chosen.item_id), Number(chosen.page));", "view_drawing opens indexed sheets by id (az or Graph)");
+has("const got = await drawingPagePdf(fileId, pageInFile);", "read_drawing_schedule opens by id (az or Graph)");
 has("async function indexDerivedSet(numPrefix: string)", "drive projects compose the current set from the drawing index");
 has("const st = await storageFor(project);", "gates run on the RESOLVED project (after HIDE)", 5);
 has("sasEnv: s.sas_env ? String(s.sas_env) : null }))",
@@ -143,14 +143,14 @@ has("if (isAzId(folderId)) {", "list_project_documents opens az: folder ids");
 has('if (region.kind !== "sharepoint") {\n        const num = String(projectNumber || "").toLowerCase().trim();', "azure_files regions are browsed by project number, not refused");
 has("const annex = region.shares.length ? await azureAnnexFor(team, num) : null;", "sharepoint regions with shares report their drive annexes");
 has("if (isAzId(itemId)) {", "read_document opens az: file ids");
-has("if (!pdfBytes) res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);", "read_document reads share bytes through the provider (PDF cache honoured)");
+has("if (!pdfBytes && !pagewise) res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);", "read_document reads share bytes through the provider (PDF cache honoured)");
 check(!shipped.includes("Ask Sara Arias."), "the slice-A 'not enabled yet' refusal is gone");
 // Codex P1 on #260: an az: id is a typed PATH, so both tools gate it on the
 // project it names (folder → project → team → projectRefVisible) before any
 // share call, and the share root is never listed for a caller.
 has("async function azurePathProject(team: string, relPath: string)", "share paths earn their own visibility verdict");
-check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPath\);/g) || []).length === 10,
-  "every az: entry point runs the gate: list_project_documents, read_document, the PDF loader, the ranged PDF source (large-file indexing), drawing item meta, the raw-file meta + byte openers behind download_document (1.19.0), and view_photos' itemId + folderId branches (1.20.0), and the review packet's file reader (1.28.0)");
+check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPath\);/g) || []).length === 11,
+  "every az: entry point runs the gate: list_project_documents, read_document, the PDF loader, the ranged PDF source (large-file indexing), the one-page PDF source that checks its cache (1.33.0), drawing item meta, the raw-file meta + byte openers behind download_document (1.19.0), and view_photos' itemId + folderId branches (1.20.0), and the review packet's file reader (1.28.0)");
 has("if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;", "the gate is projectRefVisible, so per-project overrides (confidential included) apply");
 has('if (String(p.team || "").toUpperCase().trim() !== team) return notFound;', "a project is only served from its own team's share");
 has('error: "The share root is not browsable."', "the share root is never listed for a caller");
