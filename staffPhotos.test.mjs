@@ -47,3 +47,24 @@ test("public address and initials", () => {
   assert.equal(staffInitials("  Jane  van Smith "), "Jv");
   assert.equal(staffInitials(""), "");
 });
+
+// Accolades.html has its own copy of the lookup (photoPathFor). Same cases.
+const acc = readFileSync(new URL("./Accolades.html", import.meta.url), "utf8");
+const c = acc.indexOf("const photoByEmail = new Map()");
+const d = acc.indexOf("function initialsOf(", c);
+assert.ok(c > 0 && d > c, "could not slice photoPathFor out of Accolades.html");
+const accMod = await import("data:text/javascript;base64," +
+  Buffer.from(acc.slice(c, d) + "\nexport { photoByEmail, photoByName, photoPathFor };", "utf8").toString("base64"));
+accMod.photoByEmail.set("jsmith@setty.com", "a1/x.jpg");
+accMod.photoByName.set("jane smith", { path: "a1/x.jpg", mail: "jsmith@setty.com" });
+accMod.photoByName.set("sam lee", { path: "b2/y.jpg", mail: "" });
+
+test("Accolades: same lookup rules as the PMS", () => {
+  const f = accMod.photoPathFor;
+  assert.equal(f(" JSmith@SETTY.com ", "J. Smith"), "a1/x.jpg");
+  assert.equal(f("", "  jane smith"), "a1/x.jpg");
+  assert.equal(f("slee@setty.com", "Sam Lee"), "b2/y.jpg");
+  assert.equal(f("jane.smith@other.com", "Jane Smith"), "");
+  assert.equal(f("np@setty.com", "No Photo"), "");
+  assert.equal(f("", ""), "");
+});
