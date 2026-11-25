@@ -29,6 +29,11 @@ test("the number must stand alone", () => {
   assert.ok(!re.test("M-101.01"), "so is one with a filing suffix");
   assert.ok(sheetTokenRe("FA001.00").test("FA001.00 FIRE ALARM NOTES"));
   assert.equal(sheetTokenRe("COVER"), null);
+  // The letter after the number matches in either case, and not when absent.
+  assert.ok(sheetTokenRe("E2.3a").test("SECOND FLOOR POWER PLAN E2.3A"));
+  assert.ok(sheetTokenRe("E2.3A").test("SECOND FLOOR POWER PLAN E2.3a"));
+  assert.equal(sheetTokenRe("E2.3").test("SECOND FLOOR POWER PLAN E2.3a"), false);
+  assert.equal(sheetTokenRe("E2.3a").test("SECOND FLOOR POWER PLAN E2.3"), false);
 });
 
 test("sheets numbered by floor and decimal are matched whole", () => {

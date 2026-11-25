@@ -91,7 +91,7 @@ function summarizeDisciplines(sheets) {
 }
 
 const DRAWING_LIST_ANCHOR = /DRAWING LIST\s+SHEET\s+DRAWING TITLE/;
-const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?(?:\d{2,4}(?:\.\d{1,2})?|\d\.\d{1,2})[A-Z]?(?:-[A-Z0-9]{1,2})?)(?=\s)/g;
+const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?(?:\d{2,4}(?:\.\d{1,2})?|\d\.\d{1,2})[A-Za-z]?(?:-[A-Z0-9]{1,2})?)(?=\s)/g;
 const DRAWING_LIST_TAIL =
   /\b((?:NYC|NEW YORK CITY)\s+BUILDING\s+DEPARTMENT|SPECIAL\s+INSPECTIONS?|ABBREVIATIONS\s+SYMBOLS|No\.\s+Date\s+Revision|Revisions\s+Rev\s+Description|NO\.\s+REVISIONS\s+DATE)\b/;
 const DRAWING_LIST_MAX_TITLE = 80;
@@ -527,6 +527,17 @@ has(DRAWING_LIST_ROW.source, "format-A row regex literal (byte-identical)");
   check(dec.map((r) => r.sheetNo).join(",") === "M0.1,MD1.0,M1.2,M5.10", "decimal sheet numbers are rows of the list: " + dec.map((r) => r.sheetNo).join(","));
   check(dec[2].sheetTitle === "FIRST FLOOR PLAN - PHASE 2 M1 AREA", "a single digit with no point inside a title is not a row: " + dec[2].sheetTitle);
   check(dec[1].sheetTitle === "BASEMENT FLOOR PLAN - MECHANICAL DEMOLITION", "decimal row titles are whole");
+}
+// A lower-case letter after the number ("E2.3a", "M101b"): the row is read,
+// kept as printed, and the row before keeps its own title.
+{
+  const low = parseDrawingList("DRAWING LIST SHEET DRAWING TITLE 1 E2.3 SECOND FLOOR POWER PLAN " +
+    "2 E2.3a SECOND FLOOR POWER PLAN - ALTERNATE 3 M101b FIRST FLOOR PLAN - PART B 4 E5.1 DETAILS");
+  check(low.map((r) => r.sheetNo).join(",") === "E2.3,E2.3a,M101b,E5.1", "lower-case suffixed sheets are rows of the list: " + low.map((r) => r.sheetNo).join(","));
+  check(low[0].sheetTitle === "SECOND FLOOR POWER PLAN", "the row before a lower-case suffix keeps its own title: " + low[0].sheetTitle);
+  // A title word that starts lower case is not glued onto the number.
+  const word = parseDrawingList("DRAWING LIST SHEET DRAWING TITLE 1 E101 plan notes 2 E102 details");
+  check(word.map((r) => r.sheetNo).join(",") === "E101,E102", "a lower-case title word is not a suffix");
 }
 has("return b.length ? b : parseDrawingIndexBare(pageText);", "format C chained after formats A and B");
 const shippedLayoutCount = (shipped.match(/\n\s*layout: "/g) || []).length;

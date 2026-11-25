@@ -47,7 +47,10 @@ export function sheetTokenRe(sheetNo: string): RegExp | null {
   // A part suffix ("E101-A"): required when the list row has one, and its
   // absence required when it has none, so "E101" is not found in "E101-A".
   const part = m[5] ? `-?${esc(m[5])}` : "";
-  return new RegExp(`(?<![A-Za-z0-9.])${esc(m[1])}[-\\s]?${esc(m[2])}${esc(m[3] || "")}${esc(m[4] || "")}${part}` +
+  // The letter after the number in either case: a list row "E2.3a" is the
+  // sheet whose title block prints "E2.3A", and the other way round.
+  const letter = m[4] ? `[${m[4]}${m[4].toLowerCase()}]` : "";
+  return new RegExp(`(?<![A-Za-z0-9.])${esc(m[1])}[-\\s]?${esc(m[2])}${esc(m[3] || "")}${letter}${part}` +
     `(?![A-Za-z0-9]|\\.\\d|-[A-Z0-9]{1,2}(?![A-Za-z0-9]))`);
 }
 
