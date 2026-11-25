@@ -1210,6 +1210,94 @@ function qaItemsRefresh() {
   el.innerHTML = qaItemsListHTML(state.qaRoutine.allItems, f);
   const c = $("qaItemsCount"); if (c) c.textContent = qaItemsFiltered(state.qaRoutine.allItems, f).length + " shown";
 }
+// What the filters above are set to, in words, for the report's subtitle and the file name.
+function qaItemsFilterLabel(f) {
+  const bits = [];
+  if (f.section) bits.push("Section: " + f.section);
+  if (f.source) bits.push("Came from: " + (QA_ITEM_SOURCE[f.source] || f.source));
+  if (f.show === "on") bits.push("In use only"); else if (f.show === "off") bits.push("Switched off only");
+  if (String(f.q || "").trim()) bits.push('Matching "' + String(f.q).trim() + '"');
+  return bits.length ? bits.join(" · ") : "Whole checklist";
+}
+const qaStepsOf = r => (Array.isArray(r.details) ? r.details : []).filter(d => typeof d === "string" && d);
+// Printable report of the items shown (the filters apply), grouped by section
+// in the checklist's own order. Print / Save as PDF from the report window.
+// Like the Intelligence console's report, it opens in a new window.
+function qaItemsReport() {
+  const q = state.qaRoutine, rows = q ? qaItemsFiltered(q.allItems, state.qaItemsFilter) : [];
+  if (!rows.length) { toast("Nothing to report with the current filters.", "error"); return; }
+  const steps = state.qaReportSteps !== false;
+  const by = {}, order = [];
+  rows.forEach(r => { const k = r.section || "General"; if (!by[k]) { by[k] = []; order.push(k); } by[k].push(r); });
+  const entry = r => {
+    const details = steps ? qaStepsOf(r) : [];
+    return `<div class="e"><div class="t"><span class="id">${esc(r.item_id)}</span> ${esc(r.text)}${r.enabled === false ? ' <span class="off">switched off</span>' : ""}</div>
+      <div class="m"><span><b>Who runs it:</b> ${esc(QA_ITEM_WHO[r.automation] || r.automation || "By a person")}</span>
+        <span><b>Phases:</b> ${esc(Array.isArray(r.phases) && r.phases.length ? r.phases.join(", ") : "All")}</span>
+        <span><b>Came from:</b> ${esc(QA_ITEM_SOURCE[r.source || "seed"] || r.source)}</span>${r.added_at ? `<span><b>Added:</b> ${esc(String(r.added_at).slice(0, 10))}</span>` : ""}</div>
+      ${details.length ? `<ul>${details.map(d => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}
+      ${steps && r.automation_hint ? `<div class="m"><b>Tools:</b> ${esc(r.automation_hint)}</div>` : ""}</div>`;
+  };
+  const count = k => rows.filter(r => r.automation === k).length;
+  const today = new Date().toISOString().slice(0, 10);
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Setty QA checklist report</title><style>
+    body{font:13px/1.45 Calibri,Arial,sans-serif;color:#1a1a1a;margin:28px auto;max-width:900px;padding:0 18px}
+    h1{font-size:22px;margin:0 0 2px}.sub{color:#666;margin-bottom:4px}
+    h2{font-size:15px;margin:22px 0 6px;padding:4px 8px;background:#eef2f7;border-left:4px solid #2b5c8a;break-after:avoid}
+    .e{padding:7px 0;border-bottom:1px solid #ddd;break-inside:avoid}.t{font-weight:600}.id{color:#2b5c8a;margin-right:4px}
+    .off{font-weight:400;font-size:11px;color:#a33;border:1px solid #d9a;border-radius:8px;padding:0 6px;margin-left:6px}
+    .m{color:#555;font-size:11.5px;margin-top:3px}.m span{margin-right:14px;display:inline-block}
+    ul{margin:5px 0 2px 18px;padding:0;font-size:12px;color:#333}li{margin:2px 0}
+    button{margin-bottom:14px;padding:6px 12px;font-size:13px}@media print{button{display:none}body{margin:0}}
+  </style></head><body><button onclick="window.print()">Print / Save as PDF</button>
+  <h1>Setty QA checklist</h1>
+  <div class="sub">${esc(qaItemsFilterLabel(state.qaItemsFilter))} · ${rows.length} item${rows.length === 1 ? "" : "s"} in ${order.length} section${order.length === 1 ? "" : "s"} · generated ${today}</div>
+  <div class="sub">${count("auto")} automatic · ${count("assisted")} Claude assists · ${rows.length - count("auto") - count("assisted")} by a person${steps ? "" : " · steps left out"}</div>
+  ${order.map(k => `<h2>${esc(k)} (${by[k].length})</h2>${by[k].map(entry).join("")}`).join("")}
+  </body></html>`;
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+  if (!window.open(url, "_blank")) toast("The report was blocked as a pop-up. Allow pop-ups for this page and try again.", "error");
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+function _qaDownload(blob, name) {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+let _qaSheetJs = null;
+function qaLoadSheetJS() {
+  if (window.XLSX) return Promise.resolve();
+  if (!_qaSheetJs) _qaSheetJs = new Promise((ok, no) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = ok; s.onerror = () => { _qaSheetJs = null; no(new Error("could not load the Excel library")); };
+    document.head.appendChild(s);
+  });
+  return _qaSheetJs;
+}
+// The items shown, as an Excel sheet (a CSV when the Excel library cannot load).
+async function qaItemsExport() {
+  const q = state.qaRoutine, rows = q ? qaItemsFiltered(q.allItems, state.qaItemsFilter) : [];
+  if (!rows.length) { toast("Nothing to export with the current filters.", "error"); return; }
+  const cols = [["Item", r => r.item_id], ["Section", r => r.section || "General"], ["Check", r => r.text], ["Steps", r => qaStepsOf(r).join("\n")],
+    ["Tools", r => r.automation_hint], ["Who runs it", r => QA_ITEM_WHO[r.automation] || r.automation || "By a person"],
+    ["Phases", r => (Array.isArray(r.phases) && r.phases.length ? r.phases.join(", ") : "All")], ["Came from", r => QA_ITEM_SOURCE[r.source || "seed"] || r.source],
+    ["In use", r => (r.enabled === false ? "No" : "Yes")], ["Added", r => (r.added_at ? String(r.added_at).slice(0, 10) : "")]];
+  const aoa = [cols.map(c => c[0]), ...rows.map(r => cols.map(c => { const v = c[1](r); return v == null ? "" : String(v); }))];
+  const name = `Setty QA checklist - ${qaItemsFilterLabel(state.qaItemsFilter).replace(/[\\/:*?"<>|]/g, "-")} - ${new Date().toISOString().slice(0, 10)}`;
+  try {
+    await qaLoadSheetJS();
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = cols.map(c => ({ wch: /Check|Steps|Tools/.test(c[0]) ? 70 : 20 }));
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "QA checklist");
+    XLSX.writeFile(wb, name + ".xlsx");
+    toast(`Exported ${rows.length} checklist item${rows.length === 1 ? "" : "s"} to Excel.`, "success");
+  } catch (e) {
+    // A leading = + - @ (or tab/CR) would run as a formula in Excel: prefix an apostrophe so it stays text.
+    const cell = v => '"' + (/^[=+\-@\t\r]/.test(v) ? "'" + v : v).replace(/"/g, '""') + '"';
+    _qaDownload(new Blob(["\ufeff" + aoa.map(r => r.map(cell).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }), name + ".csv");
+    toast("Excel library unavailable (" + e.message + "). Downloaded a CSV instead; it opens in Excel.", "error");
+  }
+}
 function qaItemsCardHTML(items) {
   const f = state.qaItemsFilter;
   const sections = [...new Set((items || []).map(r => r.section || "General"))];
@@ -1228,7 +1316,12 @@ function qaItemsCardHTML(items) {
         <label style="font-size:12px;color:var(--dim)">Came from<br><select onchange="state.qaItemsFilter.source=this.value;qaItemsRefresh()"><option value="">All</option>${opt(Object.keys(QA_ITEM_SOURCE), f.source, k => QA_ITEM_SOURCE[k])}</select></label>
         <label style="font-size:12px;color:var(--dim)">Show<br><select onchange="state.qaItemsFilter.show=this.value;qaItemsRefresh()">
           <option value="" ${!f.show ? "selected" : ""}>All items</option><option value="on" ${f.show === "on" ? "selected" : ""}>In use</option><option value="off" ${f.show === "off" ? "selected" : ""}>Switched off</option></select></label>
-        <span id="qaItemsCount" style="color:var(--muted);font-size:12px;margin-left:auto">${qaItemsFiltered(items, f).length} shown</span>
+        <span style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+          <span id="qaItemsCount" style="color:var(--muted);font-size:12px">${qaItemsFiltered(items, f).length} shown</span>
+          <label style="font-size:12px;color:var(--dim);white-space:nowrap" title="Leave the how-to-check steps out of the report for a one-line-per-item list"><input type="checkbox" ${state.qaReportSteps !== false ? "checked" : ""} onchange="state.qaReportSteps=this.checked"> Include the steps</label>
+          <button class="btn" onclick="qaItemsExport()" title="Download the items shown (current filters) as an Excel file">⬇ Export to Excel</button>
+          <button class="btn" onclick="qaItemsReport()" title="Open a printable report of the items shown, grouped by section">📄 Generate report</button>
+        </span>
       </div>
       <div id="qaItemsList">${qaItemsListHTML(items, f)}</div>
     </div>`;

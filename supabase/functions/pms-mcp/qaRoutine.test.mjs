@@ -154,6 +154,12 @@ test("the Admin Console lists the complete checklist, read-only", () => {
   assert.ok(html.includes("pms_qa_checklist?select=item_id,section,sort,text,details,automation,automation_hint,phases,source,enabled,added_at&order=sort,item_id"), "every item is read, switched-off ones too");
   assert.ok(html.includes("items: (items || []).filter(i => i.enabled !== false).length"), "the 'items in the checklist' count stays the items in use");
   assert.ok(html.includes("THE COMPLETE CHECKLIST") && html.includes("${qaItemsCardHTML(q.allItems)}"));
+  // The report and the Excel export work from the same filters as the list, and escape what they print.
+  assert.ok(html.includes("function qaItemsReport()") && html.includes('onclick="qaItemsReport()"') && html.includes("function qaItemsExport()") && html.includes('onclick="qaItemsExport()"'), "report and Excel buttons on the checklist card");
+  const rep = html.slice(html.indexOf("function qaItemsReport()"), html.indexOf("function _qaDownload"));
+  assert.ok(rep.includes("qaItemsFiltered(q.allItems, state.qaItemsFilter)"), "the report prints the items the filters show");
+  for (const raw of ["${r.text}", "${r.item_id}", "${r.automation_hint}", "${d}", "${k}"]) assert.ok(!rep.includes(raw), "printed without esc(): " + raw);
+  for (const safe of ["${esc(r.text)}", "${esc(r.item_id)}", "${esc(r.automation_hint)}", "${esc(d)}", "${esc(k)}"]) assert.ok(rep.includes(safe), "escaped: " + safe);
   assert.ok(!/sb\("(POST|PATCH|DELETE)", "\/rest\/v1\/pms_qa_checklist/.test(html), "the console does not edit items directly");
   // Run the list's own filter against sample rows.
   const start = html.indexOf("const QA_ITEM_SOURCE ="), end = html.indexOf("function qaItemsListHTML(");
