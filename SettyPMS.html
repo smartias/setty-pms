@@ -17133,6 +17133,30 @@ function qaPunchListEmailHtml(opts) {
     + '<p style="margin:0 0 12px;">Items are grouped by the discipline that fixes them, worst first. '
     + (tabUrl ? 'Assign, answer and close them in the <a href="' + esc(tabUrl) + '" style="color:#2F5496;">QA Reviews tab</a>.' : "Assign, answer and close them in the project's QA Reviews tab.")
     + (reportUrl ? ' The full report is <a href="' + esc(reportUrl) + '" style="color:#2F5496;">filed here</a>.' : "") + "</p>";
+  // What the review could not check because another discipline's drawings
+  // were missing or out of date (opts.backgroundGaps, from qaBackgroundGaps()):
+  // the same red warning the tab shows at the top of the review, so the team
+  // reads it before the list and does not take a short list for a clean set.
+  const gaps = Array.isArray(opts.backgroundGaps) ? opts.backgroundGaps.filter(g => g && g.label) : [];
+  if (gaps.length) {
+    const red = "#b42318";
+    const missing = gaps.filter(g => !g.stale), stale = gaps.filter(g => g.stale);
+    const itemCount = new Set([].concat.apply([], gaps.map(g => Array.isArray(g.items) ? g.items : []))).size;
+    html += '<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%;margin:0 0 14px;"><tr>'
+      + '<td style="border:2px solid ' + red + ';background:#fef3f2;padding:8px 10px;">'
+      + (missing.length ? '<p style="margin:0;color:' + red + ';font-weight:700;font-size:11.5pt;">&#9888; NOT CHECKED AGAINST: ' + esc(missing.map(g => g.label).join(", ")) + "</p>" : "")
+      + (stale.length ? '<p style="margin:' + (missing.length ? "3px" : "0") + ' 0 0;color:' + red + ';font-weight:700;font-size:11.5pt;">&#9888; CHECKED AGAINST OUT-OF-DATE: ' + esc(stale.map(g => g.label).join(", ")) + "</p>" : "")
+      + '<p style="margin:4px 0 6px;">The review did not have these drawings, so '
+      + (itemCount ? itemCount + " checklist item" + (itemCount === 1 ? "" : "s") : "the coordination against them")
+      + " could not be checked. Nothing in this review says those items are clean.</p>"
+      + '<ul style="margin:0 0 6px 18px;padding:0;">'
+      + gaps.map(g => '<li style="margin:0 0 3px;"><b>' + esc(g.label) + (g.stale ? " (out of date)" : "") + "</b> - ask for: " + esc(g.what || "")
+        + (Array.isArray(g.items) && g.items.length ? '<br><span style="color:#667085;font-size:9pt;">' + g.items.length + " item" + (g.items.length === 1 ? "" : "s") + ": " + esc(g.items.join(", ")) + "</span>" : "")
+        + "</li>").join("")
+      + "</ul>"
+      + '<p style="margin:0;"><b>Next step:</b> get the current sets from the architect (or the PM), save them to the project folder, and re-run the review for these items.</p>'
+      + "</td></tr></table>";
+  }
   groups.forEach(g => {
     html += '<p style="margin:14px 0 4px;font-weight:600;">' + esc(g.name) + " (" + g.rows.length + ")</p>"
       + '<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%;">'
@@ -17512,6 +17536,7 @@ function ProjectQAReviewsView({ project, onChange }) {
         filterNote: filtersOn ? "This list is filtered: " + [fDisc, fSev === "__key__" ? "key items only" : fSev === "__high__" ? "life-safety / agency / cost" : fSev, fWho === "__none__" ? "unassigned" : fWho].filter(Boolean).join(", ") + "." : "",
         tabUrl: window.location.origin + window.location.pathname + "#project:" + project.id,
         reportUrl: withReport ? withReport.report_url : "",
+        backgroundGaps: latest && typeof qaBackgroundGaps === "function" ? qaBackgroundGaps(latest.checklist_results, latest.coverage) : [],
       });
       const msg = await createOutlookDraft({ subject: "QA punch list - " + label + (latest && latest.set_name ? " - " + latest.set_name : ""), bodyHtml });
       let opened = false;
