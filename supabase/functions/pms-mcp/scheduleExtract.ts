@@ -16,6 +16,16 @@
 //   - A panel schedule is not titled "... SCHEDULE". It is "Branch Panel:
 //     RP1A" or "PANELBOARD: LP-2", followed by lines of ratings, then the
 //     circuit table.
+// Two more, found on Tabler's E603 to E612 (2026-11-25), where 13 of 33 panel
+// schedules came back missing or spliced together:
+//   - Side by side tables do not share row heights. The neighbour's rows sit a
+//     few points higher or lower, so between two rows of this table the page
+//     has "lines" with nothing in this table at all. Those are not a gap in
+//     this table; only lines with some of this table's text in them count,
+//     and the table ends on a stretch of clear paper, measured in points.
+//   - Panel titles beside each other are not always level. EM1B and EL1B on
+//     E609 are 45 pt apart, so neighbours are found by height on the page,
+//     not by line number.
 
 export const SCHEDULE_TITLE_RE = /\bSCHEDULES?\b/i;
 // "Branch Panel: RP1A", "PANELBOARD: PXXXX", "Switchboard: MSB", "Distribution Panel: DP1A".
@@ -32,12 +42,16 @@ const SCHED_SPAN_LINES = 14;   // lines below a title used to find how wide its 
 const SCHED_GUTTER = 22;       // pt of clear paper that separates two tables side by side
 const SCHED_INNER_GAP = 140;   // pt: the widest gap that can still be inside one table
 const SCHED_RIVER_MIN = 2.5;   // pt of clear paper down the rows that separates two columns
+const SCHED_GAP_PT = 40;       // pt of clear paper below a table's last row that ends it (at least)
+const SCHED_GAP_PITCHES = 3;   // ...or this many of its own row pitches, if more
+const PANEL_ROW_BAND = 80;     // pt: panel titles this close in height are in one row across the sheet
+const PANEL_SAME_COLUMN = 100; // pt: a title this close in x is the same column, not a neighbour
 
 // `w` is the run's printed width (pdf.js gives it). With widths the reader can
 // see where a table's text actually sits; without them (older callers, simple
 // fixtures) it falls back to start positions alone.
 export type SheetTextItem = { str: string; x: number; y: number; w?: number };
-export type SheetTable = { title: string; columns: number; rows: string[][]; truncatedRows: number; details?: string[]; notes?: string[] };
+export type SheetTable = { title: string; columns: number; rows: string[][]; truncatedRows: number; details?: string[]; notes?: string[]; loadSummary?: string[] };
 
 /**
  * Turn a page's text runs upright. `runs` are pdf.js text items: a string and
@@ -82,7 +96,7 @@ export function clusterSheetLines(items: SheetTextItem[]): Array<{ y: number; ce
   return lines;
 }
 
-type TitleHit = { line: number; x: number; mid: number; title: string; panel: boolean };
+type TitleHit = { line: number; y: number; x: number; mid: number; title: string; panel: boolean };
 const widthOf = (c: SheetTextItem) => (c.w !== undefined && c.w > 0 ? c.w : c.str.length * 5);
 
 /** Every schedule or panel title on the page, as the cell it starts at. */
@@ -93,7 +107,7 @@ function findScheduleTitles(lines: Array<{ y: number; cells: SheetTextItem[] }>)
       if (c.str.length > 120) continue;
       const panel = PANEL_TITLE_RE.test(c.str);
       if (!panel && !SCHEDULE_TITLE_RE.test(c.str)) continue;
-      hits.push({ line: i, x: c.x, mid: c.x + widthOf(c) / 2, title: c.str.trim(), panel });
+      hits.push({ line: i, y: l.y, x: c.x, mid: c.x + widthOf(c) / 2, title: c.str.trim(), panel });
     }
   });
   return hits;
@@ -101,6 +115,7 @@ function findScheduleTitles(lines: Array<{ y: number; cells: SheetTextItem[] }>)
 
 const TAG_HEADING_RE = /^(unit\s+)?(tag|mark|symbol|designation|unit\s*(no\.?|id|#)?|equip(ment)?\.?\s*(tag|no\.?|id)?|item)$/i;
 const PANEL_HEADER_CELL_RE = /^(ckt|cir(cuit)?\.?\s*(no\.?|#)?)\.?$/i;
+const PANEL_FOOTER_RE = /^\s*(load\s+classification|panel\s+totals)\b/i;
 
 /**
  * Where a title's table sits across the page. A schedule title is usually
@@ -225,7 +240,7 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
       // pitch, each with its title a little inside its left edge. Their
       // ratings block and wide description columns leave gaps bigger than
       // any gutter, so the neighbours' titles mark the edges instead.
-      const row = titles.filter((o) => o.panel && Math.abs(o.line - t.line) <= 2).sort((a, b) => a.x - b.x);
+      const row = titles.filter((o) => o.panel && Math.abs(o.y - t.y) <= PANEL_ROW_BAND && (o === t || Math.abs(o.x - t.x) > PANEL_SAME_COLUMN)).sort((a, b) => a.x - b.x);
       const at = row.indexOf(t);
       let pitch = Infinity;
       for (let k = 1; k < row.length; k++) pitch = Math.min(pitch, row[k].x - row[k - 1].x);
@@ -284,11 +299,26 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
       if (o.line > hIdx && o.mid >= xMin && o.x <= xMax) end = Math.min(end, o.line);
     }
 
+    // A line with none of this table's text belongs to a table beside it and
+    // says nothing about where this one ends. The table ends after a few of
+    // its own sparse lines, or at clear paper well beyond its row pitch.
     const blockLines: SheetTextItem[][] = [];
+    const ys: number[] = [];
     let gap = 0;
+    let footerAt = -1;
     for (let i = hIdx; i < end; i++) {
       const cells = lines[i].cells.filter(inSpan);
-      if (cells.length >= 2) { blockLines.push(cells); gap = 0; }
+      if (!cells.length) continue;
+      // A panel's circuit table is followed, close below, by its load
+      // summary (a table of its own with other columns). Merged, it would
+      // reshape the circuit columns.
+      if (t.panel && PANEL_FOOTER_RE.test(cells[0].str)) { footerAt = i; break; }
+      if (ys.length) {
+        const pitches = ys.slice(1).map((y, k) => ys[k] - y).sort((a, b) => a - b);
+        const pitch = pitches.length ? pitches[Math.floor(pitches.length / 2)] : 0;
+        if (ys[ys.length - 1] - lines[i].y > Math.max(SCHED_GAP_PT, SCHED_GAP_PITCHES * pitch)) break;
+      }
+      if (cells.length >= 2) { blockLines.push(cells); ys.push(lines[i].y); gap = 0; }
       else if (blockLines.length && ++gap >= SCHED_GAP_LINES) break;
     }
     if (blockLines.length < 2) continue;
@@ -298,6 +328,21 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
     // between them. The table's rows end at the last line that is as full as
     // a row of the table; what follows is returned as notes.
     const notes: string[] = [];
+    // The panel's load summary is kept, as printed, one string per line:
+    // connected load, demand factor and the panel totals are what a review
+    // checks against the feeder.
+    const summary: string[] = [];
+    if (footerAt >= 0) {
+      let lastY = lines[footerAt].y;
+      for (let i = footerAt; i < end && summary.length < 20; i++) {
+        const cells = lines[i].cells.filter(inSpan);
+        if (!cells.length) continue;
+        if (lastY - lines[i].y > SCHED_GAP_PT) break;
+        lastY = lines[i].y;
+        const text = cells.map((c) => c.str).join(" ").replace(/\s+/g, " ").trim();
+        if (text && !/^\d+\.$/.test(text)) summary.push(text); // a lone "3." is the sheet notes beside it
+      }
+    }
     if (haveWidths) {
       const most = Math.max(...blockLines.map((c) => c.length));
       const dense = Math.max(3, Math.ceil(most * 0.4));
@@ -337,6 +382,7 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
       truncatedRows: Math.max(0, rows.length - SCHED_MAX_ROWS),
       ...(details.length ? { details: details.slice(0, 20) } : {}),
       ...(notes.length ? { notes } : {}),
+      ...(summary.length ? { loadSummary: summary } : {}),
     });
   }
   return tables;

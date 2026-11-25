@@ -212,6 +212,66 @@ const W = (s) => s.length * 5;
   assert.deepEqual(tables.find((t) => t.title === "FAN SCHEDULE").rows[1].slice(0, 3), ["EF-1", "1200", "SEE NOTE 1 AND NOTE 2"]);
 }
 
+// Panels printed side by side rarely share row heights, and their titles are
+// rarely level. Found on Tabler E603-E612: the rows of the panel beside one
+// made empty lines between this panel's rows, so it ended after one circuit;
+// and two titles 45 pt apart were taken for one panel and spliced together.
+// Each panel also ends at its circuits: the "Load Classification" block under
+// it has other columns and comes back as loadSummary, one string per line.
+{
+  const panel = (name, x0, y0, ckts, footer = false) => {
+    const r = [run("Branch Panel: " + name, x0 + 40, y0, 120)];
+    const head = [["CKT", 0], ["Circuit Description", 40], ["Trip", 200], ["Poles", 240]];
+    head.forEach(([s, dx]) => r.push(run(s, x0 + dx, y0 - 40, W(s))));
+    ckts.forEach((desc, i) => {
+      const y = y0 - 54 - i * 14;
+      r.push(run(String(2 * i + 1), x0 + 6, y, 5), run(desc, x0 + 40, y, W(desc)), run("20 A", x0 + 200, y, 20), run("1", x0 + 250, y, 5));
+    });
+    if (footer) {
+      const y = y0 - 54 - ckts.length * 14 - 10;
+      r.push(run("Load Classification", x0, y, 95), run("Connected Load", x0 + 120, y, 75), run("Demand Factor", x0 + 230, y, 70));
+      r.push(run("Lighting", x0, y - 14, 40), run("3.2 kVA", x0 + 120, y - 14, 35), run("125.00%", x0 + 230, y - 14, 40));
+      r.push(run("Receptacle", x0, y - 28, 50), run("6.1 kVA", x0 + 120, y - 28, 35), run("100.00%", x0 + 230, y - 28, 40));
+    }
+    return r;
+  };
+  const left = ["LTG 1-100", "LTG 1-102", "REC 1-104", "REC 1-106", "SPARE"];
+  const right = ["EM LTG STAIR", "EM LTG CORR", "EXIT SIGNS", "SPARE"];
+  // Right-hand title 45 pt lower, so its rows fall 3 pt + 3 pitches off the left grid.
+  const raw = [...panel("EM1B", 0, 760, left, true), ...panel("EL1B", 900, 715, right, true)];
+  const tables = extractSheetTables(orientSheetItems(raw));
+  assert.deepEqual(tables.map((t) => t.title), ["Branch Panel: EM1B", "Branch Panel: EL1B"]);
+  const [a, b] = tables;
+  assert.deepEqual(a.rows[0], ["CKT", "Circuit Description", "Trip", "Poles"]);
+  assert.equal(a.rows.length, 1 + left.length, "every circuit of EM1B, not just the first");
+  assert.equal(b.rows.length, 1 + right.length, "every circuit of EL1B");
+  assert.deepEqual(a.rows[5], ["9", "SPARE", "20 A", "1"]);
+  assert.deepEqual(b.rows[3], ["5", "EXIT SIGNS", "20 A", "1"]);
+  // Neither panel's columns or rows take in the other's.
+  assert.equal(a.rows[0].length, 4);
+  assert.ok(!JSON.stringify(a).includes("EXIT SIGNS"));
+  assert.ok(!JSON.stringify(b).includes("REC 1-104"));
+  // The load table is not circuits; it is kept as printed.
+  assert.ok(!JSON.stringify(a.rows).includes("Load Classification"));
+  assert.equal(a.loadSummary[0].replace(/\s+/g, " "), "Load Classification Connected Load Demand Factor");
+  assert.ok(a.loadSummary.some((l) => l.includes("Receptacle") && l.includes("6.1 kVA")));
+  assert.ok(!a.loadSummary.some((l) => l.includes("EM LTG")));
+}
+
+// A schedule whose rows are interleaved with blank lines (another table's
+// rows beside it) still reads to its last row; a real gap ends it.
+{
+  const raw = [run("PUMP SCHEDULE", 100, 700, 80)];
+  [["TAG", "GPM", "HP"], ["P-1", "205", "7.5"], ["P-2", "83", "3"], ["P-3", "40", "1"]].forEach((r, ri) => r.forEach((s, ci) => raw.push(run(s, [100, 180, 260][ci], 680 - ri * 14, W(s)))));
+  // Something beside it on every half-row, outside its columns.
+  for (let i = 0; i < 4; i++) raw.push(run("X" + i, 600, 673 - i * 14, 10));
+  // Unrelated text far below.
+  raw.push(run("GENERAL NOTE", 100, 500, 60));
+  const pump = extractSheetTables(orientSheetItems(raw)).find((t) => t.title === "PUMP SCHEDULE");
+  assert.equal(pump.rows.length, 4);
+  assert.ok(!JSON.stringify(pump).includes("GENERAL NOTE"));
+}
+
 // ── drift anchors ───────────────────────────────────────────────────────────
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, "index.ts"), "utf8");
@@ -221,7 +281,7 @@ for (const anchor of [
   'from "./scheduleExtract.ts"',
   "items = orientSheetItems(tc.items as any[]);",
   // A changed extractor must not be served from an older saved parse.
-  'const SCHED_PARSER = "sched-v2";',
+  'const SCHED_PARSER = "sched-v3";',
   // Shared resolver serves both drawing tools.
   "async function resolveIndexedSheet",
 ] ) {

@@ -647,6 +647,23 @@ schedule) is still not read; when two tables nearly touch, the left one can
 pick up the right one's first column. `SCHED_PARSER` is `sched-v2`, so parses
 saved by the first version are not served.
 
+**Panel schedules, third pass (2026-11-25).** On Tabler E603-E612 the reader
+found 20 of 32 panels, and spliced EM1B and EL1B into one 29-column table. Two
+causes: panels printed side by side do not share row heights, so the rows of
+the panel beside one left empty lines between its rows and three of them ended
+the table after one circuit; and panels were paired as "side by side" by line
+number, which missed titles 45 pt apart. Now a table skips lines with nothing
+inside its own span and ends at a real vertical gap (40 pt, or three row
+pitches if larger); panel titles within 80 pt vertically and more than 100 pt
+apart horizontally share a row. A panel's circuits end at "Load
+Classification" / "Panel Totals"; that block has other columns and comes back
+as `loadSummary`, one string per printed line. Result: 32 of 32 panels, and
+across all 313 pages of Volumes 2 and 3 no table was lost (54 changed, mostly
+longer, 18 new). The switchgear schedule (no CKT header) is still not read.
+`SCHED_PARSER` is now `sched-v3`; `find_equipment` reads only saved parses of
+the current version, so it shows fewer scheduled values until sheets are read
+again.
+
 Equipment tags themselves are still derived from the drawing text at query
 time (`find_equipment`); only links that a review or a person established are
 stored.
