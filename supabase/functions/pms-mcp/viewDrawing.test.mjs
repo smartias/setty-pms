@@ -238,7 +238,7 @@ for (const anchor of [
   "const st = await storageFor(project);\n    const onDrive = st.kind !== \"sharepoint\";",
   // b64FromBuffer accepts the encoder's Uint8Array directly.
   "function b64FromBuffer(buf: ArrayBuffer | Uint8Array): string",
-  // Review-speed caches (2026-09-14): the download cache fronts fetchDrawingPdf
+  // Review-speed caches (2026-09-14): the download cache fronts drawingPagePdf
   // (view_drawing, read_drawing_schedule) and read_document, PDFium boots once
   // per isolate, and consumers hand pdf.js a COPY so the cached bytes survive
   // its buffer-ownership games.
@@ -254,7 +254,13 @@ for (const anchor of [
   "if (useCache) pdfCachePut(itemId, bytes);",
   "function pdfiumLibrary",
   "const library = await pdfiumLibrary();",
-  "getDocumentProxy(bytes.slice())",
+  "getDocumentProxy(got.bytes.slice())",
+  // 1.33.0: a file over the whole-file cap is read one page at a time, and the
+  // cut page is cached like a whole file so region zooms do not read it again.
+  "async function drawingPagePdf(itemId: string, pageInFile: number, sizeHint?: number)",
+  "const pageKey = `${itemId}#page${pageInFile}`;",
+  "pdfCachePut(pageKey, one.bytes);",
+  "const out = await renderDrawingPage(got.bytes, got.page, reg);",
   // read_document: cached bytes are copied; a file too big to cache is handed over as is.
   "getDocumentProxy(pdfBytes.byteLength > PDF_CACHE_MAX_BYTES ? pdfBytes : pdfBytes.slice())",
 ] ) {

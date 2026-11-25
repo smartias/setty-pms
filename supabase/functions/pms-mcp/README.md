@@ -372,7 +372,8 @@ both proven by the `pdf-render-test` probe function and loaded lazily like unpdf
   (`top-left`, ..., `center`) render at roughly double the effective resolution for reading
   notes and schedules, overlapping 6% so seam content is never lost. A full-page pixel cap
   (24M px) bounds memory; oversized PNGs re-encode as JPEG so the response stays shippable.
-- Read-only, one PDF download per call, 40MB file cap. Index pages are 1-based, PDFium 0-based —
+- Read-only. A file up to 40MB is downloaded whole, once per call; a larger one (to 400MB) has
+  only the page asked for read from it, see "One page of a large PDF" below. Index pages are 1-based, PDFium 0-based —
   the `- 1` at `getPage` is pinned by a drift anchor.
 - **Page objects are single-use (1.18.2).** In `@hyzyla/pdfium`, `page.render()` closes the PDFium
   page on its way out, so any later call on the same object (a second render, `getSize`) dies in
@@ -1322,6 +1323,48 @@ on its own.
   `team` column set from the region, and an external link to the drive path.
   A project already in the PMS keeps its PMS name; discovery never writes to
   `pms_projects` rows that exist.
+
+## One page of a large PDF (`pdfPageExtract.ts`, 1.33.0)
+
+`view_drawing` refused any PDF over 40MB and `read_document` any over 64MB,
+because PDFium and pdf.js are handed the whole file. An architect's combined
+set is 50 to 150MB. On 2026-11-25 a QA look-back on Tabler could read the 70MB
+architectural and structural volume only by downloading it by hand.
+
+Above the whole-file cap, the page asked for is cut out of the file by byte
+ranges and handed on as a one-page PDF, so the renderer and the text reader are
+unchanged: they see page 1 of a small file.
+
+- `pdfPageExtract.ts` (pure; `pdfPageExtract.test.mjs`) reads the
+  cross-reference table (classic tables, cross-reference streams, object
+  streams, incremental updates), walks the page tree to the page, follows its
+  references, and writes those objects out under their original numbers. Bytes
+  are copied, never re-encoded. Only the page dictionary is rewritten: new
+  parent, inherited `MediaBox` / `Resources` / `Rotate` / `CropBox` made
+  explicit.
+- It does not repair a damaged cross-reference table, does not decrypt, and
+  does not follow references to other pages (link targets, the structure
+  tree): those are left dangling, which readers treat as null. Each of the
+  first two fails with a sentence, and the tool's `nextStep` points to
+  `download_document`.
+- `drawingPagePdf(itemId, page, sizeHint?)` in `index.ts` is the one entry
+  point: whole file when it is 40MB or under (as before), a cut page above
+  that, up to 400MB (the drawing index's ranged cap). The cut page is cached
+  under `<itemId>#page<n>`, so region zooms on one sheet read it once. Used by
+  `view_drawing` (both modes) and `read_drawing_schedule`. A result that came
+  this way carries `readInPieces`.
+- `read_document` on a PDF over 64MB goes through `readPdfPagewise`: each page
+  cut out, its text extracted, OCR as usual. It is bounded by time (15 s per
+  call), not page count, and says which pages it reached. With `find`,
+  `pages:"40-"` continues a search from page 40.
+- Cost, measured on four real drawing sets of 27 to 102MB (2026-11-25): a
+  sheet needs 2 to 15MB of reads in 5 to 30 range requests, and comes out as a
+  0.3 to 1.5MB file (12MB for a cover sheet with a large image). 25 sheets
+  were compared with their pages in the originals: every one rendered pixel
+  for pixel the same and gave the same text.
+- Limits: a single page over 40MB, or one that needs more than 96MB of reads,
+  is refused. Sheet mode costs one extra metadata call when the file is not
+  cached, which is what tells a 70MB file from a 7MB one before downloading.
 
 ## OneNote sections (`read_document` on a `.one` file, 2026-11-23)
 
