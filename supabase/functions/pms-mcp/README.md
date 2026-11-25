@@ -1916,6 +1916,17 @@ complete form as an RFI or submittal.
 - **Folder access.** Folder URLs are resolved through the Graph shares API
   (like the drawing index's NYSharesite crawl), so a 403 in `failed` means
   the Graph app has no access to the NYSharesite site: an IT grant.
+- **Folder ids (2026-11-25).** A web address breaks when someone moves or
+  renames the folder in SharePoint (High Point, SAIP26119.09, was dragged into
+  another project's folder on 2026-11-24 and every run failed with "cannot
+  find the file"). The PMS now also records `rfisFolderId`,
+  `submittalsFolderId` and `driveId` in `project.portalIntake` when it plants
+  the folders, and the sweep looks a folder up by id first, then by address.
+  A live run (not a dry run) records the ids of folders it found by address,
+  and the new address of a folder its id found somewhere else
+  (`folderPatch`, `foldersRecorded` in the response). Projects set up before
+  this get their ids on the first live run, or straight away when a PM
+  presses the intake-folders button again.
 - **Body:** `{"dryRun":true}`, `{"days":N}` (default 30, max 180),
   `{"maxProjects":N}` (default 40, max 200). 40 s budget; `stoppedEarly`.
 - **Auth:** the `x-pms-cron` secret, or a PMS admin Supabase JWT.

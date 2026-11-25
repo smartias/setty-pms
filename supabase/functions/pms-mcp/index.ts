@@ -34,7 +34,7 @@ import {
 // The firm Knowledgebase share (team KB): firm-wide read-only, no project gate. Pure; see knowledgebase.ts.
 import { KB_TEAM, isKbTeam, parseKbExclude, kbExcluded, walkKb, kbSearch } from "./knowledgebase.ts";
 import { runIntakePass, intakeSince } from "./caIntakeRun.ts";
-import { runPortalIntakePass, type PortalFile } from "./portalIntakeRun.ts";
+import { runPortalIntakePass, type PortalFile, type PortalFolderRef } from "./portalIntakeRun.ts";
 import { runPortalLogsPass } from "./portalLogsRun.ts";
 // Plain JS shared with the PMS page (a drift-tested copy, like caIntake.js).
 import { findRfiDuplicates as findRfiDuplicatesJs, rfiLikelyDuplicates as rfiLikelyDuplicatesJs } from "./primeCa.js";
@@ -17141,10 +17141,33 @@ app.post("/pms-mcp/admin/portal-ca-intake", async (c) => {
         const rows = await sbGetAll("pms_projects?select=pid:project->>id,intake:project->portalIntake&project->portalIntake->>rfisUrl=not.is.null&order=id.asc");
         return rows.filter((r: any) => r.pid).map((r: any) => ({
           pid: String(r.pid), rfisUrl: String(r.intake?.rfisUrl || ""), submittalsUrl: String(r.intake?.submittalsUrl || ""),
+          rfisFolderId: r.intake?.rfisFolderId ? String(r.intake.rfisFolderId) : undefined,
+          submittalsFolderId: r.intake?.submittalsFolderId ? String(r.intake.submittalsFolderId) : undefined,
+          driveId: r.intake?.driveId ? String(r.intake.driveId) : undefined,
         }));
       },
-      listForms: async (folderUrl: string) => {
-        const folder = await graphGet(`/shares/${encodeURIComponent(shareToken(folderUrl))}/driveItem?$select=id,name,webUrl,parentReference`);
+      // By the folder's Graph id first (survives a move or rename in
+      // SharePoint), then by its web address through the shares API.
+      listForms: async (ref: PortalFolderRef) => {
+        const sel = "$select=id,name,webUrl,parentReference";
+        let folder: any = null;
+        let resolvedBy: "id" | "url" = "url";
+        let idErr = "";
+        if (ref.itemId && ref.driveId) {
+          try {
+            folder = await graphGet(`/drives/${ref.driveId}/items/${encodeURIComponent(ref.itemId)}?${sel}`);
+            resolvedBy = "id";
+          } catch (e) { idErr = String((e as any)?.message ?? e); folder = null; }
+        }
+        if (!folder?.id) {
+          if (!ref.url) throw new Error("Portal folder not found by its id (" + (idErr || "no id") + ") and no web address is recorded.");
+          try {
+            folder = await graphGet(`/shares/${encodeURIComponent(shareToken(ref.url))}/driveItem?${sel}`);
+          } catch (e) {
+            throw new Error(String((e as any)?.message ?? e) + (idErr ? " (lookup by folder id also failed: " + idErr.slice(0, 200) + ")" : ""));
+          }
+        }
+        const folderUrl = ref.url;
         const driveId = folder?.parentReference?.driveId;
         if (!folder?.id || !driveId) throw new Error("Could not resolve the portal folder " + folderUrl);
         const { value } = await listChildren(`/drives/${driveId}/items/${folder.id}/children?$select=id,name,webUrl,size,lastModifiedDateTime,file&$top=200`);
@@ -17152,7 +17175,7 @@ app.post("/pms-mcp/admin/portal-ca-intake", async (c) => {
           id: String(it.id), name: String(it.name || ""), webUrl: String(it.webUrl || ""), size: it.size,
           lastModified: String(it.lastModifiedDateTime || ""), driveId,
         }));
-        return { folderWebUrl: String(folder.webUrl || folderUrl), files };
+        return { folderWebUrl: String(folder.webUrl || folderUrl), files, folderId: String(folder.id), driveId: String(driveId), resolvedBy };
       },
       readForm: async (file: PortalFile) => {
         const res = await fetch(`https://graph.microsoft.com/v1.0/drives/${file.driveId}/items/${encodeURIComponent(file.id)}/content`,

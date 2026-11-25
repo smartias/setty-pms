@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-25-pms-v224-staff-photo-import";
+    window.__appVersion = "2026-11-25-pms-v225-portal-folder-ids";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -6272,6 +6272,7 @@ async function ensurePortalIntakeFolders(project) {
   const parentPath = segs.slice(-2).join("/");
   const names = portalFolderNames(project);
   const urls = {};
+  const ids = {};
   for (const kind of Object.keys(PF.PORTAL_INTAKE_KINDS)) {
     const info = PF.PORTAL_INTAKE_KINDS[kind];
     const childPath = await ensureSpSubfolder(driveId, parentPath, info.folder);
@@ -6287,8 +6288,12 @@ async function ensurePortalIntakeFolders(project) {
       if (!r || !r.id) throw new Error("Could not save " + fileName + " into " + info.folder + ".");
     }
     urls[kind] = item.webUrl;
+    ids[kind] = item.id;
   }
-  return { rfisUrl: urls.rfi, submittalsUrl: urls.submittal };
+  // The ids let the intake sweep find the folders after a move or rename in
+  // SharePoint, which breaks the web addresses (2026-11-25).
+  return { rfisUrl: urls.rfi, submittalsUrl: urls.submittal,
+           rfisFolderId: ids.rfi, submittalsFolderId: ids.submittal, driveId };
 }
 
 // ── Portal intake: acknowledge (step 3 of PROPOSAL-portal-ca-exchange.md) ─────
@@ -33202,8 +33207,10 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projec
     setIntakeStatus("working");
     setIntakeMsg("\u23f3 Creating RFIs and Submittals folders with their forms\u2026");
     try {
-      const { rfisUrl, submittalsUrl } = await ensurePortalIntakeFolders(proj);
-      const portalIntake = { rfisUrl, submittalsUrl, setUpAt: new Date().toISOString(), setUpBy: getCurrentUser() };
+      const { rfisUrl, submittalsUrl, rfisFolderId, submittalsFolderId, driveId } = await ensurePortalIntakeFolders(proj);
+      // Keep what the sweep recorded (skipped forms); replace the folder fields.
+      const portalIntake = { ...(proj.portalIntake || {}), rfisUrl, submittalsUrl, rfisFolderId, submittalsFolderId, driveId,
+        setUpAt: new Date().toISOString(), setUpBy: getCurrentUser() };
       setIntakeStatus("done");
       setIntakeMsg("\u2713 RFIs and Submittals folders ready, each with a blank form and a readme. " +
         "Invite the contractor's contact with Manage Sharing if they are not on the portal yet.");
