@@ -347,6 +347,54 @@ const W = (s) => s.length * 5;
   }
 }
 
+// A switchgear schedule (Tabler E603) beside a branch panel. Its primary and
+// main sections put its distribution table 217 pt below the title, and the
+// panel beside it, whose rows sit at other heights, adds lines in between:
+// the CKT heading was past the 16-line search and the table was not read.
+// Its heading is single words on lines of their own ("CIRCUIT" over
+// "NUMBER"). The branch panel keeps its own columns, and its right-hand CKT
+// heading, printed a little off the heading line, now names that column.
+{
+  const raw = [run("SWITCHGEAR: SWGR", -996, 766, 199), run("Branch Panel: DP9", -114, 766, 183)];
+  raw.push(run("LOCATION:", -1098, 750, 53), run("ELECTRICAL ROOM 2-112D", -1035, 750, 125));
+  raw.push(run("FRAME", -982, 703, 34), run("POLES", -942, 703, 32), run("TRIP", -893, 703, 22));
+  raw.push(run("PRIMARY SWITCH", -1083, 698, 83), run("600", -973, 688, 15), run("3", -929, 688, 6), run("150", -890, 688, 16));
+  raw.push(run("MAIN", -1081, 606, 25), run("4000", -1021, 599, 21), run("3", -968, 599, 5), run("4000", -937, 599, 22));
+  raw.push(run("DIST. SECTION", -894, 562, 91));
+  raw.push(run("CIRCUIT", -1094, 549, 39), run("NUMBER", -1096, 535, 42));
+  [["FRAME", -1048, 34], ["POLES", -987, 32], ["TRIP", -901, 21], ["DISTRIBUTION SUMMARY", -816, 119], ["Load", -643, 23]].forEach(([s, x, w]) => raw.push(run(s, x, 540, w)));
+  const feeders = [["1200 A", "1200 A", "PANEL DP1B", "326.60"], ["1200 A", "1200 A", "PANEL DP2A", "726.04"], ["800 A", "800 A", "CHILLER CH-1", "140.00"], ["250 A", "125 A", "FOR FUTURE SOLAR PV INVERTER", "0.00"]];
+  feeders.forEach(([f, tr, d, kva], i) => {
+    const y = 522 - i * 12.5;
+    raw.push(run(String(i + 1), -1078, y, 5), run(f, -1046, y, 30), run("3", -975, y, 5), run(tr, -905, y, 30), run(d, -837, y, W(d)), run(kva, -646, y, 29));
+  });
+  raw.push(run("Total Conn. Load", -929, 465, 78), run("1881.41 kVA", -784, 465, 54));
+  // The branch panel beside it: ratings, heading, and rows between the
+  // switchgear's lines (their own heights), all the way down past it.
+  for (let i = 0; i < 4; i++) raw.push(run("RATING " + i, -60, 745 - i * 13, 60));
+  [["CKT", -156, 19], ["Circuit Description", -63, 85], ["Trip", 97, 18], ["Poles", 129, 26], ["A[KVA]", 179, 34], ["B[KVA]", 251, 34], ["Poles", 381, 26], ["Trip", 421, 18], ["Circuit Description", 514, 85]].forEach(([s, x, w]) => raw.push(run(s, x, 690, w)));
+  raw.push(run("CKT", 640, 686, 19)); // printed a little off the heading line
+  for (let i = 0; i < 18; i++) {
+    const y = 676 - i * 11.3;
+    raw.push(run(String(2 * i + 1), -149, y, 5), run("LOAD " + i, -126, y, 40), run("20 A", 93, y, 25), run("1", 139, y, 5));
+    raw.push(run(i % 2 ? "0.00" : "1.20", i % 2 ? 238 : 166, y, 24), run(i % 2 ? "0.10" : "0.50", i % 2 ? 274 : 202, y, 24));
+    raw.push(run("1", 391, y, 5), run("20 A", 418, y, 25), run("RIGHT " + i, 450, y, 45), run(String(2 * i + 2), 645, y, 5));
+  }
+  const tables = extractSheetTables(orientSheetItems(raw));
+  const sw = tables.find((t) => t.title === "SWITCHGEAR: SWGR");
+  assert.ok(sw, "the switchgear is read");
+  assert.deepEqual(sw.rows[0], ["CIRCUIT NUMBER", "FRAME", "POLES", "TRIP", "DISTRIBUTION SUMMARY", "Load"]);
+  assert.deepEqual(sw.rows[1], ["1", "1200 A", "3", "1200 A", "PANEL DP1B", "326.60"]);
+  assert.deepEqual(sw.rows[4], ["4", "250 A", "3", "125 A", "FOR FUTURE SOLAR PV INVERTER", "0.00"]);
+  assert.ok(sw.details.some((d) => d.includes("PRIMARY SWITCH")));
+  assert.ok(sw.notes.some((n) => n.includes("1881.41 kVA")));
+  assert.ok(!JSON.stringify(sw).includes("RIGHT "), "nothing from the panel beside it");
+  const dp = tables.find((t) => t.title === "Branch Panel: DP9");
+  assert.equal(dp.rows[0].at(-1), "CKT");
+  assert.deepEqual(dp.rows[1].slice(0, 2), ["1", "LOAD 0"]);
+  assert.deepEqual(dp.rows[1].slice(-2), ["RIGHT 0", "2"]);
+}
+
 // ── drift anchors ───────────────────────────────────────────────────────────
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, "index.ts"), "utf8");
@@ -356,7 +404,7 @@ for (const anchor of [
   'from "./scheduleExtract.ts"',
   "items = orientSheetItems(tc.items as any[]);",
   // A changed extractor must not be served from an older saved parse.
-  'const SCHED_PARSER = "sched-v5";',
+  'const SCHED_PARSER = "sched-v6";',
   // Shared resolver serves both drawing tools.
   "async function resolveIndexedSheet",
 ] ) {

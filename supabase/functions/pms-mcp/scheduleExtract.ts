@@ -117,9 +117,14 @@ function findScheduleTitles(lines: Array<{ y: number; cells: SheetTextItem[] }>)
 const TAG_HEADING_RE = /^(unit\s+)?(tag|mark|symbol|designation|unit\s*(no\.?|id|#)?|equip(ment)?\.?\s*(tag|no\.?|id)?|item)$/i;
 const PANEL_HEADER_CELL_RE = /^(ckt|cir(cuit)?\.?\s*(no\.?|#)?)\.?$/i;
 const PANEL_TOTAL_RE = /^\s*total\b/i;   // a panel's "Total Load:" / "Total Amps:" lines
-const PANEL_HEAD_OVERLAP = 3;
+const PANEL_HEAD_OVERLAP = 3;            // pt a panel heading must reach over a column to name it
 // A panel's phase heading: "A", "B [KVA]", "C[KVA]", "PHASE A VA", "A VA".
-const PANEL_PHASE_HEAD_RE = /^(phase\s+)?[abc](\s*\[?\s*k?va\s*\]?)?$/i;            // pt a panel heading must reach over a column to name it
+const PANEL_PHASE_HEAD_RE = /^(phase\s+)?[abc](\s*\[?\s*k?va\s*\]?)?$/i;
+// pt below its title within which a panel's CKT heading is looked for, however
+// many lines the panels beside it add. A switchgear's primary and main
+// sections put it 217 pt down (Tabler E603); the next row of panels on these
+// sheets is 480 pt or more below.
+const PANEL_HEADER_REACH = 240;
 const PANEL_FOOTER_RE = /^\s*(load\s+classification|panel\s+totals)\b/i;
 
 /**
@@ -130,15 +135,20 @@ const PANEL_FOOTER_RE = /^\s*(load\s+classification|panel\s+totals)\b/i;
  * and take the stretch under the title.
  */
 /**
- * How far left of a panel's title its circuit table starts: the left-most
- * CKT heading below the title (within half a pitch to its left), or 0.
+ * How far left of a panel's title its circuit table starts: the nearest CKT
+ * heading below the title and to its left (within half a pitch), or 0. The
+ * nearest of all within reach, not the first line's: the panel to the left
+ * ends with a CKT column of its own, and when its title sits higher (Tabler
+ * E609) its heading line comes first.
  */
 function panelInset(lines: Array<{ y: number; cells: SheetTextItem[] }>, t: TitleHit, pitch: number): number {
-  for (let i = t.line + 1; i < lines.length && i - t.line <= SCHED_PANEL_HEADER_SEARCH; i++) {
-    const heads = lines[i].cells.filter((c) => PANEL_HEADER_CELL_RE.test(c.str.trim()) && c.x >= t.x - pitch / 2 && c.x <= t.x + pitch / 2);
-    if (heads.length) return Math.max(0, t.x - Math.min(...heads.map((c) => c.x)));
+  let best = -Infinity;
+  for (let i = t.line + 1; i < lines.length && (i - t.line <= SCHED_PANEL_HEADER_SEARCH || t.y - lines[i].y <= PANEL_HEADER_REACH); i++) {
+    for (const c of lines[i].cells) {
+      if (PANEL_HEADER_CELL_RE.test(c.str.trim()) && c.x <= t.x && c.x >= t.x - pitch / 2) best = Math.max(best, c.x);
+    }
   }
-  return 0;
+  return Number.isFinite(best) ? t.x - best : 0;
 }
 
 function tableSpan(lines: Array<{ y: number; cells: SheetTextItem[] }>, t: TitleHit, titles: TitleHit[], gutter = SCHED_GUTTER): [number, number] | null {
@@ -290,11 +300,10 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
       for (let k = 1; k < row.length; k++) pitch = Math.min(pitch, row[k].x - row[k - 1].x);
       // How far left of its title a panel starts: usually a little (Tabler
       // E603: 42 pt), but a title can be centred over its panel (E612: 206
-      // pt). The row's first panel shows it: its left-most CKT heading.
-      // Every panel in the row is printed the same way. Only ever widens the
+      // pt), and a switchgear beside branch panels starts further out (98
+      // pt). Each panel's own CKT heading shows it. Only ever widens the
       // default 80 pt.
-      const inset = Number.isFinite(pitch) ? panelInset(lines, row[0], pitch) : 0;
-      const left = (o: TitleHit) => o.x - Math.max(80, inset + PANEL_EDGE_MARGIN);
+      const left = (o: TitleHit) => o.x - Math.max(80, (Number.isFinite(pitch) ? panelInset(lines, o, pitch) : 0) + PANEL_EDGE_MARGIN);
       xMin = left(t);
       if (at >= 0 && at + 1 < row.length) xMax = left(row[at + 1]);
       else if (Number.isFinite(pitch)) xMax = xMin + pitch;
@@ -317,7 +326,7 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
     // Header = the first line below the title with 3+ cells in the table (for a
     // panel: the line that starts the circuit table, which carries "CKT").
     let hIdx = -1;
-    for (let i = t.line + 1; i < lines.length && i - t.line <= search; i++) {
+    for (let i = t.line + 1; i < lines.length && (i - t.line <= search || (t.panel && t.y - lines[i].y <= PANEL_HEADER_REACH)); i++) {
       const cand = lines[i].cells.filter(inSpan);
       if (t.panel ? cand.some((c) => PANEL_HEADER_CELL_RE.test(c.str.trim())) : cand.length >= 3) { hIdx = i; break; }
     }
@@ -357,6 +366,7 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
     const ys: number[] = [];
     let gap = 0;
     let footerAt = -1;
+    let sawCircuit = false;
     for (let i = hIdx; i < end; i++) {
       const cells = lines[i].cells.filter(inSpan);
       if (!cells.length) continue;
@@ -369,7 +379,13 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
         const pitch = pitches.length ? pitches[Math.floor(pitches.length / 2)] : 0;
         if (ys[ys.length - 1] - lines[i].y > Math.max(SCHED_GAP_PT, SCHED_GAP_PITCHES * pitch)) break;
       }
-      if (cells.length >= 2) { blockLines.push(cells); ys.push(lines[i].y); gap = 0; }
+      // A panel's heading can be single words on lines of their own
+      // ("CIRCUIT" over "NUMBER"): above its first circuit row they are kept.
+      const heading = t.panel && !sawCircuit && cells.length === 1;
+      if (cells.length >= 2 || heading) {
+        blockLines.push(cells); ys.push(lines[i].y); gap = 0;
+        if (cells.some((c) => /^\d+$/.test(c.str.trim()))) sawCircuit = true;
+      }
       else if (blockLines.length && ++gap >= SCHED_GAP_LINES) break;
     }
     if (blockLines.length < 2) continue;
@@ -475,6 +491,26 @@ export function extractSheetTables(items: SheetTextItem[], matchFilter?: string)
           if (j >= 0 && j < rs.length && !head[j]) head[j] = str;
         }
         rows[h] = head;
+      }
+      // A one-word heading line ("CKT" printed a little off the heading
+      // line, or "CIRCUIT" over "NUMBER") joins the heading row below it, or
+      // else above it, in the column it sits over.
+      const single = (h: number) => blockLines[h].length === 1;
+      const drop = new Set<number>();
+      for (let h = 0; h < headLines; h++) {
+        if (!single(h)) continue;
+        let to = -1;
+        for (let j = h + 1; j < headLines && to < 0; j++) if (!single(j)) to = j;
+        for (let j = h - 1; j >= 0 && to < 0; j--) if (!single(j)) to = j;
+        if (to < 0) continue;
+        const k = rows[h].findIndex((v) => v);
+        if (k < 0) continue;
+        rows[to][k] = rows[to][k] ? (to > h ? rows[h][k] + " " + rows[to][k] : rows[to][k] + " " + rows[h][k]) : rows[h][k];
+        drop.add(h);
+      }
+      if (drop.size) {
+        const kept = rows.filter((_, i) => !drop.has(i));
+        rows.length = 0; rows.push(...kept);
       }
     }
 
