@@ -424,7 +424,11 @@ CURRENT drawings, and those arrive as PDFs from outside.
    folder — request current S set from the architect"). The team can only
    ask for what they know is missing, so absence is a first-class result,
    never a silent skip. A stale or missing background also caps how far the
-   cross-discipline checklist items can go — say so on each affected item.
+   cross-discipline checklist items can go — say so on each affected item,
+   in the fixed wording Step 7 gives (`Missing background: ...` /
+   `Stale background: ...`). The QA Reviews tab reads that wording and puts
+   the missing disciplines in a red banner at the top of the review, so the
+   team sees what was never checked before anything else.
 4. **Index the current backgrounds so they can be searched.** For each
    folder that holds another discipline's current set, call
    `search_drawings` with `subfolder` set to that folder exactly as
@@ -1628,6 +1632,18 @@ does not show two:
   not apply for `n/a`. This table is what the QA Reviews tab shows as the
   checklist, so an item left out reads as never considered. Never write
   `clean` for an item that was not examined.
+  **When another discipline's drawings were the reason** an item is
+  `not attempted` or `partial`, start its note with `Missing background:`
+  or `Stale background:`, then the discipline and what was missing, then
+  anything else: "Missing background: Structural (framing plans). No S
+  sheets anywhere in the project folder." or "Stale background:
+  Architectural RCPs dated 2025-03-02, older than our 2025-09 issue;
+  corridors only." Name the discipline in words (Architectural, Structural,
+  Life safety plan, Civil, Division 08/10/11/12/14 specifications). The tab
+  lifts these rows into a red banner at the top of the review card and of
+  the checklist, and lists their items under each discipline. Name the
+  missing sets in `coverage` too ("No structural or architectural
+  backgrounds found").
 - `designNarrative`: the Step 5b text.
 
 The result reports `checklistStored` and `designNarrativeStored`. If it

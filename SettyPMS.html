@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-25-pms-v225-portal-folder-ids";
+    window.__appVersion = "2026-11-25-pms-v226-qa-missing-backgrounds";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -67,6 +67,11 @@
        Shared with transmittal.html and Newsletter.html; a plain script so it
        is defined before the JSX blocks run. -->
   <script src="greetingName.js"></script>
+  <!-- qaBackgroundGaps(results, coverage): which other disciplines' drawings
+       (architectural, structural, life safety...) a QA review could not check
+       against, read from its checklist notes. The QA Reviews tab shows them
+       at the top of each review. Tests: qaBackgroundGaps.test.mjs. -->
+  <script src="qaBackgroundGaps.js"></script>
 <!-- Browser .docx pipeline: zip + Word section drops + {{TOKEN}} fill.
      Loaded as a module and hung on window because the app's own code is
      compiled by Babel from text/x-pms-jsx blocks, which cannot use import. -->
@@ -17128,6 +17133,30 @@ function qaPunchListEmailHtml(opts) {
     + '<p style="margin:0 0 12px;">Items are grouped by the discipline that fixes them, worst first. '
     + (tabUrl ? 'Assign, answer and close them in the <a href="' + esc(tabUrl) + '" style="color:#2F5496;">QA Reviews tab</a>.' : "Assign, answer and close them in the project's QA Reviews tab.")
     + (reportUrl ? ' The full report is <a href="' + esc(reportUrl) + '" style="color:#2F5496;">filed here</a>.' : "") + "</p>";
+  // What the review could not check because another discipline's drawings
+  // were missing or out of date (opts.backgroundGaps, from qaBackgroundGaps()):
+  // the same red warning the tab shows at the top of the review, so the team
+  // reads it before the list and does not take a short list for a clean set.
+  const gaps = Array.isArray(opts.backgroundGaps) ? opts.backgroundGaps.filter(g => g && g.label) : [];
+  if (gaps.length) {
+    const red = "#b42318";
+    const missing = gaps.filter(g => !g.stale), stale = gaps.filter(g => g.stale);
+    const itemCount = new Set([].concat.apply([], gaps.map(g => Array.isArray(g.items) ? g.items : []))).size;
+    html += '<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%;margin:0 0 14px;"><tr>'
+      + '<td style="border:2px solid ' + red + ';background:#fef3f2;padding:8px 10px;">'
+      + (missing.length ? '<p style="margin:0;color:' + red + ';font-weight:700;font-size:11.5pt;">&#9888; NOT CHECKED AGAINST: ' + esc(missing.map(g => g.label).join(", ")) + "</p>" : "")
+      + (stale.length ? '<p style="margin:' + (missing.length ? "3px" : "0") + ' 0 0;color:' + red + ';font-weight:700;font-size:11.5pt;">&#9888; CHECKED AGAINST OUT-OF-DATE: ' + esc(stale.map(g => g.label).join(", ")) + "</p>" : "")
+      + '<p style="margin:4px 0 6px;">The review did not have these drawings, so '
+      + (itemCount ? itemCount + " checklist item" + (itemCount === 1 ? "" : "s") : "the coordination against them")
+      + " could not be checked. Nothing in this review says those items are clean.</p>"
+      + '<ul style="margin:0 0 6px 18px;padding:0;">'
+      + gaps.map(g => '<li style="margin:0 0 3px;"><b>' + esc(g.label) + (g.stale ? " (out of date)" : "") + "</b> - ask for: " + esc(g.what || "")
+        + (Array.isArray(g.items) && g.items.length ? '<br><span style="color:#667085;font-size:9pt;">' + g.items.length + " item" + (g.items.length === 1 ? "" : "s") + ": " + esc(g.items.join(", ")) + "</span>" : "")
+        + "</li>").join("")
+      + "</ul>"
+      + '<p style="margin:0;"><b>Next step:</b> get the current sets from the architect (or the PM), save them to the project folder, and re-run the review for these items.</p>'
+      + "</td></tr></table>";
+  }
   groups.forEach(g => {
     html += '<p style="margin:14px 0 4px;font-weight:600;">' + esc(g.name) + " (" + g.rows.length + ")</p>"
       + '<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%;">'
@@ -17155,6 +17184,64 @@ function QAChip({ text, color, solid }) {
       whiteSpace: "nowrap", color: solid ? "#fff" : (color || P.textDim),
       background: solid ? (color || P.border) : "transparent",
       border: "1px solid " + (color || P.border) }}>{text}</span>
+  );
+}
+
+// What a QA review could NOT check because another discipline's drawings
+// (architectural, structural, life safety plan, civil...) were missing, out
+// of date or not read. It sits at the top of the review card and of the
+// checklist, in red, because a list of mostly "clean" rows otherwise reads
+// as a coordinated set when half the coordination was never possible.
+// The detection is qaBackgroundGaps() in qaBackgroundGaps.js.
+function QaBackgroundGapBanner(props) {
+  const review = props.review;
+  const full = !!props.full;
+  const gaps = typeof qaBackgroundGaps === "function" && review
+    ? qaBackgroundGaps(review.checklist_results, review.coverage) : [];
+  if (!gaps.length) return null;
+  const missing = gaps.filter(g => !g.stale);
+  const stale = gaps.filter(g => g.stale);
+  const itemCount = new Set([].concat.apply([], gaps.map(g => g.items))).size;
+  const red = "var(--c-e5534b)";
+  const box = { border: "2px solid " + red, borderRadius: 8, background: "rgba(229,83,75,0.10)", padding: full ? "10px 12px" : "7px 9px", margin: full ? "0 0 12px" : "6px 0", maxWidth: full ? "none" : 340 };
+  const head = { color: red, fontWeight: 800, fontSize: full ? 13.5 : 12, letterSpacing: 0.2 };
+  return (
+    <div style={box} role="alert">
+      {missing.length > 0 && (
+        <div style={head}>{"\u26a0"} NOT CHECKED AGAINST: {missing.map(g => g.label).join(", ")}</div>
+      )}
+      {stale.length > 0 && (
+        <div style={{ ...head, marginTop: missing.length ? 3 : 0 }}>{"\u26a0"} CHECKED AGAINST OUT-OF-DATE: {stale.map(g => g.label).join(", ")}</div>
+      )}
+      <div style={{ fontSize: full ? 12 : 11, color: P.text, marginTop: 3, lineHeight: 1.45 }}>
+        The review did not have these drawings, so{itemCount ? " " + itemCount + " checklist item" + (itemCount === 1 ? "" : "s") : " the coordination against them"} could
+        not be checked. Nothing in this review says those items are clean.
+      </div>
+      {full && (
+        <div style={{ marginTop: 8 }}>
+          {gaps.map(g => (
+            <div key={g.key} style={{ fontSize: 11.5, marginBottom: 6, lineHeight: 1.45 }}>
+              <span style={{ fontWeight: 700 }}>{g.label}{g.stale ? " (out of date)" : ""}</span>
+              <span style={{ color: P.textDim }}> &mdash; ask for: {g.what}</span>
+              {g.items.length > 0 && (
+                <div style={{ color: P.textDim }}>
+                  {g.items.length} item{g.items.length === 1 ? "" : "s"}: {g.items.join(", ")}
+                  {g.notes[0] && <span style={{ fontStyle: "italic" }}> &middot; e.g. &ldquo;{g.notes[0].length > 140 ? g.notes[0].slice(0, 140) + "\u2026" : g.notes[0]}&rdquo;</span>}
+                </div>
+              )}
+            </div>
+          ))}
+          <div style={{ fontSize: 11.5, fontWeight: 600, color: P.text, marginTop: 4 }}>
+            Next step: get the current sets from the architect (or the PM), save them to the project folder, and re-run the review for these items.
+          </div>
+        </div>
+      )}
+      {!full && props.onOpen && (
+        <div style={{ marginTop: 5 }}>
+          <Btn small variant="ghost" onClick={props.onOpen}>See which items</Btn>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -17449,6 +17536,7 @@ function ProjectQAReviewsView({ project, onChange }) {
         filterNote: filtersOn ? "This list is filtered: " + [fDisc, fSev === "__key__" ? "key items only" : fSev === "__high__" ? "life-safety / agency / cost" : fSev, fWho === "__none__" ? "unassigned" : fWho].filter(Boolean).join(", ") + "." : "",
         tabUrl: window.location.origin + window.location.pathname + "#project:" + project.id,
         reportUrl: withReport ? withReport.report_url : "",
+        backgroundGaps: latest && typeof qaBackgroundGaps === "function" ? qaBackgroundGaps(latest.checklist_results, latest.coverage) : [],
       });
       const msg = await createOutlookDraft({ subject: "QA punch list - " + label + (latest && latest.set_name ? " - " + latest.set_name : ""), bodyHtml });
       let opened = false;
@@ -17495,7 +17583,7 @@ function ProjectQAReviewsView({ project, onChange }) {
       ? "Run an internal coordination QA review of a SPECIFIC set for " + label + ": review the folder \"" + (issuedSets.some(s => s.set === selSet) ? "Outgoing/" + selSet : selSet) + "\" - pass it as the subfolder to search_drawings and extract_sheet_index exactly as written, and treat it as the deliverable under review. A path under the QAQC folder is a PRE-ISSUANCE internal QA set: findings are fix-before-issue."
       : "Run an internal coordination QA review of the current issued drawing set for " + label + ".",
     "",
-    "Use the Setty PMS connector and the qa-coordination-review skill, in its run order. Open the review in the PMS first with set_qa_review_progress and update it at each step, so this tab shows where the review stands; record with the reviewId it returns. Then: back-check this project's open ledger findings first (list_qa_findings), then the three passes - the checklist item by item (get_qa_checklist with the phase derived from the set), the knowledge layer, and the engineering review - and give me the punch list grouped by discipline. Record everything in the PMS with record_qa_findings so it shows here for my sign-off: the new findings (each with its discipline), checklistResults (one entry for every checklist item: its result, and what was examined or why it was not), and designNarrative (the skill's brief 'Design as read' narrative, Step 5b: about one page, written only from the sheets of this set, every value quoted as scheduled with its sheet number, 'not stated on the drawings' wherever the set is silent). Do not write or file a separate report document: the QA Reviews tab is where we read the results.",
+    "Use the Setty PMS connector and the qa-coordination-review skill, in its run order. Open the review in the PMS first with set_qa_review_progress and update it at each step, so this tab shows where the review stands; record with the reviewId it returns. Then: back-check this project's open ledger findings first (list_qa_findings), then the three passes - the checklist item by item (get_qa_checklist with the phase derived from the set), the knowledge layer, and the engineering review - and give me the punch list grouped by discipline. Record everything in the PMS with record_qa_findings so it shows here for my sign-off: the new findings (each with its discipline), checklistResults (one entry for every checklist item: its result, and what was examined or why it was not; when another discipline's drawings were missing or out of date, start that note with 'Missing background: <discipline>' or 'Stale background: <discipline>' so this tab can show it at the top), and designNarrative (the skill's brief 'Design as read' narrative, Step 5b: about one page, written only from the sheets of this set, every value quoted as scheduled with its sheet number, 'not stated on the drawings' wherever the set is silent). Do not write or file a separate report document: the QA Reviews tab is where we read the results.",
   ].join("\n"));
 
   const responsesUrl = "https://claude.ai/new?q=" + encodeURIComponent([
@@ -17855,6 +17943,8 @@ function ProjectQAReviewsView({ project, onChange }) {
             <div key={r.id} style={{ border: "1px solid " + P.border, borderRadius: 8, padding: "8px 12px", fontSize: 11.5, minWidth: 220, background: P.card }}>
               <div style={{ fontWeight: 600, marginBottom: 2 }}>{QA_REVIEW_KIND_LABEL[r.kind] || "Review"} #{r.id}{r.phase ? " · " + r.phase : ""}</div>
               {(r.set_name || r.source_doc) && <div style={{ color: P.textDim, marginBottom: 2 }}>{r.set_name || r.source_doc}</div>}
+              <QaBackgroundGapBanner review={r}
+                onOpen={Array.isArray(r.checklist_results) && r.checklist_results.length > 0 ? () => setOpenReview({ id: r.id, view: "checklist" }) : null} />
               <div style={{ color: P.textMuted }}>{String(r.run_at || "").slice(0, 10)} · {r.run_by}</div>
               {(() => {
                 const st = qaReviewStatus(r);
@@ -17948,6 +18038,7 @@ function ProjectQAReviewsView({ project, onChange }) {
               </label>
               <Btn small variant="ghost" onClick={() => setOpenReview(null)}>Close</Btn>
             </div>
+            <QaBackgroundGapBanner review={r} full />
             <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 4 }}>
               {count("clean")} clean &middot; {count("finding") + count("flag")} finding / flag &middot; {count("partial")} partial &middot; {count("not attempted")} not attempted &middot; {count("n/a")} n/a (of {all.length})
             </div>

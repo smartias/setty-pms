@@ -222,3 +222,28 @@ test("the tab marks key items through the RPC and shows them in bold", () => {
   assert.match(src, /mcp\.tool\("mark_qa_key_item"/);
   assert.match(src, /keyItem: z\.boolean\(\)\.optional\(\)/);
 });
+
+test("the team email carries the missing-backgrounds warning before the list", () => {
+  const groups = [{ name: "Electrical", rows: [{ id: 7, title: "Breaker vs MOCP", severity: "cost", sheets: ["E-601"] }] }];
+  const out = api.qaPunchListEmailHtml({
+    projectLabel: "TEST1.00 - Demo", setName: "100% CD", reviewDate: "2026-11-10", groups,
+    backgroundGaps: [
+      { key: "arch", label: "Architectural", what: "plans, RCPs", stale: false, items: ["qa-080", "qa-081"] },
+      { key: "struct", label: "Structural", what: "framing <plans>", stale: false, items: ["qa-613", "qa-080"] },
+      { key: "ls", label: "Life safety plan", what: "life safety plan", stale: true, items: [] },
+    ],
+  });
+  assert.match(out, /&#9888; NOT CHECKED AGAINST: Architectural, Structural<\/p>/);
+  assert.match(out, /&#9888; CHECKED AGAINST OUT-OF-DATE: Life safety plan<\/p>/);
+  assert.match(out, /so 3 checklist items could not be checked\. Nothing in this review says those items are clean\./);
+  assert.match(out, /<b>Structural<\/b> - ask for: framing &lt;plans&gt;/);
+  assert.match(out, /2 items: qa-613, qa-080/);
+  assert.ok(out.indexOf("NOT CHECKED AGAINST") < out.indexOf("Breaker vs MOCP"), "the warning comes before the list");
+  // No gaps, no warning.
+  const plain = api.qaPunchListEmailHtml({ projectLabel: "TEST1.00 - Demo", groups });
+  assert.ok(!/NOT CHECKED AGAINST|OUT-OF-DATE/.test(plain));
+  assert.ok(!/NOT CHECKED/.test(api.qaPunchListEmailHtml({ projectLabel: "x", groups, backgroundGaps: [null, {}] })));
+  // The tab passes the newest review's gaps to the email.
+  const page = readFileSync(new URL("./SettyPMS.html", import.meta.url), "utf8");
+  assert.match(page, /backgroundGaps: latest && typeof qaBackgroundGaps === "function" \? qaBackgroundGaps\(latest\.checklist_results, latest\.coverage\) : \[\]/);
+});
