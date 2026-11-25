@@ -148,3 +148,25 @@ test("the routine's tools, tables, approval function and console tab are in step
   assert.ok(html.includes("rpc/pms_request_qa_routine") && html.includes("rpc/pms_decide_qa_item_proposal"));
   assert.ok(html.includes("start_checklist_routine") && html.includes("propose_checklist_items"), "the console's request names both tools");
 });
+
+test("the Admin Console lists the complete checklist, read-only", () => {
+  const html = readFileSync(new URL("../../../SettyAdmin.html", import.meta.url), "utf8");
+  assert.ok(html.includes("pms_qa_checklist?select=item_id,section,sort,text,details,automation,automation_hint,phases,source,enabled,added_at&order=sort,item_id"), "every item is read, switched-off ones too");
+  assert.ok(html.includes("items: (items || []).filter(i => i.enabled !== false).length"), "the 'items in the checklist' count stays the items in use");
+  assert.ok(html.includes("THE COMPLETE CHECKLIST") && html.includes("${qaItemsCardHTML(q.allItems)}"));
+  assert.ok(!/sb\("(POST|PATCH|DELETE)", "\/rest\/v1\/pms_qa_checklist/.test(html), "the console does not edit items directly");
+  // Run the list's own filter against sample rows.
+  const start = html.indexOf("const QA_ITEM_SOURCE ="), end = html.indexOf("function qaItemsListHTML(");
+  const qaItemsFiltered = new Function(html.slice(start, end) + "\nreturn qaItemsFiltered;")();
+  const rows = [
+    { item_id: "qa-001", section: "General Document Verification", text: "Verify the project name", details: [], source: "seed", enabled: true },
+    { item_id: "qa-614", section: "Cross-Discipline Coordination", text: "Verify equipment above ceilings fits", details: ["Access panel at every unit."], source: "rfi-lesson", enabled: true },
+    { item_id: "qa-099", section: "General Document Verification", text: "Unused", details: null, source: "lesson", enabled: false },
+  ];
+  const ids = (f) => qaItemsFiltered(rows, { q: "", section: "", source: "", show: "", ...f }).map((r) => r.item_id);
+  assert.deepEqual(ids({}), ["qa-001", "qa-614", "qa-099"]);
+  assert.deepEqual(ids({ q: "access panel" }), ["qa-614"], "search reads the steps too");
+  assert.deepEqual(ids({ show: "off" }), ["qa-099"]);
+  assert.deepEqual(ids({ show: "on", section: "General Document Verification" }), ["qa-001"]);
+  assert.deepEqual(ids({ source: "rfi-lesson" }), ["qa-614"]);
+});

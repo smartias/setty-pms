@@ -76,7 +76,7 @@ test("search and filters narrow the list; the tab works without RFI counts", () 
 test("the tab is wired into the page", () => {
   assert.ok(page.includes('{ key: "checklist", label: "QA Checklist",'));
   assert.ok(page.includes('if (state.tab === "checklist") return renderQaChecklist();'));
-  assert.ok(page.includes('window.__appVersion = "2026-11-24-intel-v42-qa-review-steps";'));
+  assert.ok(page.includes('window.__appVersion = "2026-11-25-intel-v43-checklist-wording";'));
   assert.ok(!/sb\("(POST|PATCH|DELETE)", "\/rest\/v1\/pms_qa_checklist/.test(page), "the page never writes the checklist");
 });
 

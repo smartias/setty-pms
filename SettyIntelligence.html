@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-11-24-intel-v42-qa-review-steps";
+    window.__appVersion = "2026-11-25-intel-v43-checklist-wording";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -1798,7 +1798,7 @@ async function loadStandards() {
 // reviewer reading a lesson can see the check it belongs to, and how many
 // preventable RFIs the firm has had under each check (pms_rfi_root_causes,
 // which signed-in users may read). Nothing is edited here: items are added by
-// migration and switched on or off in the Admin Console.
+// migration or by an approved proposal in the Admin Console (QA Checklist tab).
 const QA_SOURCE_LABEL = { seed: "Original checklist", lesson: "From a lesson", "rfi-lesson": "From the RFI log" };
 const QA_AUTOMATION_LABEL = { manual: "By a person", assisted: "Claude assists", auto: "Automatic" };
 // Everything a QA review does, in the order it does it. The checklist is one
@@ -1884,7 +1884,7 @@ function renderQaChecklist() {
   const on = all.filter(r => r.enabled !== false).length;
   $("view").innerHTML =
     '<div class="status info" style="display:block;margin-bottom:14px">✅ The checklist a QA review runs, item by item: <b>' + on + '</b> items in use' + (all.length - on ? ', ' + (all.length - on) + ' switched off' : '') +
-      '. This is a read-only copy. Items are switched on or off in the Admin Console; new ones come from lessons and from the RFI log.' +
+      '. This is a read-only copy. New items are proposed from lessons and the RFI log and added when an admin approves them (Admin Console, QA Checklist tab), where the complete list is also kept.' +
       (state.qaList.rfis ? ' The RFI count on an item is how many preventable RFIs the firm has logged that this check would have caught.' : '') + '</div>' +
     '<div id="qcPanels">' + qaReviewPanelsHTML() + '</div>' +
     '<h2 style="margin:22px 0 8px">The checklist</h2>' +
