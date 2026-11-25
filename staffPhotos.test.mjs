@@ -68,3 +68,22 @@ test("Accolades: same lookup rules as the PMS", () => {
   assert.equal(f("np@setty.com", "No Photo"), "");
   assert.equal(f("", ""), "");
 });
+
+// Who "Import photos from Microsoft 365" tries: active, with an email, no photo.
+const e = html.indexOf("function staffNeedingPhotoImport(");
+const f = html.indexOf("\n}", e);
+assert.ok(e > 0 && f > e, "could not slice staffNeedingPhotoImport out of SettyPMS.html");
+const { staffNeedingPhotoImport } = await import("data:text/javascript;base64," +
+  Buffer.from(html.slice(e, f + 2) + "\nexport { staffNeedingPhotoImport };", "utf8").toString("base64"));
+
+test("the Microsoft 365 import never replaces a photo and skips inactive people", () => {
+  const out = staffNeedingPhotoImport([
+    { id: "1", name: "Has Photo", email: "a@setty.com", photoPath: "1/x.jpg" },
+    { id: "2", name: "Left", email: "b@setty.com", inactive: true },
+    { id: "3", name: "No Email", email: "" },
+    { id: "4", name: "Wanted", email: "d@setty.com" },
+    null,
+  ]);
+  assert.deepEqual(out.map(s => s.id), ["4"]);
+  assert.deepEqual(staffNeedingPhotoImport(undefined), []);
+});

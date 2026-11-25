@@ -84,6 +84,10 @@ browser (PMS pages) or from the connector (app permissions).
 - Show a person with `<StaffAvatar person={...} />`. Team rows have no
   `photoPath`; the avatar finds the directory entry by email, then name
   (`staffPhotos.test.mjs`).
+- "Import photos from Microsoft 365" (Staff tab) reads Outlook/Teams profile
+  pictures through Graph with `User.ReadBasic.All`, requested only when the
+  button is pressed (not in `GRAPH_SCOPES`). It fills people with no photo and
+  never replaces one; the Outlook add-in shows the same photos.
 
 ## Debugging "it still doesn't work"
 
