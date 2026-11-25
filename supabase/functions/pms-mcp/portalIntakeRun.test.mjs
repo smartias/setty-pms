@@ -28,14 +28,19 @@ const SUB_OK = { SpecSection: "23 34 00", Subject: "Exhaust fans EF-1 to EF-4", 
 
 const file = (id, name, lastModified = "2026-11-02T10:00:00Z") => ({ id, name, webUrl: "https://sp/" + id, lastModified, driveId: "d1" });
 
-function harness({ projects, folders, forms, failWrite } = {}) {
+function harness({ projects, folders, forms, failWrite, listings, dryRun = false } = {}) {
   const writes = [];
   const reads = [];
+  const listed = [];
   let clock = 0;
   const deps = {
-    at: AT, dryRun: false, budgetMs: 40000, maxProjects: 40, recentDays: 30, now: () => clock,
-    projects: async () => Object.keys(projects).map((pid) => ({ pid, rfisUrl: "https://sp/" + pid + "/rfis", submittalsUrl: "https://sp/" + pid + "/subs" })),
-    listForms: async (url) => ({ folderWebUrl: url, files: folders[url] || [] }),
+    at: AT, dryRun, budgetMs: 40000, maxProjects: 40, recentDays: 30, now: () => clock,
+    projects: async () => Object.keys(projects).map((pid) => {
+      const pi = projects[pid].portalIntake || {};
+      return { pid, rfisUrl: "https://sp/" + pid + "/rfis", submittalsUrl: "https://sp/" + pid + "/subs",
+        rfisFolderId: pi.rfisFolderId, submittalsFolderId: pi.submittalsFolderId, driveId: pi.driveId };
+    }),
+    listForms: async (ref) => { listed.push(ref); const l = (listings && listings[ref.url]) || {}; return { folderWebUrl: ref.url, files: folders[ref.url] || [], ...l }; },
     readForm: async (f) => { reads.push(f.id); return forms[f.id]; },
     writeProject: async (pid, mutate) => {
       if (failWrite === pid) throw new Error("Project changed since it was read (a concurrent save)");
@@ -46,7 +51,7 @@ function harness({ projects, folders, forms, failWrite } = {}) {
     },
     tick: (ms) => { clock += ms; },
   };
-  return { deps, writes, reads, projects };
+  return { deps, writes, reads, listed, projects };
 }
 
 const P1 = (extra = {}) => ({ id: "p1", projectNumber: "SAPX176021.01", prime: "Setty & Associates", rfis: [], submittals: [], portalIntake: { rfisUrl: "x", submittalsUrl: "y" }, ...extra });
@@ -161,4 +166,66 @@ test("the required field lists are what the form marks with *", () => {
   assert.deepEqual(REQUIRED_FIELDS.rfi, ["Subject", "Question", "SubmittedBy", "Email"]);
   assert.deepEqual(REQUIRED_FIELDS.submittal, ["SpecSection", "Subject", "SubmittedBy", "Email"]);
   assert.deepEqual([...loggedFileIds({ rfis: [{ intake: { driveItemId: "a" } }, {}], submittals: [{ intake: { driveItemId: "b" } }] })], ["a", "b"]);
+});
+
+// ── folder ids (2026-11-25) ──────────────────────────────────────────────────
+// The web address breaks when someone moves the folder; the Graph id does not.
+
+test("passes the recorded folder ids to listForms", async () => {
+  const h = harness({
+    projects: { p1: P1({ portalIntake: { rfisUrl: "x", submittalsUrl: "y", rfisFolderId: "R1", submittalsFolderId: "S1", driveId: "d1" } }) },
+    folders: {},
+  });
+  await runPortalIntakePass(h.deps);
+  assert.deepEqual(h.listed.map((r) => [r.itemId, r.driveId]), [["R1", "d1"], ["S1", "d1"]]);
+});
+
+test("records the folder ids it learned, once, when live", async () => {
+  const listings = {
+    "https://sp/p1/rfis": { folderId: "R1", driveId: "d1", resolvedBy: "url" },
+    "https://sp/p1/subs": { folderId: "S1", driveId: "d1", resolvedBy: "url" },
+  };
+  const h = harness({ projects: { p1: P1() }, folders: {}, listings });
+  const s = await runPortalIntakePass(h.deps);
+  assert.equal(s.foldersRecorded, 1);
+  const pi = h.projects.p1.portalIntake;
+  assert.equal(pi.rfisFolderId, "R1");
+  assert.equal(pi.submittalsFolderId, "S1");
+  assert.equal(pi.driveId, "d1");
+  assert.equal(pi.rfisUrl, "x");            // found by address: the address is not rewritten
+  const again = await runPortalIntakePass(h.deps);
+  assert.equal(again.foldersRecorded, undefined);
+  assert.deepEqual(h.writes, ["p1"]);
+});
+
+test("after a move, the id finds the folder and its new address is recorded", async () => {
+  const listings = {
+    "https://sp/p1/rfis": { folderId: "R1", driveId: "d1", resolvedBy: "id", folderWebUrl: "https://sp/moved/RFIs" },
+    "https://sp/p1/subs": { folderId: "S1", driveId: "d1", resolvedBy: "id", folderWebUrl: "https://sp/p1/subs" },
+  };
+  const h = harness({
+    projects: { p1: P1({ portalIntake: { rfisUrl: "https://sp/p1/rfis", submittalsUrl: "https://sp/p1/subs", rfisFolderId: "R1", submittalsFolderId: "S1", driveId: "d1" } }) },
+    folders: {}, listings,
+  });
+  await runPortalIntakePass(h.deps);
+  const pi = h.projects.p1.portalIntake;
+  assert.equal(pi.rfisUrl, "https://sp/moved/RFIs");
+  assert.equal(pi.submittalsUrl, "https://sp/p1/subs");
+});
+
+test("a dry run records nothing", async () => {
+  const listings = { "https://sp/p1/rfis": { folderId: "R1", driveId: "d1", resolvedBy: "url" } };
+  const h = harness({ projects: { p1: P1() }, folders: {}, listings, dryRun: true });
+  const s = await runPortalIntakePass(h.deps);
+  assert.equal(s.foldersRecorded, undefined);
+  assert.deepEqual(h.writes, []);
+});
+
+test("addresses that differ only in %-encoding are the same folder", async () => {
+  const { folderPatch } = await import("./portalIntakeRun.ts");
+  const patch = folderPatch(
+    { rfisUrl: "https://sp/A%20B/RFIs", rfisFolderId: "R1", driveId: "d1" },
+    { rfi: { folderId: "R1", driveId: "d1", resolvedBy: "id", folderWebUrl: "https://sp/A B/RFIs", files: [] } },
+  );
+  assert.equal(patch, null);
 });
