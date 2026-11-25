@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-11-24-transmittal-v32-decimal-sheets";
+    window.__appVersion = "2026-11-25-transmittal-v33-other-documents";
 
     // Theme, applied before the stylesheet paints so there is no flash of the
     // other scheme. Remembered per browser; first visit follows the OS setting.
@@ -295,6 +295,7 @@
     .sheet-table:not(.has-folders) .col-folder { display: none; }
     .kind-select { appearance: none; -webkit-appearance: none; border: 1px solid var(--border); background: var(--card2); color: var(--muted); font: inherit; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px; cursor: pointer; width: auto; margin: 0; }
     .kind-select.kind-spec { color: var(--info-fg); border-color: var(--info-bd); }
+    .kind-select.kind-other { color: var(--warn-fg); border-color: var(--warn-bd); }
     .sheet-table .col-folder { font-size: 11px; color: var(--muted); white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
     .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); cursor: pointer; text-transform: none; letter-spacing: 0; margin: 0; }
 
@@ -1040,7 +1041,7 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
       // of this sheet is current?". Snapshot the names too, so later renames
       // in SharePoint cannot rewrite history.
       sheets: (sheets || [])
-        .filter(sh => sh.include && sh.filename)
+        .filter(sh => sh.include && sh.filename && sh.kind !== "other")
         .map(sh => ({
           sheetNo:    sh.sheetNo    || "",
           title:      sh.title      || "",
@@ -1066,6 +1067,20 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
           sheetDate:    sh.sheetDate    || null,
           revisionDate: sh.revisionDate || null,
           source:       sh.source       || null,
+        })),
+      // Other documents (invoices, backup, letters): recorded as what went out,
+      // but kept OUT of `sheets` so the Current Set panel, sheet history and the
+      // connector's get_current_set never mistake an invoice for a drawing.
+      documents: (sheets || [])
+        .filter(sh => sh.include && sh.filename && sh.kind === "other")
+        .map(sh => ({
+          title:     sh.title    || "",
+          reference: sh.sheetNo  || "",
+          revision:  sh.revision || "",
+          date:      sh.date     || null,
+          filename:  sh.filename,
+          subfolder: sh.subfolder || "",
+          webUrl:    (folderFiles.find(f => (f.relPath || f.name) === (sh.relPath || sh.filename))?.webUrl) || null,
         })),
       ...extra,
     },
@@ -1139,6 +1154,7 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
     milestoneName: row.files.milestoneName || "",
     drawings: sheetsWritten.filter(x => x.kind !== "spec").length,
     specs: sheetsWritten.filter(x => x.kind === "spec").length,
+    others: Array.isArray(row.files.documents) ? row.files.documents.length : 0,
     superseded: Array.isArray(row.files.replaces) ? row.files.replaces.length : 0,
     firstForProject: !(historyTx || []).length,
   };
@@ -1742,7 +1758,10 @@ function safeDecodeFolderUrl(u) {
 // global the URL param populates, so loadFolder() parses and validates the
 // pasted URL exactly like a deep-linked one.
 function applyFolderUrlInput() {
-  const v = (document.getElementById("folderUrlInput").value || "").trim();
+  // A "Copy link" share URL ends in ?d=…&csf=1&web=1&e=…. A '?' cannot appear
+  // in a SharePoint file or folder name, so everything from it on is dropped;
+  // left in, it became part of the folder path and Graph refused it (400).
+  const v = (document.getElementById("folderUrlInput").value || "").trim().replace(/\?.*$/, "");
   if (!v) {
     setStatus("loadStatus", "error", "✗ Paste a SharePoint folder URL first.");
     return;
@@ -3147,6 +3166,29 @@ function emptyRow() {
 
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
+// Type change. "Other" is for files that are neither drawing sheets nor spec
+// sections (invoices, backup, letters, reports). The sheet number and revision
+// the filename parser guessed for them are meaningless, so they are set aside,
+// and put back if the row is switched back before anything was typed there.
+// Marking the row edited keeps a later title-block read from replacing it.
+function setRowKind(i, kind) {
+  const s = sheets[i];
+  if (!s) return;
+  const was = s.kind;
+  s.kind = kind;
+  s.edited = true;
+  if (kind === "other" && was !== "other") {
+    s.guessed = { sheetNo: s.sheetNo || "", revision: s.revision || "" };
+    s.sheetNo = "";
+    s.revision = "";
+  } else if (was === "other" && kind !== "other" && s.guessed) {
+    if (!s.sheetNo) s.sheetNo = s.guessed.sheetNo;
+    if (!s.revision) s.revision = s.guessed.revision;
+    s.guessed = null;
+  }
+  renderTable();
+}
+
 // ─── TABLE RENDER ─────────────────────────────────────────────────────────────
 function renderTable() {
   const tbody = document.getElementById("sheetTableBody");
@@ -3171,23 +3213,24 @@ function renderTable() {
     tr.innerHTML = `
       <td><input type="checkbox" id="sheet-${s.id}-include" ${s.include ? "checked" : ""} aria-label="Include ${rowRef}" onchange="sheets[${i}].include=this.checked;this.removeAttribute('aria-invalid');updateCount()"/></td>
       <td>
-        <select class="kind-select ${s.kind === "spec" ? "kind-spec" : ""}" id="sheet-${s.id}-kind" aria-label="Type for ${rowRef}" title="Drawing sheet or specification section"
-          onchange="sheets[${i}].kind=this.value;sheets[${i}].edited=true;renderTable()">
-          <option value="drawing" ${s.kind !== "spec" ? "selected" : ""}>Drawing</option>
+        <select class="kind-select ${s.kind === "spec" ? "kind-spec" : s.kind === "other" ? "kind-other" : ""}" id="sheet-${s.id}-kind" aria-label="Type for ${rowRef}" title="Drawing sheet, specification section, or other document (invoice, backup, letter, report)"
+          onchange="setRowKind(${i}, this.value)">
+          <option value="drawing" ${s.kind !== "spec" && s.kind !== "other" ? "selected" : ""}>Drawing</option>
           <option value="spec" ${s.kind === "spec" ? "selected" : ""}>Spec</option>
+          <option value="other" ${s.kind === "other" ? "selected" : ""}>Other</option>
         </select>
       </td>
-      <td>
+      <td>${s.kind === "other" ? `<span style="color:var(--muted)" title="Other documents carry no discipline">—</span>` : `
         <select class="disc-badge disc-${dc}" id="sheet-${s.id}-disc" aria-label="Discipline for ${rowRef}" title="Change discipline"
           style="appearance:none;-webkit-appearance:none;border:none;font:inherit;font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;cursor:pointer"
           onchange="sheets[${i}].discipline=this.value;sheets[${i}].edited=true;renderTable()">
           ${DISCIPLINE_NAMES.map(d =>
             `<option ${d === s.discipline ? "selected" : ""}>${d}</option>`
           ).join("")}
-        </select>
+        </select>`}
       </td>
-      <td><input type="text" id="sheet-${s.id}-sheetNo" value="${esc(s.sheetNo)}" placeholder="M-501" aria-label="Sheet number for ${rowRef}" onchange="sheets[${i}].sheetNo=this.value;sheets[${i}].edited=true"/></td>
-      <td><input type="text" id="sheet-${s.id}-title" value="${esc(s.title)}" placeholder="Sheet title…" aria-label="Title for ${rowRef}" onchange="sheets[${i}].title=this.value;sheets[${i}].edited=true"/></td>
+      <td><input type="text" id="sheet-${s.id}-sheetNo" value="${esc(s.sheetNo)}" placeholder="${s.kind === "other" ? "Ref. (optional)" : "M-501"}" aria-label="${s.kind === "other" ? "Reference" : "Sheet number"} for ${rowRef}" onchange="sheets[${i}].sheetNo=this.value;sheets[${i}].edited=true"/></td>
+      <td><input type="text" id="sheet-${s.id}-title" value="${esc(s.title)}" placeholder="${s.kind === "other" ? "Description…" : "Sheet title…"}" aria-label="Title for ${rowRef}" onchange="sheets[${i}].title=this.value;sheets[${i}].edited=true"/></td>
       <td class="col-folder" title="${esc(s.subfolder || "")}">${esc(s.subfolder || "")}</td>
       <td><input type="text" id="sheet-${s.id}-revision" value="${esc(s.revision)}" placeholder="0" style="width:60px" aria-label="Revision for ${rowRef}" onchange="sheets[${i}].revision=this.value;sheets[${i}].edited=true"/></td>
       <td><input type="text" id="sheet-${s.id}-date" value="${esc(s.date)}" placeholder="YYYY-MM-DD" aria-label="Revision date for ${rowRef}" onchange="sheets[${i}].date=this.value;sheets[${i}].dateSource='user';sheets[${i}].edited=true"/></td>
@@ -3223,9 +3266,16 @@ function showSheetCards() {
 function updateCount() {
   const included = sheets.filter(s => s.include);
   const specs = included.filter(s => s.kind === "spec").length;
-  const drawings = included.length - specs;
+  const others = included.filter(s => s.kind === "other").length;
+  const drawings = included.length - specs - others;
+  const parts = [];
+  if (specs || others) {
+    parts.push(`${drawings} drawing${drawings === 1 ? "" : "s"}`);
+    if (specs) parts.push(`${specs} spec section${specs === 1 ? "" : "s"}`);
+    if (others) parts.push(`${others} other document${others === 1 ? "" : "s"}`);
+  }
   document.getElementById("sheetCount").textContent = `${included.length} of ${sheets.length} selected` +
-    (specs ? ` (${drawings} drawing${drawings === 1 ? "" : "s"}, ${specs} spec section${specs === 1 ? "" : "s"})` : "");
+    (parts.length ? ` (${parts.join(", ")})` : "");
 }
 
 function removeRow(i) { sheets.splice(i, 1); renderTable(); }
@@ -3238,8 +3288,8 @@ document.getElementById("tbCancelBtn").onclick = cancelTitleBlocks;
 document.getElementById("selectAllBtn").onclick = () => { sheets.forEach(s => s.include = true); renderTable(); };
 document.getElementById("deselectAllBtn").onclick = () => { sheets.forEach(s => s.include = false); renderTable(); };
 document.getElementById("sortBtn").onclick = () => {
-  // Drawings first, then spec sections; each group by its number.
-  const k = r => (r.kind === "spec" ? 1 : 0);
+  // Drawings first, then spec sections, then other documents; each group by its number.
+  const k = r => (r.kind === "spec" ? 1 : r.kind === "other" ? 2 : 0);
   sheets.sort((a, b) => k(a) - k(b) || (a.sheetNo || "").localeCompare(b.sheetNo || "", undefined, { numeric: true }));
   renderTable();
 };
@@ -3773,7 +3823,7 @@ async function buildCoverDocx(included) {
     // sheet data still resolves correctly.
     const makeRows = list => list.map((s, i) => {
       const isEven = i % 2 === 1;
-      const discFull = mapDiscipline(s.discipline);
+      const discFull = s.kind === "other" ? "" : mapDiscipline(s.discipline);
       return new TableRow({
         children: [
           dataCell(discFull, COL_DOCX[0], isEven, false, BLUE, 16),
@@ -3807,17 +3857,29 @@ async function buildCoverDocx(included) {
     // Drawings and specifications are different things to the reader, so when
     // both go out they get their own headed tables; a drawings-only set keeps
     // the single "Transmitted documents" table it always had.
-    const drawingsIncluded = included.filter(s => s.kind !== "spec");
+    // Other documents (invoices, backup, letters) get a table of their own too;
+    // when they are all that goes out, it is the single documents table.
+    const drawingsIncluded = included.filter(s => s.kind !== "spec" && s.kind !== "other");
     const specsIncluded = included.filter(s => s.kind === "spec");
-    const documentSections = specsIncluded.length
-      ? [
-          ...(drawingsIncluded.length ? [sectionHeading("TRANSMITTED DRAWINGS", 200), makeTable(drawingsIncluded, "SHEET NO.")] : []),
-          sectionHeading("TRANSMITTED SPECIFICATIONS", drawingsIncluded.length ? 320 : 200),
-          makeTable(specsIncluded, "SECTION"),
-        ]
+    const othersIncluded = included.filter(s => s.kind === "other");
+    const docGroups = [
+      { list: drawingsIncluded, heading: "TRANSMITTED DRAWINGS", header: "SHEET NO." },
+      { list: specsIncluded, heading: "TRANSMITTED SPECIFICATIONS", header: "SECTION" },
+      { list: othersIncluded, heading: "OTHER DOCUMENTS", header: "REF." },
+    ].filter(g => g.list.length);
+    const documentSections = (specsIncluded.length || othersIncluded.length)
+      ? docGroups.flatMap((g, gi) => [
+          sectionHeading(docGroups.length === 1 && g.list === othersIncluded ? "TRANSMITTED DOCUMENTS" : g.heading, gi ? 320 : 200),
+          makeTable(g.list, g.header),
+        ])
       : [sectionHeading("TRANSMITTED DOCUMENTS", 200), makeTable(included, "SHEET NO.")];
-    const totalsText = specsIncluded.length
-      ? `Total: ${drawingsIncluded.length} drawing${drawingsIncluded.length !== 1 ? "s" : ""}, ${specsIncluded.length} specification section${specsIncluded.length !== 1 ? "s" : ""}     `
+    const plural = (n, w) => `${n} ${w}${n !== 1 ? "s" : ""}`;
+    const totalParts = [];
+    if (drawingsIncluded.length || specsIncluded.length) totalParts.push(plural(drawingsIncluded.length, "drawing"));
+    if (specsIncluded.length) totalParts.push(plural(specsIncluded.length, "specification section"));
+    if (othersIncluded.length) totalParts.push(plural(othersIncluded.length, totalParts.length ? "other document" : "document"));
+    const totalsText = (specsIncluded.length || othersIncluded.length)
+      ? `Total: ${totalParts.join(", ")}     `
       : `Total: ${included.length} sheet${included.length !== 1 ? "s" : ""}     `;
 
     // Load logo
@@ -4858,7 +4920,7 @@ function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, 
       const bg = i % 2 === 1 ? "#f8f8f8" : "#ffffff";
       const td = (text, extra = "") => `<td style="${tdBase}background:${bg};${extra}">${esc(text || "—")}</td>`;
       return `<tr>` +
-        td(mapDiscipline(s.discipline), "color:#2E5395;font-size:10px;") +
+        td(s.kind === "other" ? "" : mapDiscipline(s.discipline), "color:#2E5395;font-size:10px;") +
         td(s.sheetNo) +
         td(s.title) +
         td(s.revision, "color:#666;") +
@@ -4877,10 +4939,13 @@ function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, 
       `</tr></thead>` +
       `<tbody>${rowsHtml(list)}</tbody>` +
       `</table>`;
-    const drawings = includedSheets.filter(s => s.kind !== "spec");
+    const drawings = includedSheets.filter(s => s.kind !== "spec" && s.kind !== "other");
     const specs = includedSheets.filter(s => s.kind === "spec");
-    tableHtml = specs.length
-      ? (drawings.length ? tableFor(drawings, "SHEET NO.", "Drawings") : "") + tableFor(specs, "SECTION", "Specifications")
+    const others = includedSheets.filter(s => s.kind === "other");
+    tableHtml = (specs.length || others.length)
+      ? (drawings.length ? tableFor(drawings, "SHEET NO.", "Drawings") : "") +
+        (specs.length ? tableFor(specs, "SECTION", "Specifications") : "") +
+        (others.length ? tableFor(others, "REF.", drawings.length || specs.length ? "Other documents" : "") : "")
       : tableFor(includedSheets, "SHEET NO.", "");
   }
 
@@ -4972,6 +5037,9 @@ function playStamp(opts) {
 //          specs, superseded (prior rows replaced), firstForProject.
 function celebrateCurrentSet(info) {
   if (!info) return;
+  // Only other documents (an invoice transmittal) change no set: say nothing
+  // rather than announce a "current set".
+  if (!info.drawings && !info.specs) return;
   // Let the TRANSMITTED stamp finish first when one just played.
   const sinceStamp = Date.now() - lastStampAt;
   if (sinceStamp < 2100) { setTimeout(() => celebrateCurrentSet(info), 2100 - sinceStamp); return; }
