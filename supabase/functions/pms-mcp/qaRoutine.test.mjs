@@ -162,7 +162,10 @@ test("the Admin Console lists the complete checklist, read-only", () => {
   assert.ok(rep.includes("qaItemsFiltered(q.allItems, state.qaItemsFilter)"), "the report prints the items the filters show");
   for (const raw of ["${r.text}", "${r.item_id}", "${r.automation_hint}", "${d}", "${k}"]) assert.ok(!rep.includes(raw), "printed without esc(): " + raw);
   for (const safe of ["${esc(r.text)}", "${esc(r.item_id)}", "${esc(r.automation_hint)}", "${esc(d)}", "${esc(k)}"]) assert.ok(rep.includes(safe), "escaped: " + safe);
-  assert.ok(!/sb\("(POST|PATCH|DELETE)", "\/rest\/v1\/pms_qa_checklist/.test(html), "the console does not edit items directly");
+  // The one write to the checklist is the on/off switch, and it sends nothing but `enabled`.
+  const writes = html.match(/sb\("(POST|PATCH|DELETE)", "\/rest\/v1\/pms_qa_checklist[^\n]*/g) || [];
+  assert.equal(writes.length, 1, "one write to the checklist: " + writes.join(" | "));
+  assert.ok(writes[0].startsWith('sb("PATCH", "/rest/v1/pms_qa_checklist?item_id=eq." + encodeURIComponent(itemId), { enabled: on })'), "the switch PATCHes one item's `enabled` only");
   // Run the list's own filter against sample rows.
   const start = html.indexOf("const QA_ITEM_SOURCE ="), end = html.indexOf("function qaItemsListHTML(");
   const qaItemsFiltered = new Function(html.slice(start, end) + "\nreturn qaItemsFiltered;")();
@@ -177,4 +180,43 @@ test("the Admin Console lists the complete checklist, read-only", () => {
   assert.deepEqual(ids({ show: "off" }), ["qa-099"]);
   assert.deepEqual(ids({ show: "on", section: "General Document Verification" }), ["qa-001"]);
   assert.deepEqual(ids({ source: "rfi-lesson" }), ["qa-614"]);
+});
+
+test("the on/off switch changes one item and refuses an answer with no row", async () => {
+  const html = readFileSync(new URL("../../../SettyAdmin.html", import.meta.url), "utf8");
+  const start = html.indexOf("async function qaItemSetEnabled("), end = html.indexOf("function qaItemsRefresh()");
+  assert.ok(start > 0 && end > start);
+  const make = (answer) => {
+    const calls = [], toasts = [];
+    const state = { qaRoutine: { items: 2, allItems: [
+      { item_id: "qa-001", text: "Verify the project name", enabled: true },
+      { item_id: "qa-099", text: "Unused", enabled: false },
+      { item_id: "qa-614", text: "Equipment above ceilings fits", enabled: true },
+    ] } };
+    const fn = new Function("state", "sb", "confirm", "toast", "render",
+      html.slice(start, end) + "\nreturn qaItemSetEnabled;")(
+      state, async (m, path, body) => { calls.push([m, path, body]); return answer(body); }, () => true,
+      (msg, kind) => toasts.push([kind, msg]), () => {});
+    return { fn, calls, toasts, state };
+  };
+  const ok = make((body) => [{ item_id: "qa-001", enabled: body.enabled }]);
+  await ok.fn("qa-001", false);
+  assert.deepEqual(ok.calls, [["PATCH", "/rest/v1/pms_qa_checklist?item_id=eq.qa-001", { enabled: false }]]);
+  assert.equal(ok.state.qaRoutine.allItems[0].enabled, false);
+  assert.equal(ok.state.qaRoutine.items, 1, "the in-use count follows the switch");
+  assert.equal(ok.toasts[0][0], "success");
+  // Switched back on.
+  await ok.fn("qa-099", true);
+  assert.deepEqual(ok.calls[1][2], { enabled: true });
+  assert.equal(ok.state.qaRoutine.items, 2);
+  // PostgREST's empty answer (row gone, or the policy refused) is an error, and nothing changes on the page.
+  const refused = make(() => []);
+  await refused.fn("qa-614", false);
+  assert.equal(refused.state.qaRoutine.allItems[2].enabled, true);
+  assert.equal(refused.state.qaRoutine.items, 2);
+  assert.equal(refused.toasts[0][0], "error");
+  // An id the page does not know is not sent.
+  const unknown = make(() => [{}]);
+  await unknown.fn("qa-404", false);
+  assert.equal(unknown.calls.length, 0);
 });
