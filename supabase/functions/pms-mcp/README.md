@@ -664,6 +664,26 @@ longer, 18 new). The switchgear schedule (no CKT header) is still not read.
 the current version, so it shows fewer scheduled values until sheets are read
 again.
 
+**Panel load columns (2026-11-25, `sched-v4`).** A panel prints one phase
+heading ("A[KVA]") over two loads, the left-hand circuit's and the right-hand
+circuit's. On DP2A, DP2B and DP1B the two came back in one cell ("63.39
+55.08"): the "Total Load" / "Total Amps" lines run across both loads and
+bridged the clear paper between them. A panel's columns are now found from its
+circuit rows only, without the heading or total lines. Three further rules
+keep the layout regular:
+- A heading goes to the column it sits over, or else to the nearest column
+  edge.
+- A heading printed over the gap between two columns names both, and a short
+  phase heading names the empty load column it leans toward.
+- A column with text in only one circuit row (a stray run after a
+  description) joins the column on its left.
+Every Branch Panel on Tabler E603-E611 now reads with 14 columns,
+`A, A, B, B, C, C` in the middle (EM1G, which has no A phase, has 12). Of the
+218 tables in Volumes 2 and 3, data moved only in the seven panels that were
+misread: DP2A, DP2B, DP1B, EM1A, EL4A, EM4A and EM4B. The rest are unchanged
+or gained headings. E612's PANELBOARD templates are still read poorly: half
+the circuits are lost, and title block text gets in.
+
 Equipment tags themselves are still derived from the drawing text at query
 time (`find_equipment`); only links that a review or a person established are
 stored.
