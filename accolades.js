@@ -10,7 +10,7 @@
 
 // Bump this, and the ?v= on the import in Accolades.html, on every change to
 // this file. The page compares the two to spot a stale cached copy.
-export const VERSION = "2026-11-23-15";
+export const VERSION = "2026-11-25-16";
 
 export function parseDay(str) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(str || ""));
@@ -232,11 +232,29 @@ export function dailyPuzzle(rows, staffNames, today, salt, gone) {
   return { day, accolade: row, answer, choices, others: row.recipients.length - 1 };
 }
 
-// The working day before a given day: weekends are skipped, so playing Friday
-// and then Monday keeps a streak alive.
+// Firm holidays, as YYYY-MM-DD. Like a weekend, a holiday is skipped by the
+// play streak: playing the day before and the day after keeps it alive, and
+// playing on one neither extends nor breaks it. Adding a day here is safe at any
+// time, even for a day already past: skipping a day can only join two runs into
+// one, so nobody's streak bonuses can go down. Generous on purpose: a day listed
+// here that some people work costs nothing.
+export const HOLIDAYS = new Set([
+  "2026-11-26", "2026-11-27",                 // Thanksgiving and the day after
+  "2026-12-24", "2026-12-25", "2027-01-01",   // Christmas Eve, Christmas, New Year's Day
+  "2027-05-31", "2027-07-05", "2027-09-06",   // Memorial Day, Independence Day (observed), Labor Day
+  "2027-11-25", "2027-11-26",                 // Thanksgiving and the day after
+  "2027-12-24", "2027-12-31",                 // Christmas and New Year's Day (observed)
+]);
+export function isOffDay(day) {
+  const d = day instanceof Date ? day : parseDay(day);
+  return !d || d.getDay() === 0 || d.getDay() === 6 || HOLIDAYS.has(dayStr(d));
+}
+
+// The working day before a given day: weekends and holidays are skipped, so
+// playing Friday and then Monday keeps a streak alive.
 function prevWorkday(d) {
   const p = new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
-  while (p.getDay() === 0 || p.getDay() === 6) p.setDate(p.getDate() - 1);
+  while (isOffDay(p)) p.setDate(p.getDate() - 1);
   return p;
 }
 
@@ -262,37 +280,102 @@ export function streakBonuses(playDates) {
   let run = 0, bonuses = 0, prev = null;
   for (const d of days) {
     const day = parseDay(d);
-    if (!day) continue;
+    // a play on a weekend or holiday neither extends nor breaks the run
+    if (!day || isOffDay(day)) continue;
     run = prev && dayStr(prevWorkday(day)) === prev ? run + 1 : 1;
     if (run % STREAK_LENGTH === 0) bonuses++;
-    // a weekend play neither extends nor breaks the run that Friday started
-    if (day.getDay() !== 0 && day.getDay() !== 6) prev = d; else run--;
+    prev = d;
   }
   return bonuses;
 }
 
-export const POINTS = { recognized: 10, spotted: 5, guessRight: 3, guessWrong: 1, cheer: 1, streak: 5, car: 5 };
+export const POINTS = { recognized: 10, spotted: 5, guessRight: 3, guessWrong: 1, cheer: 1, streak: 5, car: 5, newFace: 5 };
+
+// ── Fair play (from FAIR_FROM on) ────────────────────────────────────────────
+// Three rules that start on FAIR_FROM. Points are never stored, so a rule with
+// no start date would rewrite every past day. Do not move FAIR_FROM back.
+//   New face   logging the first accolade ever to name a person (picked from
+//              the staff list, not yourself) earns POINTS.newFace on top of the
+//              spotter points. One bonus per accolade, however many new faces.
+//   Pair limit one person's accolades about the same colleague score (for
+//              both of them) at most PAIR_LIMIT times a calendar month. Stops
+//              two people logging for each other without end. The accolade
+//              still goes on the wall; it just stops scoring. Approved emails
+//              and accolades naming only yourself are not affected.
+//   Cheers     a gift scores only on an accolade put on the wall in the same
+//              season, so cheering through the whole archive earns nothing.
+export const FAIR_FROM = "2026-11-30", PAIR_LIMIT = 2;
+const lc = (v) => String(v || "").trim().toLowerCase();
+const fairDay = (r) => scoreDay(r) >= FAIR_FROM;
+const wallOrder = (a, b) => scoreDay(a).localeCompare(scoreDay(b)) || String(a.created_at || "").localeCompare(String(b.created_at || "")) || Number(a.id) - Number(b.id);
+
+// Who gets spotter credit for an accolade: whoever logged it by hand, unless it
+// names only themselves. "" for none. Same rule as topSpotters.
+function spotterOf(r) {
+  const by = lc(r.created_by);
+  if (!by || r.source === "email") return "";
+  const names = r.recipients || [], emails = (r.recipient_emails || []).map(lc);
+  const onlySelf = names.length > 0 && emails.length === names.length && emails.every((e) => e === by);
+  return onlySelf ? "" : by;
+}
+
+// Accolade ids (as strings) that earn the new-face bonus. `history` must be the
+// whole wall, not one season: "never named before" means ever.
+export function newFaceIds(history) {
+  const seen = new Set(), out = new Set();
+  for (const r of [...(history || [])].sort(wallOrder)) {
+    const by = spotterOf(r), emails = (r.recipient_emails || []).map(lc);
+    if (by && fairDay(r) && emails.some((e) => e && e !== by && !seen.has(e))) out.add(String(r.id));
+    (r.recipients || []).forEach((n, i) => seen.add(emails[i] || lc(n)));
+  }
+  return out;
+}
+
+// Which names on which accolades are over the pair limit: Map of accolade id
+// (as a string) -> Set of indexes into its recipients that do not score.
+export function overPairLimit(rows) {
+  const count = new Map(), out = new Map();
+  for (const r of [...(rows || [])].sort(wallOrder)) {
+    const by = spotterOf(r);
+    if (!by || !fairDay(r)) continue;
+    const emails = (r.recipient_emails || []).map(lc), month = scoreDay(r).slice(0, 7);
+    (r.recipients || []).forEach((n, i) => {
+      const who = emails[i] || lc(n);
+      if (!who || who === by) return;
+      const k = by + "|" + who + "|" + month, c = (count.get(k) || 0) + 1;
+      count.set(k, c);
+      if (c > PAIR_LIMIT) { const id = String(r.id); if (!out.has(id)) out.set(id, new Set()); out.get(id).add(i); }
+    });
+  }
+  return out;
+}
 
 // Season standings. rows, cheers ({accolade_id, email, created_at}) and plays
 // ({email, play_date, correct}) are expected to be already cut to the season.
 // names: email -> display name. People named without an email score under
-// their typed name, so they still appear.
-export function seasonPoints(rows, cheers, plays, names, stops, cars) {
+// their typed name, so they still appear. history is the whole wall (for the
+// new-face bonus); without it only `rows` is looked at.
+export function seasonPoints(rows, cheers, plays, names, stops, cars, history) {
   const m = new Map();
   const nameOf = (k, fallback) => (names && names[k]) || fallback || k.split("@")[0];
   const give = (key, label, pts, field) => {
     const k = String(key || "").trim().toLowerCase();
     if (!k) return;
-    const e = m.get(k) || { key: k, name: nameOf(k, label), points: 0, recognized: 0, spotted: 0, guesses: 0, cheers: 0, streaks: 0, stops: 0, car: 0 };
+    const e = m.get(k) || { key: k, name: nameOf(k, label), points: 0, recognized: 0, spotted: 0, guesses: 0, cheers: 0, streaks: 0, stops: 0, car: 0, newFaces: 0 };
     e.points += pts; e[field]++;
     m.set(k, e);
   };
+  const capped = overPairLimit(rows), fresh = newFaceIds(history || rows);
   for (const r of rows || []) {
-    const emails = r.recipient_emails || [];
-    (r.recipients || []).forEach((name, i) => give(emails[i] || name, name, POINTS.recognized, "recognized"));
-  }
-  for (const s of topSpotters(rows, Infinity)) {
-    for (let i = 0; i < s.n; i++) give(s.key, s.name, POINTS.spotted, "spotted");
+    const emails = r.recipient_emails || [], over = capped.get(String(r.id)) || new Set();
+    (r.recipients || []).forEach((name, i) => { if (!over.has(i)) give(emails[i] || name, name, POINTS.recognized, "recognized"); });
+    const by = spotterOf(r);
+    if (!by) continue;
+    const label = r.created_by_name || by.split("@")[0];
+    // spotter points while at least one colleague on it still scores
+    const others = (r.recipients || []).map((_, i) => i).filter((i) => lc(emails[i]) !== by);
+    if (others.some((i) => !over.has(i))) give(by, label, POINTS.spotted, "spotted");
+    if (fresh.has(String(r.id))) give(by, label, POINTS.newFace, "newFaces");
   }
   const playDays = new Map();
   for (const p of plays || []) {
@@ -304,7 +387,11 @@ export function seasonPoints(rows, cheers, plays, names, stops, cars) {
     const e = m.get(k), b = streakBonuses(days);
     if (e && b) { e.points += b * POINTS.streak; e.streaks = b; }
   }
-  for (const c of cheers || []) give(c.email, "", POINTS.cheer, "cheers");
+  const onWall = new Set((rows || []).map((r) => String(r.id)));
+  for (const c of cheers || []) {
+    if (String(c.created_at || "").slice(0, 10) >= FAIR_FROM && !onWall.has(String(c.accolade_id))) continue;
+    give(c.email, "", POINTS.cheer, "cheers");
+  }
   for (const st of stops || []) give(st.email, "", pitPoints(st.email, st.stop_date), "stops");
   // One bonus, once, for making your car your own. `cars` is one entry per
   // person who has; the caller passes only those first customized this season.
@@ -439,7 +526,7 @@ export function champions(rows, cheers, plays, names, today, stops, cars, paceEm
   for (const c of cars || []) slot(quarterKey(c.at)).cars.push(c);
   return [...q.keys()].filter((k) => /^\d{4}-Q[1-4]$/.test(k) && k < now).sort().reverse().map((k) => {
     const s = q.get(k);
-    return { key: k, label: k.slice(5) + " " + k.slice(0, 4), podium: splitPace(seasonPoints(s.rows, s.cheers, s.plays, names, s.stops, s.cars), paceEmails).ranked.slice(0, 3) };
+    return { key: k, label: k.slice(5) + " " + k.slice(0, 4), podium: splitPace(seasonPoints(s.rows, s.cheers, s.plays, names, s.stops, s.cars, rows), paceEmails).ranked.slice(0, 3) };
   }).filter((x) => x.podium.length);
 }
 

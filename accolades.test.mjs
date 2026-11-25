@@ -393,3 +393,77 @@ test("an accolade scores in the season it was logged, whatever the email's date"
   assert.deepEqual(champions([old], [], [], (k) => k, "2026-11-11"), []);
   assert.equal(champions([old], [], [], (k) => k, "2027-01-05")[0].key, "2026-Q4");
 });
+
+// ── Fair play, from FAIR_FROM on ─────────────────────────────────────────────
+import { FAIR_FROM, PAIR_LIMIT, HOLIDAYS, isOffDay, newFaceIds, overPairLimit } from "./accolades.js";
+const fair = (id, day, by, emails, extra) => ({
+  id, recipients: emails.map((e) => e.split("@")[0]), recipient_emails: emails, received_on: day,
+  created_at: day + "T15:00:00Z", source: "manual", created_by: by, kind: "internal", ...extra,
+});
+
+test("holidays are skipped by the play streak like a weekend", () => {
+  assert.ok(HOLIDAYS.has("2026-11-26") && isOffDay("2026-11-26") && isOffDay("2026-11-28") && !isOffDay("2026-11-25"));
+  // Mon-Wed of Thanksgiving week, then Mon-Tue: Thursday and Friday do not break it
+  const days = ["2026-11-23", "2026-11-24", "2026-11-25", "2026-11-30", "2026-12-01"];
+  assert.equal(playStreak(days.map((d) => ({ email: "ana@setty.com", play_date: d })), "ana@setty.com", "2026-12-01"), 5);
+  assert.equal(streakBonuses(days), 1);
+  assert.equal(streakBonuses([...days.slice(0, 3), "2026-11-26", ...days.slice(3, 4)]), 0);   // a holiday play adds nothing
+});
+
+test("a weekend play never earns a streak bonus of its own", () => {
+  // Tue-Fri, Mon-Fri is nine working days; a Saturday in between must not make it ten
+  const days = ["2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06", "2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-14", "2026-11-16"];
+  assert.equal(streakBonuses(days), 2);   // the 5th and 10th working days, not the Saturday as well
+});
+
+test("the new-face bonus goes to whoever first names someone, from FAIR_FROM on", () => {
+  const before = fair(1, "2026-11-20", "ana@setty.com", ["bo@setty.com"]);
+  const a = fair(2, FAIR_FROM, "ana@setty.com", ["bo@setty.com", "cy@setty.com"]);   // Cy is new, Bo is not
+  const b = fair(3, FAIR_FROM, "dee@setty.com", ["cy@setty.com"]);                   // Cy no longer new
+  const self = fair(4, FAIR_FROM, "eli@setty.com", ["eli@setty.com"]);               // naming yourself
+  const typed = { ...fair(5, FAIR_FROM, "dee@setty.com", []), recipients: ["Fay Lin"], recipient_emails: [] };   // not from the staff list
+  const email = fair(6, FAIR_FROM, "admin@setty.com", ["gus@setty.com"], { source: "email" });                  // approved email
+  const old = fair(7, "2026-11-20", "ana@setty.com", ["hal@setty.com"]);            // before the start date
+  assert.deepEqual([...newFaceIds([before, a, b, self, typed, email, old])], ["2"]);
+  // one bonus per accolade however many new faces it names
+  const pts = Object.fromEntries(seasonPoints([a], [], [], {}, [], [], [before, a]).map((e) => [e.key, e]));
+  assert.equal(pts["ana@setty.com"].points, POINTS.spotted + POINTS.newFace);
+  assert.equal(pts["ana@setty.com"].newFaces, 1);
+  // the season's rows leave out the earlier accolade, but the history still knows Bo was named
+  assert.equal(seasonPoints([b], [], [], {}, [], [], [before, a, b]).find((e) => e.key === "dee@setty.com").points, POINTS.spotted);
+});
+
+test("one person's accolades about the same colleague score PAIR_LIMIT times a month", () => {
+  assert.equal(PAIR_LIMIT, 2);
+  const many = [1, 2, 3, 4].map((i) => fair(10 + i, FAIR_FROM, "ana@setty.com", ["bo@setty.com"]));
+  const back = [1, 2, 3].map((i) => fair(20 + i, FAIR_FROM, "bo@setty.com", ["ana@setty.com"]));
+  const nextMonth = fair(30, "2026-12-01", "ana@setty.com", ["bo@setty.com"]);
+  const mixed = fair(31, FAIR_FROM, "ana@setty.com", ["bo@setty.com", "cy@setty.com"]);   // Bo over the limit, Cy not
+  const rows = [...many, ...back, nextMonth, mixed];
+  const over = overPairLimit(rows);
+  assert.deepEqual([...over.keys()].sort(), ["13", "14", "23", "31"]);
+  assert.deepEqual([...over.get("31")], [0]);
+  const pts = Object.fromEntries(seasonPoints(rows, [], [], {}).map((e) => [e.key, e]));
+  // Bo: 2 from Ana this month + 1 next month; Ana: 2 from Bo
+  assert.equal(pts["bo@setty.com"].recognized, 3);
+  assert.equal(pts["ana@setty.com"].recognized, 2);
+  // Ana's spotter credit: 2 + next month + the mixed one (Cy still scores); new face for Bo once and Cy once
+  assert.equal(pts["ana@setty.com"].spotted, 4);
+  assert.equal(pts["cy@setty.com"].recognized, 1);
+  // before FAIR_FROM nothing is capped, so past standings do not move
+  assert.equal(overPairLimit([1, 2, 3].map((i) => fair(i, "2026-11-20", "ana@setty.com", ["bo@setty.com"]))).size, 0);
+  // approved emails are never capped
+  assert.equal(overPairLimit([1, 2, 3].map((i) => fair(i, FAIR_FROM, "admin@setty.com", ["bo@setty.com"], { source: "email" }))).size, 0);
+});
+
+test("a cheer scores only on an accolade from the same season, from FAIR_FROM on", () => {
+  const row = fair(1, FAIR_FROM, "ana@setty.com", ["bo@setty.com"]);
+  const cheers = [
+    { accolade_id: 1, email: "cy@setty.com", created_at: FAIR_FROM + "T16:00:00Z" },     // on this season's wall: scores
+    { accolade_id: 99, email: "cy@setty.com", created_at: FAIR_FROM + "T16:00:00Z" },    // an archived one: does not
+    { accolade_id: 98, email: "dee@setty.com", created_at: "2026-11-20T16:00:00Z" },     // before FAIR_FROM: still scores
+  ];
+  const pts = Object.fromEntries(seasonPoints([row], cheers, [], {}).map((e) => [e.key, e.points]));
+  assert.equal(pts["cy@setty.com"], POINTS.cheer);
+  assert.equal(pts["dee@setty.com"], POINTS.cheer);
+});

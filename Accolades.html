@@ -828,8 +828,8 @@ body.tv .tools:hover, body.tv .tools:focus-within { opacity: 1; }
 // VERSION in that file). Browsers cache the module separately from this page;
 // a stale copy once left the page calling functions the old module lacked,
 // which blanked everything drawn after the first failure.
-import * as A from "./accolades.js?v=2026-11-23-15";
-const NEEDS_VERSION = "2026-11-23-15";
+import * as A from "./accolades.js?v=2026-11-25-16";
+const NEEDS_VERSION = "2026-11-25-16";
 // ?review=1 is the admin review screen the Admin Console embeds: only the
 // filed-email suggestions and the form that approves one onto the wall.
 const REVIEW = new URLSearchParams(location.search).get("review") === "1";
@@ -1148,7 +1148,7 @@ function season() {
 const gone = new Set();   // emails and lower-cased names of inactive staff
 // Everyone whose saved ride is not the stock car, with the day they first saved one.
 const carBonus = () => Object.entries(carPrefs).filter(([, p]) => A.isCustomRide(p)).map(([email, p]) => ({ email, at: String(p.at || "").slice(0, 10) || today() }));
-const allStandings = () => { const se = season(); return A.seasonPoints(se.rows, se.cheers, se.plays, nameOf, se.stops, se.cars).filter((e) => !gone.has(e.key)); };
+const allStandings = () => { const se = season(); return A.seasonPoints(se.rows, se.cheers, se.plays, nameOf, se.stops, se.cars, allRows).filter((e) => !gone.has(e.key)); };
 // Pace cars (settings.pace) take part but are not ranked: standings() is the field without them.
 const standings = () => A.splitPace(allStandings(), settings.pace).ranked;
 const paceCars = () => A.splitPace(allStandings(), settings.pace).pace;
@@ -1238,7 +1238,7 @@ function renderGame() {
   $("gameTag").textContent = "Today's round";
   if (!mine) {
     body.appendChild(puzzleCard(pz, null, (c) => guess(pz, c)));
-    body.appendChild(h("p", { class: "rules", text: "One guess a day. +" + A.POINTS.guessRight + " for a right answer, +" + A.POINTS.guessWrong + " for trying. Play " + A.STREAK_LENGTH + " working days in a row for a +" + A.POINTS.streak + " bonus." + (streak ? " You are on " + streak + "." : "") }));
+    body.appendChild(h("p", { class: "rules", text: "One guess a day. +" + A.POINTS.guessRight + " for a right answer, +" + A.POINTS.guessWrong + " for trying. Play " + A.STREAK_LENGTH + " working days in a row for a +" + A.POINTS.streak + " bonus. Weekends and holidays don't break it." + (streak ? " You are on " + streak + "." : "") }));
     return;
   }
   const picked = sessionPick[pz.day] || (mine.correct ? pz.answer : "—");
@@ -1440,7 +1440,7 @@ function renderBoard(grid, st, pace) {
   ol.textContent = "";
   $("periodChips").hidden = board === "race";
   $("rules").hidden = board !== "race";
-  $("rules").textContent = "+" + A.POINTS.recognized + " each time you are recognized · +" + A.POINTS.spotted + " for logging one about someone else · +" + A.POINTS.guessRight + " for a right daily guess (+" + A.POINTS.guessWrong + " for trying) · +" + A.POINTS.cheer + " per gift you send \u00B7 +" + A.POINTS.streak + " for every " + A.STREAK_LENGTH + " working days of guessing in a row \u00B7 up to 3 from the daily fruit machine \u00B7 +" + A.POINTS.car + " once for customizing your car. Resets each quarter.";
+  $("rules").textContent = "+" + A.POINTS.recognized + " each time you are recognized · +" + A.POINTS.spotted + " for logging one about someone else (+" + A.POINTS.newFace + " more if they have never been named before) · +" + A.POINTS.guessRight + " for a right daily guess (+" + A.POINTS.guessWrong + " for trying) · +" + A.POINTS.cheer + " per gift you send on this season's accolades \u00B7 +" + A.POINTS.streak + " for every " + A.STREAK_LENGTH + " working days of guessing in a row \u00B7 up to 3 from the daily fruit machine \u00B7 +" + A.POINTS.car + " once for customizing your car. Accolades from one person about the same colleague score " + A.PAIR_LIMIT + " times a month. Resets each quarter.";
   let items = [];
   const more = board === "race" && st.length > grid.length;
   $("boardAll").hidden = !more;
