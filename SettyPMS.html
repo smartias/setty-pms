@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-11-24-pms-v220-cost-document-upload";
+    window.__appVersion = "2026-11-25-pms-v221-greeting-first-name";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2805,9 +2805,7 @@ function TemplatesPanel({ project, staff }) {
                     const projectName   = project.name || "[Project Name]";
                     const pmPocs            = project.projectContacts?.pm || [];
                     const fullContactName   = pmPocs[0]?.name || project.clientContact || "";
-                    const clientContact     = fullContactName
-                      ? fullContactName.trim().split(/\s+/)[0]
-                      : "[Client Contact]";
+                    const clientContact     = greetingFirstName(fullContactName) || "[Client Contact]";
                     const settyPm       = (project.teamMembers || []).find(m => m.role === "Project Manager")?.name
                                        || project.projectManager || "[Your Name]";
                     const staffDir      = staff || [];
@@ -3614,6 +3612,21 @@ async function createProposalFolder(project) {
   // Genuinely rare: create succeeded but Graph withheld the URL.
   if (!result.webUrl) throw new Error("Folder created but no URL returned.");
   return result.webUrl;
+}
+
+// First name for "Hi …,". About a third of PMS contacts are stored last name
+// first ("Rama, Monica"), and taking the first word greeted them by surname
+// ("Hi Rama,,"). Comma parts that are credentials or suffixes ("John Smith, PE",
+// "Kurt Bedore, Jr.") are not names and are dropped; two parts left means
+// "Last, First". A leading title (Dr., Ms.) is skipped. Same rule as
+// transmittal.html; greetingFirstName.test.mjs runs both copies.
+const NAME_SUFFIX_RE = /^(jr|sr|ii|iii|iv|pe|p\.?e|ra|r\.?a|aia|leed( ap)?|pmp|esq|ph\.?d|mba|ncarb|cem|cxa|bcxa|cpd|ccm|fpe|se|s\.?e)\.?$/i;
+function greetingFirstName(name) {
+  const parts = String(name || "").split(",").map(x => x.trim()).filter(x => x && !NAME_SUFFIX_RE.test(x));
+  if (!parts.length) return "";
+  const given = parts.length >= 2 ? parts[1] : parts[0];
+  const words = given.replace(/^(mr|mrs|ms|miss|mx|dr)\.?\s+/i, "").split(/\s+/);
+  return (words[0] || "").replace(/[.,;:]+$/, "");
 }
 
 // decodeURIComponent that tolerates already-decoded URLs. SharePoint folder
@@ -14936,7 +14949,7 @@ function ChangeOrdersView({ project, onChange }) {
   function copyASAEmail(co) {
     const pmPocs        = project.projectContacts?.pm || [];
     const fullName      = pmPocs[0]?.name || project.clientContact || "";
-    const clientFirst   = fullName ? fullName.trim().split(/\s+/)[0] : "[Client Contact]";
+    const clientFirst   = greetingFirstName(fullName) || "[Client Contact]";
     const settyPm       = (project.teamMembers || []).find(m => m.role === "Project Manager")?.name
                        || project.projectManager || "[Your Name]";
     const contractDate  = project.contractDate
@@ -16227,7 +16240,7 @@ function buildStatusCheckEmail(project) {
 
   // Greet by first name only when we're writing to exactly one person; a named
   // greeting on a multi-recipient nudge reads as a mail merge.
-  const firstNames = pocs.map(p => String(p.name || "").trim().split(/\s+/)[0]).filter(Boolean);
+  const firstNames = pocs.map(p => greetingFirstName(p.name)).filter(Boolean);
   const greeting = firstNames.length === 1 ? "Hi " + firstNames[0] + "," : "Hello,";
 
   const proj = project.name || "the project";
@@ -33929,10 +33942,10 @@ function PortalSharingModal({ project, clients, driveId, onClose, onUpdateClient
         return `<li><strong>${p.folder}</strong> (${roleLabel}): <a href="${p.url}">${p.url}</a></li>`;
       }).join("");
 
-      const firstName = (perm.name || "").split(/\s+/)[0] || "";
+      const firstName = greetingFirstName(perm.name);
       const folderWord = allTheirPerms.length > 1 ? "folders" : "folder";
       const bodyHtml =
-        `<p>Hi ${firstName},</p>` +
+        `<p>Hi${firstName ? " " + firstName : ""},</p>` +
         `<p>You have access to the SharePoint ${folderWord} for SETTY project <strong>${projLabel}</strong>:</p>` +
         `<ul>${folderList}</ul>` +
         `<p><strong>How to access the ${folderWord} (first time only):</strong></p>` +
