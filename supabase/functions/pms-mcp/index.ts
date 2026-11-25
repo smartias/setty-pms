@@ -131,6 +131,7 @@ import {
   type DocFile, deriveDocumentRow, isIndexable, linkLibraryFolder, normaliseFolderUrl,
   normaliseDiscipline, normaliseDocType, DOC_TYPES,
 } from "./documentMeta.ts";
+import { docsScopeDecision, isBigDocsScope, type DocsScopeHistory } from "./docsSyncPlan.ts";
 // find_document's read side of pms_documents (query building, freshness, row shaping). Pure; see its tests.
 import {
   type SyncState, DOCS_TABLE_MAX_ROWS, tableIsFresh, buildDocumentsQuery, rowToFile,
@@ -16565,9 +16566,8 @@ const DOCS_SYNC_CORS = {
 const DOCS_WALK_MAX_REQUESTS = 600;
 const DOCS_WALK_MAX_FILES = 20000;
 const DOCS_MAX_SCOPES_PER_RUN = 6;
-// Stop STARTING new scopes after this; an edge invocation is bounded, and a walk
-// already in flight needs the rest of the time.
-const DOCS_RUN_BUDGET_MS = 90000;
+// The per-run time budget and the "big scope runs alone" rule live in
+// docsSyncPlan.ts (DOCS_RUN_BUDGET_MS, DOCS_BIG_SCOPE_FILES).
 const DOCS_UPSERT_BATCH = 500;
 const DOCS_LIBRARY_RE = /proposal|contract/i;
 
@@ -16812,21 +16812,32 @@ app.post("/pms-mcp/admin/documents-sync", async (c) => {
     }
   }
   // Least recently completed first; never-synced scopes ahead of everything.
-  const stateRows = await sbGetAll("pms_documents_sync?select=scope,last_completed_at");
+  const stateRows = await sbGetAll("pms_documents_sync?select=scope,last_completed_at,file_count,complete");
   const last = new Map<string, string>(stateRows.map((r: any) => [r.scope, r.last_completed_at || ""]));
+  const history = new Map<string, DocsScopeHistory>(
+    stateRows.map((r: any) => [r.scope, { fileCount: r.file_count, complete: r.complete }]),
+  );
   cands.sort((a, b) => (last.get(a.scope) || "").localeCompare(last.get(b.scope) || ""));
 
-  for (const cand of cands.slice(0, maxScopes)) {
-    if (Date.now() - started > DOCS_RUN_BUDGET_MS) break;
+  // Short runs (cron every 5 minutes): no new scope after DOCS_RUN_BUDGET_MS,
+  // and a big scope only as the first and only scope of its run. A skipped big
+  // scope keeps its place at the head of the rotation for the next run.
+  let ranBig = false;
+  for (const cand of cands) {
+    const big = isBigDocsScope(history.get(cand.scope));
+    const d = docsScopeDecision({ started: results.length, elapsedMs: Date.now() - started, maxScopes, big, ranBig });
+    if (d === "stop") break;
+    if (d === "skip") continue;
     results.push(await cand.run());
+    if (big) ranBig = true;
   }
-  // pms_ca_items drift repair rides the same schedule: the projection trigger
-  // warns instead of failing a save, and this is what turns a warning back
-  // into a row. One SQL call over every project; unchanged rows cost nothing
-  // (the upsert's is-distinct guard), so it is cheap to run every cycle.
-  // `{"caItems":false}` skips it.
+  // pms_ca_items drift repair moved to its own pg_cron job on 2026-11-25
+  // (pms-ca-items-reconcile, migration 20261125173000): over every project it
+  // outgrew the 8 s statement timeout PostgREST calls get, and failed on every
+  // run. `{"caItems":true}` still runs it here for a manual check (it will time
+  // out the same way until the table is smaller).
   let caItems: Record<string, unknown> | undefined;
-  if (body?.caItems !== false) {
+  if (body?.caItems === true) {
     try {
       caItems = summarizeReconcile(await sbRpc("pms_ca_items_reconcile", {}));
       if ((caItems.failed as any[]).length || (caItems.written as number) > 0) {

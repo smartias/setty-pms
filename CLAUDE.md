@@ -33,6 +33,17 @@ browser (PMS pages) or from the connector (app permissions).
    things on every PR, plus a CRLF/LF check
    (`.github/scripts/check-source.mjs`); a red run means do not merge.
 
+## Email greetings (all pages)
+
+- Build every "Hi …," from `greetingFirstName(name)` in `greetingName.js`
+  (`greetingName.test.mjs`), never from the first word of a name: about a
+  third of contacts are stored "Last, First", some carry ", PE" / ", Jr.",
+  and directories fall back to an email address. It returns "" when there is
+  no usable name; the caller picks the fallback. It is a plain
+  `<script src>` (not an ES module) so it exists before page code runs;
+  `SettyPMS.html`, `transmittal.html` and `Newsletter.html` load it, and the
+  test fails if a page keeps its own copy.
+
 ## CDN libraries (all pages)
 
 - Every `<script src>` from jsdelivr, cdnjs or unpkg names an exact version
@@ -63,6 +74,16 @@ browser (PMS pages) or from the connector (app permissions).
   slash stripped) is the drive-root-relative path.
 - Encode Graph paths per segment with `encodeSpPath`, not one
   `encodeURIComponent` over the whole path.
+
+## Staff photos
+
+- A staff record holds only `photoPath`; the picture is a 256px JPEG in the
+  public `staff-photos` Storage bucket (uploads need `projects.edit`). Never
+  store an image in the record: `pms_meta.data.staff` is one JSON document with
+  every person in it.
+- Show a person with `<StaffAvatar person={...} />`. Team rows have no
+  `photoPath`; the avatar finds the directory entry by email, then name
+  (`staffPhotos.test.mjs`).
 
 ## Debugging "it still doesn't work"
 
